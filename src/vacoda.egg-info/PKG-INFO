@@ -1,0 +1,175 @@
+Metadata-Version: 2.4
+Name: vacoda
+Version: 1.4.6
+Summary: VAlidation of COmtrade DAta - A Python package for validating and preprocessing UN-Comtrade data for trade analysis.
+Author: Pooja Saxena
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: pandas>=2.0
+Requires-Dist: numpy>=1.24
+Requires-Dist: pyarrow>=14.0
+Requires-Dist: matplotlib>=3.7
+Requires-Dist: seaborn>=0.12
+Requires-Dist: pyyaml>=6.0
+Requires-Dist: openpyxl>=3.1
+Requires-Dist: pycountry-convert>=0.7.2
+Requires-Dist: polars>=0.20
+Requires-Dist: tqdm>=4.66
+Requires-Dist: joblib>=1.3
+Requires-Dist: plotly>=5.20
+Requires-Dist: altair>=5.2
+Requires-Dist: scikit-learn>=1.3
+Requires-Dist: scipy>=1.11
+Requires-Dist: statsmodels>=0.14
+Requires-Dist: xgboost>=2.0
+Requires-Dist: pandera>=0.18
+Requires-Dist: streamlit>=1.32
+Provides-Extra: dev
+Requires-Dist: pytest>=7.4; extra == "dev"
+
+# Project structure guide
+
+This project is organized by `purpose`, not by file type.
+
+The main rule is:
+
+- **preprocessing** = make raw data usable
+- **validation** = decide how trustworthy the data is
+- **imputation** = fill missing values
+- **pipeline** = orchestrate execution
+- **io** = read and write data
+- **models** = ML/statistical models
+- **visualization** = plots and charts
+- **utils** = small generic helpers only
+
+---
+
+## Folder intent
+
+### `io/`
+Anything related to input/output.
+
+Examples:
+- loading raw or processed files
+- saving outputs
+- writing reports/tables
+- managing filesystem paths
+
+Put code here if its main purpose is:
+**read, write, save, or locate data**
+
+---
+
+### `preprocessing/`
+Transforms raw trade + metadata into a clean working dataset.
+
+Examples:
+- metadata merges
+- column renaming
+- type conversion
+- standardization
+- dataset building
+- derived columns/features needed for downstream steps
+
+Put code here if its main purpose is:
+**prepare the dataset so it becomes usable**
+
+---
+
+### `validation/`
+Checks whether records are reliable, consistent, or suspicious.
+
+Examples:
+- hidden-flow detection
+- mirror-flow checks
+- structural consistency checks
+- suspicious trade pattern flags
+- reliability scoring
+
+Put code here if its main purpose is:
+**judge how much a row should be trusted**
+
+---
+
+### `imputation/`
+Fills missing values using rules or models.
+
+Examples:
+- weight imputation
+- unit imputation
+- reference-price-based filling
+
+Put code here if its main purpose is:
+**repair missing data**
+
+---
+
+### `pipeline/`
+Execution order and orchestration only.
+
+Examples:
+- run preprocessing
+- run validation
+- run imputation
+- full pipeline scripts
+
+Put code here if its main purpose is:
+**connect steps together**, not to implement the core logic itself
+
+---
+
+### `models/`
+Model definitions or learned methods.
+
+Examples:
+- ML models
+- statistical models
+- training/inference helpers
+
+Put code here if its main purpose is:
+**fit or apply a model**
+
+---
+
+### `visualization/`
+Plots and visual outputs.
+
+Examples:
+- distributions
+- diagnostics
+- comparison plots
+
+Put code here if its main purpose is:
+**show results visually**
+
+---
+
+### `utils/`
+Only small, reusable, generic helpers.
+
+Examples:
+- generic formatting helpers
+- small reusable utility functions
+- common helper logic not tied to trade-specific meaning
+
+Do **not** use `utils/` as a dumping ground.
+
+Put code here only if it is:
+**generic and reusable across multiple modules**
+
+---
+
+## Placement rule of thumb
+
+When adding a new file, ask:
+
+1. Does it prepare the dataset? → `preprocessing/`
+2. Does it judge reliability or consistency? → `validation/`
+3. Does it fill missing values? → `imputation/`
+4. Does it only run or connect steps? → `pipeline/`
+5. Does it read/write files? → `io/`
+6. Does it train/apply a model? → `models/`
+7. Does it make plots? → `visualization/`
+8. Is it a truly generic helper? → `utils/`
+
+If a file seems to belong in many places, choose based on its **main purpose**.
