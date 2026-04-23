@@ -1,0 +1,52 @@
+# Configuration file for data paths in the vacoda project.
+
+# Configuration file for data paths
+project_root: "."
+data_dir: "data"
+raw_data_dir: "data/raw"
+interim_data_dir: "data/interim"
+processed_data_dir: "data/processed"
+external_data_dir: "data/external"
+api_data_dir: "data/raw/api"
+output_dir: "output"
+figure_dir: "output/figures"
+
+# Pipeline mode:
+# - 'per_file' : each matched raw file is processed and saved separately
+# - 'merged'   : all matched raw files are concatenated and saved as one output
+pipeline:
+  mode: "per_file"
+  source: "api"  # options: 'api', 'local'
+
+# Paths to data files
+raw_data:
+  files:
+    - "Comtrade_hs_441012_trade.csv"
+    #- "Comtrade_*.csv"
+
+# Paths to processed data files
+processed_data:
+  files:
+    - "comtrade_code_5_base.parquet"  
+    #- "comtrade_code_5.parquet" 
+    # - "comtrade_441012_base.parquet"  # base file for 441012 only 
+
+# Paths to external data files (e.g., country codes, HS codes)
+external_data:
+  country_codes_file: "country_codes.csv"
+  hs_codes_file: "hs_codes.csv"
+
+
+# Logging options (optional)
+log_level: DEBUG  # Options: DEBUG, INFO, WARNING, ERROR, CRITICAL
+log_file: output/reports/LOG_PIPELINE_PATHS.log
+
+# Paths to metadata parquet files
+metadata:
+  hs_version: "data/metadata/hs_version.parquet"
+  reporter: "data/metadata/reporter.parquet"
+  commodity: "data/metadata/commodity.parquet"
+  flow: "data/metadata/flow.parquet"
+  unit: "data/metadata/unit.parquet"
+  estimation: "data/metadata/estimation.parquet"
+
