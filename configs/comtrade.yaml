@@ -1,0 +1,85 @@
+# Comtrade download config (flat layout)
+# Docs: https://comtradedeveloper.un.org/api-details#api=comtrade-v1&operation=get-get
+#
+# IMPORTANT: Set auth.env_file to a local file that contains:
+# COMTRADE_API_KEY=your_key_here before running downloads.
+#
+# Edit these sections first:
+# 1) queries
+# 2) output
+# 3) default_params
+#
+# Token tips:
+# - cmdCode can use token names from src/vacoda/reference/hs_sets.py (example: WOOD_PANEL)
+# - flowCode can use token names from src/vacoda/reference/flow_sets.py (example: FLOW_ALL)
+
+# --------------------
+# EDIT FIRST: WHAT TO DOWNLOAD
+# --------------------
+# One query = one logical dataset driven by cmdCode + one output file.
+query:
+  - name: "wood_panel_world_trade"
+    params:
+      # Empty/null reporterCode means all reporters.
+      reporterCode:
+      # Empty/null partnerCode means all partners.
+      partnerCode:
+      # HS product filter token from src/vacoda/reference/hs_sets.py.
+      cmdCode: "WOOD_PANEL"
+      # Use FLOW_ALL to include both imports and exports.
+      flowCode: "FLOW_ALL"
+      # "all" or specific period(s), e.g. "2023" or "2022,2023".
+      period: "all"
+    output_file: "Comtrade_hs_441012_trade.csv"
+
+
+# Logging options (optional)
+log_level: INFO  # Options: DEBUG, INFO, WARNING, ERROR, CRITICAL
+log_file: output/reports/LOG_API_PIPELINE.log
+
+# Output location.
+output:
+  directory: "data/raw/api"
+  manifest_file: "download_manifest.json"
+
+# Applied to every query unless overridden in queries[].params.
+default_params:
+  format: "csv"
+  # Page size per API request (not total rows).
+  maxRecords: 250000
+  includeDesc: true
+
+# --------------------
+# ADVANCED: USUALLY KEEP AS-IS
+# --------------------
+
+# Data API endpoint used by this pipeline.
+endpoint: "https://api.uncomtrade.org/data/v1/get/C/A/HS"
+endpoint_fallbacks:
+  - "https://comtradeapi.un.org/data/v1/get/C/A/HS"
+
+# API authentication.
+auth:
+  enabled: true
+  method: "header" # header or query
+  header_name: "Ocp-Apim-Subscription-Key"
+  env_var_name: "COMTRADE_API_KEY"
+  query_param_name: "token"
+  env_file: ".env"
+
+# Pagination controls.
+pagination:
+  enabled: true
+  limit_param: "maxRecords"
+  offset_param: "offset"
+  start_offset: 0
+
+# Network retry policy.
+retry:
+  max_attempts: 3
+  backoff_seconds: 2.0
+
+# Runtime behavior.
+runtime:
+  timeout_seconds: 120
+  overwrite_existing: false

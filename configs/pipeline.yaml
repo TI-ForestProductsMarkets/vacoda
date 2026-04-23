@@ -1,0 +1,20 @@
+## Pipeline configuration for vacoda.
+
+data:
+  source: "api"
+
+reference_prices:
+  lower_count: 5
+  max_cv: 1.5
+  year_window: 1
+
+hidden_flow_matching:
+  year_window: 1
+  price_rel_tol: 0.35
+  value_rel_tol: 0.60
+  weight_rel_tol: 0.60
+  plausible_score_threshold: 0.55
+
+imputation:
+  min_reference_count: 5
+  use_year_window: true
