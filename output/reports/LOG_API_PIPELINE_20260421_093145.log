@@ -1,0 +1,31 @@
+09:31:45 [INFO] COMTRADE.API_PIPELINE: Starting comtrade API pipeline with config: configs\comtrade.yaml
+09:31:56 [WARNING] COMTRADE.API: Primary endpoint not resolvable. Falling back to: https://comtradeapi.un.org/data/v1/get/C/A/HS
+09:31:56 [INFO] COMTRADE.API_PIPELINE: ============================================================
+09:31:56 [INFO] COMTRADE.API_PIPELINE: STEP 2/6 — Validate authentication
+09:31:56 [INFO] COMTRADE.API_PIPELINE: ============================================================
+09:31:56 [INFO] COMTRADE.API_PIPELINE:   [detail] Auth method: header, Env var: COMTRADE_API_KEY
+09:31:56 [INFO] COMTRADE.API: Loaded local env file: .env
+09:31:56 [INFO] COMTRADE.API: Auth preflight passed using env var 'COMTRADE_API_KEY' (method=header).
+09:32:35 [INFO] COMTRADE.API_PIPELINE: ============================================================
+09:32:35 [INFO] COMTRADE.API_PIPELINE: STEP 3/6 — Prepare output directory
+09:32:35 [INFO] COMTRADE.API_PIPELINE: ============================================================
+09:32:35 [INFO] COMTRADE.API_PIPELINE:   [detail] Output directory: (not resolved yet)
+09:32:35 [INFO] COMTRADE.API_PIPELINE: Output directory: E:\Projects\vacoda\data\raw\api
+09:32:35 [INFO] COMTRADE.API_PIPELINE: ============================================================
+09:32:35 [INFO] COMTRADE.API_PIPELINE: STEP 4/6 — Download queries
+09:32:35 [INFO] COMTRADE.API_PIPELINE: ============================================================
+09:32:35 [INFO] COMTRADE.API_PIPELINE:   [detail] Total queries: 1
+09:32:35 [INFO] COMTRADE.API_PIPELINE:   [query 1/1] START: wood_panel_world_trade
+09:32:35 [INFO] COMTRADE.API_PIPELINE:     Output file: E:\Projects\vacoda\data\raw\api\Comtrade_hs_441012_trade.csv
+09:32:35 [INFO] COMTRADE.API_PIPELINE:     [result] SKIPPED: data\raw\api\Comtrade_hs_441012_trade.csv
+09:32:35 [INFO] COMTRADE.API_PIPELINE:       File exists and overwrite is disabled.
+09:32:35 [INFO] COMTRADE.API_PIPELINE: ============================================================
+09:32:35 [INFO] COMTRADE.API_PIPELINE: STEP 5/6 — Write manifest
+09:32:35 [INFO] COMTRADE.API_PIPELINE: ============================================================
+09:32:35 [INFO] COMTRADE.API_PIPELINE:   [detail] Manifest file: download_manifest.json
+09:32:35 [INFO] COMTRADE.API_PIPELINE: Download manifest written to: data\raw\api\download_manifest.json
+09:32:35 [INFO] COMTRADE.API_PIPELINE: ============================================================
+09:32:35 [INFO] COMTRADE.API_PIPELINE: STEP 6/6 — Finish
+09:32:35 [INFO] COMTRADE.API_PIPELINE: ============================================================
+09:32:35 [INFO] COMTRADE.API_PIPELINE:   [detail] Pipeline finished successfully.
+09:32:35 [INFO] COMTRADE.API_PIPELINE: Comtrade API pipeline completed in 49.82 seconds (0 min 49.8 sec)

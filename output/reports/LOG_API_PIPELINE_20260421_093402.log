@@ -1,0 +1,58 @@
+09:34:02 [INFO] COMTRADE.API_PIPELINE: Starting comtrade API pipeline with config: configs\comtrade.yaml
+09:34:13 [WARNING] COMTRADE.API: Primary endpoint not resolvable. Falling back to: https://comtradeapi.un.org/data/v1/get/C/A/HS
+09:34:13 [INFO] COMTRADE.API_PIPELINE: ============================================================
+09:34:13 [INFO] COMTRADE.API_PIPELINE: STEP 2/6 — Validate authentication
+09:34:13 [INFO] COMTRADE.API_PIPELINE: ============================================================
+09:34:13 [INFO] COMTRADE.API_PIPELINE:   [detail] Auth method: header, Env var: COMTRADE_API_KEY
+09:34:13 [INFO] COMTRADE.API: Loaded local env file: .env
+09:34:13 [INFO] COMTRADE.API: Auth preflight passed using env var 'COMTRADE_API_KEY' (method=header).
+09:34:17 [INFO] COMTRADE.API_PIPELINE: ============================================================
+09:34:17 [INFO] COMTRADE.API_PIPELINE: STEP 3/6 — Prepare output directory
+09:34:17 [INFO] COMTRADE.API_PIPELINE: ============================================================
+09:34:17 [INFO] COMTRADE.API_PIPELINE:   [detail] Output directory: (not resolved yet)
+09:34:17 [INFO] COMTRADE.API_PIPELINE: Output directory: E:\Projects\vacoda\data\raw\api
+09:34:17 [INFO] COMTRADE.API_PIPELINE: ============================================================
+09:34:17 [INFO] COMTRADE.API_PIPELINE: STEP 4/6 — Download queries
+09:34:17 [INFO] COMTRADE.API_PIPELINE: ============================================================
+09:34:17 [INFO] COMTRADE.API_PIPELINE:   [detail] Total queries: 1
+09:34:17 [INFO] COMTRADE.API_PIPELINE:   [query 1/1] START: wood_panel_world_trade
+09:34:17 [INFO] COMTRADE.API_PIPELINE:     Output file: E:\Projects\vacoda\data\raw\api\Comtrade_hs_441012_trade.csv
+09:34:17 [INFO] COMTRADE.API_PIPELINE:     [info] File does not exist, will download.
+09:34:17 [INFO] COMTRADE.API: flowCode=-1 treated as all-flows filter; omitting flowCode parameter
+09:34:17 [WARNING] COMTRADE.API: period=all can be rejected by this endpoint; omitting period
+09:34:17 [INFO] COMTRADE.API_PIPELINE:     [info] Downloading query 'wood_panel_world_trade'
+09:34:17 [ERROR] COMTRADE.API: Authentication HTTP error 401 for https://comtradeapi.un.org/data/v1/get/C/A/HS?format=csv&maxRecords=250000&includeDesc=true&cmdCode=441012&offset=0
+Traceback (most recent call last):
+  File "E:\Projects\vacoda\src\vacoda\comtrade\api.py", line 226, in download_with_retry
+    return download_once(url, runtime.timeout_seconds, headers=headers)
+  File "E:\Projects\vacoda\src\vacoda\comtrade\api.py", line 199, in download_once
+    with urlopen(request, timeout=timeout_seconds) as response:
+         ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Program Files\Python313\Lib\urllib\request.py", line 189, in urlopen
+    return opener.open(url, data, timeout)
+           ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^
+  File "C:\Program Files\Python313\Lib\urllib\request.py", line 495, in open
+    response = meth(req, response)
+  File "C:\Program Files\Python313\Lib\urllib\request.py", line 604, in http_response
+    response = self.parent.error(
+        'http', request, response, code, msg, hdrs)
+  File "C:\Program Files\Python313\Lib\urllib\request.py", line 533, in error
+    return self._call_chain(*args)
+           ~~~~~~~~~~~~~~~~^^^^^^^
+  File "C:\Program Files\Python313\Lib\urllib\request.py", line 466, in _call_chain
+    result = func(*args)
+  File "C:\Program Files\Python313\Lib\urllib\request.py", line 613, in http_error_default
+    raise HTTPError(req.full_url, code, msg, hdrs, fp)
+urllib.error.HTTPError: HTTP Error 401: Access Denied
+09:34:17 [INFO] COMTRADE.API_PIPELINE:     [result] ERROR: data\raw\api\Comtrade_hs_441012_trade.csv
+09:34:17 [INFO] COMTRADE.API_PIPELINE:       Error: API auth failed (HTTP 401). Response: { "statusCode": 401, "message": "Access denied due to invalid subscription key. Make sure to provide a valid key for an active subscription." }
+09:34:17 [INFO] COMTRADE.API_PIPELINE: ============================================================
+09:34:17 [INFO] COMTRADE.API_PIPELINE: STEP 5/6 — Write manifest
+09:34:17 [INFO] COMTRADE.API_PIPELINE: ============================================================
+09:34:17 [INFO] COMTRADE.API_PIPELINE:   [detail] Manifest file: download_manifest.json
+09:34:17 [INFO] COMTRADE.API_PIPELINE: Download manifest written to: data\raw\api\download_manifest.json
+09:34:17 [INFO] COMTRADE.API_PIPELINE: ============================================================
+09:34:17 [INFO] COMTRADE.API_PIPELINE: STEP 6/6 — Finish
+09:34:17 [INFO] COMTRADE.API_PIPELINE: ============================================================
+09:34:17 [INFO] COMTRADE.API_PIPELINE:   [detail] Pipeline finished successfully.
+09:34:17 [INFO] COMTRADE.API_PIPELINE: Comtrade API pipeline completed in 15.46 seconds (0 min 15.5 sec)

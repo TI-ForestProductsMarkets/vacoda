@@ -1,0 +1,35 @@
+09:13:55 [INFO] COMTRADE.DOWNLOAD: ============================================================
+09:13:55 [INFO] COMTRADE.DOWNLOAD: STEP 1/6 — Load config and paths
+09:13:55 [INFO] COMTRADE.DOWNLOAD: ============================================================
+09:13:55 [INFO] COMTRADE.DOWNLOAD:   [detail] Config file: configs\comtrade.yaml
+09:13:55 [INFO] COMTRADE.DOWNLOAD: Starting comtrade API pipeline with config: configs\comtrade.yaml
+09:14:06 [WARNING] COMTRADE_API: Primary endpoint not resolvable. Falling back to: https://comtradeapi.un.org/data/v1/get/C/A/HS
+09:14:06 [INFO] COMTRADE.DOWNLOAD: ============================================================
+09:14:06 [INFO] COMTRADE.DOWNLOAD: STEP 2/6 — Validate authentication
+09:14:06 [INFO] COMTRADE.DOWNLOAD: ============================================================
+09:14:06 [INFO] COMTRADE.DOWNLOAD:   [detail] Auth method: header, Env var: COMTRADE_API_KEY
+09:14:06 [INFO] COMTRADE_API: Loaded local env file: .env
+09:14:06 [INFO] COMTRADE_API: Auth preflight passed using env var 'COMTRADE_API_KEY' (method=header).
+09:14:06 [INFO] COMTRADE.DOWNLOAD: ============================================================
+09:14:06 [INFO] COMTRADE.DOWNLOAD: STEP 3/6 — Prepare output directory
+09:14:06 [INFO] COMTRADE.DOWNLOAD: ============================================================
+09:14:06 [INFO] COMTRADE.DOWNLOAD:   [detail] Output directory: (not resolved yet)
+09:14:06 [INFO] COMTRADE.DOWNLOAD: Output directory: E:\Projects\vacoda\data\raw\api
+09:14:06 [INFO] COMTRADE.DOWNLOAD: ============================================================
+09:14:06 [INFO] COMTRADE.DOWNLOAD: STEP 4/6 — Download queries
+09:14:06 [INFO] COMTRADE.DOWNLOAD: ============================================================
+09:14:06 [INFO] COMTRADE.DOWNLOAD:   [detail] Total queries: 1
+09:14:06 [INFO] COMTRADE.DOWNLOAD:   [query 1/1] START: wood_panel_world_trade
+09:14:06 [INFO] COMTRADE.DOWNLOAD:     Output file: E:\Projects\vacoda\data\raw\api\Comtrade_hs_441012_trade.csv
+09:14:06 [INFO] COMTRADE.DOWNLOAD:     [result] SKIPPED: data\raw\api\Comtrade_hs_441012_trade.csv
+09:14:06 [INFO] COMTRADE.DOWNLOAD:       File exists and overwrite is disabled.
+09:14:06 [INFO] COMTRADE.DOWNLOAD: ============================================================
+09:14:06 [INFO] COMTRADE.DOWNLOAD: STEP 5/6 — Write manifest
+09:14:06 [INFO] COMTRADE.DOWNLOAD: ============================================================
+09:14:06 [INFO] COMTRADE.DOWNLOAD:   [detail] Manifest file: download_manifest.json
+09:14:06 [INFO] COMTRADE.DOWNLOAD: Download manifest written to: data\raw\api\download_manifest.json
+09:14:06 [INFO] COMTRADE.DOWNLOAD: ============================================================
+09:14:06 [INFO] COMTRADE.DOWNLOAD: STEP 6/6 — Finish
+09:14:06 [INFO] COMTRADE.DOWNLOAD: ============================================================
+09:14:06 [INFO] COMTRADE.DOWNLOAD:   [detail] Pipeline finished successfully.
+09:14:06 [INFO] COMTRADE.DOWNLOAD: Comtrade API pipeline completed in 11.34 seconds (0 min 11.3 sec)
