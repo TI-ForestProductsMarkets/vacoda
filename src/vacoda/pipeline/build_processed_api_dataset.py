@@ -18,6 +18,12 @@ from vacoda.utils.logger import get_logger
 from vacoda.utils.timing import log_step_timing
 from vacoda.io.writer import write_parquet
 from vacoda.io.paths import get_processed_data_file_path
+from vacoda.validation.weight_candidate_evaluation import (
+    build_evaluation_base,
+    evaluate_weight_candidates,
+    format_weight_candidate_ranking,
+    get_ranked_weight_candidates,
+)
 
 logger = get_logger("PIPELINE")
 
@@ -38,6 +44,7 @@ def build_processed_api_dataset(file_path: Path = None) -> pd.DataFrame:
         "Load & standardize raw API data",
         "Build base dataset",
         "Coverage diagnostics",
+        "Rank Weight candidates",
         "Run multi-cycle weight recovery",
         "Run multi-cycle value_usd recovery",
         "Write processed dataset to parquet",
@@ -172,15 +179,39 @@ def build_processed_api_dataset(file_path: Path = None) -> pd.DataFrame:
     step_times.append(elapsed)
     LOG_STEP += 1
     
+
+    ############################################################## Rank Weight candidates
+    t_step = time.perf_counter()
+    log_step(LOG_STEP)
+
+    weight_candidate_cols = ["quantity", "alt_quantity", "grossweight_kg"]
+    weight_unit_cols = ["quantity_unit_code", "alt_quantity_unit_code", None]
+    weight_unit_by_candidate = dict(zip(weight_candidate_cols, weight_unit_cols))
+    base = build_evaluation_base(df)
+    diagnostics = evaluate_weight_candidates(
+        base,
+        candidate_cols=weight_candidate_cols,
+        unit_cols=weight_unit_cols,
+    )
+    ranked_weight_candidates = get_ranked_weight_candidates(diagnostics)
+    ranked_weight_units = [weight_unit_by_candidate[candidate] for candidate in ranked_weight_candidates]
+
+    logger.info("Weight recovery candidate order: %s", ranked_weight_candidates)
+    logger.info("Weight ranking summary:\n%s", format_weight_candidate_ranking(diagnostics))
+    logger.debug("Weight candidate diagnostics:\n%s", diagnostics.round(3).to_string())
+    elapsed = log_step_timing(logger, LOG_STEP, steps[LOG_STEP-1], t_step)
+    step_times.append(elapsed)
+    LOG_STEP += 1
+
     ########################################################### Run multi-cycle weight recovery
     t_step = time.perf_counter()
     log_step(LOG_STEP)
     df= run_multi_recovery_cycles(df, 
                                 main_feature="netweight_kg_raw",
-                                supporting_features=["quantity", "alt_quantity", "grossweight_kg"],
-                                unit_features=["quantity_unit_code", "alt_quantity_unit_code", None],
-                                recovery_col_prefix=None,
-                                recovery_flag_prefix=None,
+                                supporting_features=ranked_weight_candidates,
+                                unit_features=ranked_weight_units,
+                                recovery_feature_name="netweight_kg",
+                                recovery_feature_flag="netweight_kg_recovery_flag",
                                 kg_unit_code=8,
                                 logger=logger
                                 )
@@ -197,7 +228,7 @@ def build_processed_api_dataset(file_path: Path = None) -> pd.DataFrame:
                                 supporting_features=["cif_value_usd", "fob_value_usd"],
                                 unit_features=[None,  None],
                                 recovery_col_prefix="value_usd",
-                                recovery_flag_prefix=None,
+                                recovery_flag_prefix="value_usd_recovery_flag",
                                 kg_unit_code=8,
                                 logger=logger
                                 )
