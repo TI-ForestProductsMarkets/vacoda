@@ -4,6 +4,7 @@ Shared config and utility functions for Comtrade API pipeline and download modul
 from pathlib import Path
 from typing import Any
 import yaml
+import json
 from vacoda.io.paths import resolve_path
 from vacoda.utils.logger import get_logger
 
@@ -20,3 +21,14 @@ def _load_yaml(path: Path) -> dict[str, Any]:
 def _resolve_output_dir(paths_cfg: dict[str, Any], output_cfg) -> Path:
     rel_dir = output_cfg.directory if str(output_cfg.directory).strip() else paths_cfg.get("api_data_dir")
     return resolve_path(str(rel_dir))
+
+def load_api_files_from_manifest(manifest_path: Path) -> list[Path]:
+
+    rows = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    files = []
+    for row in rows:
+        if row.get("status") in {"downloaded", "skipped"}:
+            files.append(Path(row["output_path"]))
+
+    return files

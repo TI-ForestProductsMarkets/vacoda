@@ -9,14 +9,14 @@ from typing import Any
 from vacoda.io.paths import get_project_root, load_paths_config, resolve_path
 from vacoda.utils.logger import get_logger, rel_path
 from vacoda.comtrade.utils import _resolve_output_dir
-from vacoda.comtrade.download import load_download_config
-
+from vacoda.comtrade.download import load_comtrade_config
+from vacoda.comtrade.api import select_resolvable_endpoint, validate_auth_preflight, build_query_params, build_auth_headers, is_csv_format, download_paginated_csv, download_with_retry, detect_auth_error_in_payload, redact_url
 
 logger = get_logger("COMTRADE.API_PIPELINE")
 
 def run_comtrade_api_pipeline(
     paths_config_path: Path | None = None,
-    download_config_path: Path | None = None,
+    api_config_path: Path | None = None,
 ) -> list[dict[str, Any]]:
     import time
     start_time = time.perf_counter()
@@ -39,8 +39,8 @@ def run_comtrade_api_pipeline(
 
     steps = [
         "Load config and paths",
-        "Validate authentication",
         "Prepare output directory",
+        "Validate authentication",
         "Download queries",
         "Write manifest",
         "Finish",
@@ -48,20 +48,29 @@ def run_comtrade_api_pipeline(
     total_steps = len(steps)
     step = 1
 
-    ####################################################################
+    #################################################################### Load config and paths
     project_root = get_project_root()
     resolved_paths_cfg = paths_config_path or (project_root / "configs" / "paths.yaml")
-    resolved_download_cfg = download_config_path or (project_root / "configs" / "comtrade.yaml")
-    #log_step(step, total_steps, steps[step-1], f"Config file: {rel_path(resolved_download_cfg)}")
-    logger.info("Starting comtrade API pipeline with config: %s", rel_path(resolved_download_cfg))
-    paths_cfg = load_paths_config(resolved_paths_cfg)
-    cfg = load_download_config(resolved_download_cfg)
-    from vacoda.comtrade.api import select_resolvable_endpoint, validate_auth_preflight, build_query_params, build_auth_headers, is_csv_format, download_paginated_csv, download_with_retry, detect_auth_error_in_payload, redact_url
-    resolved_endpoint = select_resolvable_endpoint(cfg.endpoint, cfg.endpoint_fallbacks)
-    logger.debug("Resolved endpoint for multi-hs mode: %s", resolved_endpoint)
-    logger.info
+    resolved_api_cfg = api_config_path or (project_root / "configs" / "comtrade.yaml")
 
-    ####################################################################
+    logger.info("Starting comtrade API pipeline with config: %s", rel_path(resolved_api_cfg))
+    paths_cfg = load_paths_config(resolved_paths_cfg)
+    cfg = load_comtrade_config(resolved_api_cfg)
+    resolved_endpoint = select_resolvable_endpoint(cfg.endpoint, cfg.endpoint_fallbacks)
+
+    logger.debug("Resolved endpoint for multi-hs mode: %s", resolved_endpoint)
+    logger.info(f"Using API config: {resolved_api_cfg}")
+
+    
+    #################################################################### Prepare output directory
+    step += 1
+    log_step(step, total_steps, steps[step-1], f"Output directory: {output_dir if 'output_dir' in locals() else '(not resolved yet)'}")
+    output_dir = _resolve_output_dir(paths_cfg, cfg.output)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Output directory: {output_dir}")
+
+
+    #################################################################### Validate authentication
     step += 1
     log_step(step, total_steps, steps[step-1], f"Auth method: {cfg.auth.method}, Env var: {cfg.auth.env_var_name}")
     validate_auth_preflight(cfg.auth)
@@ -93,14 +102,7 @@ def run_comtrade_api_pipeline(
     
 
 
-    ####################################################################
-    step += 1
-    log_step(step, total_steps, steps[step-1], f"Output directory: {output_dir if 'output_dir' in locals() else '(not resolved yet)'}")
-    output_dir = _resolve_output_dir(paths_cfg, cfg.output)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    logger.info(f"Output directory: {output_dir}")
-
-    ####################################################################
+    #################################################################### Download queries
     step += 1
     log_step(step, total_steps, steps[step-1], f"Total queries: {len(cfg.queries)}")
     manifest_rows: list[dict[str, Any]] = []
@@ -164,7 +166,7 @@ def run_comtrade_api_pipeline(
             log_query_result("error", rel_path(output_path), f"Error: {e}")
             manifest_rows.append({"query": query_name, "status": "error", "output_path": str(output_path), "error": str(e)})
 
-    ####################################################################
+    #################################################################### Write manifest
     step += 1
     log_step(step, total_steps, steps[step-1], f"Manifest file: {rel_path(cfg.output.manifest_file)}")
     manifest_path = output_dir / cfg.output.manifest_file
@@ -172,7 +174,7 @@ def run_comtrade_api_pipeline(
     logger.info("Download manifest written to: %s", rel_path(manifest_path))
 
 
-    ####################################################################
+    #################################################################### Finish pipeline
     step += 1
     log_step(step, total_steps, steps[step-1], "Pipeline finished successfully.")
     elapsed = time.perf_counter() - start_time
@@ -190,13 +192,13 @@ def run_comtrade_api_pipeline(
         logger.info("=" * 60)
     return manifest_rows
 
-def run_download_pipeline(
-    paths_config_path: Path | None = None,
-    download_config_path: Path | None = None,
-) -> list[dict[str, Any]]:
-    """Backward-compatible alias for the comtrade API pipeline."""
-    return run_comtrade_api_pipeline(
-        paths_config_path=paths_config_path,
-        download_config_path=download_config_path,
-    )
+# def run_download_pipeline(
+#     paths_config_path: Path | None = None,
+#     download_config_path: Path | None = None,
+# ) -> list[dict[str, Any]]:
+#     """Backward-compatible alias for the comtrade API pipeline."""
+#     return run_comtrade_api_pipeline(
+#         paths_config_path=paths_config_path,
+#         download_config_path=download_config_path,
+#     )
 

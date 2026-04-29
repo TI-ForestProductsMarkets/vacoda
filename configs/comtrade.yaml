@@ -13,9 +13,9 @@
 # - cmdCode can use token names from src/vacoda/reference/hs_sets.py (example: WOOD_PANEL)
 # - flowCode can use token names from src/vacoda/reference/flow_sets.py (example: FLOW_ALL)
 
-# --------------------
+# -------------------------------------------
 # EDIT FIRST: WHAT TO DOWNLOAD
-# --------------------
+# -------------------------------------------
 # One query = one logical dataset driven by cmdCode + one output file.
 query:
   - name: "wood_panel_world_trade"
@@ -27,14 +27,14 @@ query:
       # HS product filter token from src/vacoda/reference/hs_sets.py.
       cmdCode: "WOOD_PANEL"
       # Use FLOW_ALL to include both imports and exports.
-      flowCode: "FLOW_ALL"
+      flowCode: "FLOW_ALL" 
       # "all" or specific period(s), e.g. "2023" or "2022,2023".
       period: "all"
-    output_file: "Comtrade_hs_441012_trade.csv"
+    output_file: "test.csv"
 
 
 # Logging options (optional)
-log_level: INFO  # Options: DEBUG, INFO, WARNING, ERROR, CRITICAL
+log_level: DEBUG  # Options: DEBUG, INFO, WARNING, ERROR, CRITICAL
 log_file: output/reports/LOG_API_PIPELINE.log
 
 # Output location.
@@ -49,14 +49,45 @@ default_params:
   maxRecords: 250000
   includeDesc: true
 
-# --------------------
-# ADVANCED: USUALLY KEEP AS-IS
-# --------------------
 
-# Data API endpoint used by this pipeline.
-endpoint: "https://api.uncomtrade.org/data/v1/get/C/A/HS"
+## To use the bulk API download mode:
+# 1. Set bulk.enabled: true
+# 2. Define your jobs under bulk.jobs (see example below)
+## Lets make bulk api call for bulk download
+bulk:
+  # If true, will attempt to download all jobs in a single API call (if supported by the endpoint).
+  enabled: false
+  # Bulk endpoint for Comtrade Bulk API (see docs: https://comtradeapi.un.org/bulk/v1/)
+  endpoint: "https://comtradeapi.un.org/bulk/v1/get/"
+  # List of bulk jobs to download. Each job can specify parameters similar to 'query'.
+  jobs:
+    - name: "wood_panel_bulk"
+      params:
+        typeCode: "C"  # C = commodities
+        freqCode: "A"  # A = annual
+        clCode: "HS"
+        period: "2023"
+        reporterCode: "all"
+        partnerCode: "0"
+        cmdCode: "441012"
+        flowCode: "1,2"  # 1=import, 2=export
+      output_file: "Comtrade_bulk_441012.zip"
+  # Output directory for bulk downloads (optional, falls back to output.directory)
+  output_directory: "data/raw/api/bulk"
+  # Manifest file for bulk downloads (optional)
+  manifest_file: "bulk_download_manifest.json"
+  
+
+
+
+# -------------------------------------------
+# ADVANCED: USUALLY KEEP AS-IS
+# -------------------------------------------
+
+# Data API endpoint
+endpoint: "https://comtradeapi.un.org/data/v1/get/C/A/HS"
 endpoint_fallbacks:
-  - "https://comtradeapi.un.org/data/v1/get/C/A/HS"
+  - "https://api.uncomtrade.org/data/v1/get/C/A/HS"
 
 # API authentication.
 auth:
