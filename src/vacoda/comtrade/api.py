@@ -12,6 +12,7 @@ import os
 import socket
 from time import sleep
 from typing import Any
+
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
@@ -330,3 +331,30 @@ def download_paginated_csv(
         offset += page_size
 
     return _merge_csv_pages(page_payloads), urls, total_rows
+
+
+def download_bulk(
+    endpoint: str,
+    job_params: dict[str, Any],
+    retry: RetryConfig,
+    runtime: DownloadRuntimeConfig,
+    auth: AuthConfig,
+    output_path: Path,
+) -> str:
+    """
+    Download a bulk file from the Comtrade Bulk API and save to output_path.
+    Returns the path to the saved file.
+    """
+    import os
+    from urllib.parse import urlencode
+    headers = build_auth_headers(auth)
+    params = build_query_params({}, job_params, auth)
+    url = f"{endpoint}?{urlencode(params, doseq=True)}"
+    logger.info(f"[bulk] Downloading bulk file: {redact_url(url)}")
+    payload = download_with_retry(url, retry, runtime, headers=headers)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_bytes(payload)
+    logger.info(f"[bulk] Saved bulk file: {output_path}")
+    return str(output_path)
+
+

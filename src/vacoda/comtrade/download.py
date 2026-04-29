@@ -1,4 +1,3 @@
-
 """Config-driven data download pipeline for external APIs."""
 
 from __future__ import annotations
@@ -139,7 +138,10 @@ def _validate_query(query_item: dict[str, Any], idx: int) -> None:
         raise ValueError(f"queries[{idx}].params must be a mapping")
 
 
-def load_download_config(download_config_path: Path) -> DownloadConfig:
+def load_comtrade_config(download_config_path: Path) -> DownloadConfig:
+    """
+    Load and validate the comtrade download configuration from a YAML file, resolving any references to predefined sets.
+    """
     cfg = _load_yaml(download_config_path)
     scoped = cfg.get("download") if isinstance(cfg.get("download"), dict) else cfg
     if not isinstance(scoped, dict):
@@ -212,6 +214,70 @@ def load_download_config(download_config_path: Path) -> DownloadConfig:
         cfg_obj.auth.enabled,
     )
     return cfg_obj
+
+
+def run_comtrade_bulk_pipeline(
+    paths_config_path: Path | None = None,
+    download_config_path: Path | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Run the Comtrade Bulk API download pipeline using the bulk section of the config.
+    """
+    import time
+
+    from vacoda.comtrade.api import download_bulk
+
+    project_root = get_project_root()
+    resolved_paths_cfg = paths_config_path or (project_root / "configs" / "paths.yaml")
+    resolved_download_cfg = download_config_path or (project_root / "configs" / "comtrade.yaml")
+    cfg = _load_yaml(resolved_download_cfg)
+    bulk_cfg = cfg.get("bulk", {})
+    if not bulk_cfg.get("enabled", False):
+        logger.info("Bulk download is not enabled in config.")
+        return []
+    endpoint = bulk_cfg.get("endpoint", "https://comtradeapi.un.org/bulk/v1/get/")
+    jobs = bulk_cfg.get("jobs", [])
+    output_dir = bulk_cfg.get("output_directory") or cfg.get("output", {}).get("directory", "data/raw/api/bulk")
+    manifest_file = bulk_cfg.get("manifest_file", "bulk_download_manifest.json")
+    retry_cfg = cfg.get("retry", {})
+    runtime_cfg = cfg.get("runtime", {})
+    auth_cfg = cfg.get("auth", {})
+    retry = RetryConfig(
+        max_attempts=int(retry_cfg.get("max_attempts", retry_cfg.get("retries", 3))),
+        backoff_seconds=float(retry_cfg.get("backoff_seconds", 2.0)),
+    )
+    runtime = DownloadRuntimeConfig(
+        timeout_seconds=int(runtime_cfg.get("timeout_seconds", 120)),
+        overwrite_existing=bool(runtime_cfg.get("overwrite_existing", False)),
+    )
+    auth = AuthConfig(
+        enabled=bool(auth_cfg.get("enabled", False)),
+        method=str(auth_cfg.get("method", "query")).strip().lower(),
+        header_name=str(auth_cfg.get("header_name", "Ocp-Apim-Subscription-Key")),
+        env_var_name=str(auth_cfg.get("env_var_name", "COMTRADE_API_KEY")),
+        query_param_name=str(auth_cfg.get("query_param_name", "token")),
+        env_file=(str(auth_cfg.get("env_file", "")).strip() or None),
+    )
+    output_dir = resolve_path(str(output_dir))
+    output_dir.mkdir(parents=True, exist_ok=True)
+    logger.info("[bulk] Output directory: %s", output_dir)
+    manifest_rows = []
+    for job in jobs:
+        name = job.get("name", "bulk_job")
+        params = job.get("params", {})
+        output_file = job.get("output_file", f"{name}.zip")
+        output_path = output_dir / output_file
+        logger.info(f"[bulk] Starting job: {name}")
+        try:
+            saved_path = download_bulk(endpoint, params, retry, runtime, auth, output_path)
+            manifest_rows.append({"job": name, "status": "downloaded", "output_path": str(saved_path)})
+        except Exception as e:
+            logger.error(f"[bulk] Error in job {name}: {e}")
+            manifest_rows.append({"job": name, "status": "error", "error": str(e)})
+    manifest_path = output_dir / manifest_file
+    manifest_path.write_text(json.dumps(manifest_rows, indent=2), encoding="utf-8")
+    logger.info("[bulk] Bulk download manifest written to: %s", manifest_path)
+    return manifest_rows
 
 
 
