@@ -1,6 +1,7 @@
 # Comtrade download config (flat layout)
 # Docs: https://comtradedeveloper.un.org/api-details#api=comtrade-v1&operation=get-get
-#
+# Supscripton Plan: https://uncomtrade.org/docs/subscriptions/
+
 # IMPORTANT: Set auth.env_file to a local file that contains:
 # COMTRADE_API_KEY=your_key_here before running downloads.
 #
@@ -16,10 +17,10 @@
 ## To use the bulk API download mode:
 # 1. Set bulk.enabled: true
 # 2. Define your jobs under bulk.jobs (see example below)
-# NOTE: the bulk endpoint does not support commodity filters like cmdCode/cmsCode.
+# https://comtradedeveloper.un.org/api-details#api=comtradebulk-v1-with-subscription&operation=get-get
 bulk:
-  # If true, will attempt to download all jobs in a single API call (if supported by the endpoint).
-  enabled: true
+  # If true, will attempt to download all jobs in a single API call
+  enabled: false
   endpoint: "https://comtradeapi.un.org/bulk/v1/get/"
   # List of bulk jobs to download. Each job can specify parameters similar to 'query'.
   jobs:
@@ -31,12 +32,13 @@ bulk:
         period: "2023"
         reporterCode: "all"
         partnerCode: "all"
-        flowCode: "1,2"  # 1=import, 2=export
-      output_file: "Comtrade_bulk_441012.zip"
+      output_file: "Comtrade_bulk_HS_{period}_all_reporters.zip"
+
   # Output directory for bulk downloads (optional, falls back to output.directory)
-  output_directory: "data/raw/api/bulk"
-  # Manifest file for bulk downloads (optional)
-  manifest_file: "bulk_download_manifest.json"
+  output:
+    directory: "data/raw/api/bulk"
+    # Manifest file for bulk downloads (optional)
+    manifest_file: "download_manifest_bulk.json"
 
 
 # -------------------------------------------
@@ -51,12 +53,12 @@ query:
       # Empty/null partnerCode means all partners.
       partnerCode:
       # HS product filter token from src/vacoda/reference/hs_sets.py.
-      cmdCode: "WOOD_PANEL"
+      cmdCode: "WOOD_PANEL" 
       # Use FLOW_ALL to include both imports and exports.
       flowCode: "FLOW_ALL" 
       # "all" or specific period(s), e.g. "2023" or "2022,2023".
-      period: "2007,2008"
-    output_file: "test.csv"
+      period: "2006" 
+    output_file: "test_2006.csv"
 
 
 # Logging options (optional)
@@ -65,7 +67,7 @@ log_file: output/reports/LOG_API_PIPELINE.log
 
 # Output location.
 output:
-  directory: "data/raw/api"
+  directory: "data/raw/api/single"
   manifest_file: "download_manifest.json"
 
 # Applied to every query unless overridden in queries[].params.

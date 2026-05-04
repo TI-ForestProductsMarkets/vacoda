@@ -4,8 +4,6 @@ from typing import Any
 import pandas as pd
 import yaml
 from vacoda.pipeline.build_processed_api_dataset import build_processed_api_dataset
-#from vacoda.io.paths import get_rawdata_file_path, get_processed_data_file_path
-import vacoda.io.loaders as loaders_mod
 from vacoda.comtrade.utils import load_api_files_from_manifest
 from vacoda.io.paths import get_project_root, resolve_path, get_processed_data_file_path
 from vacoda.comtrade.comtrade_pipeline import run_comtrade_api_pipeline
@@ -88,6 +86,8 @@ def run_full_api_pipeline(
             for row in downloaded_jobs
             for path in row.get("output_paths", [])
         ]
+
+
         if not bulk_file_paths:
             raise FileNotFoundError(
                 f"Bulk download completed but no output files were recorded in manifest {bulk_manifest_path}."
@@ -110,4 +110,5 @@ def run_full_api_pipeline(
     if not api_csv_paths:
         raise FileNotFoundError(f"No API files found in manifest: {manifest_path}")
 
-    return _process_api_files(api_csv_paths)
+    return api_csv_paths
+    #return _process_api_files(api_csv_paths)
