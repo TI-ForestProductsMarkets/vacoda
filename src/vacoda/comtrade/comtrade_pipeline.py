@@ -6,13 +6,22 @@ Comtrade API pipeline runner
 import json
 from pathlib import Path
 from typing import Any
+import yaml
 from vacoda.io.paths import get_project_root, load_paths_config, resolve_path
 from vacoda.utils.logger import get_logger, rel_path
 from vacoda.comtrade.utils import _resolve_output_dir
-from vacoda.comtrade.download import load_comtrade_config
+from vacoda.comtrade.download import load_comtrade_config, run_comtrade_bulk_pipeline
 from vacoda.comtrade.api import select_resolvable_endpoint, validate_auth_preflight, build_query_params, build_auth_headers, is_csv_format, download_paginated_csv, download_with_retry, detect_auth_error_in_payload, redact_url
 
 logger = get_logger("COMTRADE.API_PIPELINE")
+
+
+def _is_bulk_download_enabled(config_path: Path) -> bool:
+    with open(config_path, "r", encoding="utf-8") as file:
+        raw_config = yaml.safe_load(file) or {}
+
+    bulk_config = raw_config.get("bulk", {})
+    return isinstance(bulk_config, dict) and bool(bulk_config.get("enabled", False))
 
 def run_comtrade_api_pipeline(
     paths_config_path: Path | None = None,
@@ -52,6 +61,13 @@ def run_comtrade_api_pipeline(
     project_root = get_project_root()
     resolved_paths_cfg = paths_config_path or (project_root / "configs" / "paths.yaml")
     resolved_api_cfg = api_config_path or (project_root / "configs" / "comtrade.yaml")
+
+    if _is_bulk_download_enabled(resolved_api_cfg):
+        logger.info("Bulk download is enabled in config; routing to bulk pipeline.")
+        return run_comtrade_bulk_pipeline(
+            paths_config_path=resolved_paths_cfg,
+            download_config_path=resolved_api_cfg,
+        )
 
     logger.info("Starting comtrade API pipeline with config: %s", rel_path(resolved_api_cfg))
     paths_cfg = load_paths_config(resolved_paths_cfg)
