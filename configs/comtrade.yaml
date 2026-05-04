@@ -13,6 +13,32 @@
 # - cmdCode can use token names from src/vacoda/reference/hs_sets.py (example: WOOD_PANEL)
 # - flowCode can use token names from src/vacoda/reference/flow_sets.py (example: FLOW_ALL)
 
+## To use the bulk API download mode:
+# 1. Set bulk.enabled: true
+# 2. Define your jobs under bulk.jobs (see example below)
+# NOTE: the bulk endpoint does not support commodity filters like cmdCode/cmsCode.
+bulk:
+  # If true, will attempt to download all jobs in a single API call (if supported by the endpoint).
+  enabled: true
+  endpoint: "https://comtradeapi.un.org/bulk/v1/get/"
+  # List of bulk jobs to download. Each job can specify parameters similar to 'query'.
+  jobs:
+    - name: "wood_panel_bulk"
+      params:
+        typeCode: "C"  # C = commodities
+        freqCode: "A"  # A = annual
+        clCode: "HS"
+        period: "2023"
+        reporterCode: "all"
+        partnerCode: "all"
+        flowCode: "1,2"  # 1=import, 2=export
+      output_file: "Comtrade_bulk_441012.zip"
+  # Output directory for bulk downloads (optional, falls back to output.directory)
+  output_directory: "data/raw/api/bulk"
+  # Manifest file for bulk downloads (optional)
+  manifest_file: "bulk_download_manifest.json"
+
+
 # -------------------------------------------
 # EDIT FIRST: WHAT TO DOWNLOAD
 # -------------------------------------------
@@ -29,7 +55,7 @@ query:
       # Use FLOW_ALL to include both imports and exports.
       flowCode: "FLOW_ALL" 
       # "all" or specific period(s), e.g. "2023" or "2022,2023".
-      period: "all"
+      period: "2007,2008"
     output_file: "test.csv"
 
 
@@ -48,35 +74,6 @@ default_params:
   # Page size per API request (not total rows).
   maxRecords: 250000
   includeDesc: true
-
-
-## To use the bulk API download mode:
-# 1. Set bulk.enabled: true
-# 2. Define your jobs under bulk.jobs (see example below)
-## Lets make bulk api call for bulk download
-bulk:
-  # If true, will attempt to download all jobs in a single API call (if supported by the endpoint).
-  enabled: false
-  # Bulk endpoint for Comtrade Bulk API (see docs: https://comtradeapi.un.org/bulk/v1/)
-  endpoint: "https://comtradeapi.un.org/bulk/v1/get/"
-  # List of bulk jobs to download. Each job can specify parameters similar to 'query'.
-  jobs:
-    - name: "wood_panel_bulk"
-      params:
-        typeCode: "C"  # C = commodities
-        freqCode: "A"  # A = annual
-        clCode: "HS"
-        period: "2023"
-        reporterCode: "all"
-        partnerCode: "0"
-        cmdCode: "441012"
-        flowCode: "1,2"  # 1=import, 2=export
-      output_file: "Comtrade_bulk_441012.zip"
-  # Output directory for bulk downloads (optional, falls back to output.directory)
-  output_directory: "data/raw/api/bulk"
-  # Manifest file for bulk downloads (optional)
-  manifest_file: "bulk_download_manifest.json"
-  
 
 
 

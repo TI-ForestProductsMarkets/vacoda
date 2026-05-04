@@ -258,6 +258,7 @@ def run_comtrade_bulk_pipeline(
         query_param_name=str(auth_cfg.get("query_param_name", "token")),
         env_file=(str(auth_cfg.get("env_file", "")).strip() or None),
     )
+    validate_auth_preflight(auth)
     output_dir = resolve_path(str(output_dir))
     output_dir.mkdir(parents=True, exist_ok=True)
     logger.info("[bulk] Output directory: %s", output_dir)
@@ -269,8 +270,15 @@ def run_comtrade_bulk_pipeline(
         output_path = output_dir / output_file
         logger.info(f"[bulk] Starting job: {name}")
         try:
-            saved_path = download_bulk(endpoint, params, retry, runtime, auth, output_path)
-            manifest_rows.append({"job": name, "status": "downloaded", "output_path": str(saved_path)})
+            saved_paths = download_bulk(endpoint, params, retry, runtime, auth, output_path)
+            manifest_rows.append(
+                {
+                    "job": name,
+                    "status": "downloaded",
+                    "output_paths": saved_paths,
+                    "output_path": saved_paths[0] if saved_paths else None,
+                }
+            )
         except Exception as e:
             logger.error(f"[bulk] Error in job {name}: {e}")
             manifest_rows.append({"job": name, "status": "error", "error": str(e)})
