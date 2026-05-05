@@ -122,6 +122,12 @@ def _load_jobs(section_name: str, section_cfg: dict[str, Any]) -> list[JobConfig
         local_filter = raw_job.get("local_filter")
         if local_filter is not None and not isinstance(local_filter, dict):
             raise ValueError(f"{section_name}.jobs[{idx}].local_filter must be a mapping")
+        
+        years_cfg = raw_job.get("years", {})
+        if years_cfg is None:
+            years_cfg = {}
+        if not isinstance(years_cfg, dict):
+            raise ValueError(f"{section_name}.jobs[{idx}].years must be a mapping")
 
         jobs.append(
         JobConfig(
@@ -129,9 +135,23 @@ def _load_jobs(section_name: str, section_cfg: dict[str, Any]) -> list[JobConfig
             params=_resolve_params(params),
             output_file=output_file,
             local_filter=_resolve_params(local_filter) if isinstance(local_filter, dict) else None,
-            all_years_start=raw_job.get("all_years_start"),
-            all_years_end=raw_job.get("all_years_end"),
-            use_reference_years=bool(raw_job.get("use_reference_years", False)),
+             # Explicit year expansion
+            all_years_start=raw_job.get(
+                "all_years_start",
+                years_cfg.get("start"),
+                ),
+            all_years_end=raw_job.get(
+                "all_years_end",
+                years_cfg.get("end"),
+            ),
+            # Keep this for HS-code reference-year expansion in single mode
+            use_reference_years=bool(
+                raw_job.get(
+                    "use_reference_years",
+                    years_cfg.get("enabled", False),
+                )
+            ),
+
             fallback_years_start=int(raw_job.get("fallback_years_start", 1990)),
             fallback_years_end=int(raw_job.get("fallback_years_end", 2025)),
     )

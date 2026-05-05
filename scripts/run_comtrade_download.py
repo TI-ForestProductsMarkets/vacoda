@@ -10,6 +10,7 @@ import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from venv import logger
 
 import yaml
 
@@ -78,16 +79,19 @@ def main() -> None:
     )
 
     logger = get_logger("SCRIPT.COMTRADE_DOWNLOAD")
+    logger.info("Starting Vacoda Comtrade download.")
 
-    logger.info("=" * 72)
-    logger.info("Starting Comtrade download script")
-    logger.info("=" * 72)
-    logger.info("[Config] Using config file: %s", config_path)
-    logger.info("[Config] Logger level set to: %s (%s)", log_level_raw, log_level)
-    logger.info("[Config] Log file: %s", log_path)
+    logger.debug("Initialized Comtrade download script.")
+    logger.debug("Config file: %s", config_path)
+    logger.debug("Logger level: %s (%s)", log_level_raw, log_level)
+    logger.debug("Log file: %s", log_path)
 
     try:
-        run_comtrade_download_pipeline(config_path=config_path)
+        run_comtrade_download_pipeline(
+                        config_path=config_path,
+                        log_path=log_path,
+                        confirm=True,
+                    )
     except Exception as exc:
         logger.exception("Comtrade download pipeline failed.")
         print("")
@@ -96,9 +100,7 @@ def main() -> None:
         print(f"Log file: {log_path}")
         raise SystemExit(1)
 
-    logger.info("=" * 72)
-    logger.info("Finished Comtrade download script")
-    logger.info("=" * 72)
+    logger.debug("Finished Comtrade download script.")
 
 
 if __name__ == "__main__":

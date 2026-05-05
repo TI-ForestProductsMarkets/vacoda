@@ -18,23 +18,22 @@
 # Commodity and flow filters should usually be applied locally after download.
 
 bulk:
-  enabled: true
+  enabled: false
 
   jobs:
-    - name: "hs_2025_all_reporters"
+    - name: "hs_all_reporters"
       params:
         typeCode: "C"
         freqCode: "A"
         clCode: "HS"
-        period: "2025"
         reporterCode: "all"
         partnerCode: "all"
 
-      # Reference Years
-      reference_years:
-        use_reference_years: true
-        year_range_start: 2024
-        year_range_end: 2025
+      # year-range
+      years:
+        enabled: true
+        start: 2024
+        end: 2025
 
       # Applied locally after bulk files are downloaded and parsed.
       local_filter:
@@ -56,7 +55,7 @@ bulk:
 # one commodity group × one year or generated year loop.
 
 single:
-  enabled: false
+  enabled: true
 
   jobs:
     - name: "wood_panel_direct"
@@ -103,7 +102,7 @@ retry:
   backoff_seconds: 2.0
 
 runtime:
-  timeout_seconds: 120
+  timeout_seconds: 300
   overwrite_existing: false
   max_workers: 4
 
