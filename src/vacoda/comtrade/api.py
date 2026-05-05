@@ -38,7 +38,7 @@ class RetryConfig:
 class DownloadRuntimeConfig:
     timeout_seconds: int
     overwrite_existing: bool
-
+    max_workers: int
 
 @dataclass
 class AuthConfig:
