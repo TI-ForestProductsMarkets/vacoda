@@ -59,8 +59,10 @@ def plot_data_coverage_bar(df: pd.DataFrame,
 
     word = "absent" if criteria == "absence" else "present"
     opposite = "present" if criteria == "absence" else "absent"
-    labels = [f"All {opposite}"] + [f"{c} {word}" for c in cols] + [f"All {word}"]
-    keys = [f"none_{criteria}_%"] + [f"{c}_{criteria}_%" for c in cols] + [f"all_{criteria}_%"]
+    #labels = [f"All {opposite}"] + [f"{c} {word}" for c in cols] + [f"All {word}"]
+    labels = [f"None {word}"] + [f"{c} {word}" for c in cols] + [f"At least one {word}"]
+    keys = [f"none_{criteria}_%"] + [f"{c}_{criteria}_%" for c in cols] + [f"at_least_one_{criteria}_%"]
+    #keys = [f"none_{criteria}_%"] + [f"{c}_{criteria}_%" for c in cols] + [f"all_{criteria}_%"]
     pcts = [stats[k] for k in keys]
     sizes = [round(p / 100 * stats["total_rows"]) for p in pcts]
 
@@ -78,7 +80,7 @@ def plot_data_coverage_bar(df: pd.DataFrame,
         )
 
     ax.set_xlabel("% of rows")
-    ax.set_xlim(0, max(pcts) * 1.3)
+    ax.set_xlim(0, max(pcts) * 1.4)
     ax.set_title(f"Data {word.capitalize()}: {', '.join(cols)}")
     ax.invert_yaxis()
     plt.tight_layout()
@@ -87,10 +89,11 @@ def plot_data_coverage_bar(df: pd.DataFrame,
 
 
 def plot_bar_distribution(df, 
-                                column, 
-                                figsize=(10, 5), 
-                                rotation=45,
-                                title=None):
+                            feature, 
+                            show_percent=True,
+                            figsize=(10, 5), 
+                            rotation=45,
+                            title=None):
     """
     Plot a bar chart showing the distribution of values in an ID-like column.
 
@@ -98,8 +101,10 @@ def plot_bar_distribution(df,
     ----------
     df : pandas.DataFrame
         Input dataframe.
-    column : str
+    feature : str
         Column to plot.
+    show_percent : bool, default=True
+        Whether to show percentages instead of counts.
     figsize : tuple, default=(10, 5)
         Figure size.
     title : str, optional
@@ -110,15 +115,51 @@ def plot_bar_distribution(df,
     fig, ax
     """
     fig, ax = plt.subplots(figsize=figsize)
-    df[column].value_counts().plot(kind="bar", ax=ax)
+    if show_percent:
+        df[feature].value_counts(normalize=True).mul(100).plot(kind="bar", ax=ax)
+    else:
+        df[feature].value_counts().plot(kind="bar", ax=ax)
 
-    ax.set_title(title or f"Distribution of {column}")
-    ax.set_xlabel(column)
-    ax.set_ylabel("Count")
+    ax.set_title(title or f"Distribution of {feature}")
+    ax.set_xlabel(feature)
+    ax.set_ylabel("Count" if not show_percent else "Percentage")
     ax.tick_params(axis="x", rotation=rotation)
+    ax.grid(axis="y", linestyle="--", alpha=0.7)
+    ax.grid(axis="x", linestyle="", alpha=0.0)
 
     fig.tight_layout()
     return fig, ax
+
+def plot_bar_distributions(df, 
+                           features_list,
+                           show_percent=True,
+                            figsize=(10, 5), 
+                            rotation=45,
+                            title=None):
+    """
+    Plot multiple bar charts showing the distribution of values in ID-like columns.
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Input dataframe.
+    features_list : list of str
+        Columns to plot.
+    show_percent : bool, default=True
+        Whether to show percentages instead of counts.
+    figsize : tuple, default=(10, 5)
+        Figure size.
+    title : str, optional
+        Custom title prefix for each plot (the column name will be appended).
+    """
+    for feature in features_list:
+        plot_bar_distribution(
+            df=df,
+            feature=feature,
+            show_percent=show_percent,
+            figsize=figsize,
+            rotation=rotation,
+            title=f"{title + ': ' if title else ''}Distribution of {feature}",
+        )
 
 
 def plot_distribution(df, 
@@ -265,3 +306,6 @@ def plot_distribution_and_density(
         plt.xlabel(f"{column}")
         plt.ylabel("Density")
         plt.show()
+
+
+

@@ -5,7 +5,10 @@ Two-variable (2-D) relationship plots.
 """
 
 import matplotlib.pyplot as plt
-
+import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
+import pandas as pd
 
 def plot_numeric_relationship(df, 
                               x_col="netweight_kg", 
@@ -57,3 +60,86 @@ def plot_numeric_relationship(df,
 
     fig.tight_layout()
     return fig, ax
+
+def plot_correlation_map(df, 
+                         title='Correlation Map',
+                         fig_size=(12, 10)):
+    """
+    Plot a correlation map for numeric columns in the dataframe.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Input dataframe.
+    title : str, default='Correlation Map'
+        Title of the plot.
+
+    Returns
+    -------
+    None
+    """
+    numeric_cols = df.select_dtypes(include=['int64', 'float64']).columns
+    plt.figure(figsize=fig_size)
+    corr_matrix = df[numeric_cols].corr()
+    mask = np.triu(np.ones_like(corr_matrix, dtype=bool))
+    sns.heatmap(corr_matrix, annot=True, cmap='coolwarm', fmt='.2f', mask=mask)
+    plt.title(title)
+    plt.show()
+
+
+def plot_overlapped_distribution(
+    df_left,
+    df_right,
+    column,
+    left_label="API",
+    right_label="DB",
+    bins=100,
+    figsize=(10, 6),
+    min_positive=True,
+    dropna=True,
+    log_scale=True,
+    kde=True,
+):
+    plot_df = pd.concat(
+        [
+            df_left[[column]].assign(source=left_label),
+            df_right[[column]].assign(source=right_label),
+        ],
+        ignore_index=True,
+    )
+
+    mask = pd.Series(True, index=plot_df.index)
+
+    if dropna:
+        mask &= plot_df[column].notna()
+
+    if min_positive:
+        mask &= plot_df[column] > 0
+
+    plot_df = plot_df.loc[mask].copy()
+
+    plt.figure(figsize=figsize)
+    ax = sns.histplot(
+        data=plot_df,
+        x=column,
+        hue="source",
+        bins=bins,
+        stat="density",
+        common_norm=False,
+        element="step",
+        fill=False,
+        kde=kde,
+        log_scale=(log_scale, False),
+    )
+
+    scale_label = "log scale" if log_scale else "normal scale"
+    plt.title(f"Overlapped distribution of {column} ({scale_label} x-axis)")
+    plt.xlabel(f"{column} ({scale_label})")
+    plt.ylabel("Density")
+
+    legend = ax.get_legend()
+    if legend is not None:
+        legend.set_title("Source")
+
+    plt.tight_layout()
+    plt.show()

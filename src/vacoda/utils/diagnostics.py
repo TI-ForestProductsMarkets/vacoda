@@ -70,10 +70,8 @@ def log_features_coverage(df_cov):
     for feature, stats in df_cov.iterrows():
         log_feature_coverage(stats)
 
-def compute_data_coverage(
-    df: pd.DataFrame,
-    cols: List[str],
-    indicator="absence") -> pd.Series:
+def compute_data_coverage(df: pd.DataFrame, cols: list[str], indicator="absence") -> pd.Series:
+
     """
     Compute coverage statistics for specified columns in a DataFrame.
     Parameters:
@@ -87,21 +85,35 @@ def compute_data_coverage(
     N = len(df)
 
     if indicator == "absence":
-        presence = {col: df[col].isna() | (df[col] <= 0) for col in cols}
+        mask_by_col = {
+            col: df[col].isna() | (df[col] <= 0)
+            for col in cols
+        }
+    elif indicator == "presence":
+        mask_by_col = {
+            col: df[col].notna() & (df[col] > 0)
+            for col in cols
+        }
     else:
-        presence = {col: df[col].notna() & (df[col] > 0) for col in cols}
+        raise ValueError("indicator must be 'absence' or 'presence'")
 
-    all_present = pd.concat(presence.values(), axis=1).all(axis=1)
-    none_present = ~pd.concat(presence.values(), axis=1).any(axis=1)
+    masks = pd.concat(mask_by_col.values(), axis=1)
+    masks.columns = cols
 
-    stats: dict[str, float] = {"total_rows": float(N)}
-    for col, mask in presence.items():
+    all_indicator = masks.all(axis=1)   # AND
+    none_indicator = ~masks.any(axis=1)
+    at_least_one_indicator = masks.any(axis=1)  # OR
+
+    stats = {"total_rows": float(N)}
+
+    for col, mask in mask_by_col.items():
         stats[f"{col}_{indicator}_%"] = mask.mean() * 100
-    stats[f"all_{indicator}_%"] = all_present.mean() * 100
-    stats[f"none_{indicator}_%"] = none_present.mean() * 100
-    stats[f"at_least_one_{indicator}_%"] = (~none_present).mean() * 100
 
-    return pd.Series(stats)
+    stats[f"all_{indicator}_%"] = all_indicator.mean() * 100
+    stats[f"none_{indicator}_%"] = none_indicator.mean() * 100
+    stats[f"at_least_one_{indicator}_%"] = at_least_one_indicator.mean() * 100
+
+    return pd.Series(stats)     
 
 
 def assess_feature_recoverability(
@@ -207,6 +219,8 @@ def run_multi_recovery_cycles(
     main_feature,
     supporting_features,
     unit_features=None,
+    recovery_feature_name=None,
+    recovery_feature_flag=None,
     recovery_col_prefix=None,
     recovery_flag_prefix=None,
     kg_unit_code=8,
@@ -224,10 +238,14 @@ def run_multi_recovery_cycles(
         A list of supporting features to use for recovery attempts, in order of preference. 
     unit_features : List[str], optional
         A list of unit features corresponding to each supporting feature, used to determine recoverability based on
+    recovery_feature_name : str, optional
+        Final recovered feature column to create in the returned dataset.
+    recovery_feature_flag : str, optional
+        Final recovery flag column to create in the returned dataset.
     recovery_col_prefix : str, optional
-        Prefix for naming the recovery columns. If None, defaults to main_feature.
+        Backward-compatible alias for recovery_feature_name.
     recovery_flag_prefix : str, optional
-        Prefix for naming the recovery flag columns. If None, defaults to main_feature.
+        Backward-compatible alias for recovery_feature_flag.
     kg_unit_code : int, default=8
         The code representing kilograms in the unit feature, used to determine direct recoverability.
 
@@ -239,14 +257,23 @@ def run_multi_recovery_cycles(
     from vacoda.preprocessing.recovery import  recover_feature_from_supfeature, log_recovery_summary
     from vacoda.utils.display import get_recovery_symbol
     MAIN_FEATURE_NAME = main_feature
+    final_feature_name = recovery_feature_name or recovery_col_prefix or main_feature
+    final_flag_name = (
+        recovery_feature_flag
+        or recovery_flag_prefix
+        or f"{final_feature_name}_recovery_flag"
+    )
 
     if unit_features is None:
         unit_features = [None] * len(supporting_features)
-    for sup_col, unit_col in zip(supporting_features, unit_features):
-        recovery_col_name = f"{recovery_col_prefix or main_feature}_recovered_from_{sup_col}"
-        recovery_col_flag = f"{recovery_flag_prefix or main_feature}_recovery_flag_{sup_col}"
+    if len(unit_features) != len(supporting_features):
+        raise ValueError(
+            "unit_features must have the same length as supporting_features"
+        )
 
     log = logger if logger is not None else _logger
+    cycle_flag_names = []
+    current_feature_name = MAIN_FEATURE_NAME
     
     # Capture initial coverage before any recovery
     initial_coverage = compute_feature_coverage(df, MAIN_FEATURE_NAME)
@@ -256,42 +283,46 @@ def run_multi_recovery_cycles(
     if initial_valid_pct == 100.0:
         log.info(f"Initial coverage for {MAIN_FEATURE_NAME} is already {initial_valid_pct:.2f}%. No recovery needed. Existing!")
         log.info("")
+        if final_feature_name != MAIN_FEATURE_NAME:
+            df[final_feature_name] = df[MAIN_FEATURE_NAME]
+        df[final_flag_name] = False
         return df
 
-    last_recovery_col_name = MAIN_FEATURE_NAME
-
     for idx, (sup_col, unit_col) in enumerate(zip(supporting_features, unit_features), 1):
+        cycle_flag_name = f"{final_flag_name}__cycle_{idx}"
         log.info("")
-        log.info(f" [Recovery Cycle {idx}] {MAIN_FEATURE_NAME} ← {sup_col} ({unit_col}) ")
+        log.info(f" [Recovery Cycle {idx}] {current_feature_name} ← {sup_col} ({unit_col}) ")
         log.info("┄"*60)
 
         # 1. Assess recoverability & display its coverage before recovery
         stats = assess_feature_recoverability(df, 
-                                              main_feature       = main_feature, 
+                                              main_feature       = current_feature_name, 
                                               supporting_feature = sup_col, 
                                               unit_feature       = unit_col, 
                                               kg_unit_code       = kg_unit_code)
         log_feature_recoverability(stats)
 
-        coverage_before = compute_feature_coverage(df, main_feature)
+        coverage_before = compute_feature_coverage(df, current_feature_name)
 
         # 2.  Recovery
         df = recover_feature_from_supfeature(
                     df,
-                    main_feature=main_feature,
+                    main_feature=current_feature_name,
                     sup_feature=sup_col,
                     unit_feature=unit_col,
-                    recovery_feature_name=recovery_col_name,
-                    recovery_feature_flag=recovery_col_flag,
+                    recovery_feature_name=final_feature_name,
+                    recovery_feature_flag=cycle_flag_name,
+                    kg_unit_code=kg_unit_code,
+                    logger=log,
                 )
         
          # 3. Summarization of recovery results
         log_recovery_summary(
             df,
-            recovery_col_flag,
-            recovery_col_name,
+            cycle_flag_name,
+            final_feature_name,
             int(coverage_before["Valid rows"]),
-            logger=logger
+            logger=log
         )
 
        
@@ -306,11 +337,15 @@ def run_multi_recovery_cycles(
         log.info("")
 
         # Update main_feature for next cycle
-        main_feature = recovery_col_name
-        last_recovery_col_name = recovery_col_name
+        current_feature_name = final_feature_name
+        cycle_flag_names.append(cycle_flag_name)
+
+    if cycle_flag_names:
+        df[final_flag_name] = df[cycle_flag_names].any(axis=1)
+        df = df.drop(columns=cycle_flag_names)
 
     # SUMMARY of all recovery cycles
-    final_coverage = compute_feature_coverage(df, last_recovery_col_name)
+    final_coverage = compute_feature_coverage(df, final_feature_name)
     final_valid_n = int(final_coverage["Valid rows"])
     final_valid_pct = final_coverage["Valid percentage"]
     final_missing_n = int(final_coverage["Missing rows"])

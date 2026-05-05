@@ -11,6 +11,7 @@ import pandas as pd
 from vacoda.io.loaders import load_data_from_config, load_config
 from vacoda.preprocessing.base import standardize_columns
 from vacoda.preprocessing.build_dataset import build_base_api_dataset
+from vacoda.utils import diagnostics
 from vacoda.utils.diagnostics import run_multi_recovery_cycles
 from vacoda.utils.diagnostics import compute_features_coverage, log_features_coverage
 from vacoda.preprocessing.trade import standardize_trade_columns, REQUIRED_FIELDS
@@ -38,7 +39,7 @@ def _normalize_pipeline_mode(mode: str | None) -> str:
         raise ValueError(f"Unknown pipeline mode: {mode!r}. Valid values: {valid}")
     return aliases[mode_norm]
 
-def build_processed_api_dataset(file_path: Path = None) -> pd.DataFrame:
+def build_processed_api_dataset(file_path: Path = None, confirm_settings: bool = True) -> pd.DataFrame:
     steps = [
         "Configure pipeline mode and source",
         "Load & standardize raw API data",
@@ -85,10 +86,13 @@ def build_processed_api_dataset(file_path: Path = None) -> pd.DataFrame:
     print(f"  Source: {source}")
     if mode == "per_file" and file_path is not None:
         print(f"  File: {file_path}")
-    response = input("Proceed with these settings? [y/N]: ").strip().lower()
-    if response not in ("y", "yes"):
-        logger.error("Pipeline aborted by user after configuration prompt.")
-        raise SystemExit("Pipeline stopped by user.")
+    if confirm_settings:
+        response = input("Proceed with these settings? [y/N]: ").strip().lower()
+        if response not in ("y", "yes"):
+            logger.error("Pipeline aborted by user after configuration prompt.")
+            raise SystemExit("Pipeline stopped by user.")
+    else:
+        logger.info("Proceeding with configured settings without interactive confirmation.")
     
     # --- End configuration code ---
     elapsed = log_step_timing(logger, LOG_STEP, steps[LOG_STEP-1], t_step)
@@ -184,21 +188,38 @@ def build_processed_api_dataset(file_path: Path = None) -> pd.DataFrame:
     t_step = time.perf_counter()
     log_step(LOG_STEP)
 
+    ## Candidate columns and their corresponding unit columns
     weight_candidate_cols = ["quantity", "alt_quantity", "grossweight_kg"]
     weight_unit_cols = ["quantity_unit_code", "alt_quantity_unit_code", None]
+    estimation_cols = ['is_quantity_estimated', 'is_alt_quantity_estimated', 'is_grossweight_estimated']
+    
     weight_unit_by_candidate = dict(zip(weight_candidate_cols, weight_unit_cols))
+    weight_estimation_by_candidate = dict(zip(weight_candidate_cols, estimation_cols))
+
     base = build_evaluation_base(df)
     diagnostics = evaluate_weight_candidates(
-        base,
+        df=base,
         candidate_cols=weight_candidate_cols,
         unit_cols=weight_unit_cols,
+        estimation_flag_cols=estimation_cols,
+        target_col="netweight_kg_raw",
+        value_col="value_usd_raw",
+        kg_code=8,
     )
+
+    ## Get ranked candidates and their units for use in recovery cycles
     ranked_weight_candidates = get_ranked_weight_candidates(diagnostics)
     ranked_weight_units = [weight_unit_by_candidate[candidate] for candidate in ranked_weight_candidates]
+    ranked_weight_estimation_flags = [
+        weight_estimation_by_candidate[candidate] for candidate in ranked_weight_candidates
+    ]
 
     logger.info("Weight recovery candidate order: %s", ranked_weight_candidates)
+    logger.info("Weight recovery unit columns: %s", ranked_weight_units)
+    logger.debug("Weight recovery estimation flags: %s", ranked_weight_estimation_flags)
     logger.info("Weight ranking summary:\n%s", format_weight_candidate_ranking(diagnostics))
     logger.debug("Weight candidate diagnostics:\n%s", diagnostics.round(3).to_string())
+
     elapsed = log_step_timing(logger, LOG_STEP, steps[LOG_STEP-1], t_step)
     step_times.append(elapsed)
     LOG_STEP += 1

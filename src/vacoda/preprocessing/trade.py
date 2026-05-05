@@ -12,7 +12,7 @@ from vacoda.mappings.trade_map import TRADE_MAP_DB, TRADE_MAP_API
 # List of all required internal field names for the pipeline
 REQUIRED_FIELDS = [
     "reporter_code", "partner_code", "commodity_code", "year", "flow_code",
-    "value_usd_raw", "netweight_kg_raw", "estimation_code", 
+    "value_usd_raw", "netweight_kg_raw" 
 ]
 
 # Mapping registry for easy lookup by source type
