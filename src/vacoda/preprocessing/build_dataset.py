@@ -20,7 +20,6 @@ from vacoda.preprocessing.metadata import (
 from vacoda.preprocessing.trade import prepare_trade_table
 
 from vacoda.preprocessing.derived_features import (
-    add_estimation_flags,
     add_hs_validity_flag,
     add_price_features,
 )
@@ -211,7 +210,7 @@ def build_base_dataset(bundle: dict[str, pd.DataFrame]) -> pd.DataFrame:
     estimation flags, HS validity flags, and price features.
     """
     df = build_decoded_dataset(bundle)
-    df = add_estimation_flags(df)
+    #df = add_estimation_flags(df)
     df = add_hs_validity_flag(df)
     df = add_price_features(df, weight_col="netweight_kg_raw", value_col="value_usd")
     df = add_continent_columns(df)
@@ -238,11 +237,7 @@ def build_base_api_dataset(bundle: dict[str, pd.DataFrame]) -> pd.DataFrame:
     if df is None:
         logger.error("build_decoded_api_dataset(bundle) returned None in build_base_api_dataset. Bundle keys: %s", list(bundle.keys()))
         raise RuntimeError("build_decoded_api_dataset(bundle) returned None in build_base_api_dataset.")
-    # Optionally add derived features if desired
-    df = add_estimation_flags(df)
-    if df is None:
-        logger.error("add_estimation_flags(df) returned None in build_base_api_dataset.")
-        raise RuntimeError("add_estimation_flags(df) returned None in build_base_api_dataset.")
+
     #df = add_hs_validity_flag(df)
     df = add_price_features(df, weight_col="netweight_kg_raw", value_col="value_usd_raw")
     if df is None:

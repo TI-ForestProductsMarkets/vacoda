@@ -1,6 +1,10 @@
 # Directory for storing data files (e.g. CSVs, Parquets)
 data/
 
+# To Do list
+ToBeDoneList.md
+README.md
+
 # Environment files
 .env
 .env.*

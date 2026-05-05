@@ -7,9 +7,6 @@ import numpy as np
 import pandas as pd
 
 
-# ============================================================
-# CONFIG
-# ============================================================
 
 @dataclass
 class HiddenFlowMatchConfig:
@@ -40,11 +37,6 @@ class HiddenFlowMatchConfig:
 
     # minimum final score to call plausible
     plausible_score_threshold: float = 0.60
-
-
-# ============================================================
-# HELPERS
-# ============================================================
 
 def safe_rel_gap(a: pd.Series | float, b: pd.Series | float) -> pd.Series:
     """
@@ -140,10 +132,6 @@ def infer_opposite_flow_map(
     return default_map
 
 
-# ============================================================
-# 1) CANDIDATE GENERATION
-# ============================================================
-
 def generate_candidates(
     target_row: pd.Series,
     df: pd.DataFrame,
@@ -229,10 +217,6 @@ def generate_candidates(
     return candidates
 
 
-# ============================================================
-# 2) CANDIDATE SCORING
-# ============================================================
-
 def score_candidates(
     target_row: pd.Series,
     candidates: pd.DataFrame,
@@ -262,9 +246,7 @@ def score_candidates(
     target_weight = target_row.get(weight_col, np.nan)
     target_price = target_row.get(price_col, np.nan)
 
-    # --------------------------------------------------------
     # Relative gaps
-    # --------------------------------------------------------
     scored["value_gap_rel"] = np.nan
     scored["weight_gap_rel"] = np.nan
     scored["price_gap_rel"] = np.nan
@@ -278,9 +260,7 @@ def score_candidates(
     if pd.notna(target_price) and target_price > 0:
         scored["price_gap_rel"] = safe_rel_gap(scored[price_col], target_price)
 
-    # --------------------------------------------------------
     # Component scores
-    # --------------------------------------------------------
     scored["score_price"] = 0.0
     scored["score_value"] = 0.0
     scored["score_weight"] = 0.0
@@ -304,9 +284,8 @@ def score_candidates(
     else:
         scored["score_estimation"] = 0.5
 
-    # --------------------------------------------------------
-    # Optional structural bonus/penalty
-    # --------------------------------------------------------
+    # structural bonus/penalty
+
     target_reporter = target_row[reporter_col]
     target_partner = target_row[partner_col]
 
@@ -344,10 +323,6 @@ def score_candidates(
 
     return scored
 
-
-# ============================================================
-# 3) WRAPPER
-# ============================================================
 
 def find_best_hidden_matches(
     target_row: pd.Series,
@@ -407,9 +382,6 @@ def find_best_hidden_matches(
     return scored.head(top_k).copy()
 
 
-# ============================================================
-# OPTIONAL: APPLY TO MANY ROWS
-# ============================================================
 
 def find_hidden_matches_for_subset(
     df_target: pd.DataFrame,
