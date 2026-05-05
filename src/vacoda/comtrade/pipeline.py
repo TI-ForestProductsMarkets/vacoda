@@ -303,12 +303,14 @@ def run_bulk_downloads(cfg: ComtradeConfig) -> list[dict[str, Any]]:
                 auth=cfg.auth,
                 output_path=output_path,
             )
+            bulk_index_path = output_path.with_suffix(".json")
 
             manifest_rows.append(
                 {
                     "job": job.name,
                     "mode": "bulk",
                     "status": "downloaded",
+                    "bulk_index_path": str(bulk_index_path),
                     "output_path": saved_paths[0] if saved_paths else None,
                     "output_paths": saved_paths,
                     "local_filter": job.local_filter,

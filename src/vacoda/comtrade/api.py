@@ -21,6 +21,7 @@ import zipfile
 
 from vacoda.io.paths import resolve_path
 from vacoda.utils.logger import get_logger, rel_path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 logger = get_logger("COMTRADE.API")
 
@@ -142,6 +143,37 @@ def validate_auth_preflight(auth: AuthConfig) -> None:
     logger.info("Auth preflight passed using env var '%s' (method=%s).", auth.env_var_name, auth.method)
 
 
+def _download_bulk_referenced_file(
+    *,
+    file_url: str,
+    index: int,
+    total: int,
+    output_path: Path,
+    retry: RetryConfig,
+    runtime: DownloadRuntimeConfig,
+    headers: dict[str, str],
+) -> str:
+    logger.info(
+        "[bulk] Downloading referenced file %d/%d: %s",
+        index,
+        total,
+        redact_url(file_url),
+    )
+
+    file_payload = download_with_retry(
+        file_url,
+        retry,
+        runtime,
+        headers=headers,
+    )
+
+    suffix = _infer_bulk_file_suffix(file_payload, file_url)
+    file_path = output_path.parent / f"{output_path.stem}_{index:03d}{suffix}"
+    file_path.write_bytes(file_payload)
+
+    logger.info("[bulk] Saved referenced bulk file: %s", file_path)
+    return str(file_path)
+
 def build_query_params(default_params: dict[str, Any], job_params: dict[str, Any], auth: AuthConfig) -> dict[str, Any]:
     params = {**default_params, **job_params}
 
@@ -222,6 +254,37 @@ def build_bulk_url(endpoint: str, params: dict[str, Any]) -> str:
 
 
 def _parse_bulk_index_payload(payload: bytes) -> list[str]:
+    items = _parse_bulk_index_items(payload)
+
+    file_urls: list[str] = []
+    for item in items:
+        file_url = str(item.get("fileUrl", "")).strip()
+        if file_url:
+            file_urls.append(file_url)
+
+    return file_urls
+
+
+def _infer_bulk_file_suffix(payload: bytes, file_url: str) -> str:
+    if zipfile.is_zipfile(BytesIO(payload)):
+        return ".zip"
+
+    # gzip magic bytes
+    if payload.startswith(b"\x1f\x8b"):
+        return ".gz"
+
+    suffix = Path(urlsplit(file_url).path).suffix
+    if suffix:
+        return suffix
+
+    try:
+        payload[:512].decode("utf-8-sig")
+        return ".csv"
+    except UnicodeDecodeError:
+        return ".bin"
+
+
+def _parse_bulk_index_items(payload: bytes) -> list[dict[str, Any]]:
     try:
         decoded = payload.decode("utf-8-sig")
         data = json.loads(decoded)
@@ -235,30 +298,7 @@ def _parse_bulk_index_payload(payload: bytes) -> list[str]:
     if not isinstance(items, list):
         return []
 
-    file_urls: list[str] = []
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        file_url = str(item.get("fileUrl", "")).strip()
-        if file_url:
-            file_urls.append(file_url)
-    return file_urls
-
-
-def _infer_bulk_file_suffix(payload: bytes, file_url: str) -> str:
-    if zipfile.is_zipfile(BytesIO(payload)):
-        return ".zip"
-
-    suffix = Path(urlsplit(file_url).path).suffix
-    if suffix:
-        return suffix
-
-    try:
-        payload[:512].decode("utf-8-sig")
-        return ".csv"
-    except UnicodeDecodeError:
-        return ".bin"
-
+    return [item for item in items if isinstance(item, dict)]
 
 def build_auth_headers(auth: AuthConfig) -> dict[str, str]:
     headers = {"User-Agent": "vacoda-downloader/1.0"}
@@ -440,17 +480,45 @@ def download_bulk(
     index_path = output_path.with_suffix(".json")
     index_path.write_bytes(payload)
     logger.info("[bulk] Saved bulk index: %s", index_path)
+    index_items = _parse_bulk_index_items(payload)
+
+    max_workers = max(1, int(getattr(runtime, "max_workers", 1)))
+
+    logger.info(
+        "[bulk] Downloading %d referenced file(s) with max_workers=%d",
+        len(file_urls),
+        max_workers,
+    )
 
     saved_paths: list[str] = []
-    for index, file_url in enumerate(file_urls, start=1):
-        logger.info("[bulk] Downloading referenced file %d/%d: %s", index, len(file_urls), redact_url(file_url))
-        file_payload = download_with_retry(file_url, retry, runtime, headers=headers)
-        suffix = _infer_bulk_file_suffix(file_payload, file_url)
-        file_path = output_path.parent / f"{output_path.stem}_{index:03d}{suffix}"
-        file_path.write_bytes(file_payload)
-        logger.info("[bulk] Saved referenced bulk file: %s", file_path)
-        saved_paths.append(str(file_path))
 
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_index = {
+            executor.submit(
+                _download_bulk_referenced_file,
+                file_url=file_url,
+                index=index,
+                total=len(file_urls),
+                output_path=output_path,
+                retry=retry,
+                runtime=runtime,
+                headers=headers,
+            ): index
+            for index, file_url in enumerate(file_urls, start=1)
+        }
+
+        for future in as_completed(future_to_index):
+            index = future_to_index[future]
+            try:
+                saved_path = future.result()
+                saved_paths.append(saved_path)
+            except Exception:
+                logger.exception("[bulk] Referenced file %d/%d failed.", index, len(file_urls))
+                raise
+
+    saved_paths.sort()
     return saved_paths
+
+
 
 
