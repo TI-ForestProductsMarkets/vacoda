@@ -24,6 +24,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 
+from click import confirm
+
 from vacoda.comtrade.api import (
     build_auth_headers,
     build_query_params,
@@ -489,10 +491,112 @@ def run_single_downloads(cfg: ComtradeConfig) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------
 # Public orchestration function
 # ---------------------------------------------------------------------
+def _format_bool(value: bool) -> str:
+    return "yes" if value else "no"
 
+
+def _summarize_job_years(job: JobConfig) -> str:
+    if job.all_years_start is not None and job.all_years_end is not None:
+        return f"{job.all_years_start}–{job.all_years_end}"
+
+    if job.use_reference_years:
+        return "reference-driven"
+
+    period = job.params.get("period")
+    if period:
+        return str(period)
+
+    return "not specified"
+
+
+def _summarize_local_filter(local_filter: dict[str, Any] | None) -> str:
+    if not local_filter:
+        return "none"
+
+    parts = []
+    for key, value in local_filter.items():
+        if isinstance(value, list):
+            preview = value[:5]
+            suffix = "..." if len(value) > 5 else ""
+            parts.append(f"{key}={preview}{suffix}")
+        else:
+            parts.append(f"{key}={value}")
+
+    return "; ".join(parts)
+
+
+def log_run_configuration(
+    *,
+    cfg: ComtradeConfig,
+    config_path: Path,
+    log_path: Path | None,
+) -> None:
+    logger.info("=" * 72)
+    logger.info("VACODA COMTRADE DOWNLOAD PIPELINE")
+    logger.info("=" * 72)
+
+    logger.info("Config file:        %s", rel_path(config_path))
+    logger.info("Log file:           %s", rel_path(log_path) if log_path else "console only")
+    logger.info("Log level:          %s", cfg.log_level)
+
+    logger.info("")
+    logger.info("Modes:")
+    logger.info("  Bulk enabled:     %s", _format_bool(cfg.bulk.enabled))
+    logger.info("  Single enabled:   %s", _format_bool(cfg.single.enabled))
+
+    logger.info("")
+    logger.info("Runtime:")
+    logger.info("  max_workers:      %s", cfg.runtime.max_workers)
+    logger.info("  timeout_seconds:  %s", cfg.runtime.timeout_seconds)
+    logger.info("  overwrite:        %s", _format_bool(cfg.runtime.overwrite_existing))
+
+    if cfg.bulk.enabled:
+        logger.info("")
+        logger.info("Bulk:")
+        logger.info("  endpoint:         %s", cfg.endpoint.bulk)
+        logger.info("  output directory: %s", rel_path(_mode_output_dir(cfg.bulk)))
+        logger.info("  manifest file:    %s", cfg.bulk.output.manifest_file)
+        logger.info("  jobs:             %d", len(cfg.bulk.jobs))
+
+        for idx, job in enumerate(cfg.bulk.jobs, start=1):
+            logger.info("    %d. %s", idx, job.name)
+            logger.info("       years:        %s", _summarize_job_years(job))
+            logger.info("       output_file:  %s", job.output_file)
+            logger.info("       local_filter: %s", _summarize_local_filter(job.local_filter))
+
+    if cfg.single.enabled:
+        logger.info("")
+        logger.info("Single API:")
+        logger.info("  endpoint:         %s", cfg.endpoint.single)
+        logger.info("  output directory: %s", rel_path(_mode_output_dir(cfg.single)))
+        logger.info("  manifest file:    %s", cfg.single.output.manifest_file)
+        logger.info("  jobs:             %d", len(cfg.single.jobs))
+
+        expanded_jobs = _expand_jobs(cfg.single.jobs)
+        logger.info("  expanded jobs:    %d", len(expanded_jobs))
+
+        for idx, job in enumerate(cfg.single.jobs, start=1):
+            logger.info("    %d. %s", idx, job.name)
+            logger.info("       years:        %s", _summarize_job_years(job))
+            logger.info("       output_file:  %s", job.output_file)
+            logger.info("       params:       %s", job.params)
+
+    logger.info("=" * 72)
+
+def _confirm_run(confirm: bool) -> None:
+    if not confirm:
+        return
+
+    response = input("Proceed with this Comtrade download configuration? [y/N]: ").strip().lower()
+
+    if response not in {"y", "yes"}:
+        logger.warning("Pipeline aborted by user before downloads started.")
+        raise SystemExit("Pipeline stopped by user.")
 
 def run_comtrade_download_pipeline(
     config_path: Path | None = None,
+    log_path: Path | None = None,
+    confirm: bool = True,
 ) -> list[dict[str, Any]]:
     """
     Main Comtrade download pipeline.
@@ -513,26 +617,45 @@ def run_comtrade_download_pipeline(
 
     total_step = 6
 
-    ##################
-    _log_step(1, total_step, "Load Comtrade config")
+    pipeline_steps = [
+        "Load and summarize configuration",
+        "Validate authentication",
+        "Run bulk downloads",
+        "Run single API downloads",
+        "Audit manifest",
+        "Finish"
+    ]
+
+    ################## Load config 
+    _log_step(1, total_step, pipeline_steps[0])
     logger.info("Using Comtrade config: %s", rel_path(resolved_config_path))
     cfg = load_comtrade_config(resolved_config_path)
 
-    _log_step(2, total_step, "Validate authentication")
+    log_run_configuration(
+        cfg=cfg,
+        config_path=resolved_config_path,
+        log_path=log_path,
+        )
+    _confirm_run(confirm)
+    
+    ################## Validate authentication
+    _log_step(2, total_step, pipeline_steps[1])
     validate_auth_preflight(cfg.auth)
 
     all_manifest_rows: list[dict[str, Any]] = []
 
-    _log_step(3, total_step, "Run bulk downloads")
+
+    ################# Run Bulk Downloads and Single API Downloads
+    _log_step(3, total_step, pipeline_steps[2])
     bulk_rows = run_bulk_downloads(cfg)
     all_manifest_rows.extend(bulk_rows)
 
-    _log_step(4, total_step, "Run single API downloads")
+    _log_step(4, total_step, pipeline_steps[3])
     single_rows = run_single_downloads(cfg)
     all_manifest_rows.extend(single_rows)
 
-    #### Audit Manifest
-    _log_step(5, total_step, "Audit manifest")
+    ################# Audit Manifest
+    _log_step(5, total_step, pipeline_steps[4])
     if cfg.bulk.enabled:
         bulk_manifest_path = _mode_manifest_path(cfg.bulk)
         audit_manifest_file(bulk_manifest_path, fail_on_error=True)
@@ -541,7 +664,9 @@ def run_comtrade_download_pipeline(
         single_manifest_path = _mode_manifest_path(cfg.single)
         audit_manifest_file(single_manifest_path, fail_on_error=True)
 
-    _log_step(6, total_step, "Finish")
+
+    ################ Finish and summarize
+    _log_step(6, total_step, pipeline_steps[5])
     elapsed = time.perf_counter() - start_time
     mins, secs = divmod(elapsed, 60)
 
