@@ -10,7 +10,7 @@ from typing import Any
 import yaml
 from vacoda.reference import flow_sets
 from vacoda.reference import hs_sets
-
+from vacoda.comtrade.utils import get_bulk_manifest_path, _load_yaml
 from vacoda.comtrade.api import (
     AuthConfig,
     DownloadRuntimeConfig,
@@ -121,15 +121,6 @@ def resolve_download_references(cfg: dict[str, Any]) -> dict[str, Any]:
     return resolved_cfg
 
 
-def _load_yaml(path: Path) -> dict[str, Any]:
-    logger.debug("Loading YAML config from %s", path)
-    with open(path, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f) or {}
-    if not isinstance(data, dict):
-        raise ValueError(f"Expected mapping at root of YAML: {path}")
-    return data
-
-
 def _validate_query(query_item: dict[str, Any], idx: int) -> None:
     missing = REQUIRED_QUERY_KEYS - set(query_item)
     if missing:
@@ -227,9 +218,12 @@ def run_comtrade_bulk_pipeline(
 
     from vacoda.comtrade.api import download_bulk
 
+    ## Load config and resolve paths
     project_root = get_project_root()
     resolved_paths_cfg = paths_config_path or (project_root / "configs" / "paths.yaml")
     resolved_download_cfg = download_config_path or (project_root / "configs" / "comtrade.yaml")
+    
+    ## Load and validate config 
     cfg = _load_yaml(resolved_download_cfg)
     bulk_cfg = cfg.get("bulk", {})
     if not bulk_cfg.get("enabled", False):
@@ -237,8 +231,10 @@ def run_comtrade_bulk_pipeline(
         return []
     endpoint = bulk_cfg.get("endpoint", "https://comtradeapi.un.org/bulk/v1/get/")
     jobs = bulk_cfg.get("jobs", [])
-    output_dir = bulk_cfg.get("output_directory") or cfg.get("output", {}).get("directory", "data/raw/api/bulk")
-    manifest_file = bulk_cfg.get("manifest_file", "bulk_download_manifest.json")
+    output_dir, manifest_file = get_bulk_manifest_path(bulk_cfg)
+
+    #output_dir = bulk_cfg.get("output_directory") or cfg.get("output", {}).get("directory", "data/raw/api/bulk")
+    #manifest_file = bulk_cfg.get("manifest_file", "bulk_download_manifest.json")
     retry_cfg = cfg.get("retry", {})
     runtime_cfg = cfg.get("runtime", {})
     auth_cfg = cfg.get("auth", {})

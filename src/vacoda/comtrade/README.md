@@ -1,4 +1,4 @@
-## package: `vacoda.comtrade`
+# package: `vacoda.comtrade`
 This module provides functionality to download trade data from the Comtrade Bulk API. It supports both single-query downloads and bulk downloads of multiple jobs defined in the configuration.
 
 ## Usage
@@ -82,4 +82,45 @@ This file defines a data pipeline specific to the Comtrade data, including any t
 ### reference/hs_sets.py
 This file contains predefined sets of HS codes that can be used as filters in the API requests.
 
+## Package structure overview
+`api.py`
+    Low-level normal API calls:
+    - build URL
+    - send request
+    - handle response
+    - pagination / count query if needed
 
+`bulk.py`
+    Bulk API handling:
+    - download bulk files
+    - inspect .bin/.gz files
+    - decompress/read TSV files
+    - filter cmdCode / flowCode locally
+
+`download.py`
+    High-level orchestration:
+    - read config
+    - decide normal API vs bulk
+    - iterate jobs
+    - call `api.py` or `bulk.py`
+    - save outputs
+
+`manifest.py`
+    Save download status:
+    - downloaded
+    - failed
+    - no_data
+    - skipped_existing
+    - too_large
+
+`config.py`
+    Load and validate comtrade.yaml:
+    - resolve WOOD_PANEL
+    - resolve FLOW_ALL
+    - check required fields
+
+`utils.py`
+    Small shared helpers only:
+    - ensure_dir
+    - timestamp
+    - safe_filename
