@@ -9,7 +9,7 @@ Use these as tokens in configs/comtrade.yaml, e.g.
 from __future__ import annotations
 
 # Single wood-sector code.
-WOOD_PANEL = ["441012", "441011"]  
+WOOD_PANEL = ["441012", "441011"]  # OSB and plywood, respectively.
 
 # Multi wood-sector codes.
 WOOD_ALL: list[str] = []
@@ -22,8 +22,8 @@ WOOD_ALL: list[str] = []
 # - OSB appears from HS2007 onward.
 # - Use 2025 as current download horizon for now.
 HS_VALID_YEARS: dict[str, tuple[int, int]] = {
-    "441012": (2007, 2025),
-    "441011": (1990, 2006),
+    "441012": (2024, 2025),
+    "441011": (2024, 2025),
 }
 
 
