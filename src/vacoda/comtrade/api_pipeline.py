@@ -4,15 +4,12 @@ from typing import Any
 import pandas as pd
 import yaml
 from vacoda.pipeline.build_processed_api_dataset import build_processed_api_dataset
-from vacoda.comtrade.utils import load_api_files_from_manifest
-from vacoda.io.paths import get_project_root, resolve_path, get_processed_data_file_path
+from vacoda.comtrade.utils import load_api_files_from_manifest,  get_bulk_manifest_path
+from vacoda.io.paths import get_project_root, resolve_path, get_processed_data_file_path, load_paths_config
 from vacoda.comtrade.comtrade_pipeline import run_comtrade_api_pipeline
 from vacoda.utils.logger import get_logger, rel_path
-from vacoda.io.paths import get_project_root, load_paths_config, resolve_path
-
 
 logger = get_logger("PIPELINE.API")
-
 
 def _load_bulk_config(api_config_path: Path | None) -> dict[str, Any]:
     if api_config_path is None:
@@ -23,12 +20,6 @@ def _load_bulk_config(api_config_path: Path | None) -> dict[str, Any]:
 
     bulk_config = raw_config.get("bulk", {})
     return bulk_config if isinstance(bulk_config, dict) else {}
-
-
-def _get_bulk_manifest_path(bulk_cfg: dict[str, Any], api_data_dir: str) -> Path:
-    bulk_output_dir = resolve_path(str(bulk_cfg.get("output_directory", api_data_dir)))
-    bulk_manifest_name = str(bulk_cfg.get("manifest_file", "bulk_download_manifest.json"))
-    return bulk_output_dir / bulk_manifest_name
 
 
 def _process_api_files(api_paths: list[Path]) -> Path:
@@ -66,8 +57,10 @@ def run_full_api_pipeline(
         api_config_path=resolved_api_cfg,
     )
 
+
+    ## if bulk is enabled, validate manifest and extract file paths
     if bulk_cfg.get("enabled", False):
-        bulk_manifest_path = _get_bulk_manifest_path(bulk_cfg, paths_cfg["api_data_dir"])
+        _, bulk_manifest_path = get_bulk_manifest_path(bulk_cfg, paths_cfg["api_data_dir"])
         failed_jobs = [row for row in manifest_rows if row.get("status") == "error"]
         downloaded_jobs = [row for row in manifest_rows if row.get("status") == "downloaded"]
 

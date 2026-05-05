@@ -10,6 +10,7 @@ from vacoda.utils.logger import get_logger
 
 logger = get_logger("COMTRADE.UTILS")
 
+
 def _load_yaml(path: Path) -> dict[str, Any]:
     logger.debug("Loading YAML config from %s", path)
     with open(path, "r", encoding="utf-8") as f:
@@ -32,3 +33,17 @@ def load_api_files_from_manifest(manifest_path: Path) -> list[Path]:
             files.append(Path(row["output_path"]))
 
     return files
+
+
+def get_single_manifest_path(single_cfg: dict[str, Any]) -> Path:
+    single_output = single_cfg.get("output", {})
+    output_dir = resolve_path(single_output.get("directory", "data/raw/api/single"))
+    manifest_name = single_output.get("manifest_file", "download_manifest.json")
+    return output_dir / manifest_name
+
+
+def get_bulk_manifest_path(bulk_cfg: dict[str, Any]) -> Path:
+    bulk_output = bulk_cfg.get("output", {})
+    output_dir = resolve_path(bulk_output.get("directory", "data/raw/api/bulk"))
+    manifest_name = bulk_output.get("manifest_file", "download_manifest_bulk.json")
+    return output_dir / manifest_name
