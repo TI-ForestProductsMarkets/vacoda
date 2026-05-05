@@ -38,6 +38,9 @@ class JobConfig:
     local_filter: dict[str, Any] | None = None
     all_years_start: int | None = None
     all_years_end: int | None = None
+    use_reference_years: bool = False
+    fallback_years_start: int = 1990
+    fallback_years_end: int = 2025
 
 
 @dataclass
@@ -121,15 +124,18 @@ def _load_jobs(section_name: str, section_cfg: dict[str, Any]) -> list[JobConfig
             raise ValueError(f"{section_name}.jobs[{idx}].local_filter must be a mapping")
 
         jobs.append(
-            JobConfig(
-                name=name,
-                params=_resolve_params(params),
-                output_file=output_file,
-                local_filter=_resolve_params(local_filter) if isinstance(local_filter, dict) else None,
-                all_years_start=raw_job.get("all_years_start"),
-                all_years_end=raw_job.get("all_years_end"),
-            )
-        )
+        JobConfig(
+            name=name,
+            params=_resolve_params(params),
+            output_file=output_file,
+            local_filter=_resolve_params(local_filter) if isinstance(local_filter, dict) else None,
+            all_years_start=raw_job.get("all_years_start"),
+            all_years_end=raw_job.get("all_years_end"),
+            use_reference_years=bool(raw_job.get("use_reference_years", False)),
+            fallback_years_start=int(raw_job.get("fallback_years_start", 1990)),
+            fallback_years_end=int(raw_job.get("fallback_years_end", 2025)),
+    )
+)
 
     return jobs
 
