@@ -86,7 +86,15 @@ def main() -> None:
     logger.info("[Config] Logger level set to: %s (%s)", log_level_raw, log_level)
     logger.info("[Config] Log file: %s", log_path)
 
-    run_comtrade_download_pipeline(config_path=config_path)
+    try:
+        run_comtrade_download_pipeline(config_path=config_path)
+    except Exception as exc:
+        logger.exception("Comtrade download pipeline failed.")
+        print("")
+        print("ERROR: Comtrade download pipeline failed.")
+        print(f"Reason: {exc}")
+        print(f"Log file: {log_path}")
+        raise SystemExit(1)
 
     logger.info("=" * 72)
     logger.info("Finished Comtrade download script")
