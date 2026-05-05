@@ -53,16 +53,17 @@ single:
   enabled: true
 
   jobs:
-    - name: "wood_panel_direct_hs2007_onward"
+    - name: "wood_panel_direct"
       params:
         reporterCode:
         partnerCode:
         cmdCode: "WOOD_PANEL"
         flowCode: "FLOW_ALL"
 
-      output_file: "wood_panel_direct_{period}.csv"
-      all_years_start: 1990
-      all_years_end: 2025
+      output_file: "comtrade_{cmdCode}_{period}.csv"
+      use_reference_years: true
+      fallback_years_start: 1990
+      fallback_years_end: 2025
 
   output:
     directory: "data/raw/api/single"
@@ -85,6 +86,20 @@ default_params:
   format: "csv"
   maxRecords: 250000
   includeDesc: true
+
+
+# -------------------------------------------
+# RETRY AND RUNTIME
+# -------------------------------------------
+
+retry:
+  max_attempts: 3
+  backoff_seconds: 2.0
+
+runtime:
+  timeout_seconds: 120
+  overwrite_existing: false
+  max_workers: 4
 
 
 # -------------------------------------------
@@ -122,16 +137,4 @@ pagination:
   start_offset: 0
 
 
-# -------------------------------------------
-# RETRY AND RUNTIME
-# -------------------------------------------
-
-retry:
-  max_attempts: 3
-  backoff_seconds: 2.0
-
-runtime:
-  timeout_seconds: 120
-  overwrite_existing: false
-  max_workers: 4
 

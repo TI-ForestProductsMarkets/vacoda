@@ -42,6 +42,7 @@ from vacoda.comtrade.api import (
 from vacoda.comtrade.config import ComtradeConfig, JobConfig, ModeConfig, load_comtrade_config
 from vacoda.io.paths import get_project_root, resolve_path
 from vacoda.utils.logger import get_logger, rel_path
+from vacoda.reference.hs_sets import get_hs_valid_year_range
 
 logger = get_logger("COMTRADE.PIPELINE")
 
@@ -83,30 +84,119 @@ def _format_output_file(template: str, params: dict[str, Any]) -> str:
         ) from exc
 
 
-def _expand_year_jobs(job: JobConfig) -> list[JobConfig]:
+def _as_list(value: Any) -> list[Any]:
     """
-    Expand a job with all_years_start/all_years_end into one job per year.
+    Normalize scalar/list config values to a list.
 
-    Example YAML:
-
-        output_file: "wood_panel_direct_{period}.csv"
-        all_years_start: 2007
-        all_years_end: 2025
-
-    becomes jobs with period=2007, period=2008, etc.
-
-    If no year range is defined, the job is returned unchanged.
+    Example:
+        "441012" -> ["441012"]
+        ["441012", "441011"] -> ["441012", "441011"]
     """
-    if job.all_years_start is None or job.all_years_end is None:
+    if isinstance(value, list):
+        return value
+
+    if isinstance(value, tuple):
+        return list(value)
+
+    if value is None:
+        return [None]
+
+    return [value]
+
+
+def _expand_cmd_code_jobs(job: JobConfig) -> list[JobConfig]:
+    """
+    Expand jobs where cmdCode is a list.
+
+    Example:
+        cmdCode: ["441012", "441011"]
+
+    becomes two jobs:
+        cmdCode: "441012"
+        cmdCode: "441011"
+
+    This is important because it lets output_file use {cmdCode}.
+    """
+    cmd_codes = _as_list(job.params.get("cmdCode"))
+
+    # No cmdCode or single cmdCode: keep unchanged.
+    if len(cmd_codes) <= 1:
         return [job]
 
-    start = int(job.all_years_start)
-    end = int(job.all_years_end)
+    expanded_jobs: list[JobConfig] = []
+
+    for cmd_code in cmd_codes:
+        params = dict(job.params)
+        params["cmdCode"] = str(cmd_code)
+
+        expanded_jobs.append(
+            JobConfig(
+                name=f"{job.name}_{cmd_code}",
+                params=params,
+                output_file=job.output_file,
+                local_filter=job.local_filter,
+                all_years_start=job.all_years_start,
+                all_years_end=job.all_years_end,
+                use_reference_years=job.use_reference_years,
+                fallback_years_start=job.fallback_years_start,
+                fallback_years_end=job.fallback_years_end,
+            )
+        )
+
+    return expanded_jobs
+
+
+def _get_year_range_for_job(job: JobConfig) -> tuple[int, int] | None:
+    """
+    Determine year range for a job.
+
+    Priority:
+    1. Explicit all_years_start/all_years_end
+    2. Reference-driven HS validity years
+    3. No expansion
+    """
+    if job.all_years_start is not None and job.all_years_end is not None:
+        return int(job.all_years_start), int(job.all_years_end)
+
+    if job.use_reference_years:
+        cmd_code = job.params.get("cmdCode")
+
+        if isinstance(cmd_code, list):
+            raise ValueError(
+                "use_reference_years=True requires cmdCode to be expanded before year expansion."
+            )
+
+        if cmd_code is None:
+            raise ValueError("use_reference_years=True requires params.cmdCode.")
+
+        return get_hs_valid_year_range(
+            cmd_code=str(cmd_code),
+            fallback_start=job.fallback_years_start,
+            fallback_end=job.fallback_years_end,
+        )
+
+    return None
+
+
+def _expand_year_jobs(job: JobConfig) -> list[JobConfig]:
+    """
+    Expand a job into one job per year.
+
+    Supports either:
+    - explicit all_years_start/all_years_end
+    - use_reference_years=True based on cmdCode
+    """
+    year_range = _get_year_range_for_job(job)
+
+    if year_range is None:
+        return [job]
+
+    start, end = year_range
 
     if end < start:
         raise ValueError(
             f"Invalid year range for job {job.name!r}: "
-            f"all_years_end={end} is smaller than all_years_start={start}"
+            f"end={end} is smaller than start={start}"
         )
 
     expanded_jobs: list[JobConfig] = []
@@ -115,14 +205,20 @@ def _expand_year_jobs(job: JobConfig) -> list[JobConfig]:
         params = dict(job.params)
         params["period"] = str(year)
 
+        cmd_code = params.get("cmdCode")
+        suffix = f"{cmd_code}_{year}" if cmd_code else str(year)
+
         expanded_jobs.append(
             JobConfig(
-                name=f"{job.name}_{year}",
+                name=f"{job.name}_{suffix}",
                 params=params,
                 output_file=job.output_file,
                 local_filter=job.local_filter,
                 all_years_start=None,
                 all_years_end=None,
+                use_reference_years=False,
+                fallback_years_start=job.fallback_years_start,
+                fallback_years_end=job.fallback_years_end,
             )
         )
 
@@ -130,10 +226,21 @@ def _expand_year_jobs(job: JobConfig) -> list[JobConfig]:
 
 
 def _expand_jobs(jobs: list[JobConfig]) -> list[JobConfig]:
+    """
+    Expand jobs in this order:
+
+    1. Expand cmdCode lists into one job per commodity code.
+    2. Expand each commodity job into one job per valid year.
+
+    This makes filenames like {cmdCode}_{period} safe and meaningful.
+    """
     expanded: list[JobConfig] = []
 
     for job in jobs:
-        expanded.extend(_expand_year_jobs(job))
+        cmd_jobs = _expand_cmd_code_jobs(job)
+
+        for cmd_job in cmd_jobs:
+            expanded.extend(_expand_year_jobs(cmd_job))
 
     return expanded
 
@@ -377,7 +484,9 @@ def run_single_downloads(cfg: ComtradeConfig) -> list[dict[str, Any]]:
         len(manifest_rows),
     )
 
-    _write_manifest(manifest_rows, manifest_path)
+    # Write incremental manifest every few jobs.
+    if idx % 5 == 0 or idx == len(jobs):
+        _write_manifest(manifest_rows, manifest_path)
     return manifest_rows
 
 def run_single_downloads_deprecated(cfg: ComtradeConfig) -> list[dict[str, Any]]:
