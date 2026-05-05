@@ -19,7 +19,6 @@ This file replaces the messy overlap between:
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import json
 import time
 from pathlib import Path
 from typing import Any
@@ -27,8 +26,6 @@ from urllib.parse import urlencode
 
 from vacoda.comtrade.api import (
     build_auth_headers,
-    build_bulk_params,
-    build_bulk_url,
     build_query_params,
     detect_auth_error_in_payload,
     download_bulk,
@@ -43,6 +40,7 @@ from vacoda.comtrade.config import ComtradeConfig, JobConfig, ModeConfig, load_c
 from vacoda.io.paths import get_project_root, resolve_path
 from vacoda.utils.logger import get_logger, rel_path
 from vacoda.reference.hs_sets import get_hs_valid_year_range
+from vacoda.comtrade.manifest import audit_manifest_file, write_manifest
 
 logger = get_logger("COMTRADE.PIPELINE")
 
@@ -50,13 +48,6 @@ logger = get_logger("COMTRADE.PIPELINE")
 # ---------------------------------------------------------------------
 # Small generic helpers
 # ---------------------------------------------------------------------
-
-
-def _write_manifest(rows: list[dict[str, Any]], manifest_path: Path) -> None:
-    manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    manifest_path.write_text(json.dumps(rows, indent=2), encoding="utf-8")
-    logger.info("Manifest written to: %s", rel_path(manifest_path))
-
 
 def _mode_output_dir(mode_cfg: ModeConfig) -> Path:
     return resolve_path(mode_cfg.output.directory)
@@ -103,35 +94,33 @@ def _as_list(value: Any) -> list[Any]:
 
     return [value]
 
-
 def _expand_cmd_code_jobs(job: JobConfig) -> list[JobConfig]:
     """
     Expand jobs where cmdCode is a list.
 
-    Example:
-        cmdCode: ["441012", "441011"]
-
-    becomes two jobs:
-        cmdCode: "441012"
-        cmdCode: "441011"
-
-    This is important because it lets output_file use {cmdCode}.
+    Even a one-item list like ["441012"] is converted to scalar "441012",
+    because downstream year expansion expects one cmdCode per job.
     """
-    cmd_codes = _as_list(job.params.get("cmdCode"))
-
-    # No cmdCode or single cmdCode: keep unchanged.
-    if len(cmd_codes) <= 1:
+    if "cmdCode" not in job.params:
         return [job]
+
+    cmd_codes = _as_list(job.params.get("cmdCode"))
 
     expanded_jobs: list[JobConfig] = []
 
     for cmd_code in cmd_codes:
-        params = dict(job.params)
-        params["cmdCode"] = str(cmd_code)
+        if cmd_code is None or str(cmd_code).strip() == "":
+            params = dict(job.params)
+            params.pop("cmdCode", None)
+            name = job.name
+        else:
+            params = dict(job.params)
+            params["cmdCode"] = str(cmd_code).strip()
+            name = f"{job.name}_{params['cmdCode']}"
 
         expanded_jobs.append(
             JobConfig(
-                name=f"{job.name}_{cmd_code}",
+                name=name,
                 params=params,
                 output_file=job.output_file,
                 local_filter=job.local_filter,
@@ -162,9 +151,13 @@ def _get_year_range_for_job(job: JobConfig) -> tuple[int, int] | None:
         cmd_code = job.params.get("cmdCode")
 
         if isinstance(cmd_code, list):
-            raise ValueError(
-                "use_reference_years=True requires cmdCode to be expanded before year expansion."
-            )
+            if len(cmd_code) == 1:
+                cmd_code = cmd_code[0]
+            else:
+                raise ValueError(
+                "use_reference_years=True requires one cmdCode per expanded job. "
+                f"Got multiple cmdCode values: {cmd_code}"
+                )
 
         if cmd_code is None:
             raise ValueError("use_reference_years=True requires params.cmdCode.")
@@ -205,12 +198,12 @@ def _expand_year_jobs(job: JobConfig) -> list[JobConfig]:
         params = dict(job.params)
         params["period"] = str(year)
 
-        cmd_code = params.get("cmdCode")
-        suffix = f"{cmd_code}_{year}" if cmd_code else str(year)
-
+        #cmd_code = params.get("cmdCode")
+        #suffix = f"{cmd_code}_{year}" if cmd_code else str(year)
+        
         expanded_jobs.append(
             JobConfig(
-                name=f"{job.name}_{suffix}",
+                name=f"{job.name}_{year}",
                 params=params,
                 output_file=job.output_file,
                 local_filter=job.local_filter,
@@ -336,7 +329,8 @@ def run_bulk_downloads(cfg: ComtradeConfig) -> list[dict[str, Any]]:
                 }
             )
 
-    _write_manifest(manifest_rows, manifest_path)
+    if idx % 5 == 0 or idx == len(jobs):
+        write_manifest(manifest_rows, manifest_path)
     return manifest_rows
 
 
@@ -470,7 +464,8 @@ def run_single_downloads(cfg: ComtradeConfig) -> list[dict[str, Any]]:
 
             # Write incremental manifest after every completed job.
             # Useful if the run is interrupted.
-            _write_manifest(manifest_rows, manifest_path)
+            if idx % 5 == 0 or idx == len(jobs):
+                write_manifest(manifest_rows, manifest_path)
 
     downloaded = [row for row in manifest_rows if row.get("status") == "downloaded"]
     skipped = [row for row in manifest_rows if row.get("status") == "skipped"]
@@ -486,89 +481,8 @@ def run_single_downloads(cfg: ComtradeConfig) -> list[dict[str, Any]]:
 
     # Write incremental manifest every few jobs.
     if idx % 5 == 0 or idx == len(jobs):
-        _write_manifest(manifest_rows, manifest_path)
+        write_manifest(manifest_rows, manifest_path)
     return manifest_rows
-
-def run_single_downloads_deprecated(cfg: ComtradeConfig) -> list[dict[str, Any]]:
-    """
-    Run normal Comtrade Data API downloads.
-    """
-    if not cfg.single.enabled:
-        logger.info("[single] Single API mode is disabled.")
-        return []
-
-    output_dir = _mode_output_dir(cfg.single)
-    manifest_path = _mode_manifest_path(cfg.single)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    endpoint = select_resolvable_endpoint(
-        primary=cfg.endpoint.single,
-        fallbacks=cfg.endpoint.single_fallbacks,
-    )
-
-    logger.info("[single] Endpoint: %s", endpoint)
-    logger.info("[single] Output directory: %s", rel_path(output_dir))
-    logger.info("[single] Manifest path: %s", rel_path(manifest_path))
-
-    manifest_rows: list[dict[str, Any]] = []
-    jobs = _expand_jobs(cfg.single.jobs)
-
-    for idx, job in enumerate(jobs, start=1):
-        logger.info("[single] Job %d/%d START: %s", idx, len(jobs), job.name)
-
-        try:
-            output_file = _format_output_file(job.output_file, job.params)
-            output_path = output_dir / output_file
-
-            if output_path.exists() and not cfg.runtime.overwrite_existing:
-                logger.info(
-                    "[single] Skipping existing file because overwrite_existing=false: %s",
-                    rel_path(output_path),
-                )
-
-                manifest_rows.append(
-                    {
-                        "job": job.name,
-                        "mode": "single",
-                        "status": "skipped",
-                        "output_path": str(output_path),
-                        "url": None,
-                        "params": job.params,
-                    }
-                )
-                continue
-
-            row = _download_single_job(
-                cfg=cfg,
-                endpoint=endpoint,
-                job=job,
-                output_path=output_path,
-            )
-
-            manifest_rows.append(row)
-
-            logger.info(
-                "[single] Job %s completed. Rows downloaded: %s",
-                job.name,
-                row.get("rows_downloaded", "unknown"),
-            )
-
-        except Exception as exc:
-            logger.exception("[single] Job failed: %s", job.name)
-
-            manifest_rows.append(
-                {
-                    "job": job.name,
-                    "mode": "single",
-                    "status": "error",
-                    "error": str(exc),
-                    "params": job.params,
-                }
-            )
-
-    _write_manifest(manifest_rows, manifest_path)
-    return manifest_rows
-
 
 # ---------------------------------------------------------------------
 # Public orchestration function
@@ -595,24 +509,37 @@ def run_comtrade_download_pipeline(
     project_root = get_project_root()
     resolved_config_path = config_path or project_root / "configs" / "comtrade.yaml"
 
-    _log_step(1, 5, "Load Comtrade config")
+    total_step = 6
+
+    ##################
+    _log_step(1, total_step, "Load Comtrade config")
     logger.info("Using Comtrade config: %s", rel_path(resolved_config_path))
     cfg = load_comtrade_config(resolved_config_path)
 
-    _log_step(2, 5, "Validate authentication")
+    _log_step(2, total_step, "Validate authentication")
     validate_auth_preflight(cfg.auth)
 
     all_manifest_rows: list[dict[str, Any]] = []
 
-    _log_step(3, 5, "Run bulk downloads")
+    _log_step(3, total_step, "Run bulk downloads")
     bulk_rows = run_bulk_downloads(cfg)
     all_manifest_rows.extend(bulk_rows)
 
-    _log_step(4, 5, "Run single API downloads")
+    _log_step(4, total_step, "Run single API downloads")
     single_rows = run_single_downloads(cfg)
     all_manifest_rows.extend(single_rows)
 
-    _log_step(5, 5, "Finish")
+    #### Audit Manifest
+    _log_step(5, total_step, "Audit manifest")
+    if cfg.bulk.enabled:
+        bulk_manifest_path = _mode_manifest_path(cfg.bulk)
+        audit_manifest_file(bulk_manifest_path, fail_on_error=True)
+
+    if cfg.single.enabled:
+        single_manifest_path = _mode_manifest_path(cfg.single)
+        audit_manifest_file(single_manifest_path, fail_on_error=True)
+
+    _log_step(6, total_step, "Finish")
     elapsed = time.perf_counter() - start_time
     mins, secs = divmod(elapsed, 60)
 
@@ -659,8 +586,6 @@ def run_comtrade_api_pipeline(
     The new pipeline only needs the Comtrade config path.
     """
     return run_comtrade_download_pipeline(config_path=api_config_path)
-
-
 
 
 def _run_single_job_safe(
