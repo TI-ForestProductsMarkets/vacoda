@@ -1,115 +1,137 @@
-# Comtrade download config (flat layout)
-# Docs: https://comtradedeveloper.un.org/api-details#api=comtrade-v1&operation=get-get
-# Supscripton Plan: https://uncomtrade.org/docs/subscriptions/
+# Comtrade download config
+# Docs: https://comtradedeveloper.un.org/api-details
+# Subscription plans: https://uncomtrade.org/docs/subscriptions/
 
-# IMPORTANT: Set auth.env_file to a local file that contains:
-# COMTRADE_API_KEY=your_key_here before running downloads.
-#
-# Edit these sections first:
-# 1) queries
-# 2) output
-# 3) default_params
-#
+# IMPORTANT:
+# Store your API key in .env like this:
+# COMTRADE_API_KEY=your_key_here
+
 # Token tips:
-# - cmdCode can use token names from src/vacoda/reference/hs_sets.py (example: WOOD_PANEL)
-# - flowCode can use token names from src/vacoda/reference/flow_sets.py (example: FLOW_ALL)
+# - cmdCode can use token names from src/vacoda/reference/hs_sets.py
+# - flowCode can use token names from src/vacoda/reference/flow_sets.py
 
-## To use the bulk API download mode:
-# 1. Set bulk.enabled: true
-# 2. Define your jobs under bulk.jobs (see example below)
-# https://comtradedeveloper.un.org/api-details#api=comtradebulk-v1-with-subscription&operation=get-get
+
+# -------------------------------------------
+# BULK API DOWNLOADS
+# -------------------------------------------
+# Bulk downloads broad Comtrade files.
+# Commodity and flow filters should usually be applied locally after download.
+
 bulk:
-  # If true, will attempt to download all jobs in a single API call
   enabled: false
-  endpoint: "https://comtradeapi.un.org/bulk/v1/get/"
-  # List of bulk jobs to download. Each job can specify parameters similar to 'query'.
+
   jobs:
-    - name: "wood_panel_bulk"
+    - name: "hs_2023_all_reporters"
       params:
-        typeCode: "C"  # C = commodities
-        freqCode: "A"  # A = annual
+        typeCode: "C"
+        freqCode: "A"
         clCode: "HS"
         period: "2023"
         reporterCode: "all"
         partnerCode: "all"
+
+      # Applied locally after bulk files are downloaded and parsed.
+      local_filter:
+        cmdCode: "WOOD_PANEL"
+        flowCode: "FLOW_ALL"
+
       output_file: "Comtrade_bulk_HS_{period}_all_reporters.zip"
 
-  # Output directory for bulk downloads (optional, falls back to output.directory)
   output:
     directory: "data/raw/api/bulk"
-    # Manifest file for bulk downloads (optional)
     manifest_file: "download_manifest_bulk.json"
 
 
 # -------------------------------------------
-# EDIT FIRST: WHAT TO DOWNLOAD
+# NORMAL DATA API DOWNLOADS
 # -------------------------------------------
-# One query = one logical dataset driven by cmdCode + one output file.
-query:
-  - name: "wood_panel_world_trade"
-    params:
-      # Empty/null reporterCode means all reporters.
-      reporterCode:
-      # Empty/null partnerCode means all partners.
-      partnerCode:
-      # HS product filter token from src/vacoda/reference/hs_sets.py.
-      cmdCode: "WOOD_PANEL" 
-      # Use FLOW_ALL to include both imports and exports.
-      flowCode: "FLOW_ALL" 
-      # "all" or specific period(s), e.g. "2023" or "2022,2023".
-      period: "2006" 
-    output_file: "test_2006.csv"
+# Normal API downloads precise query results.
+# Recommended job unit:
+# one commodity group × one year or generated year loop.
+
+single:
+  enabled: true
+
+  jobs:
+    - name: "wood_panel_direct_hs2007_onward"
+      params:
+        reporterCode:
+        partnerCode:
+        cmdCode: "WOOD_PANEL"
+        flowCode: "FLOW_ALL"
+
+      output_file: "wood_panel_direct_{period}.csv"
+      all_years_start: 1990
+      all_years_end: 2025
+
+  output:
+    directory: "data/raw/api/single"
+    manifest_file: "download_manifest_single.json"
 
 
-# Logging options (optional)
-log_level: DEBUG  # Options: DEBUG, INFO, WARNING, ERROR, CRITICAL
+# -------------------------------------------
+# LOGGING
+# -------------------------------------------
+
+log_level: DEBUG # Options: DEBUG, INFO, WARNING, ERROR, CRITICAL
 log_file: output/reports/LOG_API_PIPELINE.log
 
-# Output location.
-output:
-  directory: "data/raw/api/single"
-  manifest_file: "download_manifest.json"
 
-# Applied to every query unless overridden in queries[].params.
+# -------------------------------------------
+# DEFAULT DATA API PARAMETERS
+# -------------------------------------------
+
 default_params:
   format: "csv"
-  # Page size per API request (not total rows).
   maxRecords: 250000
   includeDesc: true
 
 
+# -------------------------------------------
+# ENDPOINTS
+# -------------------------------------------
+
+endpoint:
+  single: "https://comtradeapi.un.org/data/v1/get/C/A/HS"
+  single_fallbacks:
+    - "https://api.uncomtrade.org/data/v1/get/C/A/HS"
+  bulk: "https://comtradeapi.un.org/bulk/v1/get/"
+
 
 # -------------------------------------------
-# ADVANCED: USUALLY KEEP AS-IS
+# AUTHENTICATION
 # -------------------------------------------
 
-# Data API endpoint
-endpoint: "https://comtradeapi.un.org/data/v1/get/C/A/HS"
-endpoint_fallbacks:
-  - "https://api.uncomtrade.org/data/v1/get/C/A/HS"
-
-# API authentication.
 auth:
   enabled: true
-  method: "header" # header or query
+  method: "header"
   header_name: "Ocp-Apim-Subscription-Key"
   env_var_name: "COMTRADE_API_KEY"
   query_param_name: "token"
   env_file: ".env"
 
-# Pagination controls.
+
+# -------------------------------------------
+# PAGINATION
+# -------------------------------------------
+
 pagination:
   enabled: true
   limit_param: "maxRecords"
   offset_param: "offset"
   start_offset: 0
 
-# Network retry policy.
+
+# -------------------------------------------
+# RETRY AND RUNTIME
+# -------------------------------------------
+
 retry:
   max_attempts: 3
   backoff_seconds: 2.0
 
-# Runtime behavior.
 runtime:
   timeout_seconds: 120
   overwrite_existing: false
+  max_workers: 4
+
