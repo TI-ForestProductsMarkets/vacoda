@@ -7,24 +7,31 @@ Use these as tokens in configs/comtrade.yaml, e.g.
 """
 
 from __future__ import annotations
+from vacoda.reference.cmdCode_dict import HS_VALID_YEARS as DEFAULT_HS_VALID_YEARS
+
+
+# Optional local override.
+# If you define LOCAL_HS_VALID_YEARS below, it will be used instead of the imported default.
+#
+# LOCAL_HS_VALID_YEARS: dict[str, tuple[int, int]] = {
+#     "441012": (2024, 2025),
+#     "441011": (2024, 2025),
+# }
+
+LOCAL_HS_VALID_YEARS: dict[str, tuple[int, int]] | None = None
+
+
+HS_VALID_YEARS: dict[str, tuple[int, int]] = (
+    LOCAL_HS_VALID_YEARS
+    if LOCAL_HS_VALID_YEARS is not None
+    else DEFAULT_HS_VALID_YEARS
+)
 
 # Single wood-sector code.
-WOOD_PANEL = ["441012", "441011"]  # OSB and plywood, respectively.
+WOOD_PANEL = [key for key in HS_VALID_YEARS]  
 
 # Multi wood-sector codes.
 WOOD_ALL: list[str] = []
-
-
-# Validity windows for 6-digit HS codes.
-# Values are inclusive: start_year, end_year.
-#
-# For 441012:
-# - OSB appears from HS2007 onward.
-# - Use 2025 as current download horizon for now.
-HS_VALID_YEARS: dict[str, tuple[int, int]] = {
-    "441012": (2024, 2025),
-    "441011": (2024, 2025),
-}
 
 
 def get_hs_valid_year_range(
