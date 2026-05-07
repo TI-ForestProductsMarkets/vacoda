@@ -1,11 +1,12 @@
 # Directory for storing data files (e.g. CSVs, Parquets)
 data/
 
-# To Do list
+# Further personal subdirectories
 ToBeDoneList.md
 README.md
 git_cheatsheet.md
 src/vacoda/reference/vacoda.code-workspace
+jobs/
 
 # Environment files
 .env

@@ -133,6 +133,8 @@ def _handle_existing_output(
     )
 
     if policy == "redownload":
+        if reason == "zero_byte":
+            output_path.unlink(missing_ok=True)
         return None
 
     if policy == "fail":
@@ -160,7 +162,12 @@ def _handle_existing_output(
             "params": job.params,
         }
 
-    raise ValueError(f"Unknown existing_file_policy={policy!r}")
+    raise ValueError(
+    f"Unknown existing_file_policy={policy!r}. "
+    "Expected one of: skip, redownload, fail, warn."
+)
+
+
 def _as_list(value: Any) -> list[Any]:
     """
     Normalize scalar/list config values to a list.
@@ -495,14 +502,27 @@ def _download_single_job(
 
         auth_error = detect_auth_error_in_payload(payload)
         if auth_error:
-            raise PermissionError(f"API returned authentication/authorization payload: {auth_error}")
+            raise PermissionError(
+                f"API returned authentication/authorization payload: {auth_error}"
+            )
 
         urls_used = [redact_url(url)]
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = output_path.with_suffix(output_path.suffix + ".tmp")
+    if rows_downloaded == 0 or not payload:
+        return {
+            "job": job.name,
+            "mode": "single",
+            "status": "no_data",
+            "output_path": None,
+            "url": urls_used[0] if len(urls_used) == 1 else None,
+            "url_count": len(urls_used),
+            "rows_downloaded": 0,
+            "params": params,
+            "validation_reason": "api_returned_no_rows",
+        }
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = output_path.with_suffix(output_path.suffix + ".tmp")
 
     try:
         tmp_path.write_bytes(payload)
@@ -518,18 +538,17 @@ def _download_single_job(
         tmp_path.unlink(missing_ok=True)
 
     return {
-    "job": job.name,
-    "mode": "single",
-    "status": "downloaded",
-    "output_path": str(output_path),
-    "file_size_bytes": output_path.stat().st_size,
-    "validation_reason": "valid",
-    "url": urls_used[0] if len(urls_used) == 1 else None,
-    "url_count": len(urls_used),
-    "rows_downloaded": rows_downloaded,
-    "params": params,
-}
-
+        "job": job.name,
+        "mode": "single",
+        "status": "downloaded",
+        "output_path": str(output_path),
+        "file_size_bytes": output_path.stat().st_size,
+        "validation_reason": "valid",
+        "url": urls_used[0] if len(urls_used) == 1 else None,
+        "url_count": len(urls_used),
+        "rows_downloaded": rows_downloaded,
+        "params": params,
+    }
 
 def run_single_downloads(cfg: ComtradeConfig) -> list[dict[str, Any]]:
     """
