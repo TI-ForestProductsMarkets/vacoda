@@ -12,20 +12,16 @@ from vacoda.reference.cmdCode_dict import HS_VALID_YEARS as DEFAULT_HS_VALID_YEA
 
 # Optional local override.
 # If you define LOCAL_HS_VALID_YEARS below, it will be used instead of the imported default.
-#
+
 # LOCAL_HS_VALID_YEARS: dict[str, tuple[int, int]] = {
-#     "441012": (2024, 2025),
+#     "441012": (2023, 2025),
 #     "441011": (2024, 2025),
 # }
 
-LOCAL_HS_VALID_YEARS: dict[str, tuple[int, int]] | None = None
-
-
-HS_VALID_YEARS: dict[str, tuple[int, int]] = (
-    LOCAL_HS_VALID_YEARS
-    if LOCAL_HS_VALID_YEARS is not None
-    else DEFAULT_HS_VALID_YEARS
-)
+try:
+    HS_VALID_YEARS = LOCAL_HS_VALID_YEARS
+except NameError:
+    HS_VALID_YEARS = DEFAULT_HS_VALID_YEARS
 
 # Single wood-sector code.
 WOOD_PANEL = [key for key in HS_VALID_YEARS]  
