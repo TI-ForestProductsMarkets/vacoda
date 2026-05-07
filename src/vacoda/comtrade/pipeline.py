@@ -180,19 +180,44 @@ def _expand_year_jobs(job: JobConfig) -> list[JobConfig]:
     Supports either:
     - explicit all_years_start/all_years_end
     - use_reference_years=True based on cmdCode
+
+    If no year range is available, return the original job unchanged.
+    If year range is invalid, log one clean error and skip the job.
     """
     year_range = _get_year_range_for_job(job)
 
     if year_range is None:
         return [job]
 
+    if not isinstance(year_range, (list, tuple)) or len(year_range) != 2:
+        logger.error(
+            "Invalid year_range for job %r: expected [start_year, end_year], "
+            "got %r. Skipping this job.",
+            job.name,
+            year_range,
+        )
+        return []
+
     start, end = year_range
 
-    if end < start:
-        raise ValueError(
-            f"Invalid year range for job {job.name!r}: "
-            f"end={end} is smaller than start={start}"
+    if not isinstance(start, int) or not isinstance(end, int):
+        logger.error(
+            "Invalid year_range for job %r: start and end must be integers, "
+            "got %r. Skipping this job.",
+            job.name,
+            year_range,
         )
+        return []
+
+    if start > end:
+        logger.error(
+            "Invalid year_range for job %r: start_year %s is greater than end_year %s. "
+            "Skipping this job.",
+            job.name,
+            start,
+            end,
+        )
+        return []
 
     expanded_jobs: list[JobConfig] = []
 
@@ -200,9 +225,6 @@ def _expand_year_jobs(job: JobConfig) -> list[JobConfig]:
         params = dict(job.params)
         params["period"] = str(year)
 
-        #cmd_code = params.get("cmdCode")
-        #suffix = f"{cmd_code}_{year}" if cmd_code else str(year)
-        
         expanded_jobs.append(
             JobConfig(
                 name=f"{job.name}_{year}",
@@ -218,7 +240,6 @@ def _expand_year_jobs(job: JobConfig) -> list[JobConfig]:
         )
 
     return expanded_jobs
-
 
 def _expand_jobs(jobs: list[JobConfig]) -> list[JobConfig]:
     """
