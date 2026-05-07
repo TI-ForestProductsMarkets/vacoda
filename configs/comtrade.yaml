@@ -72,7 +72,7 @@ single:
       fallback_years_end: 2025
 
   output:
-    directory: "/data/comtrade/data/raw/api/single"
+    directory: "/data/comtrade/data/raw/api/single/"
     quarantine_directory: "/data/comtrade/data/raw/api/single/_quarantine_zero_byte"
     manifest_file: "download_manifest_single.json"
 
