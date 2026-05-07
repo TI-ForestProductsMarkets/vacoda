@@ -43,7 +43,8 @@ bulk:
       output_file: "Comtrade_bulk_HS_{period}_all_reporters.zip"
 
   output:
-    directory: "data/raw/api/bulk"
+    directory: "/data/comtrade/data/raw/api/bulk"
+    quarantine_directory: "/data/comtrade/data/raw/api/bulk/_quarantine_zero_byte"
     manifest_file: "download_manifest_bulk.json"
 
 
@@ -67,12 +68,14 @@ single:
 
       output_file: "comtrade_{cmdCode}_{period}.csv"
       use_reference_years: true
-      fallback_years_start: 1990
+      fallback_years_start: 1989
       fallback_years_end: 2025
 
   output:
-    directory: "data/raw/api/single"
+    directory: "/data/comtrade/data/raw/api/single"
+    quarantine_directory: "/data/comtrade/data/raw/api/single/_quarantine_zero_byte"
     manifest_file: "download_manifest_single.json"
+
 
 
 # -------------------------------------------
@@ -104,7 +107,10 @@ retry:
 runtime:
   timeout_seconds: 300
   overwrite_existing: false
-  max_workers: 4
+  # What to do when an existing output file fails validation.
+  # Valid existing files are always skipped unless overwrite_existing=true.
+  existing_file_policy: "redownload" # Options: "skip", "redownload", "fail", 'warn'
+  max_workers: 8
 
 
 # -------------------------------------------

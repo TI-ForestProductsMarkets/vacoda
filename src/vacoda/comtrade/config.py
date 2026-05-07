@@ -28,7 +28,7 @@ class EndpointConfig:
 class OutputConfig:
     directory: str
     manifest_file: str
-
+    quarantine_directory: str | None = None
 
 @dataclass
 class JobConfig:
@@ -122,40 +122,59 @@ def _load_jobs(section_name: str, section_cfg: dict[str, Any]) -> list[JobConfig
         local_filter = raw_job.get("local_filter")
         if local_filter is not None and not isinstance(local_filter, dict):
             raise ValueError(f"{section_name}.jobs[{idx}].local_filter must be a mapping")
-        
+
         years_cfg = raw_job.get("years", {})
         if years_cfg is None:
             years_cfg = {}
         if not isinstance(years_cfg, dict):
             raise ValueError(f"{section_name}.jobs[{idx}].years must be a mapping")
 
-        jobs.append(
-        JobConfig(
-            name=name,
-            params=_resolve_params(params),
-            output_file=output_file,
-            local_filter=_resolve_params(local_filter) if isinstance(local_filter, dict) else None,
-             # Explicit year expansion
-            all_years_start=raw_job.get(
-                "all_years_start",
-                years_cfg.get("start"),
-                ),
-            all_years_end=raw_job.get(
-                "all_years_end",
-                years_cfg.get("end"),
-            ),
-            # Keep this for HS-code reference-year expansion in single mode
-            use_reference_years=bool(
-                raw_job.get(
-                    "use_reference_years",
-                    years_cfg.get("enabled", False),
-                )
-            ),
+        years_enabled = bool(years_cfg.get("enabled", False))
+        use_reference_years = bool(raw_job.get("use_reference_years", False))
 
-            fallback_years_start=int(raw_job.get("fallback_years_start", 1990)),
-            fallback_years_end=int(raw_job.get("fallback_years_end", 2025)),
-    )
-)
+        if years_enabled and use_reference_years:
+            raise ValueError(
+                f"{section_name}.jobs[{idx}] cannot use both "
+                "years.enabled=true and use_reference_years=true. "
+                "Use explicit years OR HS-reference-driven years, not both."
+            )
+
+        all_years_start = None
+        all_years_end = None
+
+        if years_enabled:
+            if "start" not in years_cfg or "end" not in years_cfg:
+                raise ValueError(
+                    f"{section_name}.jobs[{idx}].years.enabled=true requires "
+                    "years.start and years.end"
+                )
+
+            all_years_start = int(years_cfg["start"])
+            all_years_end = int(years_cfg["end"])
+
+            if all_years_start > all_years_end:
+                raise ValueError(
+                    f"{section_name}.jobs[{idx}].years.start "
+                    f"({all_years_start}) is greater than years.end ({all_years_end})"
+                )
+
+        jobs.append(
+            JobConfig(
+                name=name,
+                params=_resolve_params(params),
+                output_file=output_file,
+                local_filter=(
+                    _resolve_params(local_filter)
+                    if isinstance(local_filter, dict)
+                    else None
+                ),
+                all_years_start=all_years_start,
+                all_years_end=all_years_end,
+                use_reference_years=use_reference_years,
+                fallback_years_start=int(raw_job.get("fallback_years_start", 1990)),
+                fallback_years_end=int(raw_job.get("fallback_years_end", 2025)),
+            )
+        )
 
     return jobs
 
@@ -168,6 +187,11 @@ def _load_output(section_cfg: dict[str, Any], default_dir: str, default_manifest
     return OutputConfig(
         directory=str(output_cfg.get("directory", default_dir)),
         manifest_file=str(output_cfg.get("manifest_file", default_manifest)),
+        quarantine_directory=(
+            str(output_cfg.get("quarantine_directory"))
+            if output_cfg.get("quarantine_directory")
+            else None
+        ),
     )
 
 
@@ -244,6 +268,7 @@ def load_comtrade_config(path: Path) -> ComtradeConfig:
             timeout_seconds=int(runtime_cfg.get("timeout_seconds", 120)),
             overwrite_existing=bool(runtime_cfg.get("overwrite_existing", False)),
             max_workers=int(runtime_cfg.get("max_workers", 4)),
+            existing_file_policy=str(runtime_cfg.get("existing_file_policy", "redownload")).strip().lower(),
 
         ),
         auth=AuthConfig(
