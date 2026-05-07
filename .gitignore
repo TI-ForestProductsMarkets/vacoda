@@ -5,6 +5,7 @@ data/
 ToBeDoneList.md
 README.md
 git_cheatsheet.md
+src/vacoda/reference/vacoda.code-workspace
 
 # Environment files
 .env
