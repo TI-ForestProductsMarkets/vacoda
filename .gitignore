@@ -4,6 +4,7 @@ data/
 # To Do list
 ToBeDoneList.md
 README.md
+git_cheatsheet.md
 
 # Environment files
 .env
