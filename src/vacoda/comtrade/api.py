@@ -40,6 +40,8 @@ class DownloadRuntimeConfig:
     timeout_seconds: int
     overwrite_existing: bool
     max_workers: int
+    existing_file_policy: str  
+
 
 @dataclass
 class AuthConfig:

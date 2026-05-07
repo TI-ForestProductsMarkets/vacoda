@@ -42,8 +42,16 @@ from vacoda.comtrade.config import ComtradeConfig, JobConfig, ModeConfig, load_c
 from vacoda.io.paths import get_project_root, resolve_path
 from vacoda.utils.logger import get_logger, rel_path
 from vacoda.reference.hs_sets import get_hs_valid_year_range
-from vacoda.comtrade.manifest import audit_manifest_file, write_manifest
+from vacoda.comtrade.manifest import (
+    audit_manifest_file,
+    find_invalid_manifest_rows,
+    load_manifest,
+    quarantine_invalid_outputs,
+    write_manifest,
+    validate_output_file
+)
 
+## Set up a module-level logger
 logger = get_logger("COMTRADE.PIPELINE")
 
 
@@ -58,6 +66,11 @@ def _mode_output_dir(mode_cfg: ModeConfig) -> Path:
 def _mode_manifest_path(mode_cfg: ModeConfig) -> Path:
     return _mode_output_dir(mode_cfg) / mode_cfg.output.manifest_file
 
+def _mode_quarantine_dir(mode_cfg: ModeConfig) -> Path:
+    if mode_cfg.output.quarantine_directory:
+        return resolve_path(mode_cfg.output.quarantine_directory)
+
+    return _mode_output_dir(mode_cfg) / "_quarantine_invalid"
 
 def _format_output_file(template: str, params: dict[str, Any]) -> str:
     """
@@ -76,7 +89,78 @@ def _format_output_file(template: str, params: dict[str, Any]) -> str:
             f"Template was: {template!r}"
         ) from exc
 
+def _handle_existing_output(
+    *,
+    output_path: Path,
+    cfg: ComtradeConfig,
+    mode: str,
+    job: JobConfig,
+) -> dict[str, Any] | None:
+    if not output_path.exists():
+        return None
 
+    if cfg.runtime.overwrite_existing:
+        logger.info("[%s] Existing file will be overwritten: %s", mode, rel_path(output_path))
+        return None
+
+    valid, reason, size = validate_output_file(output_path)
+
+    if valid:
+        logger.info(
+            "[%s] Skipping valid existing file: %s",
+            mode,
+            rel_path(output_path),
+        )
+        return {
+            "job": job.name,
+            "mode": mode,
+            "status": "skipped_existing",
+            "output_path": str(output_path),
+            "file_size_bytes": size,
+            "validation_reason": reason,
+            "params": job.params,
+        }
+
+    policy = cfg.runtime.existing_file_policy
+
+    logger.warning(
+        "[%s] Existing output is invalid: %s (%s, %d bytes). Policy=%s",
+        mode,
+        rel_path(output_path),
+        reason,
+        size,
+        policy,
+    )
+
+    if policy == "redownload":
+        return None
+
+    if policy == "fail":
+        raise RuntimeError(f"Invalid existing file: {output_path} ({reason})")
+
+    if policy == "warn":
+        return {
+            "job": job.name,
+            "mode": mode,
+            "status": "invalid_existing",
+            "output_path": str(output_path),
+            "file_size_bytes": size,
+            "validation_reason": reason,
+            "params": job.params,
+        }
+
+    if policy == "skip":
+        return {
+            "job": job.name,
+            "mode": mode,
+            "status": "skipped_invalid_existing",
+            "output_path": str(output_path),
+            "file_size_bytes": size,
+            "validation_reason": reason,
+            "params": job.params,
+        }
+
+    raise ValueError(f"Unknown existing_file_policy={policy!r}")
 def _as_list(value: Any) -> list[Any]:
     """
     Normalize scalar/list config values to a list.
@@ -302,10 +386,13 @@ def run_bulk_downloads(cfg: ComtradeConfig) -> list[dict[str, Any]]:
             output_path = output_dir / output_file
 
             if output_path.exists() and not cfg.runtime.overwrite_existing:
-                logger.info(
-                    "[bulk] Skipping existing file because overwrite_existing=false: %s",
-                    rel_path(output_path),
-                )
+                if output_path.stat().st_size > 0:
+                    status = "skipped_existing"
+                    logger.info("[bulk] Skipping existing file because overwrite_existing=false: %s", rel_path(output_path),)
+                else:
+                    logger.warning("Existing output is zero-byte; re-downloading: %s", output_path)
+
+
                 manifest_rows.append(
                     {
                         "job": job.name,
@@ -354,8 +441,8 @@ def run_bulk_downloads(cfg: ComtradeConfig) -> list[dict[str, Any]]:
                 }
             )
 
-    if idx % 5 == 0 or idx == len(jobs):
-        write_manifest(manifest_rows, manifest_path)
+   
+    write_manifest(manifest_rows, manifest_path)
     return manifest_rows
 
 
@@ -413,18 +500,35 @@ def _download_single_job(
         urls_used = [redact_url(url)]
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_bytes(payload)
+    tmp_path = output_path.with_suffix(output_path.suffix + ".tmp")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        tmp_path.write_bytes(payload)
+
+        valid, reason, size = validate_output_file(tmp_path)
+        if not valid:
+            tmp_path.unlink(missing_ok=True)
+            raise RuntimeError(f"Downloaded file failed validation: {reason}")
+
+        tmp_path.replace(output_path)
+
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
     return {
-        "job": job.name,
-        "mode": "single",
-        "status": "downloaded",
-        "output_path": str(output_path),
-        "url": urls_used[0] if len(urls_used) == 1 else None,
-        "url_count": len(urls_used),
-        "rows_downloaded": rows_downloaded,
-        "params": params,
-    }
+    "job": job.name,
+    "mode": "single",
+    "status": "downloaded",
+    "output_path": str(output_path),
+    "file_size_bytes": output_path.stat().st_size,
+    "validation_reason": "valid",
+    "url": urls_used[0] if len(urls_used) == 1 else None,
+    "url_count": len(urls_used),
+    "rows_downloaded": rows_downloaded,
+    "params": params,
+}
 
 
 def run_single_downloads(cfg: ComtradeConfig) -> list[dict[str, Any]]:
@@ -489,11 +593,10 @@ def run_single_downloads(cfg: ComtradeConfig) -> list[dict[str, Any]]:
 
             # Write incremental manifest after every completed job.
             # Useful if the run is interrupted.
-            if idx % 5 == 0 or idx == len(jobs):
-                write_manifest(manifest_rows, manifest_path)
+            write_manifest(manifest_rows, manifest_path)
 
     downloaded = [row for row in manifest_rows if row.get("status") == "downloaded"]
-    skipped = [row for row in manifest_rows if row.get("status") == "skipped"]
+    skipped = [row for row in manifest_rows if row.get("status") in {"skipped_existing", "skipped_invalid_existing"}]
     failed = [row for row in manifest_rows if row.get("status") == "error"]
 
     logger.info(
@@ -505,8 +608,7 @@ def run_single_downloads(cfg: ComtradeConfig) -> list[dict[str, Any]]:
     )
 
     # Write incremental manifest every few jobs.
-    if idx % 5 == 0 or idx == len(jobs):
-        write_manifest(manifest_rows, manifest_path)
+    write_manifest(manifest_rows, manifest_path)
     return manifest_rows
 
 # ---------------------------------------------------------------------
@@ -675,25 +777,77 @@ def run_comtrade_download_pipeline(
     single_rows = run_single_downloads(cfg)
     all_manifest_rows.extend(single_rows)
 
+
     ################# Audit Manifest
     _log_step(5, total_step, pipeline_steps[4])
+
+    invalid_rows_all: list[dict[str, Any]] = []
+
     if cfg.bulk.enabled:
         bulk_manifest_path = _mode_manifest_path(cfg.bulk)
-        audit_manifest_file(bulk_manifest_path, fail_on_error=True)
+        audit_manifest_file(bulk_manifest_path, fail_on_error=False)
+
+        bulk_rows_for_audit = load_manifest(bulk_manifest_path)
+        invalid_bulk_rows = find_invalid_manifest_rows(bulk_rows_for_audit)
+        invalid_rows_all.extend(invalid_bulk_rows)
+
+        if invalid_bulk_rows:
+            logger.warning("Found %d invalid bulk manifest rows.", len(invalid_bulk_rows))
+
+            if cfg.runtime.existing_file_policy == "redownload":
+                moved = quarantine_invalid_outputs(
+                invalid_bulk_rows,
+                _mode_quarantine_dir(cfg.bulk),
+            )
+                logger.warning(
+                    "Moved %d invalid bulk output files to quarantine: %s",
+                    moved,
+                    rel_path(_mode_quarantine_dir(cfg.bulk)),
+                )
 
     if cfg.single.enabled:
         single_manifest_path = _mode_manifest_path(cfg.single)
-        audit_manifest_file(single_manifest_path, fail_on_error=True)
+        audit_manifest_file(single_manifest_path, fail_on_error=False)
 
+        single_rows_for_audit = load_manifest(single_manifest_path)
+        invalid_single_rows = find_invalid_manifest_rows(single_rows_for_audit)
+        invalid_rows_all.extend(invalid_single_rows)
+
+        if invalid_single_rows:
+            logger.warning("Found %d invalid single manifest rows.", len(invalid_single_rows))
+
+            if cfg.runtime.existing_file_policy == "redownload":
+                moved = quarantine_invalid_outputs(
+                    invalid_single_rows,
+                    _mode_quarantine_dir(cfg.single),
+                )
+                logger.warning(
+                    "Moved %d invalid single output files to quarantine: %s",
+                    moved,
+                    rel_path(_mode_quarantine_dir(cfg.single)),
+                )
+
+    if invalid_rows_all:
+        if cfg.runtime.existing_file_policy == "fail":
+            raise RuntimeError(f"Manifest audit failed: {len(invalid_rows_all)} invalid rows found.")
+
+        if cfg.runtime.existing_file_policy == "warn":
+            logger.warning("Continuing despite invalid manifest rows.")
+
+        if cfg.runtime.existing_file_policy == "redownload":
+            logger.warning("Invalid outputs were quarantined. Rerun the pipeline to re-download them.")
 
     ################ Finish and summarize
     _log_step(6, total_step, pipeline_steps[5])
     elapsed = time.perf_counter() - start_time
     mins, secs = divmod(elapsed, 60)
-
-    failed = [row for row in all_manifest_rows if row.get("status") == "error"]
+    
+    ### Summarize manifest rows
+    failed = [row for row in all_manifest_rows if row.get("status") in {"error", "failed"}]
     downloaded = [row for row in all_manifest_rows if row.get("status") == "downloaded"]
-    skipped = [row for row in all_manifest_rows if row.get("status") == "skipped"]
+    skipped = [row for row in all_manifest_rows if row.get("status") in {"skipped", "skipped_existing"}]
+    no_data = [row for row in all_manifest_rows if row.get("status") == "no_data"]
+    invalid = [row for row in all_manifest_rows if row.get("status") in {"invalid_existing", "invalid_file"}]
 
     logger.info(
         "Comtrade download pipeline finished in %.2f seconds (%.0f min %.1f sec).",
@@ -702,12 +856,14 @@ def run_comtrade_download_pipeline(
         secs,
     )
     logger.info(
-        "Summary: downloaded=%d skipped=%d failed=%d total=%d",
+        "Summary: downloaded=%d skipped=%d no_data=%d invalid=%d failed=%d total=%d",
         len(downloaded),
         len(skipped),
+        len(no_data),
+        len(invalid),
         len(failed),
         len(all_manifest_rows),
-    )
+        )
 
     if failed:
         failed_summary = "; ".join(
@@ -743,30 +899,19 @@ def _run_single_job_safe(
     output_dir: Path,
     job: JobConfig,
 ) -> dict[str, Any]:
-    """
-    Wrapper around one single API job.
-
-    Returns a manifest row whether the job succeeds, is skipped, or fails.
-    This makes it safe to use inside ThreadPoolExecutor.
-    """
     try:
         output_file = _format_output_file(job.output_file, job.params)
         output_path = output_dir / output_file
 
-        if output_path.exists() and not cfg.runtime.overwrite_existing:
-            logger.info(
-                "[single] Skipping existing file because overwrite_existing=false: %s",
-                rel_path(output_path),
-            )
+        existing_row = _handle_existing_output(
+            output_path=output_path,
+            cfg=cfg,
+            mode="single",
+            job=job,
+        )
 
-            return {
-                "job": job.name,
-                "mode": "single",
-                "status": "skipped",
-                "output_path": str(output_path),
-                "url": None,
-                "params": job.params,
-            }
+        if existing_row is not None:
+            return existing_row
 
         row = _download_single_job(
             cfg=cfg,
