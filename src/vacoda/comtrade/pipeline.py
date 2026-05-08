@@ -37,6 +37,7 @@ from vacoda.comtrade.api import (
     redact_url,
     select_resolvable_endpoint,
     validate_auth_preflight,
+    RateLimitExceededError,
 )
 from vacoda.comtrade.config import ComtradeConfig, JobConfig, ModeConfig, load_comtrade_config
 from vacoda.io.paths import get_project_root, resolve_path
@@ -50,7 +51,7 @@ from vacoda.comtrade.manifest import (
     write_manifest,
     validate_output_file
 )
-
+from vacoda.utils.progress import progress_bar
 ## Set up a module-level logger
 logger = get_logger("COMTRADE.PIPELINE")
 
@@ -89,13 +90,18 @@ def _format_output_file(template: str, params: dict[str, Any]) -> str:
             f"Template was: {template!r}"
         ) from exc
 
+
+def _short_error(error: str | None, max_chars: int = 120) -> str:
+    if not error:
+        return "<no error message>"
+    return error if len(error) <= max_chars else error[:max_chars] + "..."
+
 def _handle_existing_output(
     *,
     output_path: Path,
     cfg: ComtradeConfig,
     mode: str,
-    job: JobConfig,
-) -> dict[str, Any] | None:
+    job: JobConfig,) -> dict[str, Any] | None:
     if not output_path.exists():
         return None
 
@@ -598,7 +604,8 @@ def run_single_downloads(cfg: ComtradeConfig) -> list[dict[str, Any]]:
             for job in jobs
         }
 
-        for idx, future in enumerate(as_completed(future_to_job), start=1):
+        
+        for idx, future in enumerate(progress_bar(as_completed(future_to_job), total=len(future_to_job), desc="[single] Comtrade jobs", unit="job", enabled=cfg.runtime.show_progress), start=1):
             job = future_to_job[future]
             logger.info(
                 "[single] Completed future %d/%d: %s",
@@ -615,7 +622,7 @@ def run_single_downloads(cfg: ComtradeConfig) -> list[dict[str, Any]]:
             write_manifest(manifest_rows, manifest_path)
 
     downloaded = [row for row in manifest_rows if row.get("status") == "downloaded"]
-    skipped = [row for row in manifest_rows if row.get("status") in {"skipped_existing", "skipped_invalid_existing"}]
+    skipped = [row for row in manifest_rows if row.get("status") in {"skipped", "skipped_existing", "skipped_invalid_existing"}]
     failed = [row for row in manifest_rows if row.get("status") == "error"]
 
     logger.info(
@@ -885,11 +892,18 @@ def run_comtrade_download_pipeline(
         )
 
     if failed:
-        failed_summary = "; ".join(
-            f"{row.get('job', 'unknown')}: {row.get('error', 'unknown error')}"
-            for row in failed
-        )
-        logger.warning("Some Comtrade jobs failed: %s", failed_summary)
+        logger.warning("Some Comtrade jobs failed: %d job(s)", len(failed))
+
+        for row in failed[:20]:
+            logger.warning(
+                "  - %s | type=%s | %s",
+                row.get("job"),
+                row.get("error_type", "unknown"),
+                _short_error(row.get("error")),
+                )
+
+        if len(failed) > 20:
+            logger.warning("  ... and %d more failed job(s)", len(failed) - 20)
 
     return all_manifest_rows
 
@@ -918,6 +932,8 @@ def _run_single_job_safe(
     output_dir: Path,
     job: JobConfig,
 ) -> dict[str, Any]:
+    output_path: Path | None = None
+
     try:
         output_file = _format_output_file(job.output_file, job.params)
         output_path = output_dir / output_file
@@ -940,20 +956,36 @@ def _run_single_job_safe(
         )
 
         logger.info(
-            "[single] Job %s completed. Rows downloaded: %s",
+            "[single] Job %s finished with status=%s. Rows downloaded: %s",
             job.name,
+            row.get("status", "unknown"),
             row.get("rows_downloaded", "unknown"),
         )
 
         return row
 
-    except Exception as exc:
-        logger.exception("[single] Job failed: %s", job.name)
+    except RateLimitExceededError as exc:
+        logger.warning("[single] Job rate-limited: %s | %s", job.name, exc)
 
         return {
             "job": job.name,
             "mode": "single",
             "status": "error",
+            "output_path": str(output_path) if output_path else None,
+            "error_type": "rate_limit",
+            "error": str(exc),
+            "params": job.params,
+        }
+
+    except Exception as exc:
+        logger.error("[single] Job failed: %s | %s", job.name, exc)
+
+        return {
+            "job": job.name,
+            "mode": "single",
+            "status": "error",
+            "output_path": str(output_path) if output_path else None,
+            "error_type": type(exc).__name__,
             "error": str(exc),
             "params": job.params,
         }

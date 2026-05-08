@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from io import BytesIO
 import json
 import os
+import re
 from pathlib import Path
 import socket
 from time import sleep
@@ -33,7 +34,9 @@ UNSUPPORTED_BULK_PARAM_KEYS = {"cmdCode", "cmsCode", "commodityCode"}
 class RetryConfig:
     max_attempts: int
     backoff_seconds: float
-
+    rate_limit_max_attempts: int = 10
+    rate_limit_buffer_seconds: float = 0.5
+    rate_limit_fallback_wait_seconds: float = 2.0
 
 @dataclass
 class DownloadRuntimeConfig:
@@ -41,6 +44,7 @@ class DownloadRuntimeConfig:
     overwrite_existing: bool
     max_workers: int
     existing_file_policy: str  
+    show_progress: bool = True
 
 
 @dataclass
@@ -60,6 +64,8 @@ class PaginationConfig:
     offset_param: str
     start_offset: int
 
+class RateLimitExceededError(RuntimeError):
+    """Raised when HTTP 429 retry budget is exhausted."""
 
 def redact_url(url: str) -> str:
     split = urlsplit(url)
@@ -72,6 +78,20 @@ def redact_url(url: str) -> str:
 
     return urlunsplit((split.scheme, split.netloc, split.path, urlencode(redacted_pairs, doseq=True), split.fragment))
 
+
+def parse_retry_after_seconds(
+    text: str,
+    fallback: float = 2.0,
+) -> float:
+    """
+    Parse retry wait time from HTTP 429 response text.
+    """
+    match = re.search(r"Try again in (\d+) seconds", text or "")
+
+    if match:
+        return float(match.group(1))
+
+    return fallback
 
 def select_resolvable_endpoint(primary: str, fallbacks: list[str]) -> str:
     candidates = [primary, *fallbacks]
@@ -339,41 +359,122 @@ def detect_auth_error_in_payload(payload: bytes) -> str | None:
     return first_line[:800]
 
 
-def download_with_retry(url: str, retry: RetryConfig, runtime: DownloadRuntimeConfig, headers: dict[str, str] | None = None) -> bytes:
+def download_with_retry(
+    url: str,
+    retry: RetryConfig,
+    runtime: DownloadRuntimeConfig,
+    headers: dict[str, str] | None = None,
+) -> bytes:
     safe_url = redact_url(url)
+
     attempt = 1
+    rate_limit_attempt = 1
+
     while True:
-        logger.debug("Downloading URL attempt %d/%d: %s", attempt, retry.max_attempts, safe_url)
+        logger.debug(
+            "Downloading URL attempt %d/%d; rate-limit attempt %d/%d: %s",
+            attempt,
+            retry.max_attempts,
+            rate_limit_attempt,
+            retry.rate_limit_max_attempts,
+            safe_url,
+        )
+
         try:
             return download_once(url, runtime.timeout_seconds, headers=headers)
+
         except HTTPError as exc:
             if exc.code in (401, 403):
                 try:
                     body_preview = exc.read().decode("utf-8-sig", errors="replace")[:600]
                 except Exception:
                     body_preview = "<response body unavailable>"
+
                 logger.exception("Authentication HTTP error %s for %s", exc.code, safe_url)
-                raise PermissionError(f"API auth failed (HTTP {exc.code}). Response: {body_preview}") from exc
-            if attempt >= retry.max_attempts:
-                body_preview = "<response body unavailable>"
+                raise PermissionError(
+                    f"API auth failed (HTTP {exc.code}). Response: {body_preview}"
+                ) from exc
+
+            if exc.code == 429:
                 try:
                     body_preview = exc.read().decode("utf-8-sig", errors="replace")[:600]
                 except Exception:
-                    pass
+                    body_preview =  "<response body unavailable>"
+                
+                if retry.rate_limit_max_attempts <= 0:
+                    raise RateLimitExceededError(
+                                    f"Rate limit exceeded and rate-limit retries are disabled: {safe_url}. "
+                                    f"HTTP 429. Response: {body_preview}"
+                                    ) from None
+
+                if rate_limit_attempt >= retry.rate_limit_max_attempts:
+                    logger.exception("Rate-limit retry exhausted for %s", safe_url)
+                    raise RateLimitExceededError(
+                       f"Rate limit retry exhausted after {rate_limit_attempt} attempt(s): "
+                       f"{safe_url}. HTTP 429. Response: {body_preview}"
+                    ) from None
+
+                wait_seconds = parse_retry_after_seconds(
+                    body_preview,
+                    fallback=retry.rate_limit_fallback_wait_seconds,
+                )
+                wait_seconds += retry.rate_limit_buffer_seconds
+
+                logger.warning(
+                    "HTTP 429 rate limit for %s. "
+                    "Rate-limit attempt %d/%d. Retrying in %.1fs",
+                    safe_url,
+                    rate_limit_attempt,
+                    retry.rate_limit_max_attempts,
+                    wait_seconds,
+                )
+
+                sleep(wait_seconds)
+                rate_limit_attempt += 1
+                continue
+
+            if attempt >= retry.max_attempts:
+                try:
+                    body_preview = exc.read().decode("utf-8-sig", errors="replace")[:600]
+                except Exception:
+                    body_preview = "<response body unavailable>"
+
                 logger.exception("HTTP retry exhausted for %s", safe_url)
                 raise RuntimeError(
                     f"Download failed after {attempt} attempt(s): {safe_url}. "
                     f"HTTP {exc.code}. Response: {body_preview}"
                 ) from exc
-            logger.warning("Attempt %d/%d failed HTTP %s for %s. Retrying in %.1fs", attempt, retry.max_attempts, exc.code, safe_url, retry.backoff_seconds)
+
+            logger.warning(
+                "Attempt %d/%d failed HTTP %s for %s. Retrying in %.1fs",
+                attempt,
+                retry.max_attempts,
+                exc.code,
+                safe_url,
+                retry.backoff_seconds,
+            )
+
+            sleep(retry.backoff_seconds)
+            attempt += 1
+
         except (URLError, TimeoutError) as exc:
             if attempt >= retry.max_attempts:
                 reason = getattr(exc, "reason", str(exc))
                 logger.exception("Network retry exhausted for %s", safe_url)
-                raise RuntimeError(f"Download failed after {attempt} attempt(s): {safe_url}. Reason: {reason}") from exc
-            logger.warning("Attempt %d/%d failed for %s. Retrying in %.1fs", attempt, retry.max_attempts, safe_url, retry.backoff_seconds)
-        sleep(retry.backoff_seconds)
-        attempt += 1
+                raise RuntimeError(
+                    f"Download failed after {attempt} attempt(s): {safe_url}. Reason: {reason}"
+                ) from exc
+
+            logger.warning(
+                "Attempt %d/%d failed for %s. Retrying in %.1fs",
+                attempt,
+                retry.max_attempts,
+                safe_url,
+                retry.backoff_seconds,
+            )
+
+            sleep(retry.backoff_seconds)
+            attempt += 1
 
 
 def is_csv_format(params: dict[str, Any]) -> bool:

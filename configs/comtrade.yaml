@@ -72,8 +72,8 @@ single:
       fallback_years_end: 2025
 
   output:
-    directory: "/data/comtrade/data/raw/api/single/"
-    quarantine_directory: "/data/comtrade/data/raw/api/single/_quarantine_zero_byte"
+    directory: "/data/comtrade/data/raw/api/test/"
+    quarantine_directory: "/data/comtrade/data/raw/api/test/_quarantine_zero_byte"
     manifest_file: "download_manifest_single.json"
 
 
@@ -86,15 +86,9 @@ log_level: DEBUG # Options: DEBUG, INFO, WARNING, ERROR, CRITICAL
 log_file: output/reports/LOG_API_PIPELINE.log
 
 
-# -------------------------------------------
-# DEFAULT DATA API PARAMETERS
-# -------------------------------------------
 
-default_params:
-  format: "csv"
-  maxRecords: 250000
-  includeDesc: true
-
+######################### ADVANCED SETTINGS BELOW ##########################################
+######################### Only modify if you know what you're doing! #########################
 
 # -------------------------------------------
 # RETRY AND RUNTIME
@@ -103,8 +97,13 @@ default_params:
 retry:
   max_attempts: 3
   backoff_seconds: 2.0
+  rate_limit:
+    max_attempts: 0
+    buffer_seconds: 0
+    fallback_wait_seconds: 0
 
 runtime:
+  show_progress: true
   timeout_seconds: 300
   overwrite_existing: false
   # What to do when an existing output file fails validation.
@@ -112,6 +111,15 @@ runtime:
   existing_file_policy: "redownload" # Options: "skip", "redownload", "fail", 'warn'
   max_workers: 8
 
+
+# -------------------------------------------
+# DEFAULT DATA API PARAMETERS
+# -------------------------------------------
+
+default_params:
+  format: "csv"
+  maxRecords: 250000
+  includeDesc: true
 
 # -------------------------------------------
 # ENDPOINTS

@@ -124,3 +124,5 @@ pagination:
     assert job.use_reference_years is True
     assert job.fallback_years_start == 1989
     assert job.fallback_years_end == 2025
+
+

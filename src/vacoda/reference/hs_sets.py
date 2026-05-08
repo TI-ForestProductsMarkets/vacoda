@@ -13,10 +13,10 @@ from vacoda.reference.cmdCode_dict import HS_VALID_YEARS as DEFAULT_HS_VALID_YEA
 # Optional local override.
 # If you define LOCAL_HS_VALID_YEARS below, it will be used instead of the imported default.
 
-# LOCAL_HS_VALID_YEARS: dict[str, tuple[int, int]] = {
-#     "441012": (2023, 2025),
-#     "441011": (2024, 2025),
-# }
+LOCAL_HS_VALID_YEARS: dict[str, tuple[int, int]] = {
+    "440112": (2015, 2018),
+    "440220": (2008, 2015),
+}
 
 try:
     HS_VALID_YEARS = LOCAL_HS_VALID_YEARS
