@@ -263,13 +263,16 @@ def load_comtrade_config(path: Path) -> ComtradeConfig:
         retry=RetryConfig(
             max_attempts=int(retry_cfg.get("max_attempts", retry_cfg.get("retries", 3))),
             backoff_seconds=float(retry_cfg.get("backoff_seconds", 2.0)),
+            rate_limit_max_attempts=int(retry_cfg.get("rate_limit", {}).get("max_attempts", 10)),
+            rate_limit_buffer_seconds=float(retry_cfg.get("rate_limit", {}).get("buffer_seconds", 0.5)),
+            rate_limit_fallback_wait_seconds=float(retry_cfg.get("rate_limit", {}).get("fallback_wait_seconds", 2.0)),
         ),
         runtime=DownloadRuntimeConfig(
             timeout_seconds=int(runtime_cfg.get("timeout_seconds", 120)),
             overwrite_existing=bool(runtime_cfg.get("overwrite_existing", False)),
             max_workers=int(runtime_cfg.get("max_workers", 4)),
             existing_file_policy=str(runtime_cfg.get("existing_file_policy", "redownload")).strip().lower(),
-
+            show_progress=bool(runtime_cfg.get("show_progress", True)),
         ),
         auth=AuthConfig(
             enabled=bool(auth_cfg.get("enabled", False)),

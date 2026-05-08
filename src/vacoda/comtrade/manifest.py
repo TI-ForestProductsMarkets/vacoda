@@ -11,7 +11,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-
+import pandas as pd
 from vacoda.utils.logger import get_logger, rel_path
 
 logger = get_logger("COMTRADE.MANIFEST")
@@ -81,6 +81,24 @@ def _collect_output_paths(rows: list[dict[str, Any]]) -> list[Path]:
 
     return paths
 
+def log_error_jobs(rows: list[dict[str, Any]], limit: int = 20) -> None:
+    error_entries = [row for row in rows if row.get("status") in {"error", "failed"}]
+
+    if not error_entries:
+        return
+
+    logger.warning("  failed jobs:")
+    for row in error_entries[:limit]:
+        logger.warning(
+            "    - %s | output=%s | error=%s",
+            row.get("job"),
+            row.get("output_path"),
+            row.get("error"),
+        )
+
+    if len(error_entries) > limit:
+        logger.warning("    ... and %d more", len(error_entries) - limit)
+
 
 def _audit_output_files(rows: list[dict[str, Any]]) -> dict[str, Any]:
     existing = 0
@@ -147,11 +165,31 @@ def _audit_output_files(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "suffix_counts": dict(sorted(suffix_counter.items())),
     }
 
+def export_error_jobs(manifest_rows: list[dict], manifest_path: str | Path) -> Path | None:
+    """
+    Save all failed manifest rows to a separate CSV file.
+
+    Example output:
+        download_manifest_single_errors.csv
+    """
+    error_rows = [row for row in manifest_rows if row.get("status") in {"error", "failed"}]
+
+    if not error_rows:
+        return None
+
+    manifest_path = Path(manifest_path)
+    error_path = manifest_path.with_name(f"{manifest_path.stem}_errors.csv")
+
+    df_errors = pd.json_normalize(error_rows)
+    df_errors.to_csv(error_path, index=False)
+
+    return error_path
 
 def summarize_manifest(
     rows: list[dict[str, Any]],
-    manifest_path: Path,
-) -> ManifestSummary:
+    manifest_path: Path,) -> ManifestSummary:
+    """Summarize manifest rows, including file validation."""
+    
     file_audit = _audit_output_files(rows)
     status_counts = Counter(row.get("status", "unknown") for row in rows)
 
@@ -159,7 +197,7 @@ def summarize_manifest(
         manifest_path=manifest_path,
         total=len(rows),
         downloaded=sum(row.get("status") == "downloaded" for row in rows),
-        skipped=sum(row.get("status") in {"skipped", "skipped_existing"} for row in rows),
+        skipped=sum(row.get("status") in {"skipped", "skipped_existing", "skipped_invalid_existing"} for row in rows),
         error=sum(row.get("status") in {"error", "failed"} for row in rows),
         rows_downloaded_total=sum((row.get("rows_downloaded") or 0) for row in rows),
         status_counts=dict(sorted(status_counts.items())),
@@ -215,9 +253,16 @@ def log_manifest_summary(summary: ManifestSummary) -> None:
 
 def audit_manifest_file(
     manifest_path: Path,
-    fail_on_error: bool = False,
-) -> ManifestSummary:
-    summary = summarize_manifest_file(manifest_path)
+    fail_on_error: bool = False,) -> ManifestSummary:
+
+    rows = load_manifest(manifest_path)
+    log_error_jobs(rows)
+
+    error_path = export_error_jobs(rows, manifest_path)
+    if error_path:
+        logger.warning("Error jobs exported to: %s", rel_path(error_path))
+
+    summary = summarize_manifest(rows, manifest_path)
     log_manifest_summary(summary)
 
     if fail_on_error and not summary.ok:
