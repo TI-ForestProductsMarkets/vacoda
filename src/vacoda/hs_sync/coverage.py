@@ -15,9 +15,37 @@ from vacoda.hs_sync.coverage_engines import (
     build_year_hs_counts_duckdb,
     build_year_hs_counts_polars,
     build_year_hs_counts_pandas,
+    build_reporter_year_hs_coverage_duckdb,
 )
 
 
+def build_reporter_year_hs_coverage(
+    data_dir: str | Path,
+    *,
+    pattern: str = "*.csv",
+    engine: str = "duckdb",
+    threads: int = 16,
+    columns: dict[str, str] | None = None,
+) -> pd.DataFrame:
+    """
+    Build reporter × year × HS classification coverage.
+    """
+    engine = engine.strip().lower()
+
+    if engine == "duckdb":
+        return build_reporter_year_hs_coverage_duckdb(
+            data_dir,
+            pattern=pattern,
+            threads=threads,
+            columns=columns,
+        )
+
+    raise ValueError(
+        f"Unknown engine for reporter-year coverage: {engine!r}. "
+        "Currently supported: duckdb."
+    )
+
+    
 def build_hs_system_overall_summary(
     year_hs_counts: pd.DataFrame,
     *,

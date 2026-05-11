@@ -129,3 +129,61 @@ def get_logging_timestamp_bool(cfg: dict[str, Any] | None = None) -> bool:
     """Return whether log filename should be timestamped."""
     logging_cfg = get_logging_config(cfg)
     return bool(logging_cfg.get("timestamp", True))
+
+def get_coverage_reporter_year_config(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    coverage = get_coverage_config(cfg)
+    return coverage.get("reporter_year", {"enabled": False})
+
+
+def get_coverage_reporter_year_enabled(cfg: dict[str, Any] | None = None) -> bool:
+    reporter_cfg = get_coverage_reporter_year_config(cfg)
+    return bool(reporter_cfg.get("enabled", False))
+
+def get_coverage_products_config(cfg: dict | None = None) -> dict:
+    coverage = get_coverage_config(cfg)
+    return coverage.get("products", {})
+
+
+def get_coverage_product_config(
+    product_name: str,
+    cfg: dict | None = None,
+) -> dict:
+    products = get_coverage_products_config(cfg)
+    return products.get(product_name, {})
+
+
+def is_coverage_product_enabled(
+    product_name: str,
+    cfg: dict | None = None,
+    *,
+    default: bool = False,
+) -> bool:
+    product_cfg = get_coverage_product_config(product_name, cfg)
+    return bool(product_cfg.get("enabled", default))
+
+
+def get_coverage_product_filename(
+    product_name: str,
+    cfg: dict | None = None,
+    *,
+    default: str | None = None,
+) -> str:
+    product_cfg = get_coverage_product_config(product_name, cfg)
+    filename = product_cfg.get("filename", default or product_name)
+    return str(filename)
+
+
+def get_coverage_product_columns(
+    product_name: str,
+    cfg: dict | None = None,
+) -> dict:
+    product_cfg = get_coverage_product_config(product_name, cfg)
+    return product_cfg.get("columns", {})
+
+
+def get_coverage_product_thresholds(
+    product_name: str,
+    cfg: dict | None = None,
+) -> dict:
+    product_cfg = get_coverage_product_config(product_name, cfg)
+    return product_cfg.get("thresholds", {})
