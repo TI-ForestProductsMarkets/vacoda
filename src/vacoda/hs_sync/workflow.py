@@ -37,12 +37,23 @@ from vacoda.utils.timing import timed_step, timed_workflow
 logger = get_logger("HS_SYNC.WORKFLOW")
 
 
+WORKFLOW_STEPS = {
+    1: "Load HS-sync config and resolve paths",
+    2: "Build year × HS-system counts",
+    3: "Build pivots and mix summary",
+    4: "Write tables",
+    5: "Build and write text report",
+}
+
+TOTAL_STEPS = len(WORKFLOW_STEPS)
+
 def _resolve_data_stage_dir(block: dict) -> Path:
     stage = block["stage"]
     subdir = block.get("subdir", "")
 
     base = get_data_dir(stage)
     return base / subdir if subdir else base
+
 
 
 def run_hs_system_coverage_audit(
@@ -57,9 +68,11 @@ def run_hs_system_coverage_audit(
     """
     outputs: dict[str, Path] = {}
 
+    
     with timed_workflow(logger, "HS system coverage audit"):
+        step = 1
 
-        with timed_step(logger, 1, "Load HS-sync config and resolve paths"):
+        with timed_step(logger, step, WORKFLOW_STEPS[step], total_steps=TOTAL_STEPS,):
             cfg = load_hs_sync_config(config_path)
 
             input_cfg = get_coverage_input_config(cfg)
@@ -107,7 +120,14 @@ def run_hs_system_coverage_audit(
             logger.info(f"Input files found: {len(files):,}")
             logger.info(f"Engine: {engine}, threads={threads}")
 
-        with timed_step(logger, 2, "Build year × HS-system counts"):
+        ##########################################################################################
+        step = step + 1
+        with timed_step(logger, step, WORKFLOW_STEPS[step], total_steps=TOTAL_STEPS,):
+
+            if engine in ["DuckDB", "duckdb", "polars"]:
+                logger.info(f"Using {engine} engine for data processing.")
+                logger.info("DuckDB query may take a while; progress is shown by step timing, not per file.")
+
             year_hs_counts = build_year_hs_counts(
                 data_dir=data_dir,
                 pattern=pattern,
@@ -127,7 +147,10 @@ def run_hs_system_coverage_audit(
             logger.info(f"Counts shape: {year_hs_counts.shape}")
             logger.info(f"Overall summary shape: {overall_summary.shape}")
 
-        with timed_step(logger, 3, "Build pivots and mix summary"):
+        ###########################################################################################
+        step = step + 1
+
+        with timed_step(logger, step, WORKFLOW_STEPS[step], total_steps=TOTAL_STEPS,):
             count_pivot = make_year_hs_count_pivot(
                 year_hs_counts,
                 year_col=columns.get("year", "RefYear"),
@@ -146,7 +169,9 @@ def run_hs_system_coverage_audit(
             logger.info(f"Percentage pivot shape: {percentage_pivot.shape}")
             logger.info(f"Mix summary shape: {summary.shape}")
 
-        with timed_step(logger, 4, "Write tables"):
+        ###########################################################################################
+        step = step + 1
+        with timed_step(logger, step, WORKFLOW_STEPS[step], total_steps=TOTAL_STEPS,):
             overwrite = bool(write_cfg.get("overwrite", True))
             write_csv_enabled = bool(write_cfg.get("csv", True))
             write_parquet_enabled = bool(write_cfg.get("parquet", True))
@@ -175,7 +200,9 @@ def run_hs_system_coverage_audit(
                         overwrite=overwrite,
                     )
 
-        with timed_step(logger, 5, "Build and write text report"):
+        ###########################################################################################
+        step = step + 1
+        with timed_step(logger, step, WORKFLOW_STEPS[step], total_steps=TOTAL_STEPS,):
             report_text = build_year_hs_coverage_report_text(
                 audit_info=audit_info,
                 overall_summary=overall_summary,

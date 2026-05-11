@@ -27,13 +27,10 @@ def main() -> None:
     outputs = run_hs_system_coverage_audit()
 
     logger.info("Finished HS system coverage audit.")
-
-    print("\nSaved outputs:")
-    for name, path in outputs.items():
-        print(f"  {name}: {path}")
-
-    if log_path is not None:
-        print(f"\nLog file: {log_path}")
+    logger.info("\nHS System Coverage Workflow complete.")
+    logger.info(f"  Output directory: {outputs.get('output_dir')}")
+    logger.info(f"  Report: {outputs.get('report')}")
+    logger.info(f"  Log file: {log_path}")
 
 if __name__ == "__main__":
     main()
