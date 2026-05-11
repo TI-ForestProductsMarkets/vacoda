@@ -1,111 +1,250 @@
+"""
+vacoda.io.loaders
 
-"""
 Data loading utilities for the vacoda pipeline.
-Loads raw data from CSV files and metadata from parquet files.
-All paths are controlled by configs/paths.yaml.
+
+This module loads files. It does not parse YAML directly.
 """
+
+from __future__ import annotations
 
 from pathlib import Path
+
 import pandas as pd
-import yaml
-from vacoda.io.paths import (
-    get_api_data_dir,
-    get_raw_data_dir,
-    get_rawdata_file_path,
-    CONFIG_PATH,
-    resolve_path
+
+from vacoda.config.paths import get_data_dir, get_log_dir, get_metadata_paths
+from vacoda.config.pipeline import (
+    get_block_files,
+    get_block_stage,
+    get_block_subdir,
+    get_input_block,
+    get_output_block,
+    get_pipeline_mode,
+    get_logging_file,
 )
-from vacoda.utils.decorators import require_file
 from vacoda.utils.logger import get_logger, rel_path
 
+
 logger = get_logger("IO.LOADERS")
-_config_cache = None
-
-def load_config():
-    """
-    Loads the configuration for the project. Caches the result to avoid redundant file reads.
-    """
-    global _config_cache
-    if _config_cache is None:
-        if not CONFIG_PATH.exists():
-            raise FileNotFoundError(
-                f"File not found at: {CONFIG_PATH}\n"
-                f"Make sure configs/paths.yaml exists in the project root."
-            )
-        logger.info(f"[Config] Loading config from: {rel_path(CONFIG_PATH)}")
-        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-            _config_cache = yaml.safe_load(f)
-    return _config_cache
 
 
-def _read_csv_with_diagnostics(path: Path) -> pd.DataFrame:
+def resolve_pipeline_data_dir(block: dict) -> Path:
     """
-    Reads a CSV file into a DataFrame, logs shape and columns, and checks for single-column errors.
+    Resolve a pipeline input/output block to a physical data directory.
+
+    Example:
+        {"stage": "raw", "subdir": "api/single"}
+        -> /storage/vacoda/data/raw/api/single
     """
-    df = pd.read_csv(path)
-    logger.info(f"[Data Load] {path.name}: {df.shape[0]:,} rows × {df.shape[1]} cols")
-    logger.debug(f"[Data Load] First columns: {list(df.columns)[:8]}")
-    if len(df.columns) <= 1:
-        logger.error(f"[CSV Loader] Failed to properly parse {path.name}. Only one column found. Please check the file format and delimiter.")
-        with open(path, 'r', encoding='utf-8', errors='replace') as f:
-            preview = f.read(200)
-        logger.error(f"[CSV Loader] File preview (first 200 chars):\n{preview}")
-        raise SystemExit(f"[CSV Loader] Stopped: {path.name} could not be parsed correctly. Only one column found.")
-    return df
+    stage = get_block_stage(block)
+    subdir = get_block_subdir(block)
+
+    base_dir = get_data_dir(stage)
+    return base_dir / subdir if subdir else base_dir
 
 
-def get_raw_csv_file_list(source: str = "local") -> list[Path]:
+def resolve_pipeline_files(
+    block: dict,
+    default: str | list[str] | None = None,
+) -> list[Path]:
     """
-    Returns a list of Path objects for all CSV files matching the patterns in raw_data.files in paths.yaml.
-    If source is 'api', uses the API data directory; otherwise, uses the raw data directory.
+    Resolve files or glob patterns from a pipeline block.
     """
-    cfg = load_config()
-    if source == "api":
-        raw_dir = get_api_data_dir()
-    else:
-        raw_dir = get_raw_data_dir()
-    patterns = cfg["raw_data"].get("files", ["*.csv"])
-    if isinstance(patterns, str):
-        patterns = [patterns]
-    files = []
+    base_dir = resolve_pipeline_data_dir(block)
+    patterns = get_block_files(block, default=default)
+
+    files: list[Path] = []
+
     for pattern in patterns:
-        files.extend(sorted(raw_dir.glob(pattern)))
+        matches = sorted(base_dir.glob(pattern))
+
+        if matches:
+            files.extend(matches)
+        else:
+            files.append(base_dir / pattern)
+
+    unique: dict[str, Path] = {}
+    for path in files:
+        unique[str(path)] = path
+
+    return list(unique.values())
+
+
+def get_input_files(existing_only: bool = True) -> list[Path]:
+    """
+    Return resolved input files from pipeline.yaml. 
+    By default, only existing files are returned.
+    """
+    block = get_input_block()
+    files = resolve_pipeline_files(block, default=["*.csv"])
+
+    if existing_only:
+        missing = [path for path in files if not path.exists()]
+        if missing:
+            msg = "\n".join(str(path) for path in missing)
+            raise FileNotFoundError(f"Configured input file(s) not found:\n{msg}")
+
     return files
 
 
+def get_output_files(existing_only: bool = False) -> list[Path]:
+    """Return resolved output files from pipeline.yaml."""
+    block = get_output_block()
+    files = resolve_pipeline_files(block, default=[])
+
+    if existing_only:
+        files = [path for path in files if path.exists()]
+
+    return files
+
+
+def get_pipeline_log_file() -> Path:
+    """Return full pipeline log file path."""
+    return get_log_dir() / get_logging_file()
+
+
+def read_csv_with_diagnostics(
+    path: Path | str,
+    *,
+    usecols=None,
+    dtype: dict | None = None,
+    **read_csv_kwargs,
+) -> pd.DataFrame:
+    """
+    Read a CSV file with optional pandas read_csv arguments and basic diagnostics.
+
+    Useful for both full pipeline loading and lightweight analyses that only need
+    a subset of columns.
+    """
+    path = Path(path)
+
+    if not path.exists():
+        raise FileNotFoundError(f"CSV file not found: {path}")
+
+    df = pd.read_csv(
+        path,
+        usecols=usecols,
+        dtype=dtype,
+        **read_csv_kwargs,
+    )
+
+    logger.debug(
+        f"[CSV Load] {rel_path(path)}: "
+        f"{df.shape[0]:,} rows × {df.shape[1]} cols"
+    )
+
+    if len(df.columns) <= 1:
+        with path.open("r", encoding="utf-8", errors="replace") as f:
+            preview = f.read(300)
+
+        logger.error(
+            f"[CSV Loader] Failed to parse {path.name}. "
+            f"Only one column found. Check delimiter/file format."
+        )
+        logger.error(f"[CSV Loader] File preview:\n{preview}")
+
+        raise ValueError(
+            f"CSV parsing failed for {path}. Only one column found. "
+            f"Check delimiter or file format."
+        )
+
+    return df
+
+def _read_csv_with_diagnostics(path: Path) -> pd.DataFrame:
+    """Read CSV and log basic diagnostics."""
+    if not path.exists():
+        raise FileNotFoundError(f"CSV file not found: {path}")
+
+    df = pd.read_csv(path)
+
+    logger.info(f"[Data Load] {rel_path(path)}: {df.shape[0]:,} rows × {df.shape[1]} cols")
+    logger.debug(f"[Data Load] First columns: {list(df.columns)[:8]}")
+
+    if len(df.columns) <= 1:
+        with path.open("r", encoding="utf-8", errors="replace") as f:
+            preview = f.read(300)
+
+        logger.error(
+            f"[CSV Loader] Failed to parse {path.name}. "
+            f"Only one column found. Check delimiter/file format."
+        )
+        logger.error(f"[CSV Loader] File preview:\n{preview}")
+
+        raise ValueError(
+            f"CSV parsing failed for {path}. Only one column found. "
+            f"Check delimiter or file format."
+        )
+
+    return df
+
+
+def get_raw_csv_file_list() -> list[Path]:
+    """Return configured input CSV files."""
+    return get_input_files(existing_only=True)
+
+
+def load_data_from_config(file_path: Path | str | None = None) -> pd.DataFrame:
+    """
+    Load input CSV data according to pipeline.yaml.
+
+    Modes:
+    - per_file: load first configured CSV
+    - merged: load all configured CSVs and concatenate
+    """
+    if file_path is not None:
+        path = Path(file_path)
+        logger.info(f"[Config] Loading explicit file: {rel_path(path)}")
+        return _read_csv_with_diagnostics(path)
+
+    mode = get_pipeline_mode()
+    files = get_input_files(existing_only=True)
+
+    if not files:
+        raise FileNotFoundError("No input files found from pipeline.yaml configuration.")
+
+    if mode == "per_file":
+        path = files[0]
+        logger.info(f"[Config] Loading single file for mode=per_file: {rel_path(path)}")
+        return _read_csv_with_diagnostics(path)
+
+    if mode == "merged":
+        logger.info(f"[Config] Loading {len(files)} file(s) for mode=merged")
+
+        frames = []
+        for path in files:
+            logger.debug(f"[Config] Loading: {rel_path(path)}")
+            frames.append(_read_csv_with_diagnostics(path))
+
+        combined = pd.concat(frames, ignore_index=True)
+        logger.info(
+            f"[Config] Combined shape: {combined.shape[0]:,} rows × {combined.shape[1]} cols"
+        )
+        return combined
+
+    raise ValueError(f"Unknown pipeline mode: {mode}")
+
+
 def load_metadata_from_config() -> dict[str, pd.DataFrame]:
-    """
-    Loads all metadata parquet files as specified in paths.yaml under metadata.
-    Returns a dict of DataFrames keyed by metadata name.
-    """
+    """Load metadata parquet files specified in paths.yaml."""
     from vacoda.preprocessing.metadata import standardize_metadata_dtypes
 
-    cfg = load_config()
-    meta_cfg = cfg.get("metadata", {})
-    meta = {}
-    for key, rel_path_str in meta_cfg.items():
-        path = resolve_path(rel_path_str)
+    metadata_paths = get_metadata_paths()
+    metadata: dict[str, pd.DataFrame] = {}
+
+    for key, path in metadata_paths.items():
+        if not path.exists():
+            raise FileNotFoundError(f"Metadata file not found for '{key}': {path}")
+
         logger.info(f"Loading metadata '{key}' from: {rel_path(path)}")
         df = pd.read_parquet(path)
-        meta[key] = standardize_metadata_dtypes(df)
-    return meta
+        metadata[key] = standardize_metadata_dtypes(df)
+
+    return metadata
+
 
 def get_processed_parquet_file_list() -> list[Path]:
-    """
-    Returns processed parquet files configured under processed_data.files.
-    Supports exact filenames and glob patterns.
-    """
-    cfg = load_config()
-    processed_dir = resolve_path(cfg.get("processed_data_dir", "data/processed"))
-    patterns = cfg.get("processed_data", {}).get("files", ["*.parquet"])
-    if isinstance(patterns, str):
-        patterns = [patterns]
-
-    files: dict[str, Path] = {}
-    for pattern in patterns:
-        for path in processed_dir.glob(pattern):
-            files[str(path)] = path
-    return sorted(files.values())
+    """Return existing configured output parquet files."""
+    return get_output_files(existing_only=True)
 
 
 def load_processed_trade_data(file_path: Path | str | None = None) -> pd.DataFrame:
@@ -113,67 +252,29 @@ def load_processed_trade_data(file_path: Path | str | None = None) -> pd.DataFra
     Load processed trade data parquet.
 
     Priority:
-    1. explicit file_path argument
-    2. first existing file from processed_data.files in config
-    3. first parquet file in processed_data_dir
+    1. explicit file_path
+    2. first configured existing output parquet
     """
     if file_path is not None:
         path = Path(file_path)
+
+        if not path.exists():
+            raise FileNotFoundError(f"Processed parquet file not found: {path}")
+
         logger.info(f"Loading processed trade data from: {rel_path(path)}")
         return pd.read_parquet(path)
 
-    configured_files = get_processed_parquet_file_list()
-    if configured_files:
-        path = configured_files[0]
-        logger.info(f"Loading processed trade data from configured file: {rel_path(path)}")
-        return pd.read_parquet(path)
+    files = get_processed_parquet_file_list()
 
-    cfg = load_config()
-    processed_dir = resolve_path(cfg.get("processed_data_dir", "data/processed"))
-    fallback_files = sorted(processed_dir.glob("*.parquet"))
-    if not fallback_files:
+    if not files:
+        configured = get_output_files(existing_only=False)
+        configured_msg = "\n".join(str(path) for path in configured)
         raise FileNotFoundError(
-            f"No processed parquet file found in {rel_path(processed_dir)}. "
-            f"Set processed_data.files in configs/paths.yaml or create a parquet output first."
+            "No configured processed parquet file exists yet. "
+            "Configured output path(s):\n"
+            f"{configured_msg}"
         )
 
-    path = fallback_files[0]
-    logger.warning(
-        f"No configured processed_data.files match found. "
-        f"Falling back to first parquet file: {rel_path(path)}"
-    )
+    path = files[0]
+    logger.info(f"Loading processed trade data from configured file: {rel_path(path)}")
     return pd.read_parquet(path)
-
-def load_data_from_config(file_path: Path = None) -> pd.DataFrame:
-    """
-    Loads the main input CSV(s) based on config (pipeline.mode and pipeline.source) or explicit file_path.
-    - If file_path is provided, loads that file (per_file mode).
-    - Otherwise, reads config to determine mode and source.
-    - For per_file: loads a single CSV.
-    - For merged: loads and concatenates all matching CSVs.
-    Returns a DataFrame.
-    """
-    cfg = load_config()
-    pipeline_cfg = cfg.get("pipeline", {})
-    mode = pipeline_cfg.get("mode", "per_file").strip().lower()
-    source = pipeline_cfg.get("source", "api").strip().lower()
-    if file_path is not None:
-        logger.info(f"[Config] Loading explicit file: {file_path}")
-        return _read_csv_with_diagnostics(file_path)
-    if mode == "per_file":
-        from vacoda.io.paths import get_rawdata_file_path
-        csv_path = get_rawdata_file_path(source=source)
-        logger.info(f"[Config] Loading single file for mode=per_file: {csv_path}")
-        return _read_csv_with_diagnostics(csv_path)
-    elif mode == "merged":
-        files = get_raw_csv_file_list(source=source)
-        logger.info(f"[Config] Loading {len(files)} files for mode=merged from {source}")
-        frames = []
-        for path in files:
-            logger.debug(f"  Loading {path.name}")
-            frames.append(_read_csv_with_diagnostics(path))
-        combined = pd.concat(frames, ignore_index=True)
-        logger.info(f"[Config] Combined shape: {combined.shape[0]:,} rows × {combined.shape[1]} cols")
-        return combined
-    else:
-        raise ValueError(f"Unknown pipeline mode: {mode}")

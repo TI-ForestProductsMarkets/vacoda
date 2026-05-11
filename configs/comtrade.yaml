@@ -43,9 +43,9 @@ bulk:
       output_file: "Comtrade_bulk_HS_{period}_all_reporters.zip"
 
   output:
-    directory: "/data/comtrade/data/raw/api/bulk"
-    quarantine_directory: "/data/comtrade/data/raw/api/bulk/_quarantine_zero_byte"
-    manifest_file: "download_manifest_bulk.json"
+    directory: "/storage/vacoda/data/raw/api/bulk/"
+    quarantine_directory: "/storage/vacoda/data/raw/api/bulk/_quarantine_zero_byte"
+    manifest_file: "/storage/vacoda/output/manifests/download_manifest_bulk.json"
 
 
 # -------------------------------------------
@@ -72,9 +72,9 @@ single:
       fallback_years_end: 2025
 
   output:
-    directory: "/data/comtrade/data/raw/api/test/"
-    quarantine_directory: "/data/comtrade/data/raw/api/test/_quarantine_zero_byte"
-    manifest_file: "download_manifest_single.json"
+    directory: "/storage/vacoda/data/raw/api/test/"
+    quarantine_directory: "/storage/vacoda/data/raw/api/test/_quarantine_zero_byte"
+    manifest_file: "/storage/vacoda/output/manifests/download_manifest_single.json"
 
 
 
@@ -83,7 +83,7 @@ single:
 # -------------------------------------------
 
 log_level: DEBUG # Options: DEBUG, INFO, WARNING, ERROR, CRITICAL
-log_file: output/reports/LOG_API_PIPELINE.log
+log_file: "/storage/vacoda/output/reports/LOG_API_PIPELINE.log"
 
 
 
