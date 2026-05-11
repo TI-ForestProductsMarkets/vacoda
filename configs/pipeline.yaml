@@ -1,7 +1,68 @@
-## Pipeline configuration for vacoda.
+# Configuration file for pipeline settings in the vacoda project.
 
-data:
-  source: "api"
+# Pipeline mode:
+# - 'per_file' : each matched raw file is processed and saved separately
+# - 'merged'   : all matched raw files are concatenated and saved as one output
+# Configuration for one vacoda processing pipeline run.
+
+pipeline:
+  mode: per_file      # options: per_file, merged
+  source: api         # options: api, local
+
+input:
+  stage: raw
+  subdir: api/single
+  files:
+    - Comtrade_hs_441012_trade.csv
+    # - Comtrade_*.csv
+
+output:
+  stage: processed
+  subdir: single
+  files:
+    - comtrade_code_5_base.parquet
+
+external:
+  country_codes_file: country_codes.csv
+  hs_codes_file: hs_codes.csv
+
+logging:
+  level: DEBUG
+  file: LOG_PIPELINE_PATHS.log
+
+
+########## NEED TO CLEAN UP BELOW ##########
+# Paths to data files
+raw_data:
+  files:
+    - "Comtrade_hs_441012_trade.csv"
+    #- "Comtrade_*.csv"
+
+# Paths to processed data files
+processed_data:
+  files:
+    - "comtrade_code_5_base.parquet"
+
+# Paths to external data files (e.g., country codes, HS codes)
+external_data:
+  country_codes_file: "country_codes.csv"
+  hs_codes_file: "hs_codes.csv"
+
+# Logging configuration
+logging:
+  level: "DEBUG"  # Options: DEBUG, INFO, WARNING, ERROR, CRITICAL
+  file: "LOG_PIPELINE_PATHS.log"
+
+
+#### ADDITIONAL CONFIGURATION OPTIONS BELOW AS NEEDED ####
+#### NEED TO CLEAN UP
+
+# Logging options (optional)
+log_level: DEBUG  # Options: DEBUG, INFO, WARNING, ERROR, CRITICAL
+log_file: "/storage/data/comtrade/output/reports/LOG_PIPELINE_PATHS.log"
+
+
+## Pipeline configuration for vacoda.
 
 reference_prices:
   lower_count: 5
