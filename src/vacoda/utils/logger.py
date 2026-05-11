@@ -1,5 +1,14 @@
+"""
+vacoda.utils.logger
+------------------
+Utility functions for logging configuration and usage within the vacoda package.
+"""
+from __future__ import annotations
+
 import logging
 from pathlib import Path
+from datetime import datetime
+
 
 _PROJECT_ROOT = Path(__file__).parents[3]
 
@@ -28,16 +37,15 @@ def get_logger(name: str) -> logging.Logger:
     """
     return logging.getLogger(name)
 
-
-def setup_logging(level: int = logging.INFO, log_file: str | Path | None = None) -> None:
+def setup_logging(
+    *,
+    level: int = logging.INFO,
+    log_file: str | Path | None = None,
+) -> None:
     """
     Configure root logging for the vacoda package with console and optional file output.
-    Call this once at the entry point (script or app).
 
-    Parameters
-    ----------
-    level : int
-        Logging level, e.g. logging.DEBUG, logging.INFO (default).
+    Call this once at the entry point.
     """
     root_logger = logging.getLogger()
     root_logger.handlers.clear()
@@ -53,10 +61,12 @@ def setup_logging(level: int = logging.INFO, log_file: str | Path | None = None)
     console_handler.setFormatter(formatter)
     root_logger.addHandler(console_handler)
 
-    if log_file:
+    if log_file is not None:
         log_path = Path(log_file)
+
         if not log_path.is_absolute():
             log_path = _PROJECT_ROOT / log_path
+
         log_path.parent.mkdir(parents=True, exist_ok=True)
 
         file_handler = logging.FileHandler(log_path, encoding="utf-8")
@@ -64,6 +74,48 @@ def setup_logging(level: int = logging.INFO, log_file: str | Path | None = None)
         file_handler.setFormatter(formatter)
         root_logger.addHandler(file_handler)
 
-    # Silence noisy third-party loggers regardless of the chosen level
     for noisy in ("watchdog", "urllib3", "httpx", "httpcore"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
+
+def parse_log_level(level: str | int | None, default: int = logging.INFO) -> int:
+    """
+    Convert a YAML/user log level into a logging level integer.
+
+    Examples
+    --------
+    DEBUG -> logging.DEBUG
+    INFO  -> logging.INFO
+    10    -> 10
+    None  -> default
+    """
+    if level is None:
+        return default
+
+    if isinstance(level, int):
+        return level
+
+    return getattr(logging, str(level).strip().upper(), default)
+
+
+def make_timestamped_log_path(
+    log_file: str | Path | None,
+    *,
+    timestamp: str | None = None,
+) -> Path | None:
+    """
+    Add timestamp before a log file suffix.
+
+    Example
+    -------
+    LOG_PIPELINE.log
+    -> LOG_PIPELINE_20260511_124215.log
+    """
+    if log_file is None:
+        return None
+
+    path = Path(log_file)
+
+    if timestamp is None:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    return path.with_name(f"{path.stem}_{timestamp}{path.suffix}")

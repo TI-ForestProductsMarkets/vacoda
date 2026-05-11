@@ -102,3 +102,38 @@ def get_slurm_reports_dir(cfg: dict[str, Any] | None = None) -> Path:
     """Return SLURM reports directory."""
     cfg = cfg or load_paths_config()
     return as_path(cfg["slurm"]["reports"])
+
+
+# src/vacoda/config/paths.py
+
+from pathlib import Path
+
+from vacoda.utils.logger import make_timestamped_log_path
+
+
+def resolve_log_path(
+    log_file_name: str | Path | None,
+    *,
+    timestamp: bool = True,
+) -> Path | None:
+    """
+    Resolve a log filename against the configured output/logs directory.
+
+    The logs directory comes from configs/paths.yaml:
+
+        output:
+          logs: /storage/vacoda/output/logs
+
+    The task config should provide only a filename, e.g.:
+
+        LOG_HS_SYNC_COVERAGE.log
+    """
+    if log_file_name is None:
+        return None
+
+    log_path = get_output_dir("logs") / Path(log_file_name)
+
+    if timestamp:
+        log_path = make_timestamped_log_path(log_path)
+
+    return log_path
