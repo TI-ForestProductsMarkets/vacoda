@@ -8,136 +8,186 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from vacoda.config.hs_sync import (
+    get_coverage_columns,
+    get_coverage_engine_name,
+    get_coverage_input_config,
+    get_coverage_output_config,
+    get_coverage_progress_bool,
+    get_coverage_report_config,
+    get_coverage_thresholds,
+    get_coverage_threads,
+    get_coverage_write_config,
+    load_hs_sync_config,
+)
 from vacoda.config.paths import get_data_dir, get_output_dir
 from vacoda.hs_sync.coverage import (
+    build_hs_system_overall_summary,
     build_year_hs_counts,
     build_year_hs_mix_summary,
-    iter_csv_files,
     make_year_hs_count_pivot,
     make_year_hs_percentage_pivot,
-    basic_coverage
 )
 from vacoda.hs_sync.reports import build_year_hs_coverage_report_text
 from vacoda.io.writer import write_csv, write_parquet
 from vacoda.utils.logger import get_logger, rel_path
+from vacoda.utils.timing import timed_step, timed_workflow
 
 
 logger = get_logger("HS_SYNC.WORKFLOW")
 
-REPORT_FILE = "audit_hs_year_coverage_report.txt"
+
+def _resolve_data_stage_dir(block: dict) -> Path:
+    stage = block["stage"]
+    subdir = block.get("subdir", "")
+
+    base = get_data_dir(stage)
+    return base / subdir if subdir else base
 
 
-def run_year_hs_coverage_audit(
+def run_hs_system_coverage_audit(
     *,
-    input_subdir: str = "api/single",
-    output_subdir: str = "hs_sync",
-    pattern: str = "*.csv",
-    overwrite: bool = True,
+    config_path: Path | None = None,
 ) -> dict[str, Path]:
     """
-    Run year × HS classification coverage audit.
+    Run HS system coverage audit.
 
-    Reads raw Comtrade CSV files, builds coverage tables, saves outputs,
-    and writes a plain-text report.
-
-    Returns
-    -------
-    dict[str, Path]
-        Mapping of output names to saved paths.
+    Reads HS-sync config, builds year × HS-system coverage diagnostics,
+    saves machine-readable outputs, and writes a text report.
     """
-
-    ## Setup input and output paths
-    data_dir = get_data_dir("raw") / input_subdir
-    out_dir = get_data_dir("interim") / output_subdir
-    report_dir = get_output_dir("reports")
-
-    out_dir.mkdir(parents=True, exist_ok=True)
-    report_dir.mkdir(parents=True, exist_ok=True)
-
-    logger.info(f"Scanning input files in: {rel_path(data_dir)}")
-    files = iter_csv_files(data_dir, pattern=pattern)
-    logger.info(f"Found {len(files):,} file(s).")
-
-    ## 1. Basic coverage diagnostics    
-    classification_counter, year_range, error_count = basic_coverage()
-
-    ## Save basic coverage diagnostics to output file
-    report_path = report_dir / REPORT_FILE
-
-    ## 2. Year × HS classification coverage analysis
-    year_hs_counts = build_year_hs_counts(files)
-    count_pivot = make_year_hs_count_pivot(year_hs_counts)
-    percentage_pivot = make_year_hs_percentage_pivot(count_pivot)
-    summary = build_year_hs_mix_summary(count_pivot)
-
-    ## Save outputs and report
     outputs: dict[str, Path] = {}
 
-    outputs["year_hs_counts_long_csv"] = write_csv(
-        year_hs_counts,
-        out_dir / "year_hs_counts_long.csv",
-        overwrite=overwrite,
-    )
-    outputs["year_hs_counts_pivot_csv"] = write_csv(
-        count_pivot.reset_index(),
-        out_dir / "year_hs_counts_pivot.csv",
-        overwrite=overwrite,
-    )
-    outputs["year_hs_percentage_pivot_csv"] = write_csv(
-        percentage_pivot.reset_index(),
-        out_dir / "year_hs_percentage_pivot.csv",
-        overwrite=overwrite,
-    )
-    outputs["year_hs_mix_summary_csv"] = write_csv(
-        summary,
-        out_dir / "year_hs_mix_summary.csv",
-        overwrite=overwrite,
-    )
+    with timed_workflow(logger, "HS system coverage audit"):
 
-    outputs["year_hs_counts_long_parquet"] = write_parquet(
-        year_hs_counts,
-        out_dir / "year_hs_counts_long.parquet",
-        overwrite=overwrite,
-    )
-    outputs["year_hs_counts_pivot_parquet"] = write_parquet(
-        count_pivot.reset_index(),
-        out_dir / "year_hs_counts_pivot.parquet",
-        overwrite=overwrite,
-    )
-    outputs["year_hs_percentage_pivot_parquet"] = write_parquet(
-        percentage_pivot.reset_index(),
-        out_dir / "year_hs_percentage_pivot.parquet",
-        overwrite=overwrite,
-    )
-    outputs["year_hs_mix_summary_parquet"] = write_parquet(
-        summary,
-        out_dir / "year_hs_mix_summary.parquet",
-        overwrite=overwrite,
-    )
+        with timed_step(logger, 1, "Load HS-sync config and resolve paths"):
+            cfg = load_hs_sync_config(config_path)
 
-    report_text = build_year_hs_coverage_report_text(
-        count_pivot=count_pivot,
-        percentage_pivot=percentage_pivot,
-        summary=summary,
-    )
+            input_cfg = get_coverage_input_config(cfg)
+            output_cfg = get_coverage_output_config(cfg)
+            report_cfg = get_coverage_report_config(cfg)
+            columns = get_coverage_columns(cfg)
+            progress_enabled = get_coverage_progress_bool(cfg)
+            thresholds = get_coverage_thresholds(cfg)
+            write_cfg = get_coverage_write_config(cfg)
 
-    report_text = (
-    f"HS Classification Coverage Audit\n\n"
-    f"Input directory: {rel_path(data_dir)}\n"
-    f"Number of files: {len(files):,}\n"
-    f"ClassificationCode counts:\n"
-    + "\n".join(f"{k}: {v}" for k, v in classification_counter.most_common())
-    + f"\n\nYear range: {year_range[0]} to {year_range[1]} "
-      f"(n_years: {year_range[2]})\n"
-    + f"\nErrors: {error_count}\n\n"
-    + build_year_hs_coverage_report_text(
-        count_pivot=count_pivot,
-        percentage_pivot=percentage_pivot,
-        summary=summary,
-    ))
-    report_path.write_text(report_text, encoding="utf-8")
-    outputs["report"] = report_path
+            data_dir = _resolve_data_stage_dir(input_cfg)
+            out_dir = _resolve_data_stage_dir(output_cfg)
 
-    logger.info(f"Saved HS coverage report to: {rel_path(report_path)}")
+            report_kind = report_cfg.get("output_kind", "reports")
+            report_filename = report_cfg.get(
+                "filename",
+                "audit_hs_system_coverage_report.txt",
+            )
+            report_dir = get_output_dir(report_kind)
+
+            pattern = input_cfg.get("pattern", "*.csv")
+            engine = get_coverage_engine_name(cfg)
+            threads = get_coverage_threads(cfg)
+
+            out_dir.mkdir(parents=True, exist_ok=True)
+            report_dir.mkdir(parents=True, exist_ok=True)
+
+            files = sorted(data_dir.glob(pattern))
+            if not files:
+                raise FileNotFoundError(
+                    f"No input files found in {rel_path(data_dir)} "
+                    f"matching pattern {pattern!r}"
+                )
+
+            audit_info = {
+                "input_dir": str(data_dir),
+                "pattern": pattern,
+                "n_files": len(files),
+                "engine": engine,
+                "threads": threads,
+            }
+
+            logger.info(f"Input directory: {rel_path(data_dir)}")
+            logger.info(f"Input pattern: {pattern}")
+            logger.info(f"Input files found: {len(files):,}")
+            logger.info(f"Engine: {engine}, threads={threads}")
+
+        with timed_step(logger, 2, "Build year × HS-system counts"):
+            year_hs_counts = build_year_hs_counts(
+                data_dir=data_dir,
+                pattern=pattern,
+                engine=engine,
+                year_col=columns.get("year", "RefYear"),
+                hs_col=columns.get("hs", "ClassificationCode"),
+                threads=threads,
+                show_progress=progress_enabled,
+            )
+
+            overall_summary = build_hs_system_overall_summary(
+                year_hs_counts,
+                year_col=columns.get("year", "RefYear"),
+                hs_col=columns.get("hs", "ClassificationCode"),
+            )
+
+            logger.info(f"Counts shape: {year_hs_counts.shape}")
+            logger.info(f"Overall summary shape: {overall_summary.shape}")
+
+        with timed_step(logger, 3, "Build pivots and mix summary"):
+            count_pivot = make_year_hs_count_pivot(
+                year_hs_counts,
+                year_col=columns.get("year", "RefYear"),
+                hs_col=columns.get("hs", "ClassificationCode"),
+            )
+
+            percentage_pivot = make_year_hs_percentage_pivot(count_pivot)
+
+            summary = build_year_hs_mix_summary(
+                count_pivot,
+                clean_threshold=float(thresholds.get("clean", 95.0)),
+                mostly_clean_threshold=float(thresholds.get("mostly_clean", 90.0)),
+            )
+
+            logger.info(f"Count pivot shape: {count_pivot.shape}")
+            logger.info(f"Percentage pivot shape: {percentage_pivot.shape}")
+            logger.info(f"Mix summary shape: {summary.shape}")
+
+        with timed_step(logger, 4, "Write tables"):
+            overwrite = bool(write_cfg.get("overwrite", True))
+            write_csv_enabled = bool(write_cfg.get("csv", True))
+            write_parquet_enabled = bool(write_cfg.get("parquet", True))
+
+            tables = {
+                "year_hs_counts_long": year_hs_counts,
+                "hs_system_overall_summary": overall_summary,
+                "year_hs_counts_pivot": count_pivot.reset_index(),
+                "year_hs_percentage_pivot": percentage_pivot.reset_index(),
+                "year_hs_mix_summary": summary,
+            }
+
+            if write_csv_enabled:
+                for name, table in tables.items():
+                    outputs[f"{name}_csv"] = write_csv(
+                        table,
+                        out_dir / f"{name}.csv",
+                        overwrite=overwrite,
+                    )
+
+            if write_parquet_enabled:
+                for name, table in tables.items():
+                    outputs[f"{name}_parquet"] = write_parquet(
+                        table,
+                        out_dir / f"{name}.parquet",
+                        overwrite=overwrite,
+                    )
+
+        with timed_step(logger, 5, "Build and write text report"):
+            report_text = build_year_hs_coverage_report_text(
+                audit_info=audit_info,
+                overall_summary=overall_summary,
+                count_pivot=count_pivot,
+                percentage_pivot=percentage_pivot,
+                summary=summary,
+            )
+
+            report_path = report_dir / report_filename
+            report_path.write_text(report_text, encoding="utf-8")
+            outputs["report"] = report_path
+
+            logger.info(f"Saved report: {rel_path(report_path)}")
 
     return outputs

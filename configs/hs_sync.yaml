@@ -1,0 +1,42 @@
+## Configuration for HS Sync pipeline.
+
+# configs/hs_sync.yaml
+
+coverage:
+  input:
+    stage: raw
+    subdir: api/single
+    pattern: "*.csv"
+
+  output:
+    stage: interim
+    subdir: hs_sync
+
+  report:
+    output_kind: reports
+    filename: audit_hs_system_coverage_report.txt
+
+  engine:
+    name: duckdb      # options: duckdb, polars, pandas
+    threads: 16
+
+  columns:
+    year: RefYear
+    hs: ClassificationCode
+
+  progress:
+    enabled: true
+
+  thresholds:
+    clean: 95.0
+    mostly_clean: 90.0
+
+  write:
+    csv: true
+    parquet: true
+    overwrite: true
+
+logging:
+  level: DEBUG
+  file: LOG_HS_SYNC_COVERAGE.log
+  timestamp: true

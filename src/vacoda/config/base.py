@@ -54,3 +54,4 @@ def as_path(value: str | Path) -> Path:
     """
     path = Path(value)
     return path if path.is_absolute() else PROJECT_ROOT / path
+

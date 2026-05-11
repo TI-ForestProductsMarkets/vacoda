@@ -15,6 +15,7 @@ def progress_bar(
     desc: str = "Progress",
     unit: str = "it",
     enabled: bool = True,
+    leave: bool = True,
 ) -> Iterator[T]:
     if not enabled:
         yield from iterable
@@ -26,4 +27,5 @@ def progress_bar(
         desc=desc,
         unit=unit,
         dynamic_ncols=True,
+        leave=leave,
     )
