@@ -1,9 +1,3 @@
-"""
-vacoda.utils.timing
-
-Small timing helpers for pipelines and workflows.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -25,31 +19,39 @@ def format_seconds(seconds: float) -> str:
     return f"{int(hours)}h {int(minutes)}m {sec:.1f}s"
 
 
+def _step_label(step_num: int, total_steps: int | None = None) -> str:
+    if total_steps is None:
+        return f"STEP {step_num}"
+    return f"STEP {step_num}/{total_steps}"
+
+
 @contextmanager
 def timed_step(
     logger: logging.Logger,
     step_num: int,
     step_name: str,
+    *,
+    total_steps: int | None = None,
+    separator: str = "=",
+    width: int = 72,
 ) -> Iterator[None]:
     """
-    Log elapsed time for a workflow step.
-
-    Example
-    -------
-    with timed_step(logger, 1, "Build year-HS counts"):
-        ...
+    Log a visually separated timed workflow step.
     """
+    label = _step_label(step_num, total_steps)
+    line = separator * width
+
     t0 = time.perf_counter()
-    logger.info(f"STEP {step_num} — {step_name}")
+
+    logger.info(line)
+    logger.info("%s — %s", label, step_name)
+    logger.info(line)
+
     try:
         yield
     finally:
         elapsed = time.perf_counter() - t0
-        logger.info(
-            f"STEP {step_num} DONE — {step_name} "
-            f"({format_seconds(elapsed)})"
-        )
-
+        logger.info("DONE — %s (%s)", step_name, format_seconds(elapsed))
 
 @contextmanager
 def timed_workflow(
@@ -60,8 +62,9 @@ def timed_workflow(
     Log total elapsed time for a workflow.
     """
     t0 = time.perf_counter()
+
     logger.info("=" * 72)
-    logger.info(f"START — {workflow_name}")
+    logger.info("START — %s", workflow_name)
     logger.info("=" * 72)
 
     try:
@@ -69,5 +72,5 @@ def timed_workflow(
     finally:
         elapsed = time.perf_counter() - t0
         logger.info("=" * 72)
-        logger.info(f"DONE — {workflow_name} ({format_seconds(elapsed)})")
+        logger.info("DONE — %s (%s)", workflow_name, format_seconds(elapsed))
         logger.info("=" * 72)
