@@ -61,3 +61,5 @@ coverage.xml
 # OS files
 .DS_Store
 Thumbs.db
+# Generated outputs
+output/
