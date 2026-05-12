@@ -132,10 +132,7 @@ def run_hs_system_coverage_audit(
             out_dir = _resolve_data_stage_dir(output_cfg)
 
             report_kind = report_cfg.get("output_kind", "reports")
-            report_filename = report_cfg.get(
-                "filename",
-                "audit_hs_system_coverage_report.txt",
-            )
+            report_filename = report_cfg.get("filename","audit_hs_system_coverage_report.txt")
             report_dir = get_output_dir(report_kind)
 
             pattern = input_cfg.get("pattern", "*.csv")
@@ -377,8 +374,8 @@ def run_hs_system_coverage_audit(
         # STEP 5 — write machine-readable tables
         # ------------------------------------------------------------------
         with _workflow_step(5):
-            overwrite = bool(write_cfg.get("overwrite", True))
-            write_csv_enabled = bool(write_cfg.get("csv", True))
+            overwrite             = bool(write_cfg.get("overwrite", True))
+            write_csv_enabled     = bool(write_cfg.get("csv", True))
             write_parquet_enabled = bool(write_cfg.get("parquet", True))
 
             if not tables:
@@ -386,33 +383,24 @@ def run_hs_system_coverage_audit(
 
             if write_csv_enabled:
                 for name, table in tables.items():
-                    outputs[f"{name}_csv"] = write_csv(
-                        table,
-                        out_dir / f"{name}.csv",
-                        overwrite=overwrite,
-                    )
+                    outputs[f"{name}_csv"] = write_csv(table, out_dir / f"{name}.csv", overwrite=overwrite)
 
             if write_parquet_enabled:
                 for name, table in tables.items():
-                    outputs[f"{name}_parquet"] = write_parquet(
-                        table,
-                        out_dir / f"{name}.parquet",
-                        overwrite=overwrite,
-                    )
+                    outputs[f"{name}_parquet"] = write_parquet(table, out_dir / f"{name}.parquet",overwrite=overwrite)
+    
 
         # ------------------------------------------------------------------
         # STEP 6 — build and save human-readable report
         # ------------------------------------------------------------------
         with _workflow_step(6):
             if bool(report_cfg.get("enabled", True)):
-                report_text = build_year_hs_coverage_report_text(
-                    audit_info=audit_info,
-                    overall_summary=overall_summary,
-                    count_pivot=count_pivot,
-                    percentage_pivot=percentage_pivot,
-                    summary=mix_summary,
-                    reporter_coverage=reporter_year_hs_coverage,
-                )
+                report_text = build_year_hs_coverage_report_text(audit_info=audit_info,
+                                                                overall_summary=overall_summary,
+                                                                count_pivot=count_pivot,
+                                                                percentage_pivot=percentage_pivot,
+                                                                summary=mix_summary,
+                                                                reporter_coverage=reporter_year_hs_coverage)
 
                 report_base_path = report_dir / report_filename
 
@@ -420,10 +408,7 @@ def run_hs_system_coverage_audit(
                 write_latest = bool(report_cfg.get("write_latest", True))
 
                 if report_timestamp:
-                    report_path = make_timestamped_log_path(
-                        report_base_path,
-                        timestamp=run_id,
-                    )
+                    report_path = make_timestamped_log_path(report_base_path, timestamp=run_id)
                 else:
                     report_path = report_base_path
 
@@ -431,16 +416,11 @@ def run_hs_system_coverage_audit(
                 outputs["report"] = report_path
 
                 if write_latest and report_timestamp:
-                    latest_path = report_base_path.with_name(
-                        f"{report_base_path.stem}_latest{report_base_path.suffix}"
-                    )
+                    latest_path = report_base_path.with_name( f"{report_base_path.stem}_latest{report_base_path.suffix}")
                     latest_path.write_text(report_text, encoding="utf-8")
                     outputs["report_latest"] = latest_path
 
-                    logger.info(
-                        "Saved latest report copy: %s",
-                        rel_path(latest_path),
-                    )
+                    logger.info("Saved latest report copy: %s", rel_path(latest_path))
 
                 logger.info("Saved report: %s", rel_path(report_path))
 

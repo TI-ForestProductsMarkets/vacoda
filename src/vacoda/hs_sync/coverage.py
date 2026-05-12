@@ -206,3 +206,43 @@ def build_year_hs_mix_summary(
     summary["mix_status"] = summary["dominant_share_pct"].apply(classify)
 
     return summary.reset_index()
+
+def build_hs_sync_coverage_summary_tables(
+    df: pd.DataFrame,
+    *,
+    dominance_metric: str = "share_rows_in_reporter_year",
+) -> dict[str, pd.DataFrame]:
+    """
+    Build all main HS-sync coverage summary tables.
+
+    Returns
+    -------
+    dict[str, pd.DataFrame]
+        Dictionary with:
+
+        - reporter_hs_timeline
+        - reporter_year_dominant_hs
+        - hs_transition_events
+        - mixed_classification_reporter_years
+    """
+
+    enriched = add_reporter_year_shares(df)
+
+    return {
+        "reporter_hs_timeline": build_reporter_hs_timeline(
+            enriched,
+            dominance_metric=dominance_metric,
+        ),
+        "reporter_year_dominant_hs": build_reporter_year_dominant_hs(
+            enriched,
+            dominance_metric=dominance_metric,
+        ),
+        "hs_transition_events": build_hs_transition_events(
+            enriched,
+            dominance_metric=dominance_metric,
+        ),
+        "mixed_classification_reporter_years": build_mixed_classification_reporter_years(
+            enriched,
+            dominance_metric=dominance_metric,
+        ),
+    }
