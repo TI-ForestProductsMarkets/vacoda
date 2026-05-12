@@ -17,7 +17,13 @@ from vacoda.hs_sync.coverage_engines import (
     build_year_hs_counts_pandas,
     build_reporter_year_hs_coverage_duckdb,
 )
-
+from vacoda.hs_sync.coverage_summaries import (
+    add_reporter_year_shares,
+    build_hs_transition_events,
+    build_mixed_classification_reporter_years,
+    build_reporter_hs_timeline,
+    build_reporter_year_dominant_hs,
+)
 
 def build_reporter_year_hs_coverage(
     data_dir: str | Path,
