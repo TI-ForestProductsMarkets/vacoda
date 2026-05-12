@@ -29,6 +29,7 @@ coverage:
     parquet: true
     overwrite: true
     timestamp: false
+    allow_empty: true
 
 
   ## Products to generate. Each product will be generated only if all its dependencies are generated successfully.
@@ -82,6 +83,26 @@ coverage:
         flow: FlowCode
         value: PrimaryValue
         netweight: NetWgt
+    
+    reporter_hs_timeline:
+      enabled: true
+      depends_on: reporter_year_hs_coverage
+      filename: reporter_hs_timeline
+
+    reporter_year_dominant_hs:
+      enabled: true
+      depends_on: reporter_year_hs_coverage
+      filename: reporter_year_dominant_hs
+
+    hs_transition_events:
+      enabled: true
+      depends_on: reporter_year_hs_coverage
+      filename: hs_transition_events
+
+    mixed_classification_reporter_years:
+      enabled: true
+      depends_on: reporter_year_hs_coverage
+      filename: mixed_classification_reporter_years
 
   report:
     enabled: true
@@ -89,3 +110,4 @@ coverage:
     filename: audit_hs_system_coverage_report.txt
     timestamp: true
     write_latest: true
+   

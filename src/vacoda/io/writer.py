@@ -52,7 +52,6 @@ def _prepare_output_path(
 
     return path
 
-
 def write_parquet(
     df: pd.DataFrame,
     path: str | Path,
@@ -64,24 +63,14 @@ def write_parquet(
     """
     Write a DataFrame to a Parquet file.
 
-    Parameters
-    ----------
-    df:
-        DataFrame to write.
-    path:
-        Output parquet path.
-    overwrite:
-        If True, overwrite existing file.
-    create_parent:
-        If True, create parent directories.
-    allow_empty:
-        If False, raise ValueError for empty DataFrames.
-
-    Returns
-    -------
-    Path
-        Path to the written file.
+    Empty DataFrames are allowed only when allow_empty=True.
+    A completely empty schema, meaning 0 rows and 0 columns, is always rejected.
     """
+    if df.shape[1] == 0:
+        raise ValueError(
+            "DataFrame has no columns. Refusing to write schema-less parquet."
+        )
+
     if df.empty and not allow_empty:
         raise ValueError("DataFrame is empty. Nothing to write.")
 
@@ -91,14 +80,25 @@ def write_parquet(
         create_parent=create_parent,
     )
 
-    logger.info(
-        f"Writing parquet: {rel_path(path)} "
-        f"({df.shape[0]:,} rows × {df.shape[1]:,} cols)"
-    )
+    if df.empty:
+        logger.warning(
+            "Writing empty parquet with schema only: %s "
+            "(%s rows × %s cols)",
+            rel_path(path),
+            f"{df.shape[0]:,}",
+            f"{df.shape[1]:,}",
+        )
+    else:
+        logger.info(
+            "Writing parquet: %s (%s rows × %s cols)",
+            rel_path(path),
+            f"{df.shape[0]:,}",
+            f"{df.shape[1]:,}",
+        )
 
     df.to_parquet(path, index=False)
 
-    logger.info(f"Parquet written successfully: {rel_path(path)}")
+    logger.info("Parquet written successfully: %s", rel_path(path))
     return path
 
 
@@ -114,26 +114,14 @@ def write_csv(
     """
     Write a DataFrame to a CSV file.
 
-    Parameters
-    ----------
-    df:
-        DataFrame to write.
-    path:
-        Output CSV path.
-    overwrite:
-        If True, overwrite existing file.
-    create_parent:
-        If True, create parent directories.
-    allow_empty:
-        If False, raise ValueError for empty DataFrames.
-    index:
-        If True, write row indices.
-
-    Returns
-    -------
-    Path
-        Path to the written file.
+    Empty DataFrames are allowed only when allow_empty=True.
+    A completely empty schema, meaning 0 rows and 0 columns, is always rejected.
     """
+    if df.shape[1] == 0:
+        raise ValueError(
+            "DataFrame has no columns. Refusing to write schema-less CSV."
+        )
+
     if df.empty and not allow_empty:
         raise ValueError("DataFrame is empty. Nothing to write.")
 
@@ -143,14 +131,25 @@ def write_csv(
         create_parent=create_parent,
     )
 
-    logger.info(
-        f"Writing CSV: {rel_path(path)} "
-        f"({df.shape[0]:,} rows × {df.shape[1]:,} cols)"
-    )
+    if df.empty:
+        logger.warning(
+            "Writing empty CSV with headers only: %s "
+            "(%s rows × %s cols)",
+            rel_path(path),
+            f"{df.shape[0]:,}",
+            f"{df.shape[1]:,}",
+        )
+    else:
+        logger.info(
+            "Writing CSV: %s (%s rows × %s cols)",
+            rel_path(path),
+            f"{df.shape[0]:,}",
+            f"{df.shape[1]:,}",
+        )
 
     df.to_csv(path, index=index)
 
-    logger.info(f"CSV written successfully: {rel_path(path)}")
+    logger.info("CSV written successfully: %s", rel_path(path))
     return path
 
 def write_parquet_interactive(
