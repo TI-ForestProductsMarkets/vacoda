@@ -32,7 +32,12 @@ def main() -> None:
     logger.info("Starting HS Sync coverage audit.")
     logger.debug("Log file: %s", log_path)
 
-    outputs = run_hs_system_coverage_audit(run_id=run_id)
+    try:
+        outputs = run_hs_system_coverage_audit(run_id=run_id)
+    except Exception as e:
+        logger.exception("HS Sync coverage audit failed.")
+        logger.info("Log file: %s", log_path)
+        raise
 
     logger.info("Finished HS Sync coverage audit.")
     logger.info("\nHS Sync Coverage Workflow complete.")

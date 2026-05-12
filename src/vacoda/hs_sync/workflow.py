@@ -19,6 +19,7 @@ from vacoda.hs_sync.coverage import (
     build_year_hs_mix_summary,
     make_year_hs_count_pivot,
     make_year_hs_percentage_pivot,
+    build_hs_sync_coverage_summary_tables
 )
 from vacoda.hs_sync.reports import build_year_hs_coverage_report_text
 from vacoda.io.writer import write_csv, write_parquet
@@ -34,8 +35,8 @@ WORKFLOW_STEPS = {
     2: "Build year × HS-system counts",
     3: "Build derived HS-system summaries",
     4: "Build reporter × year × HS coverage",
-    5: "Write machine-readable tables",
-    6: "Build Country-level HS coverage report",
+    5: "Build country-level HS coverage summary tables",
+    6: "Write machine-readable tables",
     7: "Build and save coverage report",
 }
 
@@ -416,14 +417,47 @@ def run_hs_system_coverage_audit(
             else:
                 logger.info("Skipping %s; disabled in config.", product_name)
 
+
         # ------------------------------------------------------------------
-        # STEP 5 — write machine-readable tables
+        # STEP 5 — Build country-level HS coverage summary tables
+        # ------------------------------------------------------------------
+        n_step += 1
+        with _workflow_step(n_step):
+            source_product = "reporter_year_hs_coverage"
+
+            if source_product not in runtime:
+                logger.warning(
+                            "Skipping country-level HS coverage summaries; "
+                            "%s was not built.",
+                            source_product)
+            else:
+                source = runtime[source_product]
+
+                summary_tables = build_hs_sync_coverage_summary_tables(source)
+
+                for product_name, table in summary_tables.items():
+                    if is_coverage_product_enabled(product_name, cfg, default=True):
+                        runtime[product_name] = table
+                        tables[product_name] = table
+
+                        logger.info("%s shape: %s",
+                                    product_name,
+                                    table.shape)
+                    else:
+                        logger.info(
+                                    "Skipping %s; disabled in config.",
+                                    product_name)
+
+
+        # ------------------------------------------------------------------
+        # STEP 6 — write machine-readable tables
         # ------------------------------------------------------------------
         n_step += 1
         with _workflow_step(n_step):
             overwrite = bool(write_cfg.get("overwrite", True))
             write_csv_enabled = bool(write_cfg.get("csv", True))
             write_parquet_enabled = bool(write_cfg.get("parquet", True))
+            allow_empty = bool(write_cfg.get("allow_empty", True))
 
             if not tables:
                 logger.warning("No tables were built; nothing to write.")
@@ -436,6 +470,7 @@ def run_hs_system_coverage_audit(
                         table,
                         out_dir / f"{filename}.csv",
                         overwrite=overwrite,
+                        allow_empty=allow_empty,
                     )
 
                 if write_parquet_enabled:
@@ -443,21 +478,9 @@ def run_hs_system_coverage_audit(
                         table,
                         out_dir / f"{filename}.parquet",
                         overwrite=overwrite,
+                        allow_empty=allow_empty,
                     )
 
-        # ------------------------------------------------------------------
-        # STEP 6 — Build Country-level HS coverage report
-        # ------------------------------------------------------------------
-        n_step += 1
-        with _workflow_step(n_step):
-            if bool(report_cfg.get("enabled", True)):
-                logger.info(
-                    "Country-level HS coverage report step is currently reserved."
-                )
-            else:
-                logger.info(
-                    "Skipping country-level HS coverage report; report disabled."
-                )
 
         # ------------------------------------------------------------------
         # STEP 7 — build and save human-readable report
