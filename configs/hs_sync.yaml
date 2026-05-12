@@ -36,7 +36,7 @@ coverage:
   products:
 
     year_hs_counts:
-      enabled: true
+      enabled: false
       filename: year_hs_counts_long
 
       columns:
@@ -44,22 +44,22 @@ coverage:
         hs: ClassificationCode
 
     hs_system_overall_summary:
-      enabled: true
+      enabled: false
       depends_on: year_hs_counts
       filename: hs_system_overall_summary
 
     year_hs_count_pivot:
-      enabled: true
+      enabled: false
       depends_on: year_hs_counts
       filename: year_hs_counts_pivot
 
     year_hs_percentage_pivot:
-      enabled: true
+      enabled: false
       depends_on: year_hs_count_pivot
       filename: year_hs_percentage_pivot
 
     year_hs_mix_summary:
-      enabled: true
+      enabled: false
       depends_on: year_hs_count_pivot
       filename: year_hs_mix_summary
 
@@ -68,7 +68,7 @@ coverage:
         mostly_clean: 95.0
 
     reporter_year_hs_coverage:
-      enabled: true
+      enabled: false
       filename: reporter_year_hs_coverage
 
       columns:
@@ -85,24 +85,54 @@ coverage:
         netweight: NetWgt
     
     reporter_hs_timeline:
-      enabled: true
+      enabled: false
       depends_on: reporter_year_hs_coverage
       filename: reporter_hs_timeline
 
     reporter_year_dominant_hs:
-      enabled: true
+      enabled: fasle
       depends_on: reporter_year_hs_coverage
       filename: reporter_year_dominant_hs
 
     hs_transition_events:
-      enabled: true
+      enabled: false
       depends_on: reporter_year_hs_coverage
       filename: hs_transition_events
 
     mixed_classification_reporter_years:
-      enabled: true
+      enabled: false
       depends_on: reporter_year_hs_coverage
       filename: mixed_classification_reporter_years
+
+    year_hs_cmd4_coverage:
+      enabled: true
+      filename: year_hs_cmd4_coverage
+
+      columns:
+        year: RefYear
+        hs: ClassificationCode
+        cmd: CmdCode
+
+    top_cmd4_by_year_hs:
+      enabled: true
+      depends_on: year_hs_cmd4_coverage
+      filename: top_cmd4_by_year_hs
+      top_n: 10
+
+    cmd4_hs_timeline:
+      enabled: true
+      depends_on: year_hs_cmd4_coverage
+      filename: cmd4_hs_timeline
+
+    cmd4_hs_diversity_summary:
+      enabled: true
+      depends_on: year_hs_cmd4_coverage
+      filename: cmd4_hs_diversity_summary
+
+    cmd4_hs_transition_events:
+      enabled: true
+      depends_on: year_hs_cmd4_coverage
+      filename: cmd4_hs_transition_events
 
   report:
     enabled: true

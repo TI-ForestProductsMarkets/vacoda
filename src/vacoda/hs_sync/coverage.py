@@ -25,6 +25,363 @@ from vacoda.hs_sync.coverage_summaries import (
     build_reporter_year_dominant_hs,
 )
 
+
+def add_cmd4(
+    df: pd.DataFrame,
+    *,
+    cmd_col: str = "CmdCode",
+    output_col: str = "cmd4",
+) -> pd.DataFrame:
+    """
+    Add a 4-digit HS heading column from a commodity code column.
+    """
+    out = df.copy()
+
+    out[output_col] = (
+        out[cmd_col]
+        .astype("string")
+        .str.strip()
+        .str.replace(r"\.0$", "", regex=True)
+        .str.zfill(6)
+        .str[:4]
+    )
+
+    return out
+
+from pathlib import Path
+
+import duckdb
+import pandas as pd
+
+
+
+
+def build_year_hs_cmd4_coverage_duckdb(
+    data_dir: str | Path,
+    *,
+    pattern: str = "*.csv",
+    year_col: str = "RefYear",
+    hs_col: str = "ClassificationCode",
+    cmd_col: str = "CmdCode",
+    threads: int = 16) -> pd.DataFrame:
+    """
+    Build year × HS classification × HS4 commodity-family coverage using DuckDB.
+
+    Output level:
+        year × ClassificationCode × cmd4
+
+    Notes
+    -----
+    CmdCode is normalized as text, left-padded to 6 characters, and truncated
+    to the first 4 characters.
+    """
+    data_dir = Path(data_dir)
+    files_glob = str(data_dir / pattern)
+
+    con = duckdb.connect(database=":memory:")
+
+    try:
+        con.execute(f"PRAGMA threads={int(threads)}")
+
+        query = f"""
+        WITH base AS (
+            SELECT
+                "{year_col}" AS year,
+                "{hs_col}" AS hs,
+                LPAD(CAST("{cmd_col}" AS VARCHAR), 6, '0') AS cmd6
+            FROM read_csv_auto(
+                ?,
+                union_by_name = true,
+                ignore_errors = true
+            )
+            WHERE "{year_col}" IS NOT NULL
+              AND "{hs_col}" IS NOT NULL
+              AND "{cmd_col}" IS NOT NULL
+        ),
+
+        grouped AS (
+            SELECT
+                year,
+                hs,
+                SUBSTR(cmd6, 1, 4) AS cmd4,
+                COUNT(*) AS n_rows,
+                COUNT(DISTINCT cmd6) AS n_cmd6
+            FROM base
+            GROUP BY
+                year,
+                hs,
+                cmd4
+        ),
+
+        with_totals AS (
+            SELECT
+                *,
+                SUM(n_rows) OVER (
+                    PARTITION BY year, hs
+                ) AS total_rows_in_year_hs
+            FROM grouped
+        )
+
+        SELECT
+            year AS "{year_col}",
+            hs AS "{hs_col}",
+            cmd4,
+            n_rows,
+            n_cmd6,
+            ROUND(
+                CAST(n_rows AS DOUBLE)
+                / NULLIF(CAST(total_rows_in_year_hs AS DOUBLE), 0),
+                4
+            ) AS share_rows_in_year_hs
+        FROM with_totals
+        ORDER BY
+            "{year_col}",
+            "{hs_col}",
+            n_rows DESC
+        """
+
+        return con.execute(query, [files_glob]).fetchdf()
+
+    finally:
+        con.close()
+
+
+def build_year_hs_cmd4_coverage_pandas(
+    data_dir: str | Path,
+    *,
+    pattern: str = "*.csv",
+    year_col: str = "RefYear",
+    hs_col: str = "ClassificationCode",
+    cmd_col: str = "CmdCode") -> pd.DataFrame:
+    """
+    Build coverage of HS4 commodity families by year and HS classification.
+
+    Output level:
+        year × HS classification × cmd4
+
+    This helps identify which commodity families appear under each HS system
+    in each year.
+    """
+    files = sorted(Path(data_dir).glob(pattern))
+
+    if not files:
+        raise FileNotFoundError(
+            f"No files found in {data_dir} matching pattern {pattern!r}"
+        )
+
+    parts: list[pd.DataFrame] = []
+
+    for path in files:
+        df = pd.read_csv(
+            path,
+            usecols=[year_col, hs_col, cmd_col],
+            dtype={
+                year_col: "Int64",
+                hs_col: "string",
+                cmd_col: "string",
+            },
+        )
+
+        if df.empty:
+            continue
+
+        df = add_cmd4(df, cmd_col=cmd_col)
+
+        grouped = (
+            df.groupby([year_col, hs_col, "cmd4"], dropna=False)
+            .agg(
+                n_rows=(cmd_col, "size"),
+                n_cmd6=(cmd_col, "nunique"),
+            )
+            .reset_index()
+        )
+
+        parts.append(grouped)
+
+    if not parts:
+        return pd.DataFrame(
+            columns=[
+                year_col,
+                hs_col,
+                "cmd4",
+                "n_rows",
+                "n_cmd6",
+                "share_rows_in_year_hs",
+            ]
+        )
+
+    out = pd.concat(parts, ignore_index=True)
+
+    out = (
+        out.groupby([year_col, hs_col, "cmd4"], dropna=False)
+        .agg(
+            n_rows=("n_rows", "sum"),
+            n_cmd6=("n_cmd6", "sum"),
+        )
+        .reset_index()
+    )
+
+    totals = out.groupby([year_col, hs_col], dropna=False)["n_rows"].transform("sum")
+
+    out["share_rows_in_year_hs"] = (
+        out["n_rows"] / totals.replace(0, pd.NA)
+    ).round(4)
+
+    return out.sort_values(
+        [year_col, hs_col, "n_rows"],
+        ascending=[True, True, False],
+    ).reset_index(drop=True)
+
+
+def build_year_hs_cmd4_coverage(
+     data_dir: str | Path,
+    *,
+    pattern: str = "*.csv",
+    engine: str = "duckdb",
+    year_col: str = "RefYear",
+    hs_col: str = "ClassificationCode",
+    cmd_col: str = "CmdCode",
+    threads: int = 16,
+    show_progress: bool = False,
+) -> pd.DataFrame:
+    """
+    Build year × HS classification × HS4 commodity-family coverage using selected backend.
+
+    Supported engines:
+    - duckdb
+    - pandas
+    """
+    engine = engine.strip().lower()
+
+    if engine == "duckdb":
+        return build_year_hs_cmd4_coverage_duckdb(
+            data_dir,
+            pattern=pattern,
+            year_col=year_col,
+            hs_col=hs_col,
+            cmd_col=cmd_col,
+            threads=threads,
+        )
+
+    if engine == "pandas":
+        return build_year_hs_cmd4_coverage_pandas(
+            data_dir,
+            pattern=pattern,
+            year_col=year_col,
+            hs_col=hs_col,
+            cmd_col=cmd_col,
+        )
+
+
+    raise ValueError(
+        f"Unknown engine: {engine!r}. "
+        "Valid engines are: duckdb, pandas."
+    )
+
+def build_top_cmd4_by_year_hs(
+    year_hs_cmd4: pd.DataFrame,
+    *,
+    year_col: str = "RefYear",
+    hs_col: str = "ClassificationCode",
+    n: int = 10,
+) -> pd.DataFrame:
+    """
+    Return top N cmd4 families within each year × HS classification.
+    """
+    return (
+        year_hs_cmd4.sort_values(
+            [year_col, hs_col, "n_rows"],
+            ascending=[True, True, False],
+        )
+        .groupby([year_col, hs_col], group_keys=False)
+        .head(n)
+        .reset_index(drop=True)
+    )
+
+def build_cmd4_hs_timeline(
+    year_hs_cmd4: pd.DataFrame,
+    *,
+    year_col: str = "RefYear",
+    hs_col: str = "ClassificationCode",
+) -> pd.DataFrame:
+    """
+    Build cmd4 × year timeline showing row counts by HS system.
+    """
+    pivot = year_hs_cmd4.pivot_table(
+        index=["cmd4", year_col],
+        columns=hs_col,
+        values="n_rows",
+        aggfunc="sum",
+        fill_value=0,
+    )
+
+    return pivot.reset_index()
+
+def build_cmd4_hs_diversity_summary(
+    year_hs_cmd4: pd.DataFrame,
+    *,
+    year_col: str = "RefYear",
+    hs_col: str = "ClassificationCode",
+) -> pd.DataFrame:
+    """
+    Summarize how many HS systems and years each cmd4 appears in.
+    """
+    summary = (
+        year_hs_cmd4.groupby("cmd4", dropna=False)
+        .agg(
+            first_year=(year_col, "min"),
+            last_year=(year_col, "max"),
+            n_years=(year_col, "nunique"),
+            n_hs_systems=(hs_col, "nunique"),
+            total_rows=("n_rows", "sum"),
+            total_cmd6=("n_cmd6", "sum"),
+        )
+        .reset_index()
+    )
+
+    return summary.sort_values(
+        ["n_hs_systems", "total_rows"],
+        ascending=[False, False],
+    ).reset_index(drop=True)
+
+def build_cmd4_hs_transition_events(
+    year_hs_cmd4: pd.DataFrame,
+    *,
+    year_col: str = "RefYear",
+    hs_col: str = "ClassificationCode",
+) -> pd.DataFrame:
+    """
+    Detect years where a cmd4 heading changes dominant HS system.
+    """
+    yearly = (
+        year_hs_cmd4.sort_values("n_rows", ascending=False)
+        .groupby(["cmd4", year_col], as_index=False)
+        .first()
+    )
+
+    yearly = yearly.sort_values(["cmd4", year_col])
+
+    yearly["previous_hs"] = yearly.groupby("cmd4")[hs_col].shift(1)
+    yearly["previous_year"] = yearly.groupby("cmd4")[year_col].shift(1)
+
+    transitions = yearly[
+        yearly["previous_hs"].notna()
+        & (yearly[hs_col] != yearly["previous_hs"])
+    ].copy()
+
+    return transitions[
+        [
+            "cmd4",
+            "previous_year",
+            year_col,
+            "previous_hs",
+            hs_col,
+            "n_rows",
+            "n_cmd6",
+            "share_rows_in_year_hs",
+        ]
+    ].reset_index(drop=True)
+
 def build_reporter_year_hs_coverage(
     data_dir: str | Path,
     *,
