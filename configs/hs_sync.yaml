@@ -35,7 +35,7 @@ coverage:
   products:
 
     year_hs_counts:
-      enabled: false
+      enabled: true
       filename: year_hs_counts_long
 
       columns:
@@ -43,28 +43,28 @@ coverage:
         hs: ClassificationCode
 
     hs_system_overall_summary:
-      enabled: false
+      enabled: true
       depends_on: year_hs_counts
       filename: hs_system_overall_summary
 
     year_hs_count_pivot:
-      enabled: false
+      enabled: true
       depends_on: year_hs_counts
       filename: year_hs_counts_pivot
 
     year_hs_percentage_pivot:
-      enabled: false
+      enabled: true
       depends_on: year_hs_count_pivot
       filename: year_hs_percentage_pivot
 
     year_hs_mix_summary:
-      enabled: false
+      enabled: true
       depends_on: year_hs_count_pivot
       filename: year_hs_mix_summary
 
       thresholds:
-        clean: 95.0
-        mostly_clean: 90.0
+        clean: 98.0
+        mostly_clean: 95.0
 
     reporter_year_hs_coverage:
       enabled: true
