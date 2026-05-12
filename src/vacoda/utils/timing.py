@@ -63,14 +63,14 @@ def timed_workflow(
     """
     t0 = time.perf_counter()
 
-    logger.info("=" * 72)
+    #logger.info("=" * 72)
     logger.info("START — %s", workflow_name)
-    logger.info("=" * 72)
+    #logger.info("=" * 72)
 
     try:
         yield
     finally:
         elapsed = time.perf_counter() - t0
-        logger.info("=" * 72)
+        #logger.info("=" * 72)
         logger.info("DONE — %s (%s)", workflow_name, format_seconds(elapsed))
-        logger.info("=" * 72)
+        #logger.info("=" * 72)
