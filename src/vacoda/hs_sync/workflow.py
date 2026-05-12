@@ -10,21 +10,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from vacoda.config.hs_sync import (
-    get_coverage_engine_name,
-    get_coverage_input_config,
-    get_coverage_output_config,
-    get_coverage_product_columns,
-    get_coverage_product_filename,
-    get_coverage_product_thresholds,
-    get_coverage_progress_bool,
-    get_coverage_report_config,
-    get_coverage_threads,
-    get_coverage_write_config,
-    is_coverage_product_enabled,
-    load_hs_sync_config,
-)
-from vacoda.utils.logger import get_logger, rel_path, make_timestamped_log_path
+from vacoda.config.hs_sync import *
 from vacoda.config.paths import get_data_dir, get_output_dir
 from vacoda.hs_sync.coverage import (
     build_hs_system_overall_summary,
@@ -36,6 +22,7 @@ from vacoda.hs_sync.coverage import (
 )
 from vacoda.hs_sync.reports import build_year_hs_coverage_report_text
 from vacoda.io.writer import write_csv, write_parquet
+from vacoda.utils.logger import get_logger, rel_path, make_timestamped_log_path
 from vacoda.utils.timing import timed_step, timed_workflow
 
 
@@ -48,7 +35,8 @@ WORKFLOW_STEPS = {
     3: "Build derived HS-system summaries",
     4: "Build reporter × year × HS coverage",
     5: "Write machine-readable tables",
-    6: "Build and save coverage report",
+    6: "Build Country-level HS coverage report",
+    7: "Build and save coverage report",
 }
 
 TOTAL_STEPS = len(WORKFLOW_STEPS)
@@ -88,6 +76,46 @@ def _workflow_step(step_num: int):
     )
 
 
+def _get_required_runtime_table(
+    *,
+    product_name: str,
+    runtime: dict[str, pd.DataFrame],
+    cfg: dict,
+) -> pd.DataFrame | None:
+    """
+    Return the dependency table required by product_name.
+
+    Dependencies are declared in YAML via:
+
+        depends_on: some_product
+
+    Runtime tables are stored by logical product name, not filename.
+
+    Returns
+    -------
+    pd.DataFrame | None
+        Dependency table if available. Returns None if the dependency was not
+        built, allowing the workflow to skip the dependent product gracefully.
+    """
+    dependency_name = get_coverage_product_dependency(product_name, cfg)
+
+    if dependency_name is None:
+        raise ValueError(
+            f"Product '{product_name}' requires a dependency, "
+            "but no 'depends_on' value is configured."
+        )
+
+    if dependency_name not in runtime:
+        logger.warning(
+            "Skipping %s; dependency %s was not built.",
+            product_name,
+            dependency_name,
+        )
+        return None
+
+    return runtime[dependency_name]
+
+
 def run_hs_system_coverage_audit(
     *,
     config_path: Path | None = None,
@@ -105,22 +133,22 @@ def run_hs_system_coverage_audit(
         Mapping of output names to written output paths.
     """
     outputs: dict[str, Path] = {}
+
+    # Write-ready products.
+    # Key = logical product name from YAML, not filename.
     tables: dict[str, pd.DataFrame] = {}
 
-    # Objects used later by the report builder.
-    year_hs_counts: pd.DataFrame | None = None
-    overall_summary: pd.DataFrame | None = None
-    count_pivot: pd.DataFrame | None = None
-    percentage_pivot: pd.DataFrame | None = None
-    mix_summary: pd.DataFrame | None = None
-    reporter_year_hs_coverage: pd.DataFrame | None = None
+    # Internal runtime products.
+    # These may preserve indexes/pivot structure needed by downstream products.
+    runtime: dict[str, pd.DataFrame] = {}
 
     with timed_workflow(logger, "HS Sync coverage audit"):
 
         # ------------------------------------------------------------------
         # STEP 1 — config and paths
         # ------------------------------------------------------------------
-        with _workflow_step(1):
+        n_step = 1
+        with _workflow_step(n_step):
             cfg = load_hs_sync_config(config_path)
 
             input_cfg = get_coverage_input_config(cfg)
@@ -131,11 +159,11 @@ def run_hs_system_coverage_audit(
             data_dir = _resolve_data_stage_dir(input_cfg)
             out_dir = _resolve_data_stage_dir(output_cfg)
 
-            report_kind = report_cfg.get("output_kind", "reports")
-            report_filename = report_cfg.get("filename","audit_hs_system_coverage_report.txt")
+            report_kind = get_coverage_report_output_kind(cfg)
+            report_filename = get_coverage_report_filename(cfg)
             report_dir = get_output_dir(report_kind)
 
-            pattern = input_cfg.get("pattern", "*.csv")
+            pattern = get_coverage_input_data_pattern(cfg)
             engine = get_coverage_engine_name(cfg)
             threads = get_coverage_threads(cfg)
             progress_enabled = get_coverage_progress_bool(cfg)
@@ -166,19 +194,25 @@ def run_hs_system_coverage_audit(
         # ------------------------------------------------------------------
         # STEP 2 — base year × HS counts
         # ------------------------------------------------------------------
-        with _workflow_step(2):
-            if is_coverage_product_enabled("year_hs_counts", cfg, default=True):
-                year_columns = get_coverage_product_columns("year_hs_counts", cfg)
+        n_step += 1
+        with _workflow_step(n_step):
+            product_name = "year_hs_counts"
 
-                year_col = year_columns.get("year", "RefYear")
-                hs_col = year_columns.get("hs", "ClassificationCode")
+            if is_coverage_product_enabled(product_name, cfg, default=True):
+                year_columns = get_coverage_product_columns(
+                    product_name,
+                    cfg,
+                    required=("year", "hs"),
+                )
 
-                engine_normalized = engine.strip().lower()
-                if engine_normalized in {"duckdb", "polars"}:
+                year_col = year_columns["year"]
+                hs_col = year_columns["hs"]
+
+                if engine in {"duckdb", "polars"}:
                     logger.info("Using %s engine for data processing.", engine)
                     logger.info(
-                        "%s query may take a while; progress is shown by step timing, "
-                        "not per file.",
+                        "%s query may take a while; progress is shown by step "
+                        "timing, not per file.",
                         engine,
                     )
 
@@ -192,157 +226,175 @@ def run_hs_system_coverage_audit(
                     show_progress=progress_enabled,
                 )
 
-                table_name = get_coverage_product_filename(
-                    "year_hs_counts",
-                    cfg,
-                    default="year_hs_counts_long",
-                )
-                tables[table_name] = year_hs_counts
+                runtime[product_name] = year_hs_counts
+                tables[product_name] = year_hs_counts
 
                 logger.info("Counts shape: %s", year_hs_counts.shape)
 
             else:
-                logger.info("Skipping year × HS-system counts; disabled in config.")
+                logger.info("Skipping %s; disabled in config.", product_name)
 
         # ------------------------------------------------------------------
         # STEP 3 — derived year-HS summaries
         # ------------------------------------------------------------------
-        with _workflow_step(3):
-            if year_hs_counts is None:
-                logger.info(
-                    "Skipping derived HS-system summaries; "
-                    "year_hs_counts was not built."
+        n_step += 1
+        with _workflow_step(n_step):
+            year_columns = get_coverage_product_columns(
+                "year_hs_counts",
+                cfg,
+                required=("year", "hs"),
+            )
+
+            year_col = year_columns["year"]
+            hs_col = year_columns["hs"]
+
+            # --------------------------------------------------------------
+            # 3A — HS-system overall summary
+            # --------------------------------------------------------------
+            product_name = "hs_system_overall_summary"
+
+            if is_coverage_product_enabled(product_name, cfg, default=True):
+                source = _get_required_runtime_table(
+                    product_name=product_name,
+                    runtime=runtime,
+                    cfg=cfg,
                 )
 
-            else:
-                year_columns = get_coverage_product_columns("year_hs_counts", cfg)
-                year_col = year_columns.get("year", "RefYear")
-                hs_col = year_columns.get("hs", "ClassificationCode")
-
-                if is_coverage_product_enabled(
-                    "hs_system_overall_summary",
-                    cfg,
-                    default=True,
-                ):
+                if source is not None:
                     overall_summary = build_hs_system_overall_summary(
-                        year_hs_counts,
+                        source,
                         year_col=year_col,
                         hs_col=hs_col,
                     )
 
-                    table_name = get_coverage_product_filename(
-                        "hs_system_overall_summary",
-                        cfg,
-                        default="hs_system_overall_summary",
-                    )
-                    tables[table_name] = overall_summary
+                    runtime[product_name] = overall_summary
+                    tables[product_name] = overall_summary
 
                     logger.info(
                         "Overall summary shape: %s",
                         overall_summary.shape,
                     )
-                else:
-                    logger.info(
-                        "Skipping HS-system overall summary; disabled in config."
-                    )
 
-                if is_coverage_product_enabled(
-                    "year_hs_count_pivot",
-                    cfg,
-                    default=True,
-                ):
+            else:
+                logger.info("Skipping %s; disabled in config.", product_name)
+
+            # --------------------------------------------------------------
+            # 3B — year × HS count pivot
+            # --------------------------------------------------------------
+            product_name = "year_hs_count_pivot"
+
+            if is_coverage_product_enabled(product_name, cfg, default=True):
+                source = _get_required_runtime_table(
+                    product_name=product_name,
+                    runtime=runtime,
+                    cfg=cfg,
+                )
+
+                if source is not None:
                     count_pivot = make_year_hs_count_pivot(
-                        year_hs_counts,
+                        source,
                         year_col=year_col,
                         hs_col=hs_col,
                     )
 
-                    table_name = get_coverage_product_filename(
-                        "year_hs_count_pivot",
-                        cfg,
-                        default="year_hs_counts_pivot",
-                    )
-                    tables[table_name] = count_pivot.reset_index()
+                    # Runtime keeps the pivot index.
+                    runtime[product_name] = count_pivot
+
+                    # Tables are write-ready, so reset index.
+                    tables[product_name] = count_pivot.reset_index()
 
                     logger.info("Count pivot shape: %s", count_pivot.shape)
-                else:
-                    logger.info("Skipping year-HS count pivot; disabled in config.")
 
-                if is_coverage_product_enabled(
-                    "year_hs_percentage_pivot",
-                    cfg,
-                    default=True,
-                ):
-                    if count_pivot is None:
-                        raise RuntimeError(
-                            "year_hs_percentage_pivot requires "
-                            "year_hs_count_pivot."
-                        )
+            else:
+                logger.info("Skipping %s; disabled in config.", product_name)
 
-                    percentage_pivot = make_year_hs_percentage_pivot(count_pivot)
+            # --------------------------------------------------------------
+            # 3C — year × HS percentage pivot
+            # --------------------------------------------------------------
+            product_name = "year_hs_percentage_pivot"
 
-                    table_name = get_coverage_product_filename(
-                        "year_hs_percentage_pivot",
-                        cfg,
-                        default="year_hs_percentage_pivot",
-                    )
-                    tables[table_name] = percentage_pivot.reset_index()
+            if is_coverage_product_enabled(product_name, cfg, default=True):
+                source = _get_required_runtime_table(
+                    product_name=product_name,
+                    runtime=runtime,
+                    cfg=cfg,
+                )
+
+                if source is not None:
+                    percentage_pivot = make_year_hs_percentage_pivot(source)
+
+                    # Runtime keeps the pivot index.
+                    runtime[product_name] = percentage_pivot
+
+                    # Tables are write-ready, so reset index.
+                    tables[product_name] = percentage_pivot.reset_index()
 
                     logger.info(
                         "Percentage pivot shape: %s",
                         percentage_pivot.shape,
                     )
-                else:
-                    logger.info(
-                        "Skipping year-HS percentage pivot; disabled in config."
-                    )
 
-                if is_coverage_product_enabled(
-                    "year_hs_mix_summary",
-                    cfg,
-                    default=True,
-                ):
-                    if count_pivot is None:
-                        raise RuntimeError(
-                            "year_hs_mix_summary requires year_hs_count_pivot."
-                        )
+            else:
+                logger.info("Skipping %s; disabled in config.", product_name)
 
+            # --------------------------------------------------------------
+            # 3D — year × HS mix summary
+            # --------------------------------------------------------------
+            product_name = "year_hs_mix_summary"
+
+            if is_coverage_product_enabled(product_name, cfg, default=True):
+                source = _get_required_runtime_table(
+                    product_name=product_name,
+                    runtime=runtime,
+                    cfg=cfg,
+                )
+
+                if source is not None:
                     thresholds = get_coverage_product_thresholds(
-                        "year_hs_mix_summary",
+                        product_name,
                         cfg,
                     )
 
                     mix_summary = build_year_hs_mix_summary(
-                        count_pivot,
+                        source,
                         clean_threshold=float(thresholds.get("clean", 95.0)),
                         mostly_clean_threshold=float(
                             thresholds.get("mostly_clean", 90.0)
                         ),
                     )
 
-                    table_name = get_coverage_product_filename(
-                        "year_hs_mix_summary",
-                        cfg,
-                        default="year_hs_mix_summary",
-                    )
-                    tables[table_name] = mix_summary
+                    runtime[product_name] = mix_summary
+                    tables[product_name] = mix_summary
 
                     logger.info("Mix summary shape: %s", mix_summary.shape)
-                else:
-                    logger.info("Skipping year-HS mix summary; disabled in config.")
+
+            else:
+                logger.info("Skipping %s; disabled in config.", product_name)
 
         # ------------------------------------------------------------------
         # STEP 4 — reporter × year × HS coverage
         # ------------------------------------------------------------------
-        with _workflow_step(4):
-            if is_coverage_product_enabled(
-                "reporter_year_hs_coverage",
-                cfg,
-                default=False,
-            ):
+        n_step += 1
+        with _workflow_step(n_step):
+            product_name = "reporter_year_hs_coverage"
+
+            if is_coverage_product_enabled(product_name, cfg, default=False):
                 reporter_columns = get_coverage_product_columns(
-                    "reporter_year_hs_coverage",
+                    product_name,
                     cfg,
+                    required=(
+                        "reporter_code",
+                        "reporter_iso",
+                        "reporter_desc",
+                        "year",
+                        "hs",
+                        "hs_search",
+                        "original",
+                        "cmd",
+                        "flow",
+                        "value",
+                        "netweight",
+                    ),
                 )
 
                 reporter_year_hs_coverage = build_reporter_year_hs_coverage(
@@ -353,12 +405,8 @@ def run_hs_system_coverage_audit(
                     columns=reporter_columns,
                 )
 
-                table_name = get_coverage_product_filename(
-                    "reporter_year_hs_coverage",
-                    cfg,
-                    default="reporter_year_hs_coverage",
-                )
-                tables[table_name] = reporter_year_hs_coverage
+                runtime[product_name] = reporter_year_hs_coverage
+                tables[product_name] = reporter_year_hs_coverage
 
                 logger.info(
                     "Reporter coverage shape: %s",
@@ -366,41 +414,65 @@ def run_hs_system_coverage_audit(
                 )
 
             else:
-                logger.info(
-                    "Skipping reporter × year × HS coverage; disabled in config."
-                )
+                logger.info("Skipping %s; disabled in config.", product_name)
 
         # ------------------------------------------------------------------
         # STEP 5 — write machine-readable tables
         # ------------------------------------------------------------------
-        with _workflow_step(5):
-            overwrite             = bool(write_cfg.get("overwrite", True))
-            write_csv_enabled     = bool(write_cfg.get("csv", True))
+        n_step += 1
+        with _workflow_step(n_step):
+            overwrite = bool(write_cfg.get("overwrite", True))
+            write_csv_enabled = bool(write_cfg.get("csv", True))
             write_parquet_enabled = bool(write_cfg.get("parquet", True))
 
             if not tables:
                 logger.warning("No tables were built; nothing to write.")
 
-            if write_csv_enabled:
-                for name, table in tables.items():
-                    outputs[f"{name}_csv"] = write_csv(table, out_dir / f"{name}.csv", overwrite=overwrite)
+            for product_name, table in tables.items():
+                filename = get_coverage_product_filename(product_name, cfg)
 
-            if write_parquet_enabled:
-                for name, table in tables.items():
-                    outputs[f"{name}_parquet"] = write_parquet(table, out_dir / f"{name}.parquet",overwrite=overwrite)
-    
+                if write_csv_enabled:
+                    outputs[f"{product_name}_csv"] = write_csv(
+                        table,
+                        out_dir / f"{filename}.csv",
+                        overwrite=overwrite,
+                    )
+
+                if write_parquet_enabled:
+                    outputs[f"{product_name}_parquet"] = write_parquet(
+                        table,
+                        out_dir / f"{filename}.parquet",
+                        overwrite=overwrite,
+                    )
 
         # ------------------------------------------------------------------
-        # STEP 6 — build and save human-readable report
+        # STEP 6 — Build Country-level HS coverage report
         # ------------------------------------------------------------------
-        with _workflow_step(6):
+        n_step += 1
+        with _workflow_step(n_step):
             if bool(report_cfg.get("enabled", True)):
-                report_text = build_year_hs_coverage_report_text(audit_info=audit_info,
-                                                                overall_summary=overall_summary,
-                                                                count_pivot=count_pivot,
-                                                                percentage_pivot=percentage_pivot,
-                                                                summary=mix_summary,
-                                                                reporter_coverage=reporter_year_hs_coverage)
+                logger.info(
+                    "Country-level HS coverage report step is currently reserved."
+                )
+            else:
+                logger.info(
+                    "Skipping country-level HS coverage report; report disabled."
+                )
+
+        # ------------------------------------------------------------------
+        # STEP 7 — build and save human-readable report
+        # ------------------------------------------------------------------
+        n_step += 1
+        with _workflow_step(n_step):
+            if bool(report_cfg.get("enabled", True)):
+                report_text = build_year_hs_coverage_report_text(
+                    audit_info=audit_info,
+                    overall_summary=runtime.get("hs_system_overall_summary"),
+                    count_pivot=runtime.get("year_hs_count_pivot"),
+                    percentage_pivot=runtime.get("year_hs_percentage_pivot"),
+                    summary=runtime.get("year_hs_mix_summary"),
+                    reporter_coverage=runtime.get("reporter_year_hs_coverage"),
+                )
 
                 report_base_path = report_dir / report_filename
 
@@ -408,7 +480,10 @@ def run_hs_system_coverage_audit(
                 write_latest = bool(report_cfg.get("write_latest", True))
 
                 if report_timestamp:
-                    report_path = make_timestamped_log_path(report_base_path, timestamp=run_id)
+                    report_path = make_timestamped_log_path(
+                        report_base_path,
+                        timestamp=run_id,
+                    )
                 else:
                     report_path = report_base_path
 
@@ -416,17 +491,22 @@ def run_hs_system_coverage_audit(
                 outputs["report"] = report_path
 
                 if write_latest and report_timestamp:
-                    latest_path = report_base_path.with_name( f"{report_base_path.stem}_latest{report_base_path.suffix}")
+                    latest_path = report_base_path.with_name(
+                        f"{report_base_path.stem}_latest"
+                        f"{report_base_path.suffix}"
+                    )
                     latest_path.write_text(report_text, encoding="utf-8")
                     outputs["report_latest"] = latest_path
 
-                    logger.info("Saved latest report copy: %s", rel_path(latest_path))
+                    logger.info(
+                        "Saved latest report copy: %s",
+                        rel_path(latest_path),
+                    )
 
                 logger.info("Saved report: %s", rel_path(report_path))
 
             else:
                 logger.info("Skipping text report; disabled in config.")
-
 
     outputs["output_dir"] = out_dir
 
