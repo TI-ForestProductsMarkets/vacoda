@@ -19,7 +19,12 @@ from vacoda.hs_sync.coverage import (
     build_year_hs_mix_summary,
     make_year_hs_count_pivot,
     make_year_hs_percentage_pivot,
-    build_hs_sync_coverage_summary_tables
+    build_hs_sync_coverage_summary_tables,
+    build_year_hs_cmd4_coverage,
+    build_cmd4_hs_diversity_summary,
+    build_cmd4_hs_timeline,
+    build_cmd4_hs_transition_events,
+    build_top_cmd4_by_year_hs,
 )
 from vacoda.hs_sync.reports import build_year_hs_coverage_report_text
 from vacoda.io.writer import write_csv, write_parquet
@@ -31,13 +36,15 @@ logger = get_logger("HS_SYNC.WORKFLOW")
 
 
 WORKFLOW_STEPS = {
-    1: "Load HS-sync config and resolve paths",
+    1: "Load HS-sync config",
     2: "Build year × HS-system counts",
     3: "Build derived HS-system summaries",
-    4: "Build reporter × year × HS coverage",
-    5: "Build country-level HS coverage summary tables",
-    6: "Write machine-readable tables",
-    7: "Build and save coverage report",
+    4: "Build year × HS × cmd4 coverage",
+    5: "Build derived cmd4 HS coverage summaries",
+    6: "Build reporter × year × HS coverage",
+    7: "Build country-level HS coverage summary tables",
+    8: "Write machine-readable tables",
+    9: "Build and save coverage report",
 }
 
 TOTAL_STEPS = len(WORKFLOW_STEPS)
@@ -372,8 +379,179 @@ def run_hs_system_coverage_audit(
             else:
                 logger.info("Skipping %s; disabled in config.", product_name)
 
+
         # ------------------------------------------------------------------
-        # STEP 4 — reporter × year × HS coverage
+        # STEP 4 — Build year × HS × cmd4 coverage
+        # ------------------------------------------------------------------
+        n_step += 1
+        with _workflow_step(n_step):
+            base_product_name = "year_hs_cmd4_coverage"
+
+            if is_coverage_product_enabled(base_product_name, cfg, default=False):
+                columns = get_coverage_product_columns(
+                    base_product_name,
+                    cfg,
+                    required=("year", "hs", "cmd"),)
+
+                cmd4_coverage = build_year_hs_cmd4_coverage(
+                    data_dir=data_dir,
+                    pattern=pattern,
+                    engine=engine,
+                    year_col=columns["year"],
+                    hs_col=columns["hs"],
+                    cmd_col=columns["cmd"],
+                    threads=threads,
+                )
+
+                runtime[base_product_name] = cmd4_coverage
+                tables[base_product_name] = cmd4_coverage
+
+                logger.info(
+                    "Year × HS × cmd4 coverage shape: %s",
+                    cmd4_coverage.shape,
+                )
+
+            else:
+                logger.info("Skipping %s; disabled in config.", base_product_name)
+
+
+
+            # ------------------------------------------------------------------
+            # STEP 5 — Build derived cmd4 HS coverage summaries
+            # ------------------------------------------------------------------
+            n_step += 1
+            with _workflow_step(n_step):
+                base_product_name = "year_hs_cmd4_coverage"
+
+            if base_product_name not in runtime:
+                logger.warning(
+                    "Skipping derived cmd4 HS summaries; %s was not built.",
+                    base_product_name)
+
+            else:
+                # Reuse column mapping from the base product.
+                columns = get_coverage_product_columns(
+                        base_product_name,
+                        cfg,
+                        required=("year", "hs", "cmd"))
+                year_col = columns["year"]
+                hs_col = columns["hs"]
+
+                # --------------------------------------------------------------
+                # 5A — top cmd4 by year × HS
+                # --------------------------------------------------------------
+                product_name = "top_cmd4_by_year_hs"
+
+                if is_coverage_product_enabled(product_name, cfg, default=True):
+                    source = _get_required_runtime_table(
+                                    product_name=product_name,
+                                    runtime=runtime,
+                                    cfg=cfg)
+
+                    if source is not None:
+                        top_n = get_coverage_product_top_n(
+                            product_name,
+                            cfg,
+                            default=10)
+                        
+                        top_cmd4 = build_top_cmd4_by_year_hs(
+                            source,
+                            year_col=year_col,
+                            hs_col=hs_col,
+                            n=top_n)
+                    
+                        runtime[product_name] = top_cmd4
+                        tables[product_name] = top_cmd4
+
+                        logger.info("%s shape: %s", product_name, top_cmd4.shape)
+
+                else:
+                    logger.info("Skipping %s; disabled in config.", product_name)
+
+                # --------------------------------------------------------------
+                # 5B — cmd4 × year HS timeline
+                # --------------------------------------------------------------
+                product_name = "cmd4_hs_timeline"
+
+                if is_coverage_product_enabled(product_name, cfg, default=True):
+                    source = _get_required_runtime_table(
+                                product_name=product_name,
+                                runtime=runtime,
+                                cfg=cfg)
+            
+
+                    if source is not None:
+                        cmd4_timeline = build_cmd4_hs_timeline(
+                                    source,
+                                    year_col=year_col,
+                                    hs_col=hs_col)
+                
+
+                    runtime[product_name] = cmd4_timeline
+                    tables[product_name] = cmd4_timeline
+
+                    logger.info("%s shape: %s", product_name, cmd4_timeline.shape)
+
+                else:
+                    logger.info("Skipping %s; disabled in config.", product_name)
+
+                # --------------------------------------------------------------
+                # 5C — cmd4 HS diversity summary
+                # --------------------------------------------------------------
+                product_name = "cmd4_hs_diversity_summary"
+
+                if is_coverage_product_enabled(product_name, cfg, default=True):
+                    source = _get_required_runtime_table(
+                                product_name=product_name,
+                                runtime=runtime,
+                                cfg=cfg)
+            
+
+                    if source is not None:
+                        diversity = build_cmd4_hs_diversity_summary(
+                                        source,
+                                        year_col=year_col,
+                                        hs_col=hs_col)
+                
+
+                    runtime[product_name] = diversity
+                    tables[product_name] = diversity
+
+                    logger.info("%s shape: %s", product_name, diversity.shape)
+
+                else:
+                    logger.info("Skipping %s; disabled in config.", product_name)
+
+                # --------------------------------------------------------------
+                # 5D — cmd4 HS transition events
+                # --------------------------------------------------------------
+                product_name = "cmd4_hs_transition_events"
+
+                if is_coverage_product_enabled(product_name, cfg, default=True):
+                    source = _get_required_runtime_table(
+                                product_name=product_name,
+                                runtime=runtime,
+                                cfg=cfg
+                            )
+
+                    if source is not None:
+                        transitions = build_cmd4_hs_transition_events(
+                                    source,
+                                    year_col=year_col,
+                                    hs_col=hs_col)
+                
+
+                        runtime[product_name] = transitions
+                        tables[product_name] = transitions
+
+                        logger.info("%s shape: %s", product_name, transitions.shape)
+
+                else:
+                    logger.info("Skipping %s; disabled in config.", product_name)
+        
+
+        # ------------------------------------------------------------------
+        # STEP 6 — reporter × year × HS coverage
         # ------------------------------------------------------------------
         n_step += 1
         with _workflow_step(n_step):
@@ -419,7 +597,7 @@ def run_hs_system_coverage_audit(
 
 
         # ------------------------------------------------------------------
-        # STEP 5 — Build country-level HS coverage summary tables
+        # STEP 7 — Build country-level HS coverage summary tables
         # ------------------------------------------------------------------
         n_step += 1
         with _workflow_step(n_step):
@@ -450,7 +628,7 @@ def run_hs_system_coverage_audit(
 
 
         # ------------------------------------------------------------------
-        # STEP 6 — write machine-readable tables
+        # STEP 8 — write machine-readable tables
         # ------------------------------------------------------------------
         n_step += 1
         with _workflow_step(n_step):
@@ -483,7 +661,7 @@ def run_hs_system_coverage_audit(
 
 
         # ------------------------------------------------------------------
-        # STEP 7 — build and save human-readable report
+        # STEP 9 — build and save human-readable report
         # ------------------------------------------------------------------
         n_step += 1
         with _workflow_step(n_step):

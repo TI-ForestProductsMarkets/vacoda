@@ -245,6 +245,17 @@ def get_coverage_product_dependency(
     product_cfg = get_coverage_product_config(product_name, cfg)
     return product_cfg.get("depends_on")
 
+
+def get_coverage_product_top_n(
+    product_name: str,
+    cfg: dict | None = None,
+    *,
+    default: int = 10,
+) -> int:
+    """Return top_n setting for a coverage product."""
+    product_cfg = get_coverage_product_config(product_name, cfg)
+    return int(product_cfg.get("top_n", default))
+
 ## Coverage report config getters
 def get_coverage_report_config(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
     """Return coverage report config."""
