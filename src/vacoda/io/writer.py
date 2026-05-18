@@ -56,9 +56,9 @@ def write_parquet(
     df: pd.DataFrame,
     path: str | Path,
     *,
-    overwrite: bool = False,
+    overwrite: bool = True,
     create_parent: bool = True,
-    allow_empty: bool = False,
+    allow_empty: bool = True,
 ) -> Path:
     """
     Write a DataFrame to a Parquet file.
@@ -106,9 +106,9 @@ def write_csv(
     df: pd.DataFrame,
     path: str | Path,
     *,
-    overwrite: bool = False,
+    overwrite: bool = True,
     create_parent: bool = True,
-    allow_empty: bool = False,
+    allow_empty: bool = True,
     index: bool = False,
 ) -> Path:
     """
@@ -156,7 +156,7 @@ def write_parquet_interactive(
     df: pd.DataFrame,
     path: str | Path,
     *,
-    allow_empty: bool = False,
+    allow_empty: bool = True,
 ) -> Path | None:
     """
     Interactively ask before writing parquet.
