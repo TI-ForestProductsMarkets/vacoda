@@ -12,59 +12,109 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from vacoda.config.base import CONFIG_DIR, as_path, load_yaml_config
+from vacoda.config.base import (
+    CONFIG_DIR,
+    get_required_block,
+    get_required_value,
+    load_yaml_config,
+    require_path,
+    resolve_placeholders,
+)
+from vacoda.utils.logger import make_timestamped_log_path
 
 
-PATHS_CONFIG_PATH = CONFIG_DIR / "paths.yaml"
+PATHS_CONFIG_NAME = "paths.yaml"
+PATHS_CONFIG_PATH = CONFIG_DIR / PATHS_CONFIG_NAME
+
+
+def validate_paths_config(cfg: dict[str, Any]) -> None:
+    """Validate required paths.yaml structure."""
+    get_required_value(cfg, ("storage_root",), config_name=PATHS_CONFIG_NAME)
+
+    data_cfg = get_required_block(
+        cfg,
+        "data",
+        config_name=PATHS_CONFIG_NAME,
+    )
+    output_cfg = get_required_block(
+        cfg,
+        "output",
+        config_name=PATHS_CONFIG_NAME,
+    )
+    metadata_cfg = get_required_block(
+        cfg,
+        "metadata",
+        config_name=PATHS_CONFIG_NAME,
+    )
+
+    for key in ("root", "raw", "external", "interim", "processed", "references"):
+        get_required_value(data_cfg, (key,), config_name=f"{PATHS_CONFIG_NAME}: data")
+
+    for key in ("root", "figures", "logs", "reports", "manifests"):
+        get_required_value(output_cfg, (key,), config_name=f"{PATHS_CONFIG_NAME}: output")
+
+    get_required_value(metadata_cfg, ("root",), config_name=f"{PATHS_CONFIG_NAME}: metadata")
 
 
 def load_paths_config(config_path: Path | None = None) -> dict[str, Any]:
-    """Load configs/paths.yaml."""
-    return load_yaml_config(config_path or PATHS_CONFIG_PATH)
-
+    """Load, resolve, and validate configs/paths.yaml."""
+    cfg = load_yaml_config(config_path or PATHS_CONFIG_PATH)
+    cfg = resolve_placeholders(cfg, config_name="paths.yaml")
+    validate_paths_config(cfg)
+    return cfg
 
 def get_storage_root(cfg: dict[str, Any] | None = None) -> Path:
     """Return storage root."""
-    cfg = cfg or load_paths_config()
-    return as_path(cfg["storage_root"])
+    if cfg is None:
+        cfg = load_paths_config()
+
+    value = get_required_value(
+        cfg,
+        ("storage_root",),
+        config_name=PATHS_CONFIG_NAME,
+    )
+    return require_path(value, key="storage_root")
 
 
 def get_data_dir(stage: str, cfg: dict[str, Any] | None = None) -> Path:
-    """
-    Return a data directory by stage.
+    """Return a data directory by stage."""
+    if cfg is None:
+        cfg = load_paths_config()
 
-    Examples:
-        raw, external, interim, processed, references
-    """
-    cfg = cfg or load_paths_config()
+    data_cfg = get_required_block(
+        cfg,
+        "data",
+        config_name=PATHS_CONFIG_NAME,
+    )
 
-    try:
-        return as_path(cfg["data"][stage])
-    except KeyError as exc:
-        valid = ", ".join(cfg.get("data", {}).keys())
-        raise KeyError(f"Unknown data stage '{stage}'. Valid stages: {valid}") from exc
+    if stage not in data_cfg:
+        valid = ", ".join(data_cfg.keys())
+        raise KeyError(f"Unknown data stage '{stage}'. Valid stages: {valid}")
+
+    return require_path(data_cfg[stage], key=f"data.{stage}")
 
 
 def get_output_dir(kind: str, cfg: dict[str, Any] | None = None) -> Path:
-    """
-    Return an output directory by kind.
+    """Return an output directory by kind."""
+    if cfg is None:
+        cfg = load_paths_config()
 
-    Examples:
-        figures, logs, reports, manifests
-    """
-    cfg = cfg or load_paths_config()
+    output_cfg = get_required_block(
+        cfg,
+        "output",
+        config_name=PATHS_CONFIG_NAME,
+    )
 
-    try:
-        return as_path(cfg["output"][kind])
-    except KeyError as exc:
-        valid = ", ".join(cfg.get("output", {}).keys())
-        raise KeyError(f"Unknown output kind '{kind}'. Valid kinds: {valid}") from exc
+    if kind not in output_cfg:
+        valid = ", ".join(output_cfg.keys())
+        raise KeyError(f"Unknown output kind '{kind}'. Valid kinds: {valid}")
+
+    return require_path(output_cfg[kind], key=f"output.{kind}")
 
 
 def get_log_dir(cfg: dict[str, Any] | None = None) -> Path:
     """Return configured log directory."""
-    cfg = cfg or load_paths_config()
-    return as_path(cfg["logging"]["dir"])
+    return get_output_dir("logs", cfg=cfg)
 
 
 def get_metadata_paths(cfg: dict[str, Any] | None = None) -> dict[str, Path]:
@@ -73,11 +123,12 @@ def get_metadata_paths(cfg: dict[str, Any] | None = None) -> dict[str, Path]:
 
     Skips metadata.root.
     """
-    cfg = cfg or load_paths_config()
+    if cfg is None:
+        cfg = load_paths_config()
     metadata_cfg = cfg.get("metadata", {})
 
     return {
-        key: as_path(value)
+        key: require_path(value, key=f"metadata.{key}")
         for key, value in metadata_cfg.items()
         if key != "root"
     }
@@ -100,15 +151,9 @@ def get_manifests_dir(cfg: dict[str, Any] | None = None) -> Path:
 
 def get_slurm_reports_dir(cfg: dict[str, Any] | None = None) -> Path:
     """Return SLURM reports directory."""
-    cfg = cfg or load_paths_config()
-    return as_path(cfg["slurm"]["reports"])
-
-
-# src/vacoda/config/paths.py
-
-from pathlib import Path
-
-from vacoda.utils.logger import make_timestamped_log_path
+    if cfg is None:
+        cfg = load_paths_config()
+    return require_path(cfg["slurm"]["reports"], key="slurm.reports")
 
 
 def resolve_log_path(
