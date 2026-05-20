@@ -1,6 +1,8 @@
 """
 Module: vacoda.preprocessing.partner_source
 Description: Harmonization and reliability classification of partner_source values.
+This module provides functions to harmonize raw partner_source values into clean, consistent labels and to classify the reliability of trade data based on these harmonized partner_source values.
+
 """
 from __future__ import annotations
 
