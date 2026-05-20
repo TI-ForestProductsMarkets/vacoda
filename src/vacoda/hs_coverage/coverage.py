@@ -1,5 +1,5 @@
 """
-vacoda.hs_sync.coverage
+vacoda.hs_coverage.coverage
 
 Diagnostics for understanding HS classification coverage across years,
 reporters, and commodity pools.
@@ -8,16 +8,16 @@ reporters, and commodity pools.
 from __future__ import annotations
 
 from pathlib import Path
-
 import pandas as pd
+import duckdb
 
-from vacoda.hs_sync.coverage_engines import (
+from vacoda.hs_coverage.engines import (
     build_year_hs_counts_duckdb,
     build_year_hs_counts_polars,
     build_year_hs_counts_pandas,
     build_reporter_year_hs_coverage_duckdb,
 )
-from vacoda.hs_sync.coverage_summaries import (
+from vacoda.hs_coverage.summaries import (
     add_reporter_year_shares,
     build_hs_transition_events,
     build_mixed_classification_reporter_years,
@@ -47,13 +47,6 @@ def add_cmd4(
     )
 
     return out
-
-from pathlib import Path
-
-import duckdb
-import pandas as pd
-
-
 
 
 def build_year_hs_cmd4_coverage_duckdb(
@@ -489,6 +482,7 @@ def build_year_hs_counts(
             pattern=pattern,
             year_col=year_col,
             hs_col=hs_col,
+            progress_every=1000,
             show_progress=show_progress,
         )
 
@@ -570,13 +564,13 @@ def build_year_hs_mix_summary(
 
     return summary.reset_index()
 
-def build_hs_sync_coverage_summary_tables(
+def build_hs_coverage_summary_tables(
     df: pd.DataFrame,
     *,
     dominance_metric: str = "share_rows_in_reporter_year",
 ) -> dict[str, pd.DataFrame]:
     """
-    Build all main HS-sync coverage summary tables.
+    Build all main HS-coverage summary tables.
 
     Returns
     -------

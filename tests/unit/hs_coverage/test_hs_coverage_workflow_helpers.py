@@ -1,10 +1,10 @@
-# tests/hs_sync/test_hs_sync_workflow.py
+# tests/unit/hs_coverage/test_hs_coverage_workflow_helpers.py
 
 from pathlib import Path
 
 import pandas as pd
 
-from vacoda.hs_sync import workflow
+from vacoda.hs_coverage import workflow
 
 
 def write_input_csv(path: Path) -> None:
@@ -30,16 +30,16 @@ def make_test_config(tmp_path: Path) -> dict:
     return {
         "coverage": {
             "input": {
-                "stage": "raw",
-                "subdir": "api/single",
+                "stage": "tmp",
+                "subdir": "",
                 "pattern": "*.csv",
             },
             "output": {
                 "stage": "interim",
-                "subdir": "hs_sync",
+                "subdir": "hs_coverage",
             },
             "engine": {
-                "name": "pandas",
+                "name": "duckdb",
                 "threads": 1,
             },
             "progress": {
@@ -156,14 +156,14 @@ def test_run_hs_system_coverage_audit_writes_outputs(
 
     monkeypatch.setattr(workflow, "get_data_dir", fake_get_data_dir)
     monkeypatch.setattr(workflow, "get_output_dir", fake_get_output_dir)
-    monkeypatch.setattr(workflow, "load_hs_sync_config", lambda _: cfg)
+    monkeypatch.setattr(workflow, "load_hs_coverage_config", lambda _: cfg)
 
     outputs = workflow.run_hs_system_coverage_audit(
         config_path=tmp_path / "dummy.yaml",
         run_id="TEST_RUN",
     )
 
-    out_dir = data_root / "interim" / "hs_sync"
+    out_dir = data_root / "interim" / "hs_coverage"
     report_path = output_root / "reports" / "audit_hs_system_coverage_report.txt"
 
     assert outputs["output_dir"] == out_dir
@@ -210,14 +210,14 @@ def test_workflow_skips_products_when_dependency_missing(
 
     monkeypatch.setattr(workflow, "get_data_dir", fake_get_data_dir)
     monkeypatch.setattr(workflow, "get_output_dir", fake_get_output_dir)
-    monkeypatch.setattr(workflow, "load_hs_sync_config", lambda _: cfg)
+    monkeypatch.setattr(workflow, "load_hs_coverage_config", lambda _: cfg)
 
     workflow.run_hs_system_coverage_audit(
         config_path=tmp_path / "dummy.yaml",
         run_id="TEST_RUN",
     )
 
-    out_dir = data_root / "interim" / "hs_sync"
+    out_dir = data_root / "interim" / "hs_coverage"
 
     assert not (out_dir / "year_hs_counts_pivot.csv").exists()
     assert not (out_dir / "year_hs_percentage_pivot.csv").exists()

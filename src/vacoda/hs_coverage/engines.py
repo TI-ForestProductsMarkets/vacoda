@@ -3,7 +3,6 @@ Coverage engines for building year × HS classification counts.
 """
 
 from pathlib import Path
-from typing import Iterable
 import duckdb
 import pandas as pd
 import polars as pl
@@ -125,7 +124,7 @@ def build_year_hs_counts_pandas(
     parts: list[pd.DataFrame] = []
     errors: list[tuple[str, str, str]] = []
 
-    for path in progress_bar(files, every=progress_every, disable=not show_progress):
+    for path in progress_bar(files, enabled=show_progress):
         try:
             df = pd.read_csv(
                 path,
@@ -149,87 +148,6 @@ def build_year_hs_counts_pandas(
 
         except Exception as exc:
             errors.append((str(path), type(exc).__name__, str(exc)[:300])) 
-
-    if not parts:
-        raise ValueError("No non-empty data found while building year-HS counts.")
-
-    year_hs = pd.concat(parts, ignore_index=True)
-
-    result = (
-        year_hs.groupby([year_col, hs_col], dropna=False)["n_rows"]
-        .sum()
-        .reset_index()
-        .sort_values([year_col, hs_col])
-        .reset_index(drop=True)
-    )
-
-    if errors:
-        print(f"WARNING: {len(errors)} file(s) failed while building counts.")
-        for error in errors[:10]:
-            print(error)
-
-    return result
-
-
-def build_year_hs_counts_pandas_deprecated(
-    files: Iterable[str | Path],
-    *,
-    year_col: str = "RefYear",
-    hs_col: str = "ClassificationCode",
-    progress_every: int = 1000) -> pd.DataFrame:
-    """
-    Build long-format year × HS-classification row counts.
-
-    Output columns:
-        RefYear | ClassificationCode | n_rows
-
-    Parameters
-    ----------
-    files:
-        Iterable of CSV file paths.
-    year_col:
-        Column containing the reference year.
-    hs_col:
-        Column containing the HS classification code, e.g. H0, H1, H2.
-    progress_every:
-        Print progress every N files. Set to 0 or None to disable.
-
-    Returns
-    -------
-    pd.DataFrame
-        Long-format table with one row per year × HS classification.
-    """
-    files = [Path(p) for p in files]
-    parts: list[pd.DataFrame] = []
-    errors: list[tuple[str, str, str]] = []
-
-    for i, path in enumerate(files, 1):
-        try:
-            df = pd.read_csv(
-                path,
-                usecols=[year_col, hs_col],
-                dtype={
-                    year_col: "int16",
-                    hs_col: "string",
-                },
-            )
-
-            if df.empty:
-                continue
-
-            grouped = (
-                df.groupby([year_col, hs_col], dropna=False)
-                .size()
-                .reset_index(name="n_rows")
-            )
-
-            parts.append(grouped)
-
-        except Exception as exc:
-            errors.append((str(path), type(exc).__name__, str(exc)[:300]))
-
-        if progress_every and i % progress_every == 0:
-            print(f"processed {i}/{len(files)} files")
 
     if not parts:
         raise ValueError("No non-empty data found while building year-HS counts.")

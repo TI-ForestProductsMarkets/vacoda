@@ -1,7 +1,7 @@
 """
-vacoda.hs_sync.workflow
+vacoda.hs_coverage.workflow
 
-End-to-end HS-sync diagnostic workflows.
+End-to-end HS-coverage diagnostic workflows.
 """
 
 from __future__ import annotations
@@ -10,33 +10,51 @@ from pathlib import Path
 
 import pandas as pd
 
-from vacoda.config.hs_sync import *
+from vacoda.config.hs_coverage import (
+    get_coverage_input_config,
+    get_coverage_output_config,
+    get_coverage_report_config,
+    get_coverage_write_config,
+    get_coverage_input_data_pattern,
+    get_coverage_engine_name,
+    get_coverage_threads,
+    get_coverage_report_output_kind,
+    get_coverage_report_filename,
+    get_coverage_product_columns,
+    get_coverage_product_thresholds,
+    get_coverage_product_top_n,
+    get_coverage_product_dependency,
+    is_coverage_product_enabled,
+    load_hs_coverage_config,
+    get_coverage_progress_bool,
+    get_coverage_product_filename
+    )
 from vacoda.config.paths import get_data_dir, get_output_dir
-from vacoda.hs_sync.coverage import (
+from vacoda.hs_coverage.coverage import (
     build_hs_system_overall_summary,
     build_reporter_year_hs_coverage,
     build_year_hs_counts,
     build_year_hs_mix_summary,
     make_year_hs_count_pivot,
     make_year_hs_percentage_pivot,
-    build_hs_sync_coverage_summary_tables,
+    build_hs_coverage_summary_tables,
     build_year_hs_cmd4_coverage,
     build_cmd4_hs_diversity_summary,
     build_cmd4_hs_timeline,
     build_cmd4_hs_transition_events,
     build_top_cmd4_by_year_hs,
 )
-from vacoda.hs_sync.reports import build_year_hs_coverage_report_text
+from vacoda.hs_coverage.reports import build_year_hs_coverage_report_text
 from vacoda.io.writer import write_csv, write_parquet
 from vacoda.utils.logger import get_logger, rel_path, make_timestamped_log_path
 from vacoda.utils.timing import timed_step, timed_workflow
 
 
-logger = get_logger("HS_SYNC.WORKFLOW")
+logger = get_logger("HS_COVERAGE.WORKFLOW")
 
 
 WORKFLOW_STEPS = {
-    1: "Load HS-sync config",
+    1: "Load HS-coverage config",
     2: "Build year × HS-system counts",
     3: "Build derived HS-system summaries",
     4: "Build year × HS × cmd4 coverage",
@@ -74,7 +92,7 @@ def _resolve_data_stage_dir(block: dict) -> Path:
 
 def _workflow_step(step_num: int):
     """
-    Convenience wrapper for a timed HS-sync workflow step.
+    Convenience wrapper for a timed HS-coverage workflow step.
     """
     return timed_step(
         logger,
@@ -150,14 +168,14 @@ def run_hs_system_coverage_audit(
     # These may preserve indexes/pivot structure needed by downstream products.
     runtime: dict[str, pd.DataFrame] = {}
 
-    with timed_workflow(logger, "HS Sync coverage audit"):
+    with timed_workflow(logger, "HS Coverage audit"):
 
         # ------------------------------------------------------------------
         # STEP 1 — config and paths
         # ------------------------------------------------------------------
         n_step = 1
         with _workflow_step(n_step):
-            cfg = load_hs_sync_config(config_path)
+            cfg = load_hs_coverage_config(config_path)
 
             input_cfg = get_coverage_input_config(cfg)
             output_cfg = get_coverage_output_config(cfg)
@@ -611,7 +629,7 @@ def run_hs_system_coverage_audit(
             else:
                 source = runtime[source_product]
 
-                summary_tables = build_hs_sync_coverage_summary_tables(source)
+                summary_tables = build_hs_coverage_summary_tables(source)
 
                 for product_name, table in summary_tables.items():
                     if is_coverage_product_enabled(product_name, cfg, default=True):
