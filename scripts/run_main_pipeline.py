@@ -7,9 +7,7 @@ from pathlib import Path
 from vacoda.utils.logger import setup_logging, get_logger, rel_path
 from vacoda.pipeline.build_processed_dataset import build_processed_dataset
 from vacoda.io.paths import (
-    get_processed_data_file_path,
     get_processed_data_dir,
-    get_raw_data_dir,
     load_paths_config,
     get_processed_file_path_from_raw
 )

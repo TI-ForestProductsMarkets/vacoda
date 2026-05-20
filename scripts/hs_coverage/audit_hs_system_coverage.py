@@ -4,19 +4,19 @@ how many are successfully processed through the workflow. This helps identify ga
 in the HS Sync pipeline.
 """
 from datetime import datetime
-from vacoda.config.hs_sync import (
+from vacoda.config.hs_coverage import (
     get_logging_file,
     get_logging_level,
     get_logging_timestamp_bool,
-    load_hs_sync_config,
+    load_hs_coverage_config,
 )
 from vacoda.config.paths import resolve_log_path
-from vacoda.hs_sync.workflow import run_hs_system_coverage_audit
+from vacoda.hs_coverage.workflow import run_hs_system_coverage_audit
 from vacoda.utils.logger import get_logger, parse_log_level, setup_logging
 
 
 def main() -> None:
-    cfg = load_hs_sync_config()
+    cfg = load_hs_coverage_config()
 
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -28,19 +28,19 @@ def main() -> None:
 
     setup_logging(level=log_level, log_file=log_path)
 
-    logger = get_logger("SCRIPT.HS_SYNC_COVERAGE")
-    logger.info("Starting HS Sync coverage audit.")
+    logger = get_logger("SCRIPT.HS_COVERAGE")
+    logger.info("Starting HS Coverage audit.")
     logger.debug("Log file: %s", log_path)
 
     try:
         outputs = run_hs_system_coverage_audit(run_id=run_id)
     except Exception as e:
-        logger.exception("HS Sync coverage audit failed.")
+        logger.exception("HS Coverage audit failed.")
         logger.info("Log file: %s", log_path)
         raise
 
-    logger.info("Finished HS Sync coverage audit.")
-    logger.info("\nHS Sync Coverage Workflow complete.")
+    logger.info("Finished HS Coverage audit.")
+    logger.info("\nHS Coverage Workflow complete.")
     logger.info(f"  Output directory: {outputs.get('output_dir')}")
     logger.info(f"  Report: {outputs.get('report')}")
     logger.info(f"  Log file: {log_path}")

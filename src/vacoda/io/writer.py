@@ -108,7 +108,7 @@ def write_csv(
     *,
     overwrite: bool = True,
     create_parent: bool = True,
-    allow_empty: bool = True,
+    allow_empty: bool = False,
     index: bool = False,
 ) -> Path:
     """

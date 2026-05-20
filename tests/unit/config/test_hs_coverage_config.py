@@ -1,8 +1,8 @@
-# tests/hs_sync/test_hs_sync_config.py
+# tests/hs_coverage/test_hs_coverage_config.py
 
 import pytest
 
-from vacoda.config.hs_sync import (
+from vacoda.config.hs_coverage import (
     get_coverage_product_columns,
     get_coverage_product_dependency,
     get_coverage_product_filename,
