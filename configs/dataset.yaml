@@ -1,0 +1,108 @@
+## configs/dataset.yaml
+## This file contains the configuration for the dataset.
+
+dataset:
+  name: comtrade_wood_panel_base
+  mode: per_file
+  source: api
+
+input:
+  stage: raw
+  subdir: api/single
+  pattern: "*.csv"
+  files:
+    - Comtrade_hs_441012_trade.csv
+
+output:
+  stage: processed
+  subdir: single
+  format: parquet
+  files:
+    - comtrade_code_5_base.parquet
+
+schema:
+  name: comtrade_annual_hs_to_vacoda_base
+  strict: false
+
+  raw:
+    required_fields:
+      - RefYear
+      - ReporterCode
+      - ReporterISO
+      - PartnerCode
+      - PartnerISO
+      - FlowCode
+      - CmdCode
+      - ClassificationCode
+      - PrimaryValue
+      - NetWgt
+
+  standardized:
+    name: vacoda_base_trade
+    drop_unmapped_fields: true
+    field_mapping:
+      RefYear: year
+      ReporterCode: reporter_code
+      ReporterISO: reporter_iso
+      ReporterDesc: reporter_name
+      PartnerCode: partner_code
+      PartnerISO: partner_iso
+      PartnerDesc: partner_name
+      FlowCode: flow_code
+      FlowDesc: flow_name
+      CmdCode: commodity_code
+      CmdDesc: commodity_name
+      ClassificationCode: hs_version
+      ClassificationSearchCode: classification_search
+      IsOriginalClassification: is_original_classification
+      PrimaryValue: value_usd
+      NetWgt: net_weight_kg
+      GrossWgt: gross_weight_kg
+      Cifvalue: cif_value_usd
+      Fobvalue: fob_value_usd
+      IsReported: is_reported
+      IsAggregate: is_aggregate
+
+    required_fields:
+      - year
+      - reporter_code
+      - reporter_iso
+      - partner_code
+      - partner_iso
+      - flow_code
+      - commodity_code
+      - hs_version
+      - value_usd
+      - net_weight_kg
+
+    dtypes:
+      year: int16
+      reporter_code: int32
+      reporter_iso: string
+      reporter_name: string
+      partner_code: int32
+      partner_iso: string
+      partner_name: string
+      flow_code: string
+      flow_name: string
+      commodity_code: string
+      commodity_name: string
+      hs_version: string
+      classification_search: string
+      is_original_classification: boolean
+      value_usd: float64
+      net_weight_kg: float64
+      gross_weight_kg: float64
+      cif_value_usd: float64
+      fob_value_usd: float64
+      is_reported: boolean
+      is_aggregate: boolean
+
+write:
+  overwrite: true
+  allow_empty: false
+
+logging:
+  level: DEBUG
+  file: LOG_DATASET_BUILD.log
+  timestamp: true

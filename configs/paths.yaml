@@ -1,33 +1,31 @@
-# Configuration file for data paths in the vacoda project.
+# configs/paths.yaml
 
-storage_root: /storage/vacoda
+storage_root: "/storage/vacoda"
 
 data:
-  root: /storage/vacoda/data
-  raw: /storage/vacoda/data/raw
-  external: /storage/vacoda/data/external
-  interim: /storage/vacoda/data/interim
-  processed: /storage/vacoda/data/processed
-  references: /storage/vacoda/data/references
+  root: "{storage_root}/data"
+  raw: "{data.root}/raw"
+  external: "{data.root}/external"
+  interim: "{data.root}/interim"
+  processed: "{data.root}/processed"
+  references: "{data.root}/references"
 
 output:
-  root: /storage/vacoda/output
-  figures: /storage/vacoda/output/figures
-  logs: /storage/vacoda/output/logs
-  reports: /storage/vacoda/output/reports
-  manifests: /storage/vacoda/output/manifests
+  root: "{storage_root}/output"
+  figures: "{output.root}/figures"
+  logs: "{output.root}/logs"
+  reports: "{output.root}/reports"
+  manifests: "{output.root}/manifests"
 
 slurm:
-  reports: /storage/slurm/output/reports
+  root: "{storage_root}/slurm"
+  reports: "{slurm.root}/output/reports"
 
 metadata:
-  root: /storage/vacoda/data/references/metadata
-  hs_version: /storage/vacoda/data/references/metadata/hs_version.parquet
-  reporter: /storage/vacoda/data/references/metadata/reporter.parquet
-  commodity: /storage/vacoda/data/references/metadata/commodity.parquet
-  flow: /storage/vacoda/data/references/metadata/flow.parquet
-  unit: /storage/vacoda/data/references/metadata/unit.parquet
-  estimation: /storage/vacoda/data/references/metadata/estimation.parquet
-
-logging:
-  dir: /storage/vacoda/output/logs
+  root: "{data.references}/metadata"
+  hs_version: "{metadata.root}/hs_version.parquet"
+  reporter: "{metadata.root}/reporter.parquet"
+  commodity: "{metadata.root}/commodity.parquet"
+  flow: "{metadata.root}/flow.parquet"
+  unit: "{metadata.root}/unit.parquet"
+  estimation: "{metadata.root}/estimation.parquet"
