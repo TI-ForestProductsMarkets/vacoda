@@ -1065,8 +1065,370 @@ def audit_csv_to_partitioned_parquet_staging_deprecated(
 
     return audit
 
-
 def export_harvard_generator_compatibility_layout(
+    *,
+    staged_partitioned_dir: Path,
+    output_root: Path,
+    years_by_hs: dict[str, list[int]] | None = None,
+    year_col: str = "RefYear",
+    hs_col: str = "ClassificationCode",
+    cmd_col: str = "CmdCode",
+    reporter_code_col: str = "reporterCode",
+    partner_code_col: str = "partnerCode",
+    flow_col: str = "flowCode",
+    value_col: str = "PrimaryValue",
+    valid_cmd_regex: str | None = None,
+    qty_col: str | None = "NetWgt",
+    country_reference_glob: str | None = None,
+    country_reporter_code_col: str = "ReporterCode",
+    country_reporter_iso_col: str = "ReporterISO",
+    country_partner_code_col: str = "PartnerCode",
+    country_partner_iso_col: str = "PartnerISO",
+    published_date: str = "2026-01-01",
+    threads: int = 16,
+    overwrite: bool = False,
+) -> dict[str, int]:
+    """
+    Export fast partitioned vacoda staging into the layout expected by the
+    Harvard/Growth Lab conversion-weight generator.
+
+    Input:
+        output_root/as_reported/raw_parquet_partitioned/
+        ├── hs_partition=H4/year_partition=2016/*.parquet
+        └── hs_partition=H5/year_partition=2017/*.parquet
+
+    Output:
+        output_root/as_reported/raw_parquet/H4/2016/
+        └── COMTRADE-FINALCLASSIC-CA{reporter}{year}H4[{date}].parquet
+
+        output_root/as_reported/aggregated_by_year_not_converted/parquet/H4/
+        └── H4_2016.parquet
+
+    Notes
+    -----
+    Harvard's MatrixBuilder uses raw_parquet mostly to identify reporter files
+    and timely classification switchers. The trade values are read from
+    aggregated_by_year_not_converted/parquet/{H}/{H}_{year}.parquet.
+
+    The aggregated files must contain real ISO3 codes in reporterISO3 and
+    partnerISO3. Bulk Comtrade files usually only contain numeric reporterCode
+    and partnerCode, so this function builds an ISO map from single-API files
+    using country_reference_glob.
+    """
+
+    if country_reference_glob is None:
+        raise ValueError(
+            "country_reference_glob is required. Harvard aggregated files need "
+            "real ISO3 values in reporterISO3/partnerISO3, but bulk data only "
+            "contains numeric reporter/partner codes."
+        )
+
+    as_reported_dir = output_root / "as_reported"
+
+    raw_parquet_dir = as_reported_dir / "raw_parquet"
+    aggregated_dir = (
+        as_reported_dir
+        / "aggregated_by_year_not_converted"
+        / "parquet"
+    )
+
+    raw_parquet_dir.mkdir(parents=True, exist_ok=True)
+    aggregated_dir.mkdir(parents=True, exist_ok=True)
+
+    logger.info("Exporting Harvard generator compatibility layout.")
+    logger.info("Input partitioned dir: %s", rel_path(staged_partitioned_dir))
+    logger.info("Raw parquet output: %s", rel_path(raw_parquet_dir))
+    logger.info("Aggregated output: %s", rel_path(aggregated_dir))
+    logger.info("Country reference glob: %s", country_reference_glob)
+
+    if years_by_hs is None:
+        years_by_hs = {}
+
+        for hs_dir in staged_partitioned_dir.glob("hs_partition=*"):
+            if not hs_dir.is_dir():
+                continue
+
+            hs = hs_dir.name.split("=", 1)[1]
+            years: list[int] = []
+
+            for year_dir in hs_dir.glob("year_partition=*"):
+                if not year_dir.is_dir():
+                    continue
+                year_text = year_dir.name.split("=", 1)[1]
+                years.append(int(year_text))
+
+            years_by_hs[hs] = sorted(years)
+
+    written_raw_files = 0
+    written_aggregated_files = 0
+    skipped_raw_files = 0
+    skipped_aggregated_files = 0
+
+    with duckdb.connect() as con:
+        con.execute(f"PRAGMA threads={int(threads)}")
+
+        # ------------------------------------------------------------------
+        # Build numeric Comtrade code -> ISO3 map from single-API files.
+        # ------------------------------------------------------------------
+        con.execute(
+            f"""
+            CREATE OR REPLACE TEMP VIEW country_iso_map_raw AS
+            SELECT DISTINCT
+                CAST("{country_reporter_code_col}" AS INTEGER) AS code,
+                UPPER(TRIM(CAST("{country_reporter_iso_col}" AS VARCHAR))) AS iso3
+            FROM read_csv_auto(
+                '{country_reference_glob}',
+                union_by_name = true,
+                filename = true
+            )
+            WHERE "{country_reporter_code_col}" IS NOT NULL
+              AND "{country_reporter_iso_col}" IS NOT NULL
+              AND TRIM(CAST("{country_reporter_iso_col}" AS VARCHAR)) <> ''
+
+            UNION
+
+            SELECT DISTINCT
+                CAST("{country_partner_code_col}" AS INTEGER) AS code,
+                UPPER(TRIM(CAST("{country_partner_iso_col}" AS VARCHAR))) AS iso3
+            FROM read_csv_auto(
+                '{country_reference_glob}',
+                union_by_name = true,
+                filename = true
+            )
+            WHERE "{country_partner_code_col}" IS NOT NULL
+              AND "{country_partner_iso_col}" IS NOT NULL
+              AND TRIM(CAST("{country_partner_iso_col}" AS VARCHAR)) <> ''
+            """
+        )
+
+        # Deduplicate defensively. If a numeric code maps to multiple ISO3
+        # strings in messy source files, choose the lexicographically first one
+        # and expose the ambiguity through logs.
+        ambiguous_mappings = con.execute(
+            """
+            SELECT
+                code,
+                COUNT(DISTINCT iso3) AS n_iso3
+            FROM country_iso_map_raw
+            GROUP BY code
+            HAVING COUNT(DISTINCT iso3) > 1
+            ORDER BY code
+            """
+        ).df()
+
+        if not ambiguous_mappings.empty:
+            logger.warning(
+                "Country ISO map has ambiguous code→ISO3 mappings. "
+                "Using MIN(iso3). First examples: %s",
+                ambiguous_mappings.head(20).to_dict(orient="records"),
+            )
+
+        con.execute(
+            """
+            CREATE OR REPLACE TEMP VIEW country_iso_map AS
+            SELECT
+                code,
+                MIN(iso3) AS iso3
+            FROM country_iso_map_raw
+            WHERE iso3 IS NOT NULL
+              AND TRIM(iso3) <> ''
+            GROUP BY code
+            """
+        )
+
+        country_map_summary = con.execute(
+            """
+            SELECT
+                COUNT(*) AS n_codes,
+                COUNT(DISTINCT iso3) AS n_iso3
+            FROM country_iso_map
+            """
+        ).df()
+
+        logger.info(
+            "Country ISO map summary: %s",
+            country_map_summary.to_dict(orient="records")[0],
+        )
+
+        for hs, years in sorted(years_by_hs.items()):
+            hs = str(hs).strip().upper()
+
+            for year in sorted(years):
+                input_glob = str(
+                    staged_partitioned_dir
+                    / f"hs_partition={hs}"
+                    / f"year_partition={int(year)}"
+                    / "*.parquet"
+                )
+
+                # ---------------------------------------------------------
+                # 1. Aggregated file used by Harvard MatrixBuilder
+                # ---------------------------------------------------------
+
+                agg_out_dir = aggregated_dir / hs
+                agg_out_dir.mkdir(parents=True, exist_ok=True)
+
+                agg_out_file = agg_out_dir / f"{hs}_{int(year)}.parquet"
+
+                if agg_out_file.exists() and not overwrite:
+                    skipped_aggregated_files += 1
+                    logger.info(
+                        "Skipping existing aggregated file: %s",
+                        rel_path(agg_out_file),
+                    )
+                else:
+                    qty_expr = (
+                        f'SUM(TRY_CAST(t."{qty_col}" AS DOUBLE)) AS qty'
+                        if qty_col
+                        else "CAST(NULL AS DOUBLE) AS qty"
+                    )
+
+                    logger.info(
+                        "Writing aggregated Harvard file: %s",
+                        rel_path(agg_out_file),
+                    )
+
+                    # Audit unmapped reporter/partner codes before writing.
+                    unmapped = con.execute(
+                        f"""
+                        WITH trade_codes AS (
+                            SELECT DISTINCT
+                                TRY_CAST(t."{reporter_code_col}" AS INTEGER) AS reporter_code,
+                                TRY_CAST(t."{partner_code_col}" AS INTEGER) AS partner_code
+                            FROM read_parquet(
+                                '{input_glob}',
+                                union_by_name = true
+                            ) AS t
+                            WHERE t."{reporter_code_col}" IS NOT NULL
+                               OR t."{partner_code_col}" IS NOT NULL
+                        )
+                        SELECT
+                            COUNT(DISTINCT reporter_code) FILTER (
+                                WHERE reporter_code IS NOT NULL
+                                  AND reporter_ref.iso3 IS NULL
+                            ) AS unmapped_reporter_codes,
+                            COUNT(DISTINCT partner_code) FILTER (
+                                WHERE partner_code IS NOT NULL
+                                  AND partner_ref.iso3 IS NULL
+                            ) AS unmapped_partner_codes
+                        FROM trade_codes
+                        LEFT JOIN country_iso_map AS reporter_ref
+                            ON trade_codes.reporter_code = reporter_ref.code
+                        LEFT JOIN country_iso_map AS partner_ref
+                            ON trade_codes.partner_code = partner_ref.code
+                        """
+                    ).df()
+
+                    logger.info(
+                        "Unmapped country codes for %s/%s: %s",
+                        hs,
+                        year,
+                        unmapped.to_dict(orient="records")[0],
+                    )
+
+                    con.execute(
+                        f"""
+                        COPY (
+                            SELECT
+                                reporter_ref.iso3 AS reporterISO3,
+                                partner_ref.iso3 AS partnerISO3,
+                                CAST(t."{cmd_col}" AS VARCHAR) AS cmdCode,
+                                CAST(t."{flow_col}" AS VARCHAR) AS flowCode,
+                                LENGTH(CAST(t."{cmd_col}" AS VARCHAR)) AS digitLevel,
+                                {qty_expr},
+                                CAST(NULL AS DOUBLE) AS CIFValue,
+                                CAST(NULL AS DOUBLE) AS FOBValue,
+                                SUM(TRY_CAST(t."{value_col}" AS DOUBLE)) AS primaryValue
+                            FROM read_parquet(
+                                '{input_glob}',
+                                union_by_name = true
+                            ) AS t
+                            LEFT JOIN country_iso_map AS reporter_ref
+                                ON TRY_CAST(t."{reporter_code_col}" AS INTEGER) = reporter_ref.code
+                            LEFT JOIN country_iso_map AS partner_ref
+                                ON TRY_CAST(t."{partner_code_col}" AS INTEGER) = partner_ref.code
+                            WHERE t."{hs_col}" IS NOT NULL
+                              AND t."{year_col}" IS NOT NULL
+                              AND reporter_ref.iso3 IS NOT NULL
+                              AND partner_ref.iso3 IS NOT NULL
+                            GROUP BY
+                                reporterISO3,
+                                partnerISO3,
+                                cmdCode,
+                                flowCode,
+                                digitLevel
+                        )
+                        TO '{agg_out_file}'
+                        (FORMAT PARQUET)
+                        """
+                    )
+
+                    written_aggregated_files += 1
+
+                # ---------------------------------------------------------
+                # 2. Raw parquet marker/files used for reporter switching
+                # ---------------------------------------------------------
+
+                reporters = con.execute(
+                    f"""
+                    SELECT DISTINCT
+                        LPAD(CAST(t."{reporter_code_col}" AS VARCHAR), 3, '0') AS reporter_code
+                    FROM read_parquet(
+                        '{input_glob}',
+                        union_by_name = true
+                    ) AS t
+                    INNER JOIN country_iso_map AS reporter_ref
+                        ON TRY_CAST(t."{reporter_code_col}" AS INTEGER) = reporter_ref.code
+                    WHERE t."{reporter_code_col}" IS NOT NULL
+                      AND reporter_ref.iso3 IS NOT NULL
+                    ORDER BY reporter_code
+                    """
+                ).fetchall()
+
+                raw_out_dir = raw_parquet_dir / hs / str(int(year))
+                raw_out_dir.mkdir(parents=True, exist_ok=True)
+
+                for (reporter_code,) in reporters:
+                    out_file = (
+                        raw_out_dir
+                        / f"COMTRADE-FINALCLASSIC-CA{reporter_code}{int(year)}{hs}[{published_date}].parquet"
+                    )
+
+                    if out_file.exists() and not overwrite:
+                        skipped_raw_files += 1
+                        continue
+
+                    # Keep these as small marker files. Harvard parses filenames
+                    # for reporter/year/classification; trade values come from
+                    # aggregated_by_year_not_converted.
+                    con.execute(
+                        f"""
+                        COPY (
+                            SELECT
+                                '{reporter_code}' AS ReporterCode,
+                                {int(year)} AS RefYear,
+                                '{hs}' AS ClassificationCode
+                            LIMIT 1
+                        )
+                        TO '{out_file}'
+                        (FORMAT PARQUET)
+                        """
+                    )
+
+                    written_raw_files += 1
+
+    summary = {
+        "written_raw_files": written_raw_files,
+        "skipped_raw_files": skipped_raw_files,
+        "written_aggregated_files": written_aggregated_files,
+        "skipped_aggregated_files": skipped_aggregated_files,
+    }
+
+    logger.info("Harvard compatibility export summary: %s", summary)
+
+    return summary
+
+def export_harvard_generator_compatibility_layout_deprecated(
     *,
     staged_partitioned_dir: Path,
     output_root: Path,
