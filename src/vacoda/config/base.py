@@ -339,3 +339,24 @@ def require_dict(value: Any, *, key: str) -> dict[str, Any]:
         )
 
     return value
+
+def require_float(
+    value: Any,
+    *,
+    key: str,
+    min_value: float | None = None,
+    max_value: float | None = None) -> float:
+    if isinstance(value, bool):
+        raise TypeError(f"'{key}' must be a float, got bool.")
+    try:
+        out = float(value)
+    except (TypeError, ValueError) as exc:
+        raise TypeError(f"'{key}' must be a float-compatible value.") from exc
+
+    if min_value is not None and out < min_value:
+        raise ValueError(f"'{key}' must be >= {min_value}, got {out}.")
+
+    if max_value is not None and out > max_value:
+        raise ValueError(f"'{key}' must be <= {max_value}, got {out}.")
+
+    return out
