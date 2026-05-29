@@ -1,5 +1,5 @@
 """
-Script to audit HS Sync system coverage by generating a report on how many HS records are present in the source data and 
+Script to audit HS system coverage by generating a report on how many HS records are present in the source data and 
 how many are successfully processed through the workflow. This helps identify gaps in coverage and areas for improvement 
 in the HS Sync pipeline.
 """
