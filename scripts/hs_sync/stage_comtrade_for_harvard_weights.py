@@ -23,15 +23,21 @@ from vacoda.config.hs_sync import (
     get_harvard_staging_report_write_latest_bool,
     get_harvard_staging_value_abs_tolerance,
     get_harvard_staging_value_rel_tolerance,
-    get_hs_col,
     get_logging_file,
     get_logging_level,
     get_logging_timestamp_bool,
-    get_year_col,
-    get_cmd_col,
-    get_value_col,
     load_hs_sync_config,
-)
+    get_harvard_staging_valid_cmd_regex,
+    get_harvard_staging_hs_years,
+    get_harvard_staging_year_col,
+    get_harvard_staging_hs_col,
+    get_harvard_staging_cmd_col,
+    get_harvard_staging_value_col,
+    get_harvard_staging_reporter_code_col,
+    get_harvard_staging_partner_code_col,
+    get_harvard_staging_flow_col,
+    get_harvard_staging_quantity_col,
+    )
 
 from vacoda.config.paths import get_data_dir, get_output_dir, resolve_log_path
 from vacoda.utils.logger import (
@@ -46,6 +52,7 @@ from vacoda.hs_sync.harvard_stage import (
     audit_csv_to_partitioned_parquet_staging,
     audit_harvard_staging_partitioned_output,
     stage_comtrade_for_harvard_weights_fast,
+    export_harvard_generator_compatibility_layout
 )
 
 
@@ -73,7 +80,17 @@ def main() -> None:
         get_harvard_staging_input_subdir(cfg),
     )
     pattern = get_harvard_staging_input_pattern(cfg)
-
+    valid_cmd_regex = get_harvard_staging_valid_cmd_regex(cfg)
+    years_by_hs = get_harvard_staging_hs_years(cfg)
+    year_col = get_harvard_staging_year_col(cfg)
+    hs_col = get_harvard_staging_hs_col(cfg)
+    cmd_col = get_harvard_staging_cmd_col(cfg)
+    value_col = get_harvard_staging_value_col(cfg)
+    reporter_code_col = get_harvard_staging_reporter_code_col(cfg)
+    partner_code_col = get_harvard_staging_partner_code_col(cfg)
+    flow_col = get_harvard_staging_flow_col(cfg)
+    quantity_col = get_harvard_staging_quantity_col(cfg)
+    
     output_root = (
         get_data_dir(get_harvard_staging_output_stage(cfg))
         / get_harvard_staging_output_subdir(cfg))
@@ -84,32 +101,71 @@ def main() -> None:
     logger.info("Input pattern: %s", pattern)
     logger.info("Output root: %s", rel_path(output_root))
     logger.info("Output directory: %s", rel_path(output_dir))
+    logger.info("Valid commodity-code regex: %s", valid_cmd_regex)
+    logger.info("HS/year filter: %s", years_by_hs)
+    logger.info(
+        "Harvard input columns: year=%s, hs=%s, cmd=%s, value=%s",
+        year_col,
+        hs_col,
+        cmd_col,
+        value_col)
+    logger.info(
+        "Harvard compatibility columns: reporter=%s, partner=%s, flow=%s, quantity=%s",
+        reporter_code_col,
+        partner_code_col,
+        flow_col,
+        quantity_col,
+    )
 
     summary = stage_comtrade_for_harvard_weights_fast(
-        input_dir=input_dir,
-        pattern=pattern,
-        output_dir=output_dir,
-        year_col=get_year_col(cfg),
-        hs_col=get_hs_col(cfg),
-        threads=get_engine_threads(cfg),
-        overwrite=get_harvard_staging_overwrite_bool(cfg))
+    input_dir=input_dir,
+    pattern=pattern,
+    output_dir=output_dir,
+    year_col=year_col,
+    hs_col=hs_col,
+    cmd_col=cmd_col,
+    valid_cmd_regex=valid_cmd_regex,
+    years_by_hs=years_by_hs,
+    threads=get_engine_threads(cfg),
+    overwrite=get_harvard_staging_overwrite_bool(cfg),
+)
     
     inventory = audit_harvard_staging_partitioned_output(
         output_dir=output_dir,
     )
 
     preservation = audit_csv_to_partitioned_parquet_staging(
-        input_dir=input_dir,
-        input_pattern=pattern,
-        output_dir=output_dir,
-        year_col=get_year_col(cfg),
-        hs_col=get_hs_col(cfg),
-        cmd_col=get_cmd_col(cfg),
-        value_col=get_value_col(cfg),
-        threads=get_engine_threads(cfg),
-        value_abs_tolerance=get_harvard_staging_value_abs_tolerance(cfg),
-        value_rel_tolerance=get_harvard_staging_value_rel_tolerance(cfg))
+    input_dir=input_dir,
+    input_pattern=pattern,
+    output_dir=output_dir,
+    year_col=year_col,
+    hs_col=hs_col,
+    cmd_col=cmd_col,
+    value_col=value_col,
+    valid_cmd_regex=valid_cmd_regex,
+    years_by_hs=years_by_hs,
+    threads=get_engine_threads(cfg),
+    value_abs_tolerance=get_harvard_staging_value_abs_tolerance(cfg),
+    value_rel_tolerance=get_harvard_staging_value_rel_tolerance(cfg),
+)
     
+    compatibility_summary = export_harvard_generator_compatibility_layout(
+    staged_partitioned_dir=output_dir,
+    output_root=output_root,
+    years_by_hs=years_by_hs,
+    year_col=year_col,
+    hs_col=hs_col,
+    cmd_col=cmd_col,
+    value_col=value_col,
+    reporter_code_col=reporter_code_col,
+    partner_code_col=partner_code_col,
+    flow_col=flow_col,
+    qty_col=quantity_col,
+    valid_cmd_regex=valid_cmd_regex,
+    threads=get_engine_threads(cfg),
+    overwrite=get_harvard_staging_overwrite_bool(cfg),
+)
+
     report_kind = get_harvard_staging_report_output_kind(cfg)
     report_dir = get_output_dir(report_kind)
     
@@ -147,6 +203,8 @@ def main() -> None:
 
         logger.info("Latest inventory copy written: %s", rel_path(inventory_latest_path))
         logger.info("Latest preservation copy written: %s", rel_path(preservation_latest_path))
+
+    logger.info("Compatibility export summary: %s", compatibility_summary)
 
     logger.info("Finished Harvard staging.")
     logger.info("Summary: %s", summary)
