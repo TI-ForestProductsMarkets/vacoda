@@ -1,57 +1,114 @@
 ## HS Synchronization Configuration
 
 scope:
-  target_hs: H5
+  target_hs: "H5"
   min_year: 2002
 
 engine:
-  name: duckdb
+  name: "duckdb"
   threads: 16
 
 progress:
   enabled: true
-  
+
+columns:
+  year: "RefYear"
+  hs: "ClassificationCode"
+  cmd: "CmdCode"
+  value: "PrimaryValue"
+
+logging:
+  level: "DEBUG"
+  file: "LOG_HS_SYNC_COVERAGE.log"
+  timestamp: true
+
+
+# ---------------------------------------------------------------------
+# Stage 1: raw Comtrade CSV → Harvard-compatible staged Parquet
+# ---------------------------------------------------------------------
+
 harvard_staging:
-  output_stage: external
-  output_subdir: harvard_comtrade
+  enabled: true
+
+  input:
+    stage: "raw"
+    subdir: "api/single"
+    pattern: "*.csv"
+
+  output:
+    stage: "external"
+    subdir: "harvard_comtrade"
+
   overwrite: false
 
   diagnostics:
     value_abs_tolerance: 1.0
-    value_rel_tolerance: 1e-10
-  
+    value_rel_tolerance: 1.0e-10
+
   report:
-    output_kind: reports
+    output_kind: "reports"
     inventory_filename: "audit_hs_sync_harvard_staging_inventory.csv"
     preservation_filename: "audit_hs_sync_harvard_staging_preservation.csv"
     timestamp: true
     write_latest: true
 
-logging:
-  level: DEBUG
-  file: LOG_HS_SYNC_COVERAGE.log
-  timestamp: true
 
-columns:
-  year: RefYear
-  hs: ClassificationCode
-  cmd: CmdCode
-  value: PrimaryValue
+# ---------------------------------------------------------------------
+# Stage 2: Harvard-compatible staged Parquet → HS conversion weights
+# ---------------------------------------------------------------------
+
+harvard_weights:
+  enabled: true
+  overwrite: true
+
+  input:
+    stage: "external"
+    subdir: "harvard_comtrade/as_reported/raw_parquet_partitioned"
+    pattern: "hs_partition=*/year_partition=*/*.parquet"
+
+  static:
+    stage: "references"
+    subdir: "harvard_comtrade"
+    concordance_file: "HS_consolidated_comtrade_concordances.csv"
+
+  output:
+    stage: "references"
+    subdir: "hs_sync"
+    file: "harvard_hs_conversion_weights.parquet"
+
+  report:
+    output_kind: "reports"
+    filename: "audit_hs_sync_harvard_weights.csv"
+    timestamp: true
+    write_latest: true
+
+
+# ---------------------------------------------------------------------
+# Stage 3: coverage diagnostics using generated weights
+# ---------------------------------------------------------------------
+
+input:
+  source: "harvard_staging"
+  stage: "external"
+  subdir: "harvard_comtrade/as_reported/raw_parquet_partitioned"
+  pattern: "hs_partition=*/year_partition=*/*.parquet"
+  format: "parquet"
 
 concordance:
-  stage: references
-  file: harvard_hs_conversion_weights.parquet
-  columns:
-    source_hs: source_hs
-    source_cmd: source_cmd
-    target_hs: target_hs
-    target_cmd: target_cmd
-    weight: weight
+  stage: "references"
+  subdir: "hs_sync"
+  file: "harvard_hs_conversion_weights.parquet"
 
+  columns:
+    source_hs: "source_hs"
+    source_cmd: "source_cmd"
+    target_hs: "target_hs"
+    target_cmd: "target_cmd"
+    weight: "weight"
 
 output:
-  stage: interim
-  subdir: hs_sync
+  stage: "interim"
+  subdir: "hs_sync"
 
 write:
   csv: true
@@ -63,46 +120,45 @@ diagnostics:
   weight_sum_tolerance: 0.001
   missing_mapping_top_n: 50
 
+report:
+  output_kind: "reports"
+  concordance_coverage_filename: "audit_hs_sync_concordance_coverage.csv"
+  timestamp: true
+  write_latest: true
+
 products:
   hs_concordance_coverage:
     enabled: true
-    kind: base
-    filename: hs_concordance_coverage
+    kind: "base"
+    filename: "hs_concordance_coverage"
     write: true
 
   hs_concordance_summary:
     enabled: true
-    kind: derived
-    depends_on: hs_concordance_coverage
-    filename: hs_concordance_summary
+    kind: "derived"
+    depends_on: "hs_concordance_coverage"
+    filename: "hs_concordance_summary"
     write: true
 
   missing_hs_mappings:
     enabled: true
-    kind: derived
-    depends_on: hs_concordance_coverage
-    filename: missing_hs_mappings
+    kind: "derived"
+    depends_on: "hs_concordance_coverage"
+    filename: "missing_hs_mappings"
     write: true
     options:
       top_n: 50
 
   one_to_many_hs_mappings:
     enabled: true
-    kind: derived
-    depends_on: hs_concordance_coverage
-    filename: one_to_many_hs_mappings
+    kind: "derived"
+    depends_on: "hs_concordance_coverage"
+    filename: "one_to_many_hs_mappings"
     write: true
 
   value_split_hs_mappings:
     enabled: true
-    kind: derived
-    depends_on: hs_concordance_coverage
-    filename: value_split_hs_mappings
+    kind: "derived"
+    depends_on: "hs_concordance_coverage"
+    filename: "value_split_hs_mappings"
     write: true
-
-
-report:
-  output_kind: reports
-  concordance_coverage_filename: "audit_hs_sync_concordance_coverage.csv"
-  timestamp: true
-  write_latest: true

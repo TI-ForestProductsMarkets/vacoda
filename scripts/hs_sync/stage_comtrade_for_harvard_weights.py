@@ -10,6 +10,9 @@ from datetime import datetime
 from pathlib import Path
 from vacoda.config.hs_sync import (
     get_engine_threads,
+    get_harvard_staging_input_pattern,
+    get_harvard_staging_input_stage,
+    get_harvard_staging_input_subdir,
     get_harvard_staging_inventory_filename,
     get_harvard_staging_output_stage,
     get_harvard_staging_output_subdir,
@@ -21,8 +24,6 @@ from vacoda.config.hs_sync import (
     get_harvard_staging_value_abs_tolerance,
     get_harvard_staging_value_rel_tolerance,
     get_hs_col,
-    get_input_config,
-    get_input_pattern,
     get_logging_file,
     get_logging_level,
     get_logging_timestamp_bool,
@@ -48,10 +49,7 @@ from vacoda.hs_sync.harvard_stage import (
 )
 
 
-def _resolve_data_stage_dir(block: dict) -> Path:
-    stage = block["stage"]
-    subdir = block.get("subdir", "")
-
+def _resolve_data_stage_dir(stage: str, subdir: str = "") -> Path:
     base = get_data_dir(stage)
     return base / subdir if subdir else base
 
@@ -64,17 +62,17 @@ def main() -> None:
     log_level = parse_log_level(get_logging_level(cfg))
     log_path = resolve_log_path(
         get_logging_file(cfg),
-        timestamp=run_id if get_logging_timestamp_bool(cfg) else None,
-    )
+        timestamp=run_id if get_logging_timestamp_bool(cfg) else None,)
 
     setup_logging(level=log_level, log_file=log_path)
 
     logger = get_logger("SCRIPT.HS_SYNC_STAGE_HARVARD")
 
-    input_cfg = get_input_config(cfg)
-
-    input_dir = _resolve_data_stage_dir(input_cfg)
-    pattern = get_input_pattern(cfg)
+    input_dir = _resolve_data_stage_dir(
+        get_harvard_staging_input_stage(cfg),
+        get_harvard_staging_input_subdir(cfg),
+    )
+    pattern = get_harvard_staging_input_pattern(cfg)
 
     output_root = (
         get_data_dir(get_harvard_staging_output_stage(cfg))

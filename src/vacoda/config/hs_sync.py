@@ -263,6 +263,16 @@ def get_concordance_weight_col(cfg: dict[str, Any] | None = None) -> str:
     return get_concordance_columns(cfg)["weight"]
 
 
+def get_concordance_subdir(cfg: dict[str, Any] | None = None) -> str:
+    """Return concordance subdirectory below data stage."""
+    concordance_cfg = get_concordance_config(cfg)
+    value = concordance_cfg.get("subdir", "")
+    return require_str(
+        value,
+        key="concordance.subdir",
+        allow_empty=True,
+    )
+
 # ---------------------------------------------------------------------
 # Input config getters
 # ---------------------------------------------------------------------
@@ -282,21 +292,47 @@ def get_input_config(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
 
 def get_input_stage(cfg: dict[str, Any] | None = None) -> str:
     input_cfg = get_input_config(cfg)
-    value = input_cfg.get("stage", "raw")
+    value = input_cfg.get("stage", "external")
     return require_str(value, key="input.stage")
 
 
 def get_input_subdir(cfg: dict[str, Any] | None = None) -> str:
     input_cfg = get_input_config(cfg)
-    value = input_cfg.get("subdir", "api/single")
+    value = input_cfg.get(
+        "subdir",
+        "harvard_comtrade/as_reported/raw_parquet_partitioned",
+    )
     return require_str(value, key="input.subdir")
 
 
 def get_input_pattern(cfg: dict[str, Any] | None = None) -> str:
     input_cfg = get_input_config(cfg)
-    value = input_cfg.get("pattern", "*.csv")
+    value = input_cfg.get(
+        "pattern",
+        "hs_partition=*/year_partition=*/*.parquet",
+    )
     return require_str(value, key="input.pattern")
 
+def get_input_source(cfg: dict[str, Any] | None = None) -> str:
+    """Return logical input source name for main HS-sync workflow."""
+    input_cfg = get_input_config(cfg)
+    value = input_cfg.get("source", "harvard_staging")
+    return require_str(value, key="input.source").strip().lower()
+
+
+def get_input_format(cfg: dict[str, Any] | None = None) -> str:
+    """Return input file format for main HS-sync workflow."""
+    input_cfg = get_input_config(cfg)
+    value = input_cfg.get("format", "parquet")
+    fmt = require_str(value, key="input.format").strip().lower()
+
+    valid = {"csv", "parquet"}
+    if fmt not in valid:
+        raise ValueError(
+            f"Invalid input.format: {fmt!r}. Valid values: {sorted(valid)}"
+        )
+
+    return fmt
 
 # ---------------------------------------------------------------------
 # Output config getters
@@ -568,55 +604,76 @@ def get_report_write_latest_bool(cfg: dict[str, Any] | None = None) -> bool:
 # Harvard staging config getters
 # ---------------------------------------------------------------------
 
-
-def get_harvard_staging_config(
+def get_harvard_staging_input_config(
     cfg: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Return Harvard staging config block."""
+    """Return Harvard staging input config."""
     if cfg is None:
         cfg = load_hs_sync_config()
 
-    return get_required_block(
+    return get_required_nested_block(
         cfg,
-        "harvard_staging",
+        ("harvard_staging", "input"),
         config_name="hs_sync.yaml",
     )
 
 
-def get_harvard_staging_enabled_bool(
+def get_harvard_staging_input_stage(
     cfg: dict[str, Any] | None = None,
-) -> bool:
-    """Return whether Harvard staging is enabled."""
-    staging_cfg = get_harvard_staging_config(cfg)
-    value = staging_cfg.get("enabled", True)
-    return require_bool(value, key="harvard_staging.enabled")
+) -> str:
+    """Return input data stage for Harvard staging."""
+    input_cfg = get_harvard_staging_input_config(cfg)
+    value = input_cfg.get("stage", "raw")
+    return require_str(value, key="harvard_staging.input.stage")
+
+
+def get_harvard_staging_input_subdir(
+    cfg: dict[str, Any] | None = None,
+) -> str:
+    """Return input subdirectory for Harvard staging."""
+    input_cfg = get_harvard_staging_input_config(cfg)
+    value = input_cfg.get("subdir", "api/single")
+    return require_str(value, key="harvard_staging.input.subdir")
+
+
+def get_harvard_staging_input_pattern(
+    cfg: dict[str, Any] | None = None,
+) -> str:
+    """Return input glob pattern for Harvard staging."""
+    input_cfg = get_harvard_staging_input_config(cfg)
+    value = input_cfg.get("pattern", "*.csv")
+    return require_str(value, key="harvard_staging.input.pattern")
+
+def get_harvard_staging_output_config(
+    cfg: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return Harvard staging output config."""
+    if cfg is None:
+        cfg = load_hs_sync_config()
+
+    return get_required_nested_block(
+        cfg,
+        ("harvard_staging", "output"),
+        config_name="hs_sync.yaml",
+    )
 
 
 def get_harvard_staging_output_stage(
     cfg: dict[str, Any] | None = None,
 ) -> str:
-    """Return data stage for Harvard staging output."""
-    staging_cfg = get_harvard_staging_config(cfg)
-    value = staging_cfg.get("output_stage", "external")
-    return require_str(value, key="harvard_staging.output_stage")
+    """Return output data stage for Harvard staging."""
+    output_cfg = get_harvard_staging_output_config(cfg)
+    value = output_cfg.get("stage", "external")
+    return require_str(value, key="harvard_staging.output.stage")
 
 
 def get_harvard_staging_output_subdir(
     cfg: dict[str, Any] | None = None,
 ) -> str:
     """Return output subdirectory for Harvard staging."""
-    staging_cfg = get_harvard_staging_config(cfg)
-    value = staging_cfg.get("output_subdir", "harvard_comtrade")
-    return require_str(value, key="harvard_staging.output_subdir")
-
-
-def get_harvard_staging_overwrite_bool(
-    cfg: dict[str, Any] | None = None,
-) -> bool:
-    """Return whether Harvard staging should overwrite existing output."""
-    staging_cfg = get_harvard_staging_config(cfg)
-    value = staging_cfg.get("overwrite", False)
-    return require_bool(value, key="harvard_staging.overwrite")
+    output_cfg = get_harvard_staging_output_config(cfg)
+    value = output_cfg.get("subdir", "harvard_comtrade")
+    return require_str(value, key="harvard_staging.output.subdir")
 
 
 # ---------------------------------------------------------------------
@@ -706,7 +763,34 @@ def get_harvard_staging_report_write_latest_bool(
 # ---------------------------------------------------------------------
 # Harvard staging diagnostics config getters
 # ---------------------------------------------------------------------
+def get_harvard_staging_config(
+    cfg: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return Harvard staging config block."""
+    if cfg is None:
+        cfg = load_hs_sync_config()
 
+    return get_required_block(
+        cfg,
+        "harvard_staging",
+        config_name="hs_sync.yaml",
+    )
+
+def get_harvard_staging_enabled_bool(
+    cfg: dict[str, Any] | None = None,
+) -> bool:
+    """Return whether Harvard staging is enabled."""
+    staging_cfg = get_harvard_staging_config(cfg)
+    value = staging_cfg.get("enabled", True)
+    return require_bool(value, key="harvard_staging.enabled")
+
+def get_harvard_staging_overwrite_bool(
+    cfg: dict[str, Any] | None = None,
+) -> bool:
+    """Return whether Harvard staging should overwrite existing output."""
+    staging_cfg = get_harvard_staging_config(cfg)
+    value = staging_cfg.get("overwrite", True)
+    return require_bool(value, key="harvard_staging.overwrite")
 
 def get_harvard_staging_diagnostics_config(
     cfg: dict[str, Any] | None = None,
@@ -723,7 +807,11 @@ def get_harvard_staging_value_abs_tolerance(
     """Return absolute tolerance for staging value preservation audit."""
     diagnostics_cfg = get_harvard_staging_diagnostics_config(cfg)
     value = diagnostics_cfg.get("value_abs_tolerance", 1.0)
-    return float(value)
+    return require_float(
+        value,
+        key="harvard_staging.diagnostics.value_abs_tolerance",
+        min_value=0.0,
+    )
 
 
 def get_harvard_staging_value_rel_tolerance(
@@ -732,4 +820,202 @@ def get_harvard_staging_value_rel_tolerance(
     """Return relative tolerance for staging value preservation audit."""
     diagnostics_cfg = get_harvard_staging_diagnostics_config(cfg)
     value = diagnostics_cfg.get("value_rel_tolerance", 1e-10)
-    return float(value)
+    return require_float(
+        value,
+        key="harvard_staging.diagnostics.value_rel_tolerance",
+        min_value=0.0,
+    )
+# ---------------------------------------------------------------------
+# Harvard weights config getters
+# ---------------------------------------------------------------------
+
+
+def get_harvard_weights_config(
+    cfg: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return Harvard weight-generation config block."""
+    if cfg is None:
+        cfg = load_hs_sync_config()
+
+    return get_required_block(
+        cfg,
+        "harvard_weights",
+        config_name="hs_sync.yaml",
+    )
+
+
+def get_harvard_weights_enabled_bool(
+    cfg: dict[str, Any] | None = None,
+) -> bool:
+    """Return whether Harvard weight generation is enabled."""
+    weights_cfg = get_harvard_weights_config(cfg)
+    value = weights_cfg.get("enabled", True)
+    return require_bool(value, key="harvard_weights.enabled")
+
+def get_harvard_weights_input_config(
+    cfg: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return Harvard weights input config."""
+    if cfg is None:
+        cfg = load_hs_sync_config()
+
+    return get_required_nested_block(
+        cfg,
+        ("harvard_weights", "input"),
+        config_name="hs_sync.yaml",
+    )
+
+
+def get_harvard_weights_input_stage(
+    cfg: dict[str, Any] | None = None,
+) -> str:
+    input_cfg = get_harvard_weights_input_config(cfg)
+    value = input_cfg.get("stage", "external")
+    return require_str(value, key="harvard_weights.input.stage")
+
+
+def get_harvard_weights_input_subdir(
+    cfg: dict[str, Any] | None = None,
+) -> str:
+    input_cfg = get_harvard_weights_input_config(cfg)
+    value = input_cfg.get(
+        "subdir",
+        "harvard_comtrade/as_reported/raw_parquet_partitioned",
+    )
+    return require_str(value, key="harvard_weights.input.subdir")
+
+
+def get_harvard_weights_input_pattern(
+    cfg: dict[str, Any] | None = None,
+) -> str:
+    input_cfg = get_harvard_weights_input_config(cfg)
+    value = input_cfg.get(
+        "pattern",
+        "hs_partition=*/year_partition=*/*.parquet",
+    )
+    return require_str(value, key="harvard_weights.input.pattern")
+
+def get_harvard_weights_static_config(
+    cfg: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return Harvard static input config."""
+    if cfg is None:
+        cfg = load_hs_sync_config()
+
+    return get_required_nested_block(
+        cfg,
+        ("harvard_weights", "static"),
+        config_name="hs_sync.yaml",
+    )
+
+
+def get_harvard_weights_static_stage(
+    cfg: dict[str, Any] | None = None,
+) -> str:
+    static_cfg = get_harvard_weights_static_config(cfg)
+    value = static_cfg.get("stage", "references")
+    return require_str(value, key="harvard_weights.static.stage")
+
+
+def get_harvard_weights_static_subdir(
+    cfg: dict[str, Any] | None = None,
+) -> str:
+    static_cfg = get_harvard_weights_static_config(cfg)
+    value = static_cfg.get("subdir", "harvard_comtrade")
+    return require_str(value, key="harvard_weights.static.subdir")
+
+
+def get_harvard_weights_static_concordance_file(
+    cfg: dict[str, Any] | None = None,
+) -> str:
+    static_cfg = get_harvard_weights_static_config(cfg)
+    value = static_cfg.get("concordance_file")
+    return require_str(
+        value,
+        key="harvard_weights.static.concordance_file",
+    )
+
+def get_harvard_weights_output_config(
+    cfg: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return Harvard weights output config."""
+    if cfg is None:
+        cfg = load_hs_sync_config()
+
+    return get_required_nested_block(
+        cfg,
+        ("harvard_weights", "output"),
+        config_name="hs_sync.yaml",
+    )
+
+
+def get_harvard_weights_output_stage(
+    cfg: dict[str, Any] | None = None,
+) -> str:
+    output_cfg = get_harvard_weights_output_config(cfg)
+    value = output_cfg.get("stage", "references")
+    return require_str(value, key="harvard_weights.output.stage")
+
+
+def get_harvard_weights_output_subdir(
+    cfg: dict[str, Any] | None = None,
+) -> str:
+    output_cfg = get_harvard_weights_output_config(cfg)
+    value = output_cfg.get("subdir", "hs_sync")
+    return require_str(value, key="harvard_weights.output.subdir")
+
+
+def get_harvard_weights_output_file(
+    cfg: dict[str, Any] | None = None,
+) -> str:
+    output_cfg = get_harvard_weights_output_config(cfg)
+    value = output_cfg.get("file", "harvard_hs_conversion_weights.parquet")
+    return require_str(value, key="harvard_weights.output.file")
+
+def get_harvard_weights_report_config(
+    cfg: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return Harvard weights report config."""
+    if cfg is None:
+        cfg = load_hs_sync_config()
+
+    return get_required_nested_block(
+        cfg,
+        ("harvard_weights", "report"),
+        config_name="hs_sync.yaml",
+    )
+
+
+def get_harvard_weights_report_output_kind(
+    cfg: dict[str, Any] | None = None,
+) -> str:
+    report_cfg = get_harvard_weights_report_config(cfg)
+    value = report_cfg.get("output_kind", "reports")
+    return require_str(
+        value,
+        key="harvard_weights.report.output_kind",
+    ).strip().lower()
+
+
+def get_harvard_weights_report_filename(
+    cfg: dict[str, Any] | None = None,
+) -> str:
+    report_cfg = get_harvard_weights_report_config(cfg)
+    value = report_cfg.get("filename", "audit_hs_sync_harvard_weights.csv")
+    return require_str(value, key="harvard_weights.report.filename")
+
+
+def get_harvard_weights_report_timestamp_bool(
+    cfg: dict[str, Any] | None = None,
+) -> bool:
+    report_cfg = get_harvard_weights_report_config(cfg)
+    value = report_cfg.get("timestamp", True)
+    return require_bool(value, key="harvard_weights.report.timestamp")
+
+
+def get_harvard_weights_report_write_latest_bool(
+    cfg: dict[str, Any] | None = None,
+) -> bool:
+    report_cfg = get_harvard_weights_report_config(cfg)
+    value = report_cfg.get("write_latest", True)
+    return require_bool(value, key="harvard_weights.report.write_latest")
