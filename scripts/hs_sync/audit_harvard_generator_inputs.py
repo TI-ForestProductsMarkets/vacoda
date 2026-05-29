@@ -29,6 +29,51 @@ def _print_header(title: str) -> None:
     print(title)
     print("=" * 80)
 
+def audit_harvard_dimension_tests(
+    *,
+    generator_root: Path,
+) -> None:
+    """
+    Run Harvard generator's built-in matrix dimension test.
+
+    This checks whether source trade matrices, target trade matrices,
+    and conversion matrices have compatible dimensions before optimization.
+    """
+
+    _print_header("5. Harvard matrix dimension tests")
+
+    import os
+    import sys
+
+    old_cwd = Path.cwd()
+
+    try:
+        os.chdir(generator_root)
+
+        if str(generator_root) not in sys.path:
+            sys.path.insert(0, str(generator_root))
+
+        from tests.test import TestData
+        from src.python_objects.base import Base
+        from user_config import get_enabled_conversions
+
+        pairs = get_enabled_conversions()
+        base = Base(pairs)
+        test_data = TestData(base.data_path, base.logger)
+
+        failed = test_data.test_dimensions()
+
+        if failed:
+            print("status: FAILED")
+            print(f"n_failed: {len(failed)}")
+            print("failed tests:")
+            print(failed)
+        else:
+            print("status: OK")
+            print("failed tests: {}")
+
+    finally:
+        os.chdir(old_cwd)
 
 def audit_raw_marker_files(
     *,
@@ -322,6 +367,9 @@ def main() -> None:
         generator_root=args.generator_root,
         source_year=args.source_year,
         target_year=args.target_year,
+    )
+    audit_harvard_dimension_tests(
+        generator_root=args.generator_root,
     )
 
 

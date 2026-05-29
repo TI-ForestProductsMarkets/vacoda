@@ -37,6 +37,14 @@ from vacoda.config.hs_sync import (
     get_harvard_staging_partner_code_col,
     get_harvard_staging_flow_col,
     get_harvard_staging_quantity_col,
+    get_harvard_staging_country_reference_stage,
+    get_harvard_staging_country_reference_subdir,
+    get_harvard_staging_country_reference_pattern,
+    get_harvard_staging_country_reference_reporter_code_col,
+    get_harvard_staging_country_reference_reporter_iso_col,
+    get_harvard_staging_country_reference_partner_code_col,
+    get_harvard_staging_country_reference_partner_iso_col,
+    
     )
 
 from vacoda.config.paths import get_data_dir, get_output_dir, resolve_log_path
@@ -117,6 +125,20 @@ def main() -> None:
         quantity_col,
     )
 
+
+    country_reference_dir = _resolve_data_stage_dir(
+    get_harvard_staging_country_reference_stage(cfg),
+    get_harvard_staging_country_reference_subdir(cfg),
+    )
+
+    country_reference_glob = str(
+        country_reference_dir
+        / get_harvard_staging_country_reference_pattern(cfg)
+    )
+
+    logger.info("Country reference directory: %s", rel_path(country_reference_dir))
+    logger.info("Country reference glob: %s", country_reference_glob)
+    
     summary = stage_comtrade_for_harvard_weights_fast(
     input_dir=input_dir,
     pattern=pattern,
@@ -162,6 +184,11 @@ def main() -> None:
     flow_col=flow_col,
     qty_col=quantity_col,
     valid_cmd_regex=valid_cmd_regex,
+    country_reference_glob=country_reference_glob,
+    country_reporter_code_col=get_harvard_staging_country_reference_reporter_code_col(cfg),
+    country_reporter_iso_col=get_harvard_staging_country_reference_reporter_iso_col(cfg),
+    country_partner_code_col=get_harvard_staging_country_reference_partner_code_col(cfg),
+    country_partner_iso_col=get_harvard_staging_country_reference_partner_iso_col(cfg),
     threads=get_engine_threads(cfg),
     overwrite=get_harvard_staging_overwrite_bool(cfg),
 )

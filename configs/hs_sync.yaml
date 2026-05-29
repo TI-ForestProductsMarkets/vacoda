@@ -6,7 +6,7 @@ scope:
 
 engine:
   name: "duckdb"
-  threads: 16
+  threads: 48
 
 progress:
   enabled: true
