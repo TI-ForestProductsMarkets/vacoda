@@ -32,14 +32,41 @@ harvard_staging:
 
   input:
     stage: "raw"
-    subdir: "api/single"
-    pattern: "*.csv"
+    subdir: "api/bulk"
+    pattern: "Comtrade_bulk_HS_201[67]_all_reporters_*.gz"
 
   output:
     stage: "external"
-    subdir: "harvard_comtrade"
+    subdir: "harvard_comtrade_bulk"
+
+  filters:
+    valid_cmd_regex: "^[0-9]{6}$"
+    hs_years:
+      H4: [2016]
+      H5: [2017]
+
+  columns:
+    year: "refYear"
+    hs: "classificationCode"
+    cmd: "cmdCode"
+    value: "primaryValue"
+    reporter_code: "reporterCode"
+    partner_code: "partnerCode"
+    flow: "flowCode"
+    quantity: "netWgt"
 
   overwrite: false
+
+  country_reference:
+    source: "single_api"
+    stage: "raw"
+    subdir: "api/single"
+    pattern: "*.csv"
+    columns:
+      reporter_code: "ReporterCode"
+      reporter_iso: "ReporterISO"
+      partner_code: "PartnerCode"
+      partner_iso: "PartnerISO"
 
   diagnostics:
     value_abs_tolerance: 1.0
@@ -63,7 +90,7 @@ harvard_weights:
 
   input:
     stage: "external"
-    subdir: "harvard_comtrade/as_reported/raw_parquet_partitioned"
+    subdir: "harvard_comtrade_bulk"
     pattern: "hs_partition=*/year_partition=*/*.parquet"
 
   static:
@@ -90,7 +117,7 @@ harvard_weights:
 input:
   source: "harvard_staging"
   stage: "external"
-  subdir: "harvard_comtrade/as_reported/raw_parquet_partitioned"
+  subdir: "harvard_comtrade_bulk/as_reported/raw_parquet_partitioned"
   pattern: "hs_partition=*/year_partition=*/*.parquet"
   format: "parquet"
 

@@ -792,6 +792,63 @@ def get_harvard_staging_overwrite_bool(
     value = staging_cfg.get("overwrite", True)
     return require_bool(value, key="harvard_staging.overwrite")
 
+
+def get_harvard_staging_filters_config(
+    cfg: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return Harvard staging filters config."""
+    if cfg is None:
+        cfg = load_hs_sync_config()
+
+    return get_required_nested_block(
+        cfg,
+        ("harvard_staging", "filters"),
+        config_name="hs_sync.yaml",
+    )
+
+
+def get_harvard_staging_valid_cmd_regex(
+    cfg: dict[str, Any] | None = None,
+) -> str:
+    """Return regex used to keep valid commodity codes during Harvard staging."""
+    filters_cfg = get_harvard_staging_filters_config(cfg)
+    value = filters_cfg.get("valid_cmd_regex", r"^[0-9]{6}$")
+    return require_str(value, key="harvard_staging.filters.valid_cmd_regex")
+
+
+def get_harvard_staging_hs_years(
+    cfg: dict[str, Any] | None = None,
+) -> dict[str, list[int]]:
+    """Return allowed years by HS system for Harvard staging filters."""
+    filters_cfg = get_harvard_staging_filters_config(cfg)
+    value = filters_cfg.get("hs_years", {})
+    hs_years_cfg = require_dict(value, key="harvard_staging.filters.hs_years")
+
+    normalized: dict[str, list[int]] = {}
+
+    for hs_system, years in hs_years_cfg.items():
+        hs_key = require_str(
+            hs_system,
+            key="harvard_staging.filters.hs_years.<key>",
+        ).strip().upper()
+
+        if not isinstance(years, list):
+            raise TypeError(
+                "'harvard_staging.filters.hs_years.%s' must be a list, got %s."
+                % (hs_key, type(years).__name__)
+            )
+
+        normalized[hs_key] = [
+            require_int(
+                year,
+                key=f"harvard_staging.filters.hs_years.{hs_key}",
+                min_value=0,
+            )
+            for year in years
+        ]
+
+    return normalized
+
 def get_harvard_staging_diagnostics_config(
     cfg: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -825,6 +882,201 @@ def get_harvard_staging_value_rel_tolerance(
         key="harvard_staging.diagnostics.value_rel_tolerance",
         min_value=0.0,
     )
+
+
+def get_harvard_staging_columns_config(
+    cfg: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return Harvard staging columns config."""
+    if cfg is None:
+        cfg = load_hs_sync_config()
+
+    return get_required_nested_block(
+        cfg,
+        ("harvard_staging", "columns"),
+        config_name="hs_sync.yaml",
+    )
+
+
+def get_harvard_staging_year_col(
+    cfg: dict[str, Any] | None = None,
+) -> str:
+    cols_cfg = get_harvard_staging_columns_config(cfg)
+    value = cols_cfg.get("year", "refYear")
+    return require_str(value, key="harvard_staging.columns.year")
+
+
+def get_harvard_staging_hs_col(
+    cfg: dict[str, Any] | None = None,
+) -> str:
+    cols_cfg = get_harvard_staging_columns_config(cfg)
+    value = cols_cfg.get("hs", "classificationCode")
+    return require_str(value, key="harvard_staging.columns.hs")
+
+
+def get_harvard_staging_cmd_col(
+    cfg: dict[str, Any] | None = None,
+) -> str:
+    cols_cfg = get_harvard_staging_columns_config(cfg)
+    value = cols_cfg.get("cmd", "cmdCode")
+    return require_str(value, key="harvard_staging.columns.cmd")
+
+
+def get_harvard_staging_value_col(
+    cfg: dict[str, Any] | None = None,
+) -> str:
+    cols_cfg = get_harvard_staging_columns_config(cfg)
+    value = cols_cfg.get("value", "primaryValue")
+    return require_str(value, key="harvard_staging.columns.value")
+
+
+def get_harvard_staging_reporter_code_col(
+    cfg: dict[str, Any] | None = None,
+) -> str:
+    cols_cfg = get_harvard_staging_columns_config(cfg)
+    value = cols_cfg.get("reporter_code", "reporterCode")
+    return require_str(value, key="harvard_staging.columns.reporter_code")
+
+
+def get_harvard_staging_partner_code_col(
+    cfg: dict[str, Any] | None = None,
+) -> str:
+    cols_cfg = get_harvard_staging_columns_config(cfg)
+    value = cols_cfg.get("partner_code", "partnerCode")
+    return require_str(value, key="harvard_staging.columns.partner_code")
+
+
+def get_harvard_staging_flow_col(
+    cfg: dict[str, Any] | None = None,
+) -> str:
+    cols_cfg = get_harvard_staging_columns_config(cfg)
+    value = cols_cfg.get("flow", "flowCode")
+    return require_str(value, key="harvard_staging.columns.flow")
+
+
+def get_harvard_staging_quantity_col(
+    cfg: dict[str, Any] | None = None,
+) -> str:
+    cols_cfg = get_harvard_staging_columns_config(cfg)
+    value = cols_cfg.get("quantity", "netWgt")
+    return require_str(value, key="harvard_staging.columns.quantity")
+
+
+def get_harvard_staging_columns(
+    cfg: dict[str, Any] | None = None,
+) -> dict[str, str]:
+    """Return standardized Harvard staging input column mapping."""
+    return {
+        "year": get_harvard_staging_year_col(cfg),
+        "hs": get_harvard_staging_hs_col(cfg),
+        "cmd": get_harvard_staging_cmd_col(cfg),
+        "value": get_harvard_staging_value_col(cfg),
+        "reporter_code": get_harvard_staging_reporter_code_col(cfg),
+        "partner_code": get_harvard_staging_partner_code_col(cfg),
+        "flow": get_harvard_staging_flow_col(cfg),
+        "quantity": get_harvard_staging_quantity_col(cfg),
+    }
+
+
+def get_harvard_staging_country_reference_config(
+    cfg: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return Harvard staging country reference config."""
+    if cfg is None:
+        cfg = load_hs_sync_config()
+
+    return get_required_nested_block(
+        cfg,
+        ("harvard_staging", "country_reference"),
+        config_name="hs_sync.yaml",
+    )
+
+
+def get_harvard_staging_country_reference_source(
+    cfg: dict[str, Any] | None = None,
+) -> str:
+    ref_cfg = get_harvard_staging_country_reference_config(cfg)
+    value = ref_cfg.get("source", "single_api")
+    return require_str(value, key="harvard_staging.country_reference.source")
+
+
+def get_harvard_staging_country_reference_stage(
+    cfg: dict[str, Any] | None = None,
+) -> str:
+    ref_cfg = get_harvard_staging_country_reference_config(cfg)
+    value = ref_cfg.get("stage", "raw")
+    return require_str(value, key="harvard_staging.country_reference.stage")
+
+
+def get_harvard_staging_country_reference_subdir(
+    cfg: dict[str, Any] | None = None,
+) -> str:
+    ref_cfg = get_harvard_staging_country_reference_config(cfg)
+    value = ref_cfg.get("subdir", "api/single")
+    return require_str(value, key="harvard_staging.country_reference.subdir")
+
+
+def get_harvard_staging_country_reference_pattern(
+    cfg: dict[str, Any] | None = None,
+) -> str:
+    ref_cfg = get_harvard_staging_country_reference_config(cfg)
+    value = ref_cfg.get("pattern", "*.csv")
+    return require_str(value, key="harvard_staging.country_reference.pattern")
+
+
+def get_harvard_staging_country_reference_columns_config(
+    cfg: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return Harvard staging country reference column config."""
+    ref_cfg = get_harvard_staging_country_reference_config(cfg)
+    value = ref_cfg.get("columns", {})
+    return require_dict(value, key="harvard_staging.country_reference.columns")
+
+
+def get_harvard_staging_country_reference_reporter_code_col(
+    cfg: dict[str, Any] | None = None,
+) -> str:
+    cols_cfg = get_harvard_staging_country_reference_columns_config(cfg)
+    value = cols_cfg.get("reporter_code", "ReporterCode")
+    return require_str(
+        value,
+        key="harvard_staging.country_reference.columns.reporter_code",
+    )
+
+
+def get_harvard_staging_country_reference_reporter_iso_col(
+    cfg: dict[str, Any] | None = None,
+) -> str:
+    cols_cfg = get_harvard_staging_country_reference_columns_config(cfg)
+    value = cols_cfg.get("reporter_iso", "ReporterISO")
+    return require_str(
+        value,
+        key="harvard_staging.country_reference.columns.reporter_iso",
+    )
+
+
+def get_harvard_staging_country_reference_partner_code_col(
+    cfg: dict[str, Any] | None = None,
+) -> str:
+    cols_cfg = get_harvard_staging_country_reference_columns_config(cfg)
+    value = cols_cfg.get("partner_code", "PartnerCode")
+    return require_str(
+        value,
+        key="harvard_staging.country_reference.columns.partner_code",
+    )
+
+
+def get_harvard_staging_country_reference_partner_iso_col(
+    cfg: dict[str, Any] | None = None,
+) -> str:
+    cols_cfg = get_harvard_staging_country_reference_columns_config(cfg)
+    value = cols_cfg.get("partner_iso", "PartnerISO")
+    return require_str(
+        value,
+        key="harvard_staging.country_reference.columns.partner_iso",
+    )
+
+
 # ---------------------------------------------------------------------
 # Harvard weights config getters
 # ---------------------------------------------------------------------
@@ -971,6 +1223,7 @@ def get_harvard_weights_output_file(
     output_cfg = get_harvard_weights_output_config(cfg)
     value = output_cfg.get("file", "harvard_hs_conversion_weights.parquet")
     return require_str(value, key="harvard_weights.output.file")
+
 
 def get_harvard_weights_report_config(
     cfg: dict[str, Any] | None = None,
