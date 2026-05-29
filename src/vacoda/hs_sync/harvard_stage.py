@@ -498,10 +498,17 @@ def stage_comtrade_for_harvard_weights_fast(
     input_glob = str(input_dir / pattern)
     output_base = output_dir
 
-    if output_base.exists() and not overwrite:
-        raise FileExistsError(
-            f"Output directory already exists: {rel_path(output_base)}"
-        )
+    if output_base.exists():
+        if overwrite:
+            logger.info(
+                "Output directory already exists and overwrite is enabled: %s",
+                rel_path(output_base),
+            )
+        else:
+            logger.info(
+                "Output directory already exists; reusing it without deleting existing files: %s",
+                rel_path(output_base),
+            )
 
     output_base.mkdir(parents=True, exist_ok=True)
 
