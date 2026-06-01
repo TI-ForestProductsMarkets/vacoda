@@ -550,6 +550,88 @@ def get_product_options(
     value = product_cfg.get("options", {})
     return require_dict(value, key=f"products.{product_name}.options")
 
+
+def get_target_h5_mapping_interpretation_display_report_config(
+    cfg: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return product config for interpretation display report."""
+    return get_product_config(
+        "target_h5_mapping_interpretation_display_report",
+        cfg,
+        required=True,
+    )
+
+
+def get_target_h5_mapping_interpretation_display_report_enabled_bool(
+    cfg: dict[str, Any] | None = None,
+) -> bool:
+    """Return whether interpretation display report product is enabled."""
+    return is_product_enabled(
+        "target_h5_mapping_interpretation_display_report",
+        cfg,
+        default=False,
+    )
+
+
+def get_target_h5_mapping_interpretation_display_report_kind(
+    cfg: dict[str, Any] | None = None,
+) -> str:
+    """Return product kind for interpretation display report."""
+    product_cfg = get_target_h5_mapping_interpretation_display_report_config(cfg)
+    value = product_cfg.get("kind", "derived")
+    return require_str(
+        value,
+        key="products.target_h5_mapping_interpretation_display_report.kind",
+    )
+
+
+def get_target_h5_mapping_interpretation_display_report_dependency(
+    cfg: dict[str, Any] | None = None,
+) -> str | None:
+    """Return dependency for interpretation display report product."""
+    return get_product_dependency(
+        "target_h5_mapping_interpretation_display_report",
+        cfg,
+    )
+
+
+def get_target_h5_mapping_interpretation_display_report_filename(
+    cfg: dict[str, Any] | None = None,
+) -> str:
+    """Return filename for interpretation display report product."""
+    return get_product_filename(
+        "target_h5_mapping_interpretation_display_report",
+        cfg,
+    )
+
+
+def get_target_h5_mapping_interpretation_display_report_write_bool(
+    cfg: dict[str, Any] | None = None,
+) -> bool:
+    """Return whether interpretation display report product should be written."""
+    return get_product_write_bool(
+        "target_h5_mapping_interpretation_display_report",
+        cfg,
+        default=True,
+    )
+
+
+def get_target_h5_mapping_interpretation_display_report_output_kind(
+    cfg: dict[str, Any] | None = None,
+) -> str:
+    """Return output kind for interpretation display report product."""
+    product_cfg = get_target_h5_mapping_interpretation_display_report_config(cfg)
+    value = require_str(
+        product_cfg.get("output_kind", "reports"),
+        key="products.target_h5_mapping_interpretation_display_report.output_kind",
+    ).strip().lower()
+
+    # Accept singular alias while normalizing to paths.yaml key.
+    if value == "report":
+        return "reports"
+
+    return value
+
 # ---------------------------------------------------------------------
 # Main HS-sync report config getters
 # ---------------------------------------------------------------------
@@ -1272,3 +1354,291 @@ def get_harvard_weights_report_write_latest_bool(
     report_cfg = get_harvard_weights_report_config(cfg)
     value = report_cfg.get("write_latest", True)
     return require_bool(value, key="harvard_weights.report.write_latest")
+
+
+def get_coverage_config(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Return target-HS mapping coverage config."""
+    if cfg is None:
+        cfg = load_hs_sync_config()
+
+    return get_required_block(
+        cfg,
+        "coverage",
+        config_name="hs_sync.yaml",
+    )
+
+
+def get_coverage_enabled_bool(cfg: dict[str, Any] | None = None) -> bool:
+    coverage_cfg = get_coverage_config(cfg)
+    value = coverage_cfg.get("enabled", True)
+    return require_bool(value, key="coverage.enabled")
+
+
+def get_coverage_target_hs(cfg: dict[str, Any] | None = None) -> str:
+    coverage_cfg = get_coverage_config(cfg)
+    value = coverage_cfg.get("target_hs", get_target_hs(cfg))
+    return require_str(value, key="coverage.target_hs").strip().upper()
+
+
+def get_coverage_min_year(cfg: dict[str, Any] | None = None) -> int:
+    coverage_cfg = get_coverage_config(cfg)
+    value = coverage_cfg.get("min_year", 2017)
+    return require_int(value, key="coverage.min_year", min_value=0)
+
+
+def get_coverage_max_year(cfg: dict[str, Any] | None = None) -> int:
+    coverage_cfg = get_coverage_config(cfg)
+    value = coverage_cfg.get("max_year", 9999)
+    return require_int(value, key="coverage.max_year", min_value=0)
+
+def get_coverage_input_config(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    coverage_cfg = get_coverage_config(cfg)
+    value = coverage_cfg.get("input", {})
+    return require_dict(value, key="coverage.input")
+
+
+def get_coverage_input_stage(cfg: dict[str, Any] | None = None) -> str:
+    input_cfg = get_coverage_input_config(cfg)
+    value = input_cfg.get("stage", "raw")
+    return require_str(value, key="coverage.input.stage")
+
+
+def get_coverage_input_subdir(cfg: dict[str, Any] | None = None) -> str:
+    input_cfg = get_coverage_input_config(cfg)
+    value = input_cfg.get("subdir", "")
+    return require_str(value, key="coverage.input.subdir")
+
+
+def get_coverage_input_pattern(cfg: dict[str, Any] | None = None) -> str:
+    input_cfg = get_coverage_input_config(cfg)
+    value = input_cfg.get("pattern", "*.csv")
+    return require_str(value, key="coverage.input.pattern")
+
+
+def get_coverage_input_format(cfg: dict[str, Any] | None = None) -> str:
+    input_cfg = get_coverage_input_config(cfg)
+    value = input_cfg.get("format", "csv")
+    return require_str(value, key="coverage.input.format").strip().lower()
+
+
+def get_coverage_mappings_config(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    coverage_cfg = get_coverage_config(cfg)
+    value = coverage_cfg.get("mappings", {})
+    return require_dict(value, key="coverage.mappings")
+
+
+def get_coverage_mappings_stage(cfg: dict[str, Any] | None = None) -> str:
+    mappings_cfg = get_coverage_mappings_config(cfg)
+    value = mappings_cfg.get("stage", "references")
+    return require_str(value, key="coverage.mappings.stage")
+
+
+def get_coverage_mappings_subdir(cfg: dict[str, Any] | None = None) -> str:
+    mappings_cfg = get_coverage_mappings_config(cfg)
+    value = mappings_cfg.get("subdir", "")
+    return require_str(value, key="coverage.mappings.subdir")
+
+
+def get_coverage_mapping_files(cfg: dict[str, Any] | None = None) -> dict[str, str]:
+    mappings_cfg = get_coverage_mappings_config(cfg)
+    value = mappings_cfg.get("files", {})
+    files_cfg = require_dict(value, key="coverage.mappings.files")
+
+    return {
+        require_str(key, key="coverage.mappings.files.<key>"): require_str(
+            filename,
+            key=f"coverage.mappings.files.{key}",
+        )
+        for key, filename in files_cfg.items()
+    }
+
+
+def get_coverage_mapping_columns_config(
+    cfg: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    mappings_cfg = get_coverage_mappings_config(cfg)
+    value = mappings_cfg.get("columns", {})
+    return require_dict(value, key="coverage.mappings.columns")
+
+
+def get_coverage_mapping_source_cmd_col(cfg: dict[str, Any] | None = None) -> str:
+    cols_cfg = get_coverage_mapping_columns_config(cfg)
+    value = cols_cfg.get("source_cmd", "code.source")
+    return require_str(value, key="coverage.mappings.columns.source_cmd")
+
+
+def get_coverage_mapping_target_cmd_col(cfg: dict[str, Any] | None = None) -> str:
+    cols_cfg = get_coverage_mapping_columns_config(cfg)
+    value = cols_cfg.get("target_cmd", "code.target")
+    return require_str(value, key="coverage.mappings.columns.target_cmd")
+
+
+def get_coverage_mapping_relationship_col(cfg: dict[str, Any] | None = None) -> str:
+    cols_cfg = get_coverage_mapping_columns_config(cfg)
+    value = cols_cfg.get("relationship", "Relationship")
+    return require_str(value, key="coverage.mappings.columns.relationship")
+
+
+def get_coverage_mapping_adjustment_col(cfg: dict[str, Any] | None = None) -> str:
+    cols_cfg = get_coverage_mapping_columns_config(cfg)
+    value = cols_cfg.get("adjustment", "adjustment")
+    return require_str(value, key="coverage.mappings.columns.adjustment")
+
+
+def get_coverage_mapping_group_id_col(cfg: dict[str, Any] | None = None) -> str:
+    cols_cfg = get_coverage_mapping_columns_config(cfg)
+    value = cols_cfg.get("group_id", "group.id")
+    return require_str(value, key="coverage.mappings.columns.group_id")
+
+
+def get_coverage_mapping_columns(cfg: dict[str, Any] | None = None) -> dict[str, str]:
+    return {
+        "source_cmd": get_coverage_mapping_source_cmd_col(cfg),
+        "target_cmd": get_coverage_mapping_target_cmd_col(cfg),
+        "relationship": get_coverage_mapping_relationship_col(cfg),
+        "adjustment": get_coverage_mapping_adjustment_col(cfg),
+        "group_id": get_coverage_mapping_group_id_col(cfg),
+    }
+
+def get_coverage_categories_config(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    coverage_cfg = get_coverage_config(cfg)
+    value = coverage_cfg.get("categories", {})
+    return require_dict(value, key="coverage.categories")
+
+
+def get_coverage_easy_without_weights_categories(
+    cfg: dict[str, Any] | None = None,
+) -> list[str]:
+    categories_cfg = get_coverage_categories_config(cfg)
+    value = categories_cfg.get("easy_without_weights", ["already_target", "1:1", "n:1"])
+
+    if not isinstance(value, list):
+        raise TypeError("'coverage.categories.easy_without_weights' must be a list.")
+
+    return [
+        require_str(item, key="coverage.categories.easy_without_weights")
+        for item in value
+    ]
+
+
+def get_coverage_needs_weights_categories(
+    cfg: dict[str, Any] | None = None,
+) -> list[str]:
+    categories_cfg = get_coverage_categories_config(cfg)
+    value = categories_cfg.get("needs_weights", ["1:n", "n:n"])
+
+    if not isinstance(value, list):
+        raise TypeError("'coverage.categories.needs_weights' must be a list.")
+
+    return [
+        require_str(item, key="coverage.categories.needs_weights")
+        for item in value
+    ]
+
+
+def get_coverage_missing_categories(
+    cfg: dict[str, Any] | None = None,
+) -> list[str]:
+    categories_cfg = get_coverage_categories_config(cfg)
+    value = categories_cfg.get("missing", ["missing_mapping"])
+
+    if not isinstance(value, list):
+        raise TypeError("'coverage.categories.missing' must be a list.")
+
+    return [
+        require_str(item, key="coverage.categories.missing")
+        for item in value
+    ]
+
+def get_coverage_report_config(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    coverage_cfg = get_coverage_config(cfg)
+    value = coverage_cfg.get("report", {})
+    return require_dict(value, key="coverage.report")
+
+
+def get_coverage_report_output_kind(cfg: dict[str, Any] | None = None) -> str:
+    report_cfg = get_coverage_report_config(cfg)
+    value = report_cfg.get("output_kind", "reports")
+    return require_str(value, key="coverage.report.output_kind")
+
+
+def get_coverage_report_filename(cfg: dict[str, Any] | None = None) -> str:
+    report_cfg = get_coverage_report_config(cfg)
+    value = report_cfg.get(
+        "filename",
+        "audit_hs_sync_target_h5_mapping_coverage.csv",
+    )
+    return require_str(value, key="coverage.report.filename")
+
+
+def get_coverage_report_timestamp_bool(cfg: dict[str, Any] | None = None) -> bool:
+    report_cfg = get_coverage_report_config(cfg)
+    value = report_cfg.get("timestamp", True)
+    return require_bool(value, key="coverage.report.timestamp")
+
+
+def get_coverage_report_write_latest_bool(cfg: dict[str, Any] | None = None) -> bool:
+    report_cfg = get_coverage_report_config(cfg)
+    value = report_cfg.get("write_latest", True)
+    return require_bool(value, key="coverage.report.write_latest")
+
+def get_coverage_supported_source_hs(
+    cfg: dict[str, Any] | None = None,
+) -> list[str]:
+    coverage_cfg = get_coverage_config(cfg)
+    value = coverage_cfg.get("supported_source_hs", ["H4", "H5", "H6"])
+
+    if not isinstance(value, list):
+        raise TypeError("'coverage.supported_source_hs' must be a list.")
+
+    return [
+        require_str(item, key="coverage.supported_source_hs").strip().upper()
+        for item in value
+    ]
+
+def get_coverage_output_config(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    coverage_cfg = get_coverage_config(cfg)
+    value = coverage_cfg.get("output", {})
+    return require_dict(value, key="coverage.output")
+
+
+def get_coverage_output_stage(cfg: dict[str, Any] | None = None) -> str:
+    output_cfg = get_coverage_output_config(cfg)
+    value = output_cfg.get("stage", "interim")
+    return require_str(value, key="coverage.output.stage")
+
+
+def get_coverage_output_subdir(cfg: dict[str, Any] | None = None) -> str:
+    output_cfg = get_coverage_output_config(cfg)
+    value = output_cfg.get("subdir", "hs_sync/target_h5_mapping_coverage")
+    return require_str(value, key="coverage.output.subdir")
+
+
+def get_coverage_write_config(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    coverage_cfg = get_coverage_config(cfg)
+    value = coverage_cfg.get("write", {})
+    return require_dict(value, key="coverage.write")
+
+
+def get_coverage_write_csv_bool(cfg: dict[str, Any] | None = None) -> bool:
+    write_cfg = get_coverage_write_config(cfg)
+    value = write_cfg.get("csv", True)
+    return require_bool(value, key="coverage.write.csv")
+
+
+def get_coverage_write_parquet_bool(cfg: dict[str, Any] | None = None) -> bool:
+    write_cfg = get_coverage_write_config(cfg)
+    value = write_cfg.get("parquet", True)
+    return require_bool(value, key="coverage.write.parquet")
+
+
+def get_coverage_write_overwrite_bool(cfg: dict[str, Any] | None = None) -> bool:
+    write_cfg = get_coverage_write_config(cfg)
+    value = write_cfg.get("overwrite", True)
+    return require_bool(value, key="coverage.write.overwrite")
+
+
+def get_coverage_write_timestamp_bool(cfg: dict[str, Any] | None = None) -> bool:
+    write_cfg = get_coverage_write_config(cfg)
+    value = write_cfg.get("timestamp", False)
+    return require_bool(value, key="coverage.write.timestamp")

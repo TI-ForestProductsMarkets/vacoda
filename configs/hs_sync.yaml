@@ -111,37 +111,63 @@ harvard_weights:
 
 
 # ---------------------------------------------------------------------
-# Stage 3: coverage diagnostics using generated weights
+# Stage 3: target-H5 mapping coverage diagnostics
 # ---------------------------------------------------------------------
 
-input:
-  source: "harvard_staging"
-  stage: "external"
-  subdir: "harvard_comtrade_bulk/as_reported/raw_parquet_partitioned"
-  pattern: "hs_partition=*/year_partition=*/*.parquet"
-  format: "parquet"
+coverage:
+  enabled: true
+  target_hs: "H5"
+  min_year: 2017
+  max_year: 2025
 
-concordance:
-  stage: "references"
-  subdir: "hs_sync"
-  file: "harvard_hs_conversion_weights.parquet"
+  input:
+    stage: "raw"
+    subdir: "api/single"
+    pattern: "*.csv"
+    format: "csv"
 
-  columns:
-    source_hs: "source_hs"
-    source_cmd: "source_cmd"
-    target_hs: "target_hs"
-    target_cmd: "target_cmd"
-    weight: "weight"
+  mappings:
+    stage: "references"
+    subdir: "comtrade-conversion-weights/generator/data/correlation_groups"
+    files:
+      H4_to_H5: "from_HS2012_to_HS2017.csv"
+      H6_to_H5: "from_HS2022_to_HS2017.csv"
 
-output:
-  stage: "interim"
-  subdir: "hs_sync"
+    columns:
+      source_cmd: "code.source"
+      target_cmd: "code.target"
+      relationship: "Relationship"
+      adjustment: "adjustment"
+      group_id: "group.id"
 
-write:
-  csv: true
-  parquet: true
-  overwrite: true
-  timestamp: false
+  categories:
+    easy_without_weights:
+      - "already_target"
+      - "1:1"
+      - "n:1"
+
+    needs_weights:
+      - "1:n"
+      - "n:n"
+
+    missing:
+      - "missing_mapping"
+
+  output:
+    stage: "interim"
+    subdir: "hs_sync/target_h5_mapping_coverage"
+
+  write:
+    csv: true
+    parquet: true
+    overwrite: true
+    timestamp: false
+
+  report:
+    output_kind: "reports"
+    filename: "audit_hs_sync_target_h5_mapping_coverage.csv"
+    timestamp: true
+    write_latest: true
 
 diagnostics:
   weight_sum_tolerance: 0.001
@@ -154,38 +180,53 @@ report:
   write_latest: true
 
 products:
-  hs_concordance_coverage:
+  target_h5_mapping_coverage:
     enabled: true
     kind: "base"
-    filename: "hs_concordance_coverage"
+    filename: "target_h5_mapping_coverage"
     write: true
 
-  hs_concordance_summary:
+  target_h5_mapping_summary:
     enabled: true
     kind: "derived"
-    depends_on: "hs_concordance_coverage"
-    filename: "hs_concordance_summary"
+    depends_on: "target_h5_mapping_coverage"
+    filename: "target_h5_mapping_summary"
     write: true
 
-  missing_hs_mappings:
+  target_h5_missing_mappings:
     enabled: true
     kind: "derived"
-    depends_on: "hs_concordance_coverage"
-    filename: "missing_hs_mappings"
+    depends_on: "target_h5_mapping_coverage"
+    filename: "target_h5_missing_mappings"
     write: true
     options:
       top_n: 50
 
-  one_to_many_hs_mappings:
+  target_h5_needs_weights:
     enabled: true
     kind: "derived"
-    depends_on: "hs_concordance_coverage"
-    filename: "one_to_many_hs_mappings"
+    depends_on: "target_h5_mapping_coverage"
+    filename: "target_h5_needs_weights"
     write: true
 
-  value_split_hs_mappings:
+  target_h5_easy_without_weights:
     enabled: true
     kind: "derived"
-    depends_on: "hs_concordance_coverage"
-    filename: "value_split_hs_mappings"
+    depends_on: "target_h5_mapping_coverage"
+    filename: "target_h5_easy_without_weights"
+    write: true
+
+  target_h5_mapping_interpretation_report:
+    enabled: true
+    kind: "derived"
+    depends_on: "target_h5_mapping_summary"
+    filename: "target_h5_mapping_interpretation_report"
+    write: true
+
+  target_h5_mapping_interpretation_display_report:
+    enabled: true
+    kind: "derived"
+    depends_on: "target_h5_mapping_interpretation_report"
+    output_kind: "reports"
+    filename: "target_h5_mapping_interpretation_display_report"
     write: true
