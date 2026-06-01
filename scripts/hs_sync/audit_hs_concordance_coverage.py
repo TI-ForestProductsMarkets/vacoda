@@ -26,7 +26,7 @@ from vacoda.config.hs_sync import (
     load_hs_sync_config,
 )
 from vacoda.config.paths import resolve_log_path
-from vacoda.hs_sync.workflow import run_hs_sync_diagnostics
+from vacoda.hs_sync.workflow import run_target_h5_mapping_coverage_audit
 from vacoda.utils.logger import get_logger, parse_log_level, setup_logging
 
 
@@ -49,7 +49,7 @@ def main() -> None:
     logger.debug("Log file: %s", log_path)
 
     try:
-        outputs = run_hs_sync_diagnostics(run_id=run_id)
+        outputs = run_target_h5_mapping_coverage_audit(run_id=run_id)
     except Exception:
         logger.exception("HS-sync concordance coverage audit failed.")
         logger.info("Log file: %s", log_path)

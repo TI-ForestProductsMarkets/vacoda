@@ -6,6 +6,591 @@ from __future__ import annotations
 
 import pandas as pd
 
+
+def _dataframe_to_markdown_table(df: pd.DataFrame) -> str:
+    """Serialize a DataFrame into an aligned GitHub-flavored markdown table."""
+    def _sanitize(value: object) -> str:
+        text = str(value)
+        return text.replace("\n", " ").replace("|", r"\|")
+
+    headers = [str(col) for col in df.columns]
+
+    if not headers:
+        return ""
+
+    rows_data = [
+        [_sanitize(value) for value in row]
+        for row in df.itertuples(index=False, name=None)
+    ]
+
+    col_widths = [len(header) for header in headers]
+    for row in rows_data:
+        for idx, cell in enumerate(row):
+            if idx < len(col_widths):
+                col_widths[idx] = max(col_widths[idx], len(cell))
+
+    header_row = "| " + " | ".join(
+        header.ljust(col_widths[idx]) for idx, header in enumerate(headers)
+    ) + " |"
+    divider_row = "| " + " | ".join(
+        "-" * col_widths[idx] for idx in range(len(headers))
+    ) + " |"
+
+    if not rows_data:
+        return "\n".join([header_row, divider_row])
+
+    rows: list[str] = []
+    for row in rows_data:
+        rows.append(
+            "| " + " | ".join(
+                cell.ljust(col_widths[idx]) for idx, cell in enumerate(row)
+            ) + " |"
+        )
+
+    return "\n".join([header_row, divider_row, *rows])
+
+def _format_compact_number(value: float) -> str:
+    """Format large numbers compactly for human-readable reports."""
+    value = float(value)
+
+    abs_value = abs(value)
+
+    if abs_value >= 1_000_000_000_000:
+        return f"{value / 1_000_000_000_000:.2f}T"
+
+    if abs_value >= 1_000_000_000:
+        return f"{value / 1_000_000_000:.2f}B"
+
+    if abs_value >= 1_000_000:
+        return f"{value / 1_000_000:.2f}M"
+
+    if abs_value >= 1_000:
+        return f"{value / 1_000:.2f}K"
+
+    return f"{value:.2f}"
+
+
+def build_target_h5_mapping_interpretation_display_report(
+    report: pd.DataFrame,
+    *,
+    output: str = "dataframe",
+) -> pd.DataFrame | str:
+    """
+    Convert the raw target-H5 interpretation report into a compact
+    human-readable display table.
+
+    This is meant for reports, slides, and quick inspection.
+    """
+
+    required = {
+        "result_class",
+        "n_rows",
+        "value_total",
+        "share_rows_percent",
+        "share_value_percent",
+    }
+
+    missing = required - set(report.columns)
+    if missing:
+        raise KeyError(
+            f"Interpretation report is missing required columns: {sorted(missing)}. "
+            f"Available columns: {list(report.columns)}"
+        )
+
+    meaning = {
+        "Easy without weights": (
+            "Already H5, 1:1, or deterministic aggregation"
+        ),
+        "Needs weights": (
+            "Source code may split across multiple H5 targets"
+        ),
+        "Unsupported source HS": (
+            "H2/H3 not covered by direct H4/H6 → H5 mappings"
+        ),
+        "Missing mapping": (
+            "Supported HS system, but no mapping found"
+        ),
+    }
+
+    display = report.copy()
+
+    display["Rows"] = display["n_rows"].map(lambda x: f"{int(x):,}")
+    display["Row share"] = display["share_rows_percent"].map(lambda x: f"{x:.2f}%")
+    display["Value"] = display["value_total"].map(_format_compact_number)
+    display["Value share"] = display["share_value_percent"].map(lambda x: f"{x:.2f}%")
+    display["Meaning"] = display["result_class"].map(meaning).fillna(
+        display.get("interpretation", "")
+    )
+
+    display = display.rename(columns={"result_class": "Result class"})
+
+    display_df = display[
+        [
+            "Result class",
+            "Rows",
+            "Row share",
+            "Value",
+            "Value share",
+            "Meaning",
+        ]
+    ].reset_index(drop=True)
+
+    output_normalized = output.strip().lower()
+    if output_normalized == "dataframe":
+        return display_df
+
+    if output_normalized == "markdown":
+        return _dataframe_to_markdown_table(display_df)
+
+    raise ValueError(
+        "Invalid output for build_target_h5_mapping_interpretation_display_report: "
+        f"{output!r}. Expected 'dataframe' or 'markdown'."
+    )
+
+def _find_first_existing_column(
+    df: pd.DataFrame,
+    candidates: list[str],
+    *,
+    label: str,
+) -> str:
+    """
+    Return the first existing column from candidates.
+
+    This keeps the coverage functions robust against small differences in
+    source-summary column naming.
+    """
+    for col in candidates:
+        if col in df.columns:
+            return col
+
+    raise KeyError(
+        f"Could not find {label} column. Tried: {candidates}. "
+        f"Available columns: {list(df.columns)}"
+    )
+
+
+def _normalize_cmd_code_series(series: pd.Series) -> pd.Series:
+    """
+    Normalize HS commodity codes to six-character strings where possible.
+
+    Handles values read as int/float/string, e.g.:
+        440110      -> '440110'
+        440110.0    -> '440110'
+        '010121'    -> '010121'
+    """
+    out = series.astype("string").str.strip()
+
+    # Remove trailing .0 from numeric-looking strings.
+    out = out.str.replace(r"\.0$", "", regex=True)
+
+    # Keep missing values as missing.
+    out = out.mask(out.isin(["", "nan", "None", "<NA>"]))
+
+    # Pad purely numeric codes up to 6 digits.
+    is_numeric = out.str.match(r"^[0-9]+$", na=False)
+    out = out.where(~is_numeric, out.str.zfill(6))
+
+    return out
+
+
+def _prepare_mapping_table(
+    mapping_df: pd.DataFrame,
+    *,
+    source_hs: str,
+    target_hs: str,
+    mapping_columns: dict[str, str],
+) -> pd.DataFrame:
+    """
+    Normalize one Harvard correlation-group mapping file.
+
+    Expected logical columns:
+        source_cmd
+        target_cmd
+        relationship
+        adjustment
+        group_id
+    """
+
+    source_cmd_col = mapping_columns["source_cmd"]
+    target_cmd_col = mapping_columns["target_cmd"]
+    relationship_col = mapping_columns["relationship"]
+    adjustment_col = mapping_columns["adjustment"]
+    group_id_col = mapping_columns["group_id"]
+
+    required = [
+        source_cmd_col,
+        target_cmd_col,
+        relationship_col,
+        adjustment_col,
+        group_id_col,
+    ]
+
+    missing = [col for col in required if col not in mapping_df.columns]
+    if missing:
+        raise KeyError(
+            "Mapping table is missing required columns: "
+            f"{missing}. Available columns: {list(mapping_df.columns)}"
+        )
+
+    out = mapping_df[
+        [
+            source_cmd_col,
+            target_cmd_col,
+            relationship_col,
+            adjustment_col,
+            group_id_col,
+        ]
+    ].copy()
+
+    out = out.rename(
+        columns={
+            source_cmd_col: "source_cmd",
+            target_cmd_col: "target_cmd",
+            relationship_col: "relationship",
+            adjustment_col: "adjustment",
+            group_id_col: "group_id",
+        }
+    )
+
+    out["source_hs"] = source_hs
+    out["target_hs"] = target_hs
+    out["source_cmd"] = _normalize_cmd_code_series(out["source_cmd"])
+    out["target_cmd"] = _normalize_cmd_code_series(out["target_cmd"])
+    out["relationship"] = out["relationship"].astype("string").str.strip()
+
+    return out
+
+
+def build_target_h5_mapping_coverage(
+    *,
+    source_summary: pd.DataFrame,
+    mappings: dict[str, pd.DataFrame],
+    target_hs: str,
+    mapping_columns: dict[str, str],
+    easy_without_weights: list[str],
+    needs_weights: list[str],
+    missing_categories: list[str],
+) -> pd.DataFrame:
+    """
+    Build target-H5 mapping coverage from source trade summary and mapping files.
+
+    This answers:
+        How many records / how much value can be converted to target H5
+        without optimized conversion weights?
+
+    Classification logic:
+        - source_hs == target_hs:
+            already_target, easy_without_weights
+
+        - source_hs has direct mapping file and mapping exists:
+            relationship from mapping table, e.g. 1:1, n:1, 1:n, n:n
+
+        - source_hs has direct mapping file but source_cmd not found:
+            missing_mapping
+
+        - source_hs has no configured mapping file and is not target_hs:
+            unsupported_source_hs
+
+    For target H5, expected mapping keys are typically:
+        H4_to_H5
+        H6_to_H5
+    """
+
+    target_hs = target_hs.strip().upper()
+
+    first_year_col = _find_first_existing_column(
+    source_summary,
+    ["first_year", "year", "RefYear", "refYear"],
+    label="first year",
+    )
+
+    last_year_col = _find_first_existing_column(
+    source_summary,
+    ["last_year", "year", "RefYear", "refYear"],
+    label="last year",
+    )
+
+    hs_col = _find_first_existing_column(
+        source_summary,
+        ["source_hs", "hs", "ClassificationCode", "classificationCode"],
+        label="HS/source HS",
+    )
+
+    cmd_col = _find_first_existing_column(
+        source_summary,
+        ["source_cmd", "cmd", "CmdCode", "cmdCode"],
+        label="commodity/source command code",
+    )
+
+    rows_col = _find_first_existing_column(
+        source_summary,
+        ["n_trade_rows", "n_rows", "rows", "row_count", "count"],
+        label="row count",
+    )
+
+    value_col = _find_first_existing_column(
+        source_summary,
+        [
+        "trade_value_total",
+        "value_total",
+        "primary_value_total",
+        "PrimaryValue",
+        "primaryValue",
+    ],
+    label="value total",
+    )
+    
+    trade = source_summary.copy()
+
+    trade = trade.rename(
+        columns={
+            first_year_col: "first_year",
+            last_year_col: "last_year",
+            hs_col: "source_hs",
+            cmd_col: "source_cmd",
+            rows_col: "n_rows",
+            value_col: "value_total",
+        }
+    )
+
+    trade["source_hs"] = trade["source_hs"].astype("string").str.strip().str.upper()
+    trade["source_cmd"] = _normalize_cmd_code_series(trade["source_cmd"])
+    trade["first_year"] = pd.to_numeric(trade["first_year"], errors="coerce",).astype("Int64")
+    trade["last_year"] = pd.to_numeric(trade["last_year"], errors="coerce",).astype("Int64")
+    trade["n_rows"] = pd.to_numeric(trade["n_rows"], errors="coerce").fillna(0).astype("int64")
+    trade["value_total"] = pd.to_numeric(
+        trade["value_total"],
+        errors="coerce",
+    ).fillna(0.0)
+
+    prepared_mappings: list[pd.DataFrame] = []
+
+    for mapping_name, mapping_df in mappings.items():
+        # Expected names like H4_to_H5, H6_to_H5.
+        parts = mapping_name.upper().split("_TO_")
+
+        if len(parts) != 2:
+            raise ValueError(
+                "Mapping file key must look like 'H4_to_H5' or 'H6_to_H5'. "
+                f"Got: {mapping_name}"
+            )
+
+        source_hs, mapping_target_hs = parts
+
+        if mapping_target_hs != target_hs:
+            raise ValueError(
+                f"Mapping {mapping_name} points to {mapping_target_hs}, "
+                f"but target_hs is {target_hs}."
+            )
+
+        prepared_mappings.append(
+            _prepare_mapping_table(
+                mapping_df,
+                source_hs=source_hs,
+                target_hs=mapping_target_hs,
+                mapping_columns=mapping_columns,
+            )
+        )
+
+    if prepared_mappings:
+        mapping_all = pd.concat(prepared_mappings, ignore_index=True)
+    else:
+        mapping_all = pd.DataFrame(
+            columns=[
+                "source_cmd",
+                "target_cmd",
+                "relationship",
+                "adjustment",
+                "group_id",
+                "source_hs",
+                "target_hs",
+            ]
+        )
+
+    # One source code can map to multiple target codes.
+    # For coverage classification, keep relationship-level rows.
+    coverage = trade.merge(
+        mapping_all,
+        on=["source_hs", "source_cmd"],
+        how="left",
+        validate="many_to_many",
+    )
+
+    configured_source_hs = set(mapping_all["source_hs"].dropna().unique())
+
+    coverage["mapping_category"] = coverage["relationship"].astype("string")
+    coverage["target_hs"] = target_hs
+
+    already_target = coverage["source_hs"] == target_hs
+    has_mapping = coverage["relationship"].notna()
+    source_supported = coverage["source_hs"].isin(configured_source_hs)
+
+    coverage.loc[already_target, "mapping_category"] = "already_target"
+
+    coverage.loc[
+        (~already_target) & source_supported & (~has_mapping),
+        "mapping_category",
+    ] = "missing_mapping"
+
+    coverage.loc[
+        (~already_target) & (~source_supported),
+        "mapping_category",
+    ] = "unsupported_source_hs"
+
+    easy_set = set(easy_without_weights)
+    needs_set = set(needs_weights)
+    missing_set = set(missing_categories)
+
+    coverage["conversion_need"] = "other"
+
+    coverage.loc[
+        coverage["mapping_category"].isin(easy_set),
+        "conversion_need",
+    ] = "easy_without_weights"
+
+    coverage.loc[
+        coverage["mapping_category"].isin(needs_set),
+        "conversion_need",
+    ] = "needs_weights"
+
+    coverage.loc[
+        coverage["mapping_category"].isin(missing_set),
+        "conversion_need",
+    ] = "missing"
+
+    coverage.loc[
+        coverage["mapping_category"] == "unsupported_source_hs",
+        "conversion_need",
+    ] = "unsupported_source_hs"
+
+    # For already target rows, target_cmd is the source code.
+    coverage.loc[already_target, "target_cmd"] = coverage.loc[
+        already_target,
+        "source_cmd",
+    ]
+
+    coverage["target_cmd"] = _normalize_cmd_code_series(coverage["target_cmd"])
+
+    # Indicator useful for summaries.
+    coverage["is_simple_without_weights"] = (
+        coverage["conversion_need"] == "easy_without_weights"
+    )
+
+    coverage["requires_weights"] = coverage["conversion_need"] == "needs_weights"
+
+    ordered_cols = [
+    "first_year",
+    "last_year",
+    "source_hs",
+    "source_cmd",
+    "target_hs",
+    "target_cmd",
+    "relationship",
+    "mapping_category",
+    "conversion_need",
+    "is_simple_without_weights",
+    "requires_weights",
+    "group_id",
+    "adjustment",
+    "n_rows",
+    "value_total",
+]
+
+    existing_cols = [col for col in ordered_cols if col in coverage.columns]
+    other_cols = [col for col in coverage.columns if col not in existing_cols]
+
+    return coverage[existing_cols + other_cols].reset_index(drop=True)
+
+
+def summarize_target_h5_mapping_coverage(
+    coverage: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Summarize target-H5 mapping coverage by conversion need and category.
+    """
+
+    total_rows = coverage["n_rows"].sum()
+    total_value = coverage["value_total"].sum()
+
+    group_cols = [
+        "conversion_need",
+        "mapping_category",
+        "source_hs",
+    ]
+
+    summary = (
+        coverage.groupby(group_cols, dropna=False)
+        .agg(
+            n_source_codes=("source_cmd", "nunique"),
+            n_target_codes=("target_cmd", "nunique"),
+            n_rows=("n_rows", "sum"),
+            value_total=("value_total", "sum"),
+        )
+        .reset_index()
+    )
+
+    summary["share_rows"] = 0.0
+    summary["share_value"] = 0.0
+
+    if total_rows:
+        summary["share_rows"] = summary["n_rows"] / total_rows
+
+    if total_value:
+        summary["share_value"] = summary["value_total"] / total_value
+
+    summary = summary.sort_values(
+        ["conversion_need", "mapping_category", "source_hs"],
+    ).reset_index(drop=True)
+
+    return summary
+
+
+def get_target_h5_missing_mappings(
+    coverage: pd.DataFrame,
+    *,
+    top_n: int | None = 50,
+) -> pd.DataFrame:
+    """
+    Return missing/unsupported source HS-code combinations by value.
+
+    This is useful for answering:
+        Which codes block deterministic conversion to target H5?
+    """
+
+    missing = coverage[
+        coverage["conversion_need"].isin(
+            ["missing", "unsupported_source_hs"]
+        )
+    ].copy()
+
+    if missing.empty:
+        return missing
+
+    group_cols = [
+        "source_hs",
+        "source_cmd",
+        "mapping_category",
+        "conversion_need",
+    ]
+
+    out = (
+        missing.groupby(group_cols, dropna=False)
+        .agg(
+            first_year=("first_year", "min"),
+            last_year=("last_year", "max"),
+            n_rows=("n_rows", "sum"),
+            value_total=("value_total", "sum"),
+        )
+        .reset_index()
+        .sort_values("value_total", ascending=False)
+        .reset_index(drop=True)
+    )
+
+    if top_n is not None:
+        out = out.head(int(top_n))
+
+    return out
+
 def build_hs_concordance_coverage_from_source_summary(
     source_summary: pd.DataFrame,
     concordance_df: pd.DataFrame,
@@ -238,6 +823,114 @@ def get_missing_hs_mappings(
         missing = missing.head(top_n)
 
     return missing
+
+
+def build_target_h5_mapping_interpretation_report(
+    summary: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Collapse detailed target-H5 mapping summary into a concise interpretation report.
+
+    Produces three high-level result classes:
+        - Easy without weights
+        - Needs weights
+        - Unsupported source HS
+
+    Input is expected to be the output of summarize_target_h5_mapping_coverage().
+    """
+
+    required = {
+        "conversion_need",
+        "n_rows",
+        "value_total",
+        "share_rows",
+        "share_value",
+    }
+
+    missing = required - set(summary.columns)
+    if missing:
+        raise KeyError(
+            f"Summary table is missing required columns: {sorted(missing)}. "
+            f"Available columns: {list(summary.columns)}"
+        )
+
+    total_rows = summary["n_rows"].sum()
+    total_value = summary["value_total"].sum()
+
+    class_map = {
+        "easy_without_weights": {
+            "result_class": "Easy without weights",
+            "interpretation": (
+                "Already H5, exact 1:1 mappings, or aggregation-type mappings "
+                "where source codes map deterministically to one H5 target code."
+            ),
+            "sort_order": 1,
+        },
+        "needs_weights": {
+            "result_class": "Needs weights",
+            "interpretation": (
+                "One source code may map to multiple H5 target codes; "
+                "value allocation requires conversion weights or another split rule."
+            ),
+            "sort_order": 2,
+        },
+        "unsupported_source_hs": {
+            "result_class": "Unsupported source HS",
+            "interpretation": (
+                "Source HS systems not handled by the current direct H4/H6 → H5 "
+                "mapping setup, such as H2/H3 records."
+            ),
+            "sort_order": 3,
+        },
+        "missing": {
+            "result_class": "Missing mapping",
+            "interpretation": (
+                "Source codes are in a supported HS system, but no mapping was found."
+            ),
+            "sort_order": 4,
+        },
+    }
+
+    rows: list[dict[str, object]] = []
+
+    for conversion_need, group in summary.groupby("conversion_need", dropna=False):
+        key = str(conversion_need)
+
+        meta = class_map.get(
+            key,
+            {
+                "result_class": key,
+                "interpretation": "Other mapping category.",
+                "sort_order": 99,
+            },
+        )
+
+        n_rows = group["n_rows"].sum()
+        value_total = group["value_total"].sum()
+
+        share_rows = n_rows / total_rows if total_rows else 0.0
+        share_value = value_total / total_value if total_value else 0.0
+
+        rows.append(
+            {
+                "result_class": meta["result_class"],
+                "conversion_need": key,
+                "n_rows": int(n_rows),
+                "value_total": float(value_total),
+                "share_rows": share_rows,
+                "share_value": share_value,
+                "share_rows_percent": share_rows * 100,
+                "share_value_percent": share_value * 100,
+                "interpretation": meta["interpretation"],
+                "sort_order": meta["sort_order"],
+            }
+        )
+
+    report = pd.DataFrame(rows)
+
+    report = report.sort_values("sort_order").drop(columns=["sort_order"])
+
+    return report.reset_index(drop=True)
 
 def build_hs_concordance_coverage(
     source_summary: pd.DataFrame,
