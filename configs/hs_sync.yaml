@@ -230,3 +230,10 @@ products:
     output_kind: "reports"
     filename: "target_h5_mapping_interpretation_display_report"
     write: true
+
+  target_h5_source_code_coverage:
+    enabled: true
+    kind: "derived"
+    depends_on: "target_h5_mapping_coverage"
+    filename: "target_h5_source_code_coverage"
+    write: true

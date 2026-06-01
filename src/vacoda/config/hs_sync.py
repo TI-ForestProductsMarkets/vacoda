@@ -632,6 +632,71 @@ def get_target_h5_mapping_interpretation_display_report_output_kind(
 
     return value
 
+
+def get_target_h5_source_code_coverage_config(
+    cfg: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return product config for target-H5 source code coverage."""
+    return get_product_config(
+        "target_h5_source_code_coverage",
+        cfg,
+        required=True,
+    )
+
+
+def get_target_h5_source_code_coverage_enabled_bool(
+    cfg: dict[str, Any] | None = None,
+) -> bool:
+    """Return whether target-H5 source code coverage product is enabled."""
+    return is_product_enabled(
+        "target_h5_source_code_coverage",
+        cfg,
+        default=False,
+    )
+
+
+def get_target_h5_source_code_coverage_kind(
+    cfg: dict[str, Any] | None = None,
+) -> str:
+    """Return product kind for target-H5 source code coverage."""
+    product_cfg = get_target_h5_source_code_coverage_config(cfg)
+    value = product_cfg.get("kind", "derived")
+    return require_str(
+        value,
+        key="products.target_h5_source_code_coverage.kind",
+    )
+
+
+def get_target_h5_source_code_coverage_dependency(
+    cfg: dict[str, Any] | None = None,
+) -> str | None:
+    """Return dependency for target-H5 source code coverage product."""
+    return get_product_dependency(
+        "target_h5_source_code_coverage",
+        cfg,
+    )
+
+
+def get_target_h5_source_code_coverage_filename(
+    cfg: dict[str, Any] | None = None,
+) -> str:
+    """Return filename for target-H5 source code coverage product."""
+    return get_product_filename(
+        "target_h5_source_code_coverage",
+        cfg,
+    )
+
+
+def get_target_h5_source_code_coverage_write_bool(
+    cfg: dict[str, Any] | None = None,
+) -> bool:
+    """Return whether target-H5 source code coverage product should be written."""
+    return get_product_write_bool(
+        "target_h5_source_code_coverage",
+        cfg,
+        default=True,
+    )
+
 # ---------------------------------------------------------------------
 # Main HS-sync report config getters
 # ---------------------------------------------------------------------

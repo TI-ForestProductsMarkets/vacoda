@@ -67,13 +67,15 @@ from vacoda.config.hs_sync import (
 
 from vacoda.hs_sync.coverage import (
     build_hs_concordance_coverage_from_source_summary,
+    build_target_h5_source_code_coverage,
     get_missing_hs_mappings,
     get_one_to_many_hs_mappings,
     build_target_h5_mapping_coverage,
     summarize_target_h5_mapping_coverage,
     get_target_h5_missing_mappings,
     build_target_h5_mapping_interpretation_report,
-    build_target_h5_mapping_interpretation_display_report
+    build_target_h5_mapping_interpretation_display_report,
+    build_target_h5_source_code_coverage
 )
 
 from vacoda.hs_sync.diagnostics import (
@@ -478,14 +480,18 @@ def run_target_h5_mapping_coverage_audit(
                 missing_categories=get_coverage_missing_categories(cfg),
             )
 
-            runtime["target_h5_mapping_coverage"] = coverage
-            tables["target_h5_mapping_coverage"] = coverage
+            source_code_coverage = build_target_h5_source_code_coverage(coverage)
+            runtime["target_h5_source_code_coverage"] = source_code_coverage
+            tables["target_h5_source_code_coverage"] = source_code_coverage
+            
+            #runtime["target_h5_mapping_coverage"] = coverage
+            #tables["target_h5_mapping_coverage"] = coverage
 
-            summary = summarize_target_h5_mapping_coverage(coverage)
-            runtime["target_h5_mapping_summary"] = summary
-            tables["target_h5_mapping_summary"] = summary
+            #summary = summarize_target_h5_mapping_coverage(coverage)
+            #runtime["target_h5_mapping_summary"] = summary
+            #tables["target_h5_mapping_summary"] = summary
 
-            interpretation_report = build_target_h5_mapping_interpretation_report(summary)
+            interpretation_report = build_target_h5_mapping_interpretation_report(source_code_coverage)
 
             interpretation_display_report = (build_target_h5_mapping_interpretation_display_report(interpretation_report))
             runtime["target_h5_mapping_interpretation_display_report"] = (interpretation_display_report)

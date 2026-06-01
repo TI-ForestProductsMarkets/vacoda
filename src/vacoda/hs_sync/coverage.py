@@ -84,6 +84,8 @@ def build_target_h5_mapping_interpretation_display_report(
 
     required = {
         "result_class",
+        "n_source_hs_code_pairs",
+        "share_source_hs_code_pairs_percent",
         "n_rows",
         "value_total",
         "share_rows_percent",
@@ -115,6 +117,8 @@ def build_target_h5_mapping_interpretation_display_report(
     display = report.copy()
 
     display["Rows"] = display["n_rows"].map(lambda x: f"{int(x):,}")
+    display["Source HS-code pairs"] = display["n_source_hs_code_pairs"].map(lambda x: f"{int(x):,}")
+    display["Source-code share"] = display["share_source_hs_code_pairs_percent"].map(lambda x: f"{x:.2f}%")
     display["Row share"] = display["share_rows_percent"].map(lambda x: f"{x:.2f}%")
     display["Value"] = display["value_total"].map(_format_compact_number)
     display["Value share"] = display["share_value_percent"].map(lambda x: f"{x:.2f}%")
@@ -127,6 +131,8 @@ def build_target_h5_mapping_interpretation_display_report(
     display_df = display[
         [
             "Result class",
+            "Source HS-code pairs",
+            "Source-code share",
             "Rows",
             "Row share",
             "Value",
@@ -260,6 +266,191 @@ def _prepare_mapping_table(
 
     return out
 
+
+def build_target_h5_source_code_coverage(
+    coverage: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Collapse detailed source→target mapping coverage to one row per
+    source HS/code pair.
+
+    This is the decision-level table for the target-H5 audit.
+
+    It avoids double-counting n_rows/value_total when one source code maps to
+    multiple target codes.
+    """
+
+    required = {
+        "source_hs",
+        "source_cmd",
+        "target_hs",
+        "target_cmd",
+        "relationship",
+        "mapping_category",
+        "conversion_need",
+        "first_year",
+        "last_year",
+        "n_rows",
+        "value_total",
+    }
+
+    missing = required - set(coverage.columns)
+    if missing:
+        raise KeyError(
+            f"Coverage table is missing required columns: {sorted(missing)}. "
+            f"Available columns: {list(coverage.columns)}"
+        )
+
+    base_cols = [
+        "source_hs",
+        "source_cmd",
+    ]
+
+    # One source_hs/source_cmd has the same n_rows/value_total repeated
+    # across target candidates after the source→target merge.
+    # Therefore use first() for row/value metrics, not sum().
+    out = (
+        coverage.groupby(base_cols, dropna=False)
+        .agg(
+            first_year=("first_year", "min"),
+            last_year=("last_year", "max"),
+            target_hs=("target_hs", "first"),
+            n_rows=("n_rows", "first"),
+            value_total=("value_total", "first"),
+            n_target_codes=("target_cmd", lambda x: x.dropna().nunique()),
+            target_codes=(
+                "target_cmd",
+                lambda x: sorted(set(x.dropna().astype(str))),
+            ),
+            relationship_original=(
+                "relationship",
+                lambda x: sorted(set(x.dropna().astype(str))),
+            ),
+            group_ids=(
+                "group_id",
+                lambda x: sorted(set(x.dropna().astype(str)))
+                if "group_id" in coverage.columns
+                else [],
+            ),
+        )
+        .reset_index()
+    )
+
+    out["target_codes"] = out["target_codes"].map(
+        lambda values: ";".join(values)
+    )
+
+    out["relationship_original"] = out["relationship_original"].map(
+        lambda values: ";".join(values)
+    )
+
+    out["group_ids"] = out["group_ids"].map(
+        lambda values: ";".join(values)
+    )
+
+    # Compute actual mapping category in our configured direction:
+    # source_cmd → target_cmd.
+    out["actual_mapping_category"] = "missing_mapping"
+
+    already_target = out["source_hs"].eq(out["target_hs"])
+
+    unsupported = coverage.groupby(base_cols, dropna=False)["mapping_category"].first()
+    unsupported = unsupported.reset_index()
+
+    out = out.merge(
+        unsupported.rename(columns={"mapping_category": "_raw_mapping_category"}),
+        on=base_cols,
+        how="left",
+    )
+
+    out.loc[already_target, "actual_mapping_category"] = "already_target"
+
+    out.loc[
+        out["_raw_mapping_category"].eq("unsupported_source_hs"),
+        "actual_mapping_category",
+    ] = "unsupported_source_hs"
+
+    out.loc[
+        out["_raw_mapping_category"].eq("missing_mapping"),
+        "actual_mapping_category",
+    ] = "missing_mapping"
+
+    mapped = (
+        ~already_target
+        & ~out["_raw_mapping_category"].isin(
+            ["unsupported_source_hs", "missing_mapping"]
+        )
+    )
+
+    out.loc[
+        mapped & out["n_target_codes"].eq(1),
+        "actual_mapping_category"] = "actual_to_single_target"
+
+    out.loc[
+    mapped & out["n_target_codes"].gt(1),
+    "actual_mapping_category"] = "actual_to_multiple_targets"
+
+    # Cleaner category names for interpretation.
+    # We cannot fully distinguish actual_1_to_1 from actual_n_to_1 at this
+    # source-code level without sources-per-target. For the decision question,
+    # both are deterministic and easy. The important distinction is whether
+    # one source code maps to one or multiple target codes.
+    out["conversion_need"] = "other"
+
+    out.loc[
+        out["actual_mapping_category"].isin(
+            ["already_target", "actual_to_single_target"]
+        ),
+        "conversion_need",
+    ] = "easy_without_weights"
+
+    out.loc[
+        out["actual_mapping_category"].eq("actual_to_multiple_targets"),
+        "conversion_need",
+    ] = "needs_weights"
+
+    out.loc[
+        out["actual_mapping_category"].eq("missing_mapping"),
+        "conversion_need",
+    ] = "missing"
+
+    out.loc[
+        out["actual_mapping_category"].eq("unsupported_source_hs"),
+        "conversion_need",
+    ] = "unsupported_source_hs"
+
+    out["is_simple_without_weights"] = out["conversion_need"].eq(
+        "easy_without_weights"
+    )
+    out["requires_weights"] = out["conversion_need"].eq("needs_weights")
+
+    out = out.drop(columns=["_raw_mapping_category"])
+
+    ordered_cols = [
+        "first_year",
+        "last_year",
+        "source_hs",
+        "source_cmd",
+        "target_hs",
+        "n_target_codes",
+        "target_codes",
+        "relationship_original",
+        "actual_mapping_category",
+        "conversion_need",
+        "is_simple_without_weights",
+        "requires_weights",
+        "group_ids",
+        "n_rows",
+        "value_total",
+    ]
+
+    existing = [col for col in ordered_cols if col in out.columns]
+    other = [col for col in out.columns if col not in existing]
+
+    return out[existing + other].sort_values(
+        ["conversion_need", "source_hs", "value_total"],
+        ascending=[True, True, False],
+    ).reset_index(drop=True)
 
 def build_target_h5_mapping_coverage(
     *,
@@ -824,68 +1015,67 @@ def get_missing_hs_mappings(
 
     return missing
 
-
 def build_target_h5_mapping_interpretation_report(
-    summary: pd.DataFrame,
+    source_code_coverage: pd.DataFrame,
 ) -> pd.DataFrame:
     """
-    Collapse detailed target-H5 mapping summary into a concise interpretation report.
+    Build a concise interpretation report from source-code-level coverage.
 
-    Produces three high-level result classes:
-        - Easy without weights
-        - Needs weights
-        - Unsupported source HS
-
-    Input is expected to be the output of summarize_target_h5_mapping_coverage().
+    This report is based on one row per source HS/code pair, so rows/value are
+    not double-counted when one source code maps to multiple targets.
     """
 
     required = {
         "conversion_need",
+        "source_hs",
+        "source_cmd",
         "n_rows",
         "value_total",
-        "share_rows",
-        "share_value",
     }
 
-    missing = required - set(summary.columns)
+    missing = required - set(source_code_coverage.columns)
     if missing:
         raise KeyError(
-            f"Summary table is missing required columns: {sorted(missing)}. "
-            f"Available columns: {list(summary.columns)}"
+            f"Source-code coverage table is missing required columns: "
+            f"{sorted(missing)}. Available columns: "
+            f"{list(source_code_coverage.columns)}"
         )
 
-    total_rows = summary["n_rows"].sum()
-    total_value = summary["value_total"].sum()
+    total_rows = source_code_coverage["n_rows"].sum()
+    total_value = source_code_coverage["value_total"].sum()
+
+    total_source_hs_code_pairs = (
+        source_code_coverage[["source_hs", "source_cmd"]]
+        .drop_duplicates()
+        .shape[0]
+    )
 
     class_map = {
         "easy_without_weights": {
             "result_class": "Easy without weights",
             "interpretation": (
-                "Already H5, exact 1:1 mappings, or aggregation-type mappings "
-                "where source codes map deterministically to one H5 target code."
+                "Already H5, 1:1, or deterministic aggregation"
             ),
             "sort_order": 1,
         },
         "needs_weights": {
             "result_class": "Needs weights",
             "interpretation": (
-                "One source code may map to multiple H5 target codes; "
-                "value allocation requires conversion weights or another split rule."
+                "Source code may split across multiple H5 targets"
             ),
             "sort_order": 2,
         },
         "unsupported_source_hs": {
             "result_class": "Unsupported source HS",
             "interpretation": (
-                "Source HS systems not handled by the current direct H4/H6 → H5 "
-                "mapping setup, such as H2/H3 records."
+                "H2/H3 not covered by direct H4/H6 → H5 mappings"
             ),
             "sort_order": 3,
         },
         "missing": {
             "result_class": "Missing mapping",
             "interpretation": (
-                "Source codes are in a supported HS system, but no mapping was found."
+                "Supported source HS, but no H5 mapping was found"
             ),
             "sort_order": 4,
         },
@@ -893,20 +1083,38 @@ def build_target_h5_mapping_interpretation_report(
 
     rows: list[dict[str, object]] = []
 
-    for conversion_need, group in summary.groupby("conversion_need", dropna=False):
+    for conversion_need, group in source_code_coverage.groupby(
+        "conversion_need",
+        dropna=False,
+    ):
         key = str(conversion_need)
 
         meta = class_map.get(
             key,
             {
                 "result_class": key,
-                "interpretation": "Other mapping category.",
+                "interpretation": "Other mapping category",
                 "sort_order": 99,
             },
         )
 
-        n_rows = group["n_rows"].sum()
-        value_total = group["value_total"].sum()
+        n_rows = int(group["n_rows"].sum())
+        value_total = float(group["value_total"].sum())
+
+        n_source_hs_code_pairs = (
+            group[["source_hs", "source_cmd"]]
+            .drop_duplicates()
+            .shape[0]
+        )
+
+        share_source_hs_code_pairs = (
+            n_source_hs_code_pairs / total_source_hs_code_pairs
+            if total_source_hs_code_pairs
+            else 0.0
+        )
+
+        n_source_codes = group["source_cmd"].nunique()
+        n_source_hs = group["source_hs"].nunique()
 
         share_rows = n_rows / total_rows if total_rows else 0.0
         share_value = value_total / total_value if total_value else 0.0
@@ -915,8 +1123,15 @@ def build_target_h5_mapping_interpretation_report(
             {
                 "result_class": meta["result_class"],
                 "conversion_need": key,
-                "n_rows": int(n_rows),
-                "value_total": float(value_total),
+                "n_source_hs_code_pairs": int(n_source_hs_code_pairs),
+                "share_source_hs_code_pairs": share_source_hs_code_pairs,
+                "share_source_hs_code_pairs_percent": (
+                    share_source_hs_code_pairs * 100
+                ),
+                "n_source_codes": int(n_source_codes),
+                "n_source_hs": int(n_source_hs),
+                "n_rows": n_rows,
+                "value_total": value_total,
                 "share_rows": share_rows,
                 "share_value": share_value,
                 "share_rows_percent": share_rows * 100,
@@ -928,10 +1143,12 @@ def build_target_h5_mapping_interpretation_report(
 
     report = pd.DataFrame(rows)
 
-    report = report.sort_values("sort_order").drop(columns=["sort_order"])
-
-    return report.reset_index(drop=True)
-
+    return (
+        report.sort_values("sort_order")
+        .drop(columns=["sort_order"])
+        .reset_index(drop=True)
+    )
+    
 def build_hs_concordance_coverage(
     source_summary: pd.DataFrame,
     concordance_df: pd.DataFrame,
