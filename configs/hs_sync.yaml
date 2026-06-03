@@ -1,45 +1,256 @@
-# configs/hs_sync.yaml
+## HS Synchronization Configuration
 
+# ============================================================
+# Global HS-sync scope
+# ============================================================
 scope:
-  target_hs: H5
-  min_year: 2017
+  target_hs: "H5"
+  min_year: 2002
   max_year: 2025
 
 engine:
-  name: duckdb
-  threads: 16
+  name: "duckdb"
+  threads: 48
 
 progress:
   enabled: true
 
+columns:
+  year: "RefYear"
+  hs: "ClassificationCode"
+  cmd: "CmdCode"
+  value: "PrimaryValue"
+
 logging:
-  level: INFO
-  file: hs_sync.log
+  level: "DEBUG"
+  file: "LOG_HS_SYNC_COVERAGE.log"
   timestamp: true
 
-columns:
-  year: RefYear
-  hs: ClassificationCode
-  cmd: CmdCode
-  value: PrimaryValue
 
-workflows:
-  harvard_staging:
+# ============================================================
+# Harvard staging
+# ============================================================
+harvard_staging:
+  enabled: true
+
+  input:
+    stage: "raw"
+    subdir: "api/bulk"
+    pattern: "Comtrade_bulk_HS_201[67]_all_reporters_*.gz"
+
+  output:
+    stage: "external"
+    subdir: "harvard_comtrade_bulk"
+
+  filters:
+    valid_cmd_regex: "^[0-9]{6}$"
+    hs_years:
+      H4: [2016]
+      H5: [2017]
+
+  columns:
+    year: "refYear"
+    hs: "classificationCode"
+    cmd: "cmdCode"
+    value: "primaryValue"
+    reporter_code: "reporterCode"
+    partner_code: "partnerCode"
+    flow: "flowCode"
+    quantity: "netWgt"
+
+  overwrite: false
+
+  country_reference:
+    source: "single_api"
+    stage: "raw"
+    subdir: "api/single"
+    pattern: "*.csv"
+    columns:
+      reporter_code: "ReporterCode"
+      reporter_iso: "ReporterISO"
+      partner_code: "PartnerCode"
+      partner_iso: "PartnerISO"
+
+  diagnostics:
+    value_abs_tolerance: 1.0
+    value_rel_tolerance: 1.0e-10
+
+  report:
+    output_kind: "reports"
+    inventory_filename: "audit_hs_sync_harvard_staging_inventory.csv"
+    preservation_filename: "audit_hs_sync_harvard_staging_preservation.csv"
+    timestamp: true
+    write_latest: true
+
+
+# ============================================================
+# Harvard weights / optional weight generation
+# ============================================================
+harvard_weights:
+  enabled: false
+  overwrite: true
+
+  input:
+    stage: "external"
+    subdir: "harvard_comtrade_bulk"
+    pattern: "hs_partition=*/year_partition=*/*.parquet"
+
+  static:
+    stage: "references"
+    subdir: "harvard_comtrade"
+    concordance_file: "HS_consolidated_comtrade_concordances.csv"
+
+  output:
+    stage: "references"
+    subdir: "hs_sync"
+    file: "harvard_hs_conversion_weights.parquet"
+
+  report:
+    output_kind: "reports"
+    filename: "audit_hs_sync_harvard_weights.csv"
+    timestamp: true
+    write_latest: true
+
+
+# ============================================================
+# Coverage mapping diagnostics
+# ============================================================
+coverage:
+  enabled: true
+  target_hs: "H5"
+  min_year: 2017
+  max_year: 2025
+
+  input:
+    stage: "raw"
+    subdir: "api/single"
+    pattern: "*.csv"
+    format: "csv"
+
+  mappings:
+    stage: "references"
+    subdir: "comtrade-conversion-weights/generator/data/correlation_groups"
+    files:
+      H4_to_H5: "from_HS2012_to_HS2017.csv"
+      H6_to_H5: "from_HS2022_to_HS2017.csv"
+
+    columns:
+      source_cmd: "code.source"
+      target_cmd: "code.target"
+      relationship: "Relationship"
+      adjustment: "adjustment"
+      group_id: "group.id"
+
+  categories:
+    easy_without_weights:
+      - "already_target"
+      - "1:1"
+      - "n:1"
+
+    needs_weights:
+      - "1:n"
+      - "n:n"
+
+    missing:
+      - "missing_mapping"
+
+  output:
+    stage: "interim"
+    subdir: "hs_sync/target_{target_hs_lower}_mapping_coverage"
+
+  write:
+    csv: true
+    parquet: false
+    overwrite: true
+    timestamp: false
+
+  report:
+    output_kind: "reports"
+    filename: "audit_hs_sync_{target_hs_lower}_mapping_coverage.txt"
+    timestamp: true
+    write_latest: true
+
+diagnostics:
+  weight_sum_tolerance: 0.001
+  missing_mapping_top_n: 50
+
+report:
+  output_kind: "reports"
+  concordance_coverage_filename: "audit_hs_sync_concordance_coverage.txt"
+  timestamp: true
+  write_latest: true
+
+products:
+  mapping_coverage:
     enabled: true
-    config: hs_sync/harvard_staging.yaml
+    kind: "base"
+    filename: "{target_hs_lower}_mapping_coverage"
+    write: true
 
-  coverage:
+  mapping_summary:
     enabled: true
-    config: hs_sync/coverage.yaml
+    kind: "derived"
+    depends_on: "mapping_coverage"
+    filename: "{target_hs_lower}_mapping_summary"
+    write: true
 
-  harvard_weights:
-    enabled: false
-    config: hs_sync/harvard_weights.yaml
+  missing_mappings:
+    enabled: true
+    kind: "derived"
+    depends_on: "mapping_coverage"
+    filename: "{target_hs_lower}_missing_mappings"
+    write: true
+    options:
+      top_n: 50
 
-  un_comtrade_mapping:
-    enabled: false
-    config: hs_sync/un_comtrade_mapping.yaml
+  needs_weights:
+    enabled: true
+    kind: "derived"
+    depends_on: "mapping_coverage"
+    filename: "{target_hs_lower}_needs_weights"
+    write: true
 
-  weight_strategy:
-    enabled: false
-    config: hs_sync/weight_strategies.yaml
+  easy_without_weights:
+    enabled: true
+    kind: "derived"
+    depends_on: "mapping_coverage"
+    filename: "{target_hs_lower}_easy_without_weights"
+    write: true
+
+  mapping_interpretation_report:
+    enabled: true
+    kind: "derived"
+    depends_on: "mapping_summary"
+    filename: "mapping_interpretation_report"
+    write: true
+
+  mapping_interpretation_display_report:
+    enabled: true
+    kind: "derived"
+    depends_on: "mapping_interpretation_report"
+    output_kind: "reports"
+    filename: "mapping_interpretation_display_report"
+    write: true
+
+  source_code_coverage:
+    enabled: true
+    kind: "derived"
+    depends_on: "mapping_coverage"
+    filename: "{target_hs_lower}_source_code_coverage"
+    write: true
+
+
+# ============================================================
+# Future UN Comtrade mappings
+# ============================================================
+un_comtrade_mapping:
+  enabled: false
+  status: planned
+
+
+# ============================================================
+# Future weight strategies
+# ============================================================
+weight_strategy:
+  enabled: false
+  status: planned

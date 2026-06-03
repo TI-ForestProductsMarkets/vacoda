@@ -21,8 +21,90 @@ from vacoda.config.base import (
     require_dict,
 )
 
-
 HS_SYNC_CONFIG_PATH = CONFIG_DIR / "hs_sync.yaml"
+
+
+@dataclass(frozen=True)
+class TemplateContext:
+    target_hs: str
+
+    @property
+    def target_hs_lower(self) -> str:
+        return self.target_hs.lower()
+
+    def render(self, value: str) -> str:
+        return value.format(
+            target_hs=self.target_hs,
+            target_hs_lower=self.target_hs_lower,
+        )
+
+
+@dataclass(frozen=True)
+class StagePathConfig:
+    stage: str
+    subdir: str = ""
+
+    def resolve_data_dir(self) -> Path:
+        base = get_data_dir(self.stage)
+        return base / self.subdir if self.subdir else base
+
+@dataclass(frozen=True)
+class ProductConfig:
+    name: str
+    enabled: bool = False
+    filename: str | None = None
+    depends_on: str | None = None
+    write: bool = True
+    output_kind: str | None = None
+    options: dict[str, Any] = field(default_factory=dict)
+
+@dataclass(frozen=True)
+class HsSyncConfig:
+    raw: dict[str, Any]
+    scope: ScopeConfig
+    engine: EngineConfig
+    columns: ColumnConfig
+    coverage: CoverageConfig
+    products: dict[str, ProductConfig]
+
+    @classmethod
+    def from_yaml(cls, config_path: Path | None = None) -> "HsSyncConfig":
+        raw = load_hs_sync_config(config_path)
+        return cls.from_dict(raw)
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "HsSyncConfig":
+        scope = ScopeConfig.from_dict(get_scope_config(raw))
+        engine = EngineConfig.from_dict(get_engine_config(raw))
+        columns = ColumnConfig.from_dict(get_columns_config(raw))
+        coverage = CoverageConfig.from_dict(get_concordance_config(raw))
+
+        products_cfg = get_products_config(raw)
+        products = {
+            name: ProductConfig(
+                name=name,
+                enabled=is_product_enabled(name, raw),
+                filename=get_product_filename(name, raw) if is_product_enabled(name, raw) else None,
+                depends_on=get_product_dependency(name, raw),
+                write=get_product_write_bool(name, raw),
+                output_kind=get_product_options(name, raw).get("output_kind"),
+                options=get_product_options(name, raw),
+            )
+            for name in products_cfg
+        }
+
+        return cls(
+            raw=raw,
+            scope=scope,
+            engine=engine,
+            columns=columns,
+            coverage=coverage,
+            products=products,
+        )   
+
+
+
+
 
 
 def load_hs_sync_config(config_path: Path | None = None) -> dict[str, Any]:
