@@ -221,7 +221,7 @@ products:
     enabled: true
     kind: "derived"
     depends_on: "mapping_summary"
-    filename: "mapping_interpretation_report"
+    filename: "{target_hs_lower}_mapping_interpretation_report"
     write: true
 
   mapping_interpretation_display_report:
@@ -229,7 +229,7 @@ products:
     kind: "derived"
     depends_on: "mapping_interpretation_report"
     output_kind: "reports"
-    filename: "mapping_interpretation_display_report"
+    filename: "{target_hs_lower}_mapping_interpretation_display_report"
     write: true
 
   source_code_coverage:

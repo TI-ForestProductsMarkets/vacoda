@@ -1,71 +1,1081 @@
+# src/vacoda/config/hs_sync.py
+
 """
 vacoda.config.hs_sync
 
-Config reader for configs/hs_sync.yaml.
+Class-based config reader for configs/hs_sync.yaml.
+
+The YAML file is treated as the contract for the HS-sync layer.
+This module converts the raw YAML dictionary into typed, convenient
+dataclass objects used by workflow code.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from vacoda.config.base import (
     CONFIG_DIR,
-    get_required_block,
-    get_required_nested_block,
     load_yaml_config,
     require_bool,
-    require_str,
-    require_int,
-    require_float,
     require_dict,
+    require_float,
+    require_int,
+    require_str,
 )
+from vacoda.config.paths import get_data_dir, get_output_dir
+
 
 HS_SYNC_CONFIG_PATH = CONFIG_DIR / "hs_sync.yaml"
 
 
+# ---------------------------------------------------------------------
+# Small parsing helpers
+# ---------------------------------------------------------------------
+
+
+def load_hs_sync_config(config_path: Path | None = None) -> dict[str, Any]:
+    """Load configs/hs_sync.yaml as a raw dictionary."""
+    return load_yaml_config(config_path or HS_SYNC_CONFIG_PATH)
+
+
+def _block(
+    cfg: dict[str, Any],
+    key: str,
+    *,
+    required: bool = True,
+) -> dict[str, Any]:
+    value = cfg.get(key)
+
+    if value is None:
+        if required:
+            raise KeyError(f"Missing required config block: {key!r}")
+        return {}
+
+    return require_dict(value, key=key)
+
+
+def _nested_block(
+    cfg: dict[str, Any],
+    path: tuple[str, ...],
+    *,
+    required: bool = True,
+) -> dict[str, Any]:
+    current: Any = cfg
+    label = ".".join(path)
+
+    for key in path:
+        if not isinstance(current, dict) or key not in current:
+            if required:
+                raise KeyError(f"Missing required config block: {label!r}")
+            return {}
+        current = current[key]
+
+    return require_dict(current, key=label)
+
+
+def _optional_str(value: Any, *, key: str) -> str | None:
+    if value is None:
+        return None
+    return require_str(value, key=key)
+
+
+def _string_dict(value: Any, *, key: str) -> dict[str, str]:
+    raw = require_dict(value, key=key)
+    return {
+        require_str(k, key=f"{key}.<key>"): require_str(v, key=f"{key}.{k}")
+        for k, v in raw.items()
+    }
+
+
+# ---------------------------------------------------------------------
+# Template rendering
+# ---------------------------------------------------------------------
+
+
 @dataclass(frozen=True)
 class TemplateContext:
+    """Template values available to YAML filenames/subdirs."""
+
     target_hs: str
+
+    @property
+    def target_hs_upper(self) -> str:
+        return self.target_hs.upper()
 
     @property
     def target_hs_lower(self) -> str:
         return self.target_hs.lower()
 
     def render(self, value: str) -> str:
+        """Render YAML templates like {target_hs_lower}."""
         return value.format(
-            target_hs=self.target_hs,
+            target_hs=self.target_hs_upper,
+            target_hs_upper=self.target_hs_upper,
             target_hs_lower=self.target_hs_lower,
         )
+
+
+# ---------------------------------------------------------------------
+# Generic reusable config blocks
+# ---------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
 class StagePathConfig:
     stage: str
     subdir: str = ""
+    pattern: str | None = None
+    format: str | None = None
+
+    @classmethod
+    def from_dict(
+        cls,
+        cfg: dict[str, Any],
+        *,
+        key: str,
+        default_stage: str | None = None,
+        default_subdir: str = "",
+        default_pattern: str | None = None,
+        default_format: str | None = None,
+        context: TemplateContext | None = None,
+    ) -> "StagePathConfig":
+        stage = require_str(
+            cfg.get("stage", default_stage),
+            key=f"{key}.stage",
+        )
+
+        subdir = require_str(
+            cfg.get("subdir", default_subdir),
+            key=f"{key}.subdir",
+            allow_empty=True,
+        )
+
+        if context is not None:
+            subdir = context.render(subdir)
+
+        pattern = cfg.get("pattern", default_pattern)
+        fmt = cfg.get("format", default_format)
+
+        return cls(
+            stage=stage,
+            subdir=subdir,
+            pattern=_optional_str(pattern, key=f"{key}.pattern"),
+            format=_optional_str(fmt, key=f"{key}.format"),
+        )
 
     def resolve_data_dir(self) -> Path:
         base = get_data_dir(self.stage)
         return base / self.subdir if self.subdir else base
 
+
+@dataclass(frozen=True)
+class ReportConfig:
+    output_kind: str = "reports"
+    filename: str | None = None
+    timestamp: bool = True
+    write_latest: bool = True
+
+    @classmethod
+    def from_dict(
+        cls,
+        cfg: dict[str, Any],
+        *,
+        key: str,
+        default_filename: str | None = None,
+        context: TemplateContext | None = None,
+    ) -> "ReportConfig":
+        output_kind = require_str(
+            cfg.get("output_kind", "reports"),
+            key=f"{key}.output_kind",
+        ).strip().lower()
+
+        filename = cfg.get("filename", default_filename)
+        if filename is not None:
+            filename = require_str(filename, key=f"{key}.filename")
+            if context is not None:
+                filename = context.render(filename)
+
+        return cls(
+            output_kind=output_kind,
+            filename=filename,
+            timestamp=require_bool(
+                cfg.get("timestamp", True),
+                key=f"{key}.timestamp",
+            ),
+            write_latest=require_bool(
+                cfg.get("write_latest", True),
+                key=f"{key}.write_latest",
+            ),
+        )
+
+    def resolve_output_dir(self) -> Path:
+        return get_output_dir(self.output_kind)
+
+
+@dataclass(frozen=True)
+class WriteConfig:
+    csv: bool = True
+    parquet: bool = False
+    overwrite: bool = True
+    timestamp: bool = False
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any], *, key: str) -> "WriteConfig":
+        return cls(
+            csv=require_bool(cfg.get("csv", True), key=f"{key}.csv"),
+            parquet=require_bool(
+                cfg.get("parquet", False),
+                key=f"{key}.parquet",
+            ),
+            overwrite=require_bool(
+                cfg.get("overwrite", True),
+                key=f"{key}.overwrite",
+            ),
+            timestamp=require_bool(
+                cfg.get("timestamp", False),
+                key=f"{key}.timestamp",
+            ),
+        )
+
+
+# ---------------------------------------------------------------------
+# Global config blocks
+# ---------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ScopeConfig:
+    target_hs: str
+    min_year: int
+    max_year: int
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "ScopeConfig":
+        return cls(
+            target_hs=require_str(
+                cfg.get("target_hs"),
+                key="scope.target_hs",
+            ).strip().upper(),
+            min_year=require_int(
+                cfg.get("min_year", 1962),
+                key="scope.min_year",
+                min_value=1962,
+            ),
+            max_year=require_int(
+                cfg.get("max_year", 9999),
+                key="scope.max_year",
+                min_value=1962,
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class EngineConfig:
+    name: str
+    threads: int
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "EngineConfig":
+        return cls(
+            name=require_str(
+                cfg.get("name", "duckdb"),
+                key="engine.name",
+            ).strip().lower(),
+            threads=require_int(
+                cfg.get("threads", 16),
+                key="engine.threads",
+                min_value=1,
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class ProgressConfig:
+    enabled: bool = True
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "ProgressConfig":
+        return cls(
+            enabled=require_bool(
+                cfg.get("enabled", True),
+                key="progress.enabled",
+            )
+        )
+
+
+@dataclass(frozen=True)
+class ColumnsConfig:
+    year: str
+    hs: str
+    cmd: str
+    value: str
+
+    @classmethod
+    def from_dict(
+        cls,
+        cfg: dict[str, Any],
+        *,
+        key: str = "columns",
+        defaults: dict[str, str] | None = None,
+    ) -> "ColumnsConfig":
+        defaults = defaults or {
+            "year": "RefYear",
+            "hs": "ClassificationCode",
+            "cmd": "CmdCode",
+            "value": "PrimaryValue",
+        }
+
+        return cls(
+            year=require_str(cfg.get("year", defaults["year"]), key=f"{key}.year"),
+            hs=require_str(cfg.get("hs", defaults["hs"]), key=f"{key}.hs"),
+            cmd=require_str(cfg.get("cmd", defaults["cmd"]), key=f"{key}.cmd"),
+            value=require_str(cfg.get("value", defaults["value"]), key=f"{key}.value"),
+        )
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "year": self.year,
+            "hs": self.hs,
+            "cmd": self.cmd,
+            "value": self.value,
+        }
+
+
+@dataclass(frozen=True)
+class LoggingConfig:
+    level: str = "INFO"
+    file: str | None = None
+    timestamp: bool = True
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "LoggingConfig":
+        return cls(
+            level=require_str(
+                cfg.get("level", "INFO"),
+                key="logging.level",
+            ).strip().upper(),
+            file=_optional_str(cfg.get("file"), key="logging.file"),
+            timestamp=require_bool(
+                cfg.get("timestamp", True),
+                key="logging.timestamp",
+            ),
+        )
+
+
+# ---------------------------------------------------------------------
+# Harvard staging
+# ---------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class HarvardStagingFiltersConfig:
+    valid_cmd_regex: str
+    hs_years: dict[str, list[int]]
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "HarvardStagingFiltersConfig":
+        hs_years_raw = require_dict(
+            cfg.get("hs_years", {}),
+            key="harvard_staging.filters.hs_years",
+        )
+
+        hs_years: dict[str, list[int]] = {}
+        for hs_system, years in hs_years_raw.items():
+            hs_key = require_str(
+                hs_system,
+                key="harvard_staging.filters.hs_years.<key>",
+            ).strip().upper()
+
+            if not isinstance(years, list):
+                raise TypeError(
+                    f"harvard_staging.filters.hs_years.{hs_key} must be a list."
+                )
+
+            hs_years[hs_key] = [
+                require_int(
+                    year,
+                    key=f"harvard_staging.filters.hs_years.{hs_key}",
+                    min_value=0,
+                )
+                for year in years
+            ]
+
+        return cls(
+            valid_cmd_regex=require_str(
+                cfg.get("valid_cmd_regex", r"^[0-9]{6}$"),
+                key="harvard_staging.filters.valid_cmd_regex",
+            ),
+            hs_years=hs_years,
+        )
+
+
+@dataclass(frozen=True)
+class HarvardStagingColumnsConfig:
+    year: str
+    hs: str
+    cmd: str
+    value: str
+    reporter_code: str
+    partner_code: str
+    flow: str
+    quantity: str
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "HarvardStagingColumnsConfig":
+        return cls(
+            year=require_str(
+                cfg.get("year", "refYear"),
+                key="harvard_staging.columns.year",
+            ),
+            hs=require_str(
+                cfg.get("hs", "classificationCode"),
+                key="harvard_staging.columns.hs",
+            ),
+            cmd=require_str(
+                cfg.get("cmd", "cmdCode"),
+                key="harvard_staging.columns.cmd",
+            ),
+            value=require_str(
+                cfg.get("value", "primaryValue"),
+                key="harvard_staging.columns.value",
+            ),
+            reporter_code=require_str(
+                cfg.get("reporter_code", "reporterCode"),
+                key="harvard_staging.columns.reporter_code",
+            ),
+            partner_code=require_str(
+                cfg.get("partner_code", "partnerCode"),
+                key="harvard_staging.columns.partner_code",
+            ),
+            flow=require_str(
+                cfg.get("flow", "flowCode"),
+                key="harvard_staging.columns.flow",
+            ),
+            quantity=require_str(
+                cfg.get("quantity", "netWgt"),
+                key="harvard_staging.columns.quantity",
+            ),
+        )
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "year": self.year,
+            "hs": self.hs,
+            "cmd": self.cmd,
+            "value": self.value,
+            "reporter_code": self.reporter_code,
+            "partner_code": self.partner_code,
+            "flow": self.flow,
+            "quantity": self.quantity,
+        }
+
+
+@dataclass(frozen=True)
+class HarvardStagingCountryReferenceColumnsConfig:
+    reporter_code: str
+    reporter_iso: str
+    partner_code: str
+    partner_iso: str
+
+    @classmethod
+    def from_dict(
+        cls,
+        cfg: dict[str, Any],
+    ) -> "HarvardStagingCountryReferenceColumnsConfig":
+        return cls(
+            reporter_code=require_str(
+                cfg.get("reporter_code", "ReporterCode"),
+                key="harvard_staging.country_reference.columns.reporter_code",
+            ),
+            reporter_iso=require_str(
+                cfg.get("reporter_iso", "ReporterISO"),
+                key="harvard_staging.country_reference.columns.reporter_iso",
+            ),
+            partner_code=require_str(
+                cfg.get("partner_code", "PartnerCode"),
+                key="harvard_staging.country_reference.columns.partner_code",
+            ),
+            partner_iso=require_str(
+                cfg.get("partner_iso", "PartnerISO"),
+                key="harvard_staging.country_reference.columns.partner_iso",
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class HarvardStagingCountryReferenceConfig:
+    source: str
+    input: StagePathConfig
+    columns: HarvardStagingCountryReferenceColumnsConfig
+
+    @classmethod
+    def from_dict(
+        cls,
+        cfg: dict[str, Any],
+    ) -> "HarvardStagingCountryReferenceConfig":
+        return cls(
+            source=require_str(
+                cfg.get("source", "single_api"),
+                key="harvard_staging.country_reference.source",
+            ),
+            input=StagePathConfig.from_dict(
+                cfg,
+                key="harvard_staging.country_reference",
+                default_stage="raw",
+                default_subdir="api/single",
+                default_pattern="*.csv",
+            ),
+            columns=HarvardStagingCountryReferenceColumnsConfig.from_dict(
+                require_dict(
+                    cfg.get("columns", {}),
+                    key="harvard_staging.country_reference.columns",
+                )
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class HarvardStagingDiagnosticsConfig:
+    value_abs_tolerance: float
+    value_rel_tolerance: float
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "HarvardStagingDiagnosticsConfig":
+        return cls(
+            value_abs_tolerance=require_float(
+                cfg.get("value_abs_tolerance", 1.0),
+                key="harvard_staging.diagnostics.value_abs_tolerance",
+                min_value=0.0,
+            ),
+            value_rel_tolerance=require_float(
+                cfg.get("value_rel_tolerance", 1e-10),
+                key="harvard_staging.diagnostics.value_rel_tolerance",
+                min_value=0.0,
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class HarvardStagingReportConfig:
+    output_kind: str
+    inventory_filename: str
+    preservation_filename: str
+    timestamp: bool
+    write_latest: bool
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "HarvardStagingReportConfig":
+        return cls(
+            output_kind=require_str(
+                cfg.get("output_kind", "reports"),
+                key="harvard_staging.report.output_kind",
+            ).strip().lower(),
+            inventory_filename=require_str(
+                cfg.get(
+                    "inventory_filename",
+                    "audit_hs_sync_harvard_staging_inventory.csv",
+                ),
+                key="harvard_staging.report.inventory_filename",
+            ),
+            preservation_filename=require_str(
+                cfg.get(
+                    "preservation_filename",
+                    "audit_hs_sync_harvard_staging_preservation.csv",
+                ),
+                key="harvard_staging.report.preservation_filename",
+            ),
+            timestamp=require_bool(
+                cfg.get("timestamp", True),
+                key="harvard_staging.report.timestamp",
+            ),
+            write_latest=require_bool(
+                cfg.get("write_latest", True),
+                key="harvard_staging.report.write_latest",
+            ),
+        )
+
+    def resolve_output_dir(self) -> Path:
+        return get_output_dir(self.output_kind)
+
+
+@dataclass(frozen=True)
+class HarvardStagingConfig:
+    enabled: bool
+    input: StagePathConfig
+    output: StagePathConfig
+    filters: HarvardStagingFiltersConfig
+    columns: HarvardStagingColumnsConfig
+    overwrite: bool
+    country_reference: HarvardStagingCountryReferenceConfig
+    diagnostics: HarvardStagingDiagnosticsConfig
+    report: HarvardStagingReportConfig
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "HarvardStagingConfig":
+        return cls(
+            enabled=require_bool(
+                cfg.get("enabled", False),
+                key="harvard_staging.enabled",
+            ),
+            input=StagePathConfig.from_dict(
+                require_dict(cfg.get("input", {}), key="harvard_staging.input"),
+                key="harvard_staging.input",
+                default_stage="raw",
+            ),
+            output=StagePathConfig.from_dict(
+                require_dict(cfg.get("output", {}), key="harvard_staging.output"),
+                key="harvard_staging.output",
+                default_stage="external",
+            ),
+            filters=HarvardStagingFiltersConfig.from_dict(
+                require_dict(cfg.get("filters", {}), key="harvard_staging.filters")
+            ),
+            columns=HarvardStagingColumnsConfig.from_dict(
+                require_dict(cfg.get("columns", {}), key="harvard_staging.columns")
+            ),
+            overwrite=require_bool(
+                cfg.get("overwrite", True),
+                key="harvard_staging.overwrite",
+            ),
+            country_reference=HarvardStagingCountryReferenceConfig.from_dict(
+                require_dict(
+                    cfg.get("country_reference", {}),
+                    key="harvard_staging.country_reference",
+                )
+            ),
+            diagnostics=HarvardStagingDiagnosticsConfig.from_dict(
+                require_dict(
+                    cfg.get("diagnostics", {}),
+                    key="harvard_staging.diagnostics",
+                )
+            ),
+            report=HarvardStagingReportConfig.from_dict(
+                require_dict(cfg.get("report", {}), key="harvard_staging.report")
+            ),
+        )
+
+# ---------------------------------------------------------------------
+# Coverage
+# ---------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class CoverageMappingColumnsConfig:
+    source_cmd: str
+    target_cmd: str
+    relationship: str
+    adjustment: str
+    group_id: str
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "CoverageMappingColumnsConfig":
+        return cls(
+            source_cmd=require_str(
+                cfg.get("source_cmd", "code.source"),
+                key="coverage.mappings.columns.source_cmd",
+            ),
+            target_cmd=require_str(
+                cfg.get("target_cmd", "code.target"),
+                key="coverage.mappings.columns.target_cmd",
+            ),
+            relationship=require_str(
+                cfg.get("relationship", "Relationship"),
+                key="coverage.mappings.columns.relationship",
+            ),
+            adjustment=require_str(
+                cfg.get("adjustment", "adjustment"),
+                key="coverage.mappings.columns.adjustment",
+            ),
+            group_id=require_str(
+                cfg.get("group_id", "group.id"),
+                key="coverage.mappings.columns.group_id",
+            ),
+        )
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "source_cmd": self.source_cmd,
+            "target_cmd": self.target_cmd,
+            "relationship": self.relationship,
+            "adjustment": self.adjustment,
+            "group_id": self.group_id,
+        }
+
+
+@dataclass(frozen=True)
+class CoverageMappingsConfig:
+    stage: str
+    subdir: str
+    files: dict[str, str]
+    columns: CoverageMappingColumnsConfig
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "CoverageMappingsConfig":
+        return cls(
+            stage=require_str(
+                cfg.get("stage", "references"),
+                key="coverage.mappings.stage",
+            ),
+            subdir=require_str(
+                cfg.get("subdir", ""),
+                key="coverage.mappings.subdir",
+                allow_empty=True,
+            ),
+            files=_string_dict(
+                cfg.get("files", {}),
+                key="coverage.mappings.files",
+            ),
+            columns=CoverageMappingColumnsConfig.from_dict(
+                require_dict(
+                    cfg.get("columns", {}),
+                    key="coverage.mappings.columns",
+                )
+            ),
+        )
+
+    def resolve_dir(self) -> Path:
+        base = get_data_dir(self.stage)
+        return base / self.subdir if self.subdir else base
+
+    def resolve_files(self) -> dict[str, Path]:
+        root = self.resolve_dir()
+        return {name: root / filename for name, filename in self.files.items()}
+
+
+@dataclass(frozen=True)
+class CoverageCategoriesConfig:
+    easy_without_weights: list[str]
+    needs_weights: list[str]
+    missing: list[str]
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "CoverageCategoriesConfig":
+        def parse_list(name: str, default: list[str]) -> list[str]:
+            value = cfg.get(name, default)
+            if not isinstance(value, list):
+                raise TypeError(f"coverage.categories.{name} must be a list.")
+            return [
+                require_str(item, key=f"coverage.categories.{name}")
+                for item in value
+            ]
+
+        return cls(
+            easy_without_weights=parse_list(
+                "easy_without_weights",
+                ["already_target", "1:1", "n:1"],
+            ),
+            needs_weights=parse_list("needs_weights", ["1:n", "n:n"]),
+            missing=parse_list("missing", ["missing_mapping"]),
+        )
+
+
+@dataclass(frozen=True)
+class CoverageConfig:
+    enabled: bool
+    target_hs: str
+    min_year: int
+    max_year: int
+    input: StagePathConfig
+    mappings: CoverageMappingsConfig
+    categories: CoverageCategoriesConfig
+    output: StagePathConfig
+    write: WriteConfig
+    report: ReportConfig
+
+    @classmethod
+    def from_dict(
+        cls,
+        cfg: dict[str, Any],
+        *,
+        scope: ScopeConfig,
+    ) -> "CoverageConfig":
+        target_hs = require_str(
+            cfg.get("target_hs", scope.target_hs),
+            key="coverage.target_hs",
+        ).strip().upper()
+
+        context = TemplateContext(target_hs=target_hs)
+
+        return cls(
+            enabled=require_bool(
+                cfg.get("enabled", False),
+                key="coverage.enabled",
+            ),
+            target_hs=target_hs,
+            min_year=require_int(
+                cfg.get("min_year", scope.min_year),
+                key="coverage.min_year",
+                min_value=0,
+            ),
+            max_year=require_int(
+                cfg.get("max_year", scope.max_year),
+                key="coverage.max_year",
+                min_value=0,
+            ),
+            input=StagePathConfig.from_dict(
+                require_dict(cfg.get("input", {}), key="coverage.input"),
+                key="coverage.input",
+                default_stage="raw",
+                context=context,
+            ),
+            mappings=CoverageMappingsConfig.from_dict(
+                require_dict(cfg.get("mappings", {}), key="coverage.mappings")
+            ),
+            categories=CoverageCategoriesConfig.from_dict(
+                require_dict(cfg.get("categories", {}), key="coverage.categories")
+            ),
+            output=StagePathConfig.from_dict(
+                require_dict(cfg.get("output", {}), key="coverage.output"),
+                key="coverage.output",
+                default_stage="interim",
+                context=context,
+            ),
+            write=WriteConfig.from_dict(
+                require_dict(cfg.get("write", {}), key="coverage.write"),
+                key="coverage.write",
+            ),
+            report=ReportConfig.from_dict(
+                require_dict(cfg.get("report", {}), key="coverage.report"),
+                key="coverage.report",
+                default_filename="audit_hs_sync_mapping_coverage.txt",
+                context=context,
+            ),
+        )
+
+
+# ---------------------------------------------------------------------
+# Diagnostics, products, future placeholders
+# ---------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class DiagnosticsConfig:
+    weight_sum_tolerance: float
+    missing_mapping_top_n: int
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "DiagnosticsConfig":
+        return cls(
+            weight_sum_tolerance=require_float(
+                cfg.get("weight_sum_tolerance", 0.001),
+                key="diagnostics.weight_sum_tolerance",
+                min_value=0.0,
+            ),
+            missing_mapping_top_n=require_int(
+                cfg.get("missing_mapping_top_n", 50),
+                key="diagnostics.missing_mapping_top_n",
+                min_value=1,
+            ),
+        )
+
+
 @dataclass(frozen=True)
 class ProductConfig:
     name: str
-    enabled: bool = False
-    filename: str | None = None
+    enabled: bool
+    kind: str
+    filename: str
+    write: bool
     depends_on: str | None = None
-    write: bool = True
     output_kind: str | None = None
     options: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(
+        cls,
+        name: str,
+        cfg: dict[str, Any],
+        *,
+        context: TemplateContext,
+    ) -> "ProductConfig":
+        filename = require_str(
+            cfg.get("filename"),
+            key=f"products.{name}.filename",
+        )
+
+        return cls(
+            name=name,
+            enabled=require_bool(
+                cfg.get("enabled", False),
+                key=f"products.{name}.enabled",
+            ),
+            kind=require_str(
+                cfg.get("kind", "derived"),
+                key=f"products.{name}.kind",
+            ).strip().lower(),
+            depends_on=_optional_str(
+                cfg.get("depends_on"),
+                key=f"products.{name}.depends_on",
+            ),
+            filename=context.render(filename),
+            write=require_bool(
+                cfg.get("write", True),
+                key=f"products.{name}.write",
+            ),
+            output_kind=_optional_str(
+                cfg.get("output_kind"),
+                key=f"products.{name}.output_kind",
+            ),
+            options=require_dict(
+                cfg.get("options", {}),
+                key=f"products.{name}.options",
+            ),
+        )
+
+    def resolve_output_dir(self, default_dir: Path) -> Path:
+        if self.output_kind is None:
+            return default_dir
+        return get_output_dir(self.output_kind.strip().lower())
+
+
+@dataclass(frozen=True)
+class FutureBlockConfig:
+    enabled: bool
+    status: str | None = None
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any], *, key: str) -> "FutureBlockConfig":
+        return cls(
+            enabled=require_bool(cfg.get("enabled", False), key=f"{key}.enabled"),
+            status=_optional_str(cfg.get("status"), key=f"{key}.status"),
+        )
+
+
+
+
+# ---------------------------------------------------------------------
+# Harvard weights
+# ---------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class HarvardWeightsStaticConfig:
+    stage: str
+    subdir: str
+    concordance_file: str
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "HarvardWeightsStaticConfig":
+        return cls(
+            stage=require_str(
+                cfg.get("stage", "references"),
+                key="harvard_weights.static.stage",
+            ),
+            subdir=require_str(
+                cfg.get("subdir", "harvard_comtrade"),
+                key="harvard_weights.static.subdir",
+                allow_empty=True,
+            ),
+            concordance_file=require_str(
+                cfg.get("concordance_file"),
+                key="harvard_weights.static.concordance_file",
+            ),
+        )
+
+    def resolve_dir(self) -> Path:
+        base = get_data_dir(self.stage)
+        return base / self.subdir if self.subdir else base
+
+    def resolve_concordance_path(self) -> Path:
+        return self.resolve_dir() / self.concordance_file
+
+
+@dataclass(frozen=True)
+class HarvardWeightsOutputConfig:
+    stage: str
+    subdir: str
+    file: str
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "HarvardWeightsOutputConfig":
+        return cls(
+            stage=require_str(
+                cfg.get("stage", "references"),
+                key="harvard_weights.output.stage",
+            ),
+            subdir=require_str(
+                cfg.get("subdir", "hs_sync"),
+                key="harvard_weights.output.subdir",
+                allow_empty=True,
+            ),
+            file=require_str(
+                cfg.get("file", "harvard_hs_conversion_weights.parquet"),
+                key="harvard_weights.output.file",
+            ),
+        )
+
+    def resolve_dir(self) -> Path:
+        base = get_data_dir(self.stage)
+        return base / self.subdir if self.subdir else base
+
+    def resolve_path(self) -> Path:
+        return self.resolve_dir() / self.file
+
+
+@dataclass(frozen=True)
+class HarvardWeightsConfig:
+    enabled: bool
+    overwrite: bool
+    input: StagePathConfig
+    static: HarvardWeightsStaticConfig
+    output: HarvardWeightsOutputConfig
+    report: ReportConfig
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "HarvardWeightsConfig":
+        return cls(
+            enabled=require_bool(
+                cfg.get("enabled", False),
+                key="harvard_weights.enabled",
+            ),
+            overwrite=require_bool(
+                cfg.get("overwrite", True),
+                key="harvard_weights.overwrite",
+            ),
+            input=StagePathConfig.from_dict(
+                require_dict(cfg.get("input", {}), key="harvard_weights.input"),
+                key="harvard_weights.input",
+                default_stage="external",
+            ),
+            static=HarvardWeightsStaticConfig.from_dict(
+                require_dict(cfg.get("static", {}), key="harvard_weights.static")
+            ),
+            output=HarvardWeightsOutputConfig.from_dict(
+                require_dict(cfg.get("output", {}), key="harvard_weights.output")
+            ),
+            report=ReportConfig.from_dict(
+                require_dict(cfg.get("report", {}), key="harvard_weights.report"),
+                key="harvard_weights.report",
+                default_filename="audit_hs_sync_harvard_weights.csv",
+            ),
+        )
+
+
+# ---------------------------------------------------------------------
+# Main config object
+# ---------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class HsSyncConfig:
     raw: dict[str, Any]
+
     scope: ScopeConfig
     engine: EngineConfig
-    columns: ColumnConfig
+    progress: ProgressConfig
+    columns: ColumnsConfig
+    logging: LoggingConfig
+
+    harvard_staging: HarvardStagingConfig
+    harvard_weights: HarvardWeightsConfig
     coverage: CoverageConfig
+
+    diagnostics: DiagnosticsConfig
+    report: ReportConfig
     products: dict[str, ProductConfig]
+
+    un_comtrade_mapping: FutureBlockConfig
+    weight_strategy: FutureBlockConfig
 
     @classmethod
     def from_yaml(cls, config_path: Path | None = None) -> "HsSyncConfig":
@@ -74,1718 +1084,128 @@ class HsSyncConfig:
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "HsSyncConfig":
-        scope = ScopeConfig.from_dict(get_scope_config(raw))
-        engine = EngineConfig.from_dict(get_engine_config(raw))
-        columns = ColumnConfig.from_dict(get_columns_config(raw))
-        coverage = CoverageConfig.from_dict(get_concordance_config(raw))
+        scope = ScopeConfig.from_dict(_block(raw, "scope"))
+        context = TemplateContext(
+            target_hs=require_str(
+                _block(raw, "coverage", required=False).get(
+                    "target_hs",
+                    scope.target_hs,
+                ),
+                key="coverage.target_hs",
+            ).strip().upper()
+        )
 
-        products_cfg = get_products_config(raw)
+        coverage = CoverageConfig.from_dict(
+            _block(raw, "coverage"),
+            scope=scope,
+        )
+
+        products_raw = _block(raw, "products", required=False)
         products = {
-            name: ProductConfig(
-                name=name,
-                enabled=is_product_enabled(name, raw),
-                filename=get_product_filename(name, raw) if is_product_enabled(name, raw) else None,
-                depends_on=get_product_dependency(name, raw),
-                write=get_product_write_bool(name, raw),
-                output_kind=get_product_options(name, raw).get("output_kind"),
-                options=get_product_options(name, raw),
+            product_name: ProductConfig.from_dict(
+                product_name,
+                require_dict(
+                    product_cfg,
+                    key=f"products.{product_name}",
+                ),
+                context=TemplateContext(target_hs=coverage.target_hs),
             )
-            for name in products_cfg
+            for product_name, product_cfg in products_raw.items()
         }
 
         return cls(
             raw=raw,
             scope=scope,
-            engine=engine,
-            columns=columns,
+            engine=EngineConfig.from_dict(_block(raw, "engine", required=False)),
+            progress=ProgressConfig.from_dict(
+                _block(raw, "progress", required=False)
+            ),
+            columns=ColumnsConfig.from_dict(_block(raw, "columns")),
+            logging=LoggingConfig.from_dict(_block(raw, "logging", required=False)),
+            harvard_staging=HarvardStagingConfig.from_dict(
+                _block(raw, "harvard_staging")
+            ),
+            harvard_weights=HarvardWeightsConfig.from_dict(
+                _block(raw, "harvard_weights")
+            ),
             coverage=coverage,
+            diagnostics=DiagnosticsConfig.from_dict(
+                _block(raw, "diagnostics", required=False)
+            ),
+            report=ReportConfig.from_dict(
+                _block(raw, "report", required=False),
+                key="report",
+                default_filename="audit_hs_sync_concordance_coverage.txt",
+                context=context,
+            ),
             products=products,
-        )   
-
-
-
-
-
-
-def load_hs_sync_config(config_path: Path | None = None) -> dict[str, Any]:
-    """Load configs/hs_sync.yaml."""
-    return load_yaml_config(config_path or HS_SYNC_CONFIG_PATH)
-
-
-# ---------------------------------------------------------------------
-# Scope config getters
-# ---------------------------------------------------------------------
-
-
-def get_scope_config(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Return HS-sync scope config block."""
-    if cfg is None:
-        cfg = load_hs_sync_config()
-
-    return get_required_block(
-        cfg,
-        "scope",
-        config_name="hs_sync.yaml",
-    )
-
-
-def get_target_hs(cfg: dict[str, Any] | None = None) -> str:
-    """Return target HS system, e.g. H5."""
-    scope_cfg = get_scope_config(cfg)
-    value = scope_cfg.get("target_hs")
-    return require_str(value, key="scope.target_hs").strip().upper()
-
-
-def get_min_year(cfg: dict[str, Any] | None = None) -> int:
-    """Return minimum year for HS-sync diagnostics."""
-    scope_cfg = get_scope_config(cfg)
-    value = scope_cfg.get("min_year", 2002)
-    return require_int(value, key="scope.min_year", min_value=1962)
-
-
-# ---------------------------------------------------------------------
-# Logging config getters
-# ---------------------------------------------------------------------
-
-
-def get_logging_config(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Return logging config from hs_sync.yaml."""
-    cfg = cfg or load_hs_sync_config()
-    return cfg.get("logging", {})
-
-
-def get_logging_level(cfg: dict[str, Any] | None = None) -> str:
-    """Return logging level string."""
-    logging_cfg = get_logging_config(cfg)
-    value = logging_cfg.get("level", "INFO")
-    return require_str(value, key="logging.level").strip().upper()
-
-
-def get_logging_file(cfg: dict[str, Any] | None = None) -> str | None:
-    """Return configured log file path."""
-    logging_cfg = get_logging_config(cfg)
-    value = logging_cfg.get("file")
-
-    if value is None:
-        return None
-
-    return require_str(value, key="logging.file")
-
-
-def get_logging_timestamp_bool(cfg: dict[str, Any] | None = None) -> bool:
-    """Return whether log filename should be timestamped."""
-    logging_cfg = get_logging_config(cfg)
-    value = logging_cfg.get("timestamp", True)
-    return require_bool(value, key="logging.timestamp")
-
-
-# ---------------------------------------------------------------------
-# Engine config getters
-# --------------------------------------------------------------------- 
-
-def get_engine_config(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
-    if cfg is None:
-        cfg = load_hs_sync_config()
-
-    return get_required_block(
-        cfg,
-        "engine",
-        config_name="hs_sync.yaml",
-    )
-
-
-def get_engine_name(cfg: dict[str, Any] | None = None) -> str:
-    engine_cfg = get_engine_config(cfg)
-    value = engine_cfg.get("name", "duckdb")
-    return require_str(value, key="engine.name").strip().lower()
-
-
-def get_engine_threads(cfg: dict[str, Any] | None = None) -> int:
-    engine_cfg = get_engine_config(cfg)
-    value = engine_cfg.get("threads", 16)
-    return require_int(value, key="engine.threads", min_value=1)
-
-
-def get_progress_bool(cfg: dict[str, Any] | None = None) -> bool:
-    cfg = cfg or load_hs_sync_config()
-    progress_cfg = cfg.get("progress", {})
-    value = progress_cfg.get("enabled", True)
-    return require_bool(value, key="progress.enabled")
-
-# ------------------------------------------------------------------------------------------------------------------------------------------
-# Trade data column getters
-# -------------------------------------------------------------------------
-
-
-def get_columns_config(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Return trade-data columns config."""
-    if cfg is None:
-        cfg = load_hs_sync_config()
-
-    return get_required_block(
-        cfg,
-        "columns",
-        config_name="hs_sync.yaml",
-    )
-
-
-def get_year_col(cfg: dict[str, Any] | None = None) -> str:
-    columns_cfg = get_columns_config(cfg)
-    value = columns_cfg.get("year", "RefYear")
-    return require_str(value, key="columns.year")
-
-
-def get_hs_col(cfg: dict[str, Any] | None = None) -> str:
-    columns_cfg = get_columns_config(cfg)
-    value = columns_cfg.get("hs", "ClassificationCode")
-    return require_str(value, key="columns.hs")
-
-
-def get_cmd_col(cfg: dict[str, Any] | None = None) -> str:
-    columns_cfg = get_columns_config(cfg)
-    value = columns_cfg.get("cmd", "CmdCode")
-    return require_str(value, key="columns.cmd")
-
-
-def get_value_col(cfg: dict[str, Any] | None = None) -> str:
-    columns_cfg = get_columns_config(cfg)
-    value = columns_cfg.get("value", "PrimaryValue")
-    return require_str(value, key="columns.value")
-
-
-def get_trade_columns(cfg: dict[str, Any] | None = None) -> dict[str, str]:
-    """Return standardized trade-data column mapping."""
-    return {
-        "year": get_year_col(cfg),
-        "hs": get_hs_col(cfg),
-        "cmd": get_cmd_col(cfg),
-        "value": get_value_col(cfg),
-    }
-
-
-# ---------------------------------------------------------------------
-# Concordance config getters
-# ---------------------------------------------------------------------
-
-
-def get_concordance_config(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Return concordance config block."""
-    if cfg is None:
-        cfg = load_hs_sync_config()
-
-    return get_required_block(
-        cfg,
-        "concordance",
-        config_name="hs_sync.yaml",
-    )
-
-
-def get_concordance_stage(cfg: dict[str, Any] | None = None) -> str:
-    """Return data stage for concordance file."""
-    concordance_cfg = get_concordance_config(cfg)
-    value = concordance_cfg.get("stage", "references")
-    return require_str(value, key="concordance.stage")
-
-
-def get_concordance_file(cfg: dict[str, Any] | None = None) -> str:
-    """Return concordance filename."""
-    concordance_cfg = get_concordance_config(cfg)
-    value = concordance_cfg.get("file")
-
-    if not value:
-        raise KeyError("Missing required 'concordance.file' in hs_sync.yaml.")
-
-    return require_str(value, key="concordance.file")
-
-
-def get_concordance_columns_config(
-    cfg: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Return concordance column mappings."""
-    if cfg is None:
-        cfg = load_hs_sync_config()
-
-    return get_required_nested_block(
-        cfg,
-        ("concordance", "columns"),
-        config_name="hs_sync.yaml",
-    )
-
-
-def get_concordance_columns(cfg: dict[str, Any] | None = None) -> dict[str, str]:
-    """Return standardized concordance column mapping."""
-    cols = get_concordance_columns_config(cfg)
-
-    return {
-        "source_hs": require_str(
-            cols.get("source_hs", "source_hs"),
-            key="concordance.columns.source_hs",
-        ),
-        "source_cmd": require_str(
-            cols.get("source_cmd", "source_cmd"),
-            key="concordance.columns.source_cmd",
-        ),
-        "target_hs": require_str(
-            cols.get("target_hs", "target_hs"),
-            key="concordance.columns.target_hs",
-        ),
-        "target_cmd": require_str(
-            cols.get("target_cmd", "target_cmd"),
-            key="concordance.columns.target_cmd",
-        ),
-        "weight": require_str(
-            cols.get("weight", "weight"),
-            key="concordance.columns.weight",
-        ),
-    }
-
-
-def get_concordance_weight_col(cfg: dict[str, Any] | None = None) -> str:
-    """Return concordance weight column name."""
-    return get_concordance_columns(cfg)["weight"]
-
-
-def get_concordance_subdir(cfg: dict[str, Any] | None = None) -> str:
-    """Return concordance subdirectory below data stage."""
-    concordance_cfg = get_concordance_config(cfg)
-    value = concordance_cfg.get("subdir", "")
-    return require_str(
-        value,
-        key="concordance.subdir",
-        allow_empty=True,
-    )
-
-# ---------------------------------------------------------------------
-# Input config getters
-# ---------------------------------------------------------------------
-
-
-def get_input_config(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Return HS-sync input config."""
-    if cfg is None:
-        cfg = load_hs_sync_config()
-
-    return get_required_block(
-        cfg,
-        "input",
-        config_name="hs_sync.yaml",
-    )
-
-
-def get_input_stage(cfg: dict[str, Any] | None = None) -> str:
-    input_cfg = get_input_config(cfg)
-    value = input_cfg.get("stage", "external")
-    return require_str(value, key="input.stage")
-
-
-def get_input_subdir(cfg: dict[str, Any] | None = None) -> str:
-    input_cfg = get_input_config(cfg)
-    value = input_cfg.get(
-        "subdir",
-        "harvard_comtrade/as_reported/raw_parquet_partitioned",
-    )
-    return require_str(value, key="input.subdir")
-
-
-def get_input_pattern(cfg: dict[str, Any] | None = None) -> str:
-    input_cfg = get_input_config(cfg)
-    value = input_cfg.get(
-        "pattern",
-        "hs_partition=*/year_partition=*/*.parquet",
-    )
-    return require_str(value, key="input.pattern")
-
-def get_input_source(cfg: dict[str, Any] | None = None) -> str:
-    """Return logical input source name for main HS-sync workflow."""
-    input_cfg = get_input_config(cfg)
-    value = input_cfg.get("source", "harvard_staging")
-    return require_str(value, key="input.source").strip().lower()
-
-
-def get_input_format(cfg: dict[str, Any] | None = None) -> str:
-    """Return input file format for main HS-sync workflow."""
-    input_cfg = get_input_config(cfg)
-    value = input_cfg.get("format", "parquet")
-    fmt = require_str(value, key="input.format").strip().lower()
-
-    valid = {"csv", "parquet"}
-    if fmt not in valid:
-        raise ValueError(
-            f"Invalid input.format: {fmt!r}. Valid values: {sorted(valid)}"
+            un_comtrade_mapping=FutureBlockConfig.from_dict(
+                _block(raw, "un_comtrade_mapping", required=False),
+                key="un_comtrade_mapping",
+            ),
+            weight_strategy=FutureBlockConfig.from_dict(
+                _block(raw, "weight_strategy", required=False),
+                key="weight_strategy",
+            ),
         )
 
-    return fmt
-
-# ---------------------------------------------------------------------
-# Output config getters
-# ---------------------------------------------------------------------
-
-
-def get_output_config(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Return HS-sync output config."""
-    if cfg is None:
-        cfg = load_hs_sync_config()
-
-    return get_required_block(
-        cfg,
-        "output",
-        config_name="hs_sync.yaml",
-    )
-
-
-def get_output_stage(cfg: dict[str, Any] | None = None) -> str:
-    output_cfg = get_output_config(cfg)
-    value = output_cfg.get("stage", "interim")
-    return require_str(value, key="output.stage")
-
-
-def get_output_subdir(cfg: dict[str, Any] | None = None) -> str:
-    output_cfg = get_output_config(cfg)
-    value = output_cfg.get("subdir", "hs_sync")
-    return require_str(value, key="output.subdir")
-
-
-# ---------------------------------------------------------------------
-# Write config getters
-# ---------------------------------------------------------------------
-
-
-def get_write_config(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Return output writing preferences."""
-    if cfg is None:
-        cfg = load_hs_sync_config()
-
-    return get_required_block(
-        cfg,
-        "write",
-        config_name="hs_sync.yaml",
-    )
-
-
-def get_write_csv_bool(cfg: dict[str, Any] | None = None) -> bool:
-    write_cfg = get_write_config(cfg)
-    value = write_cfg.get("csv", True)
-    return require_bool(value, key="write.csv")
-
-
-def get_write_parquet_bool(cfg: dict[str, Any] | None = None) -> bool:
-    write_cfg = get_write_config(cfg)
-    value = write_cfg.get("parquet", True)
-    return require_bool(value, key="write.parquet")
-
-
-def get_write_overwrite_bool(cfg: dict[str, Any] | None = None) -> bool:
-    write_cfg = get_write_config(cfg)
-    value = write_cfg.get("overwrite", True)
-    return require_bool(value, key="write.overwrite")
-
-
-def get_write_timestamp_bool(cfg: dict[str, Any] | None = None) -> bool:
-    write_cfg = get_write_config(cfg)
-    value = write_cfg.get("timestamp", False)
-    return require_bool(value, key="write.timestamp")
-
-
-# ---------------------------------------------------------------------
-# Diagnostics config getters
-# ---------------------------------------------------------------------
-
-
-def get_diagnostics_config(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Return diagnostics config block."""
-    cfg = cfg or load_hs_sync_config()
-    value = cfg.get("diagnostics", {})
-    return require_dict(value, key="diagnostics")
-
-
-def get_weight_sum_tolerance(cfg: dict[str, Any] | None = None) -> float:
-    diagnostics_cfg = get_diagnostics_config(cfg)
-    value = diagnostics_cfg.get("weight_sum_tolerance", 0.001)
-
-    # If your base.py does not yet have require_float, either add it there
-    # or replace this with float(value).
-    return require_float(
-        value,
-        key="diagnostics.weight_sum_tolerance",
-        min_value=0.0,
-    )
-
-
-def get_missing_mapping_top_n(cfg: dict[str, Any] | None = None) -> int:
-    diagnostics_cfg = get_diagnostics_config(cfg)
-    value = diagnostics_cfg.get("missing_mapping_top_n", 50)
-    return require_int(
-        value,
-        key="diagnostics.missing_mapping_top_n",
-        min_value=1,
-    )
-
-
-# ---------------------------------------------------------------------
-# Product config getters
-# ---------------------------------------------------------------------
-
-
-def get_products_config(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Return config for all HS-sync products."""
-    if cfg is None:
-        cfg = load_hs_sync_config()
-
-    return get_required_block(
-        cfg,
-        "products",
-        config_name="hs_sync.yaml",
-    )
-
-
-def get_product_config(
-    product_name: str,
-    cfg: dict[str, Any] | None = None,
-    *,
-    required: bool = False,
-) -> dict[str, Any]:
-    """Return config for a specific HS-sync product."""
-    products = get_products_config(cfg)
-
-    if product_name not in products:
-        if required:
-            raise KeyError(
-                f"Unknown HS-sync product '{product_name}' in hs_sync.yaml."
-            )
-        return {}
-
-    return require_dict(
-        products[product_name],
-        key=f"products.{product_name}",
-    )
-
-
-def is_product_enabled(
-    product_name: str,
-    cfg: dict[str, Any] | None = None,
-    *,
-    default: bool = False,
-) -> bool:
-    """Return whether an HS-sync product is enabled."""
-    product_cfg = get_product_config(product_name, cfg)
-    value = product_cfg.get("enabled", default)
-    return require_bool(value, key=f"products.{product_name}.enabled")
-
-
-def get_product_filename(
-    product_name: str,
-    cfg: dict[str, Any] | None = None,
-) -> str:
-    """Return output filename for an HS-sync product."""
-    product_cfg = get_product_config(product_name, cfg)
-
-    filename = product_cfg.get("filename")
-
-    if not filename:
-        raise KeyError(
-            f"Missing required 'filename' for HS-sync product '{product_name}'."
-        )
-
-    return require_str(filename, key=f"products.{product_name}.filename")
-
-
-def get_product_dependency(
-    product_name: str,
-    cfg: dict[str, Any] | None = None,
-) -> str | None:
-    """Return product dependency, if any."""
-    product_cfg = get_product_config(product_name, cfg)
-    value = product_cfg.get("depends_on")
-
-    if value is None:
-        return None
-
-    return require_str(value, key=f"products.{product_name}.depends_on")
-
-
-def get_enabled_products(cfg: dict[str, Any] | None = None) -> list[str]:
-    """Return enabled HS-sync product names."""
-    products = get_products_config(cfg)
-
-    return [
-        product_name
-        for product_name in products
-        if is_product_enabled(product_name, cfg)
-    ]
-
-def get_product_write_bool(
-    product_name: str,
-    cfg: dict[str, Any] | None = None,
-    *,
-    default: bool = True,
-) -> bool:
-    product_cfg = get_product_config(product_name, cfg)
-    value = product_cfg.get("write", default)
-    return require_bool(value, key=f"products.{product_name}.write")
-
-
-def get_product_options(
-    product_name: str,
-    cfg: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    product_cfg = get_product_config(product_name, cfg)
-    value = product_cfg.get("options", {})
-    return require_dict(value, key=f"products.{product_name}.options")
-
-
-def get_target_h5_mapping_interpretation_display_report_config(
-    cfg: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Return product config for interpretation display report."""
-    return get_product_config(
-        "target_h5_mapping_interpretation_display_report",
-        cfg,
-        required=True,
-    )
-
-
-def get_target_h5_mapping_interpretation_display_report_enabled_bool(
-    cfg: dict[str, Any] | None = None,
-) -> bool:
-    """Return whether interpretation display report product is enabled."""
-    return is_product_enabled(
-        "target_h5_mapping_interpretation_display_report",
-        cfg,
-        default=False,
-    )
-
-
-def get_target_h5_mapping_interpretation_display_report_kind(
-    cfg: dict[str, Any] | None = None,
-) -> str:
-    """Return product kind for interpretation display report."""
-    product_cfg = get_target_h5_mapping_interpretation_display_report_config(cfg)
-    value = product_cfg.get("kind", "derived")
-    return require_str(
-        value,
-        key="products.target_h5_mapping_interpretation_display_report.kind",
-    )
-
-
-def get_target_h5_mapping_interpretation_display_report_dependency(
-    cfg: dict[str, Any] | None = None,
-) -> str | None:
-    """Return dependency for interpretation display report product."""
-    return get_product_dependency(
-        "target_h5_mapping_interpretation_display_report",
-        cfg,
-    )
-
-
-def get_target_h5_mapping_interpretation_display_report_filename(
-    cfg: dict[str, Any] | None = None,
-) -> str:
-    """Return filename for interpretation display report product."""
-    return get_product_filename(
-        "target_h5_mapping_interpretation_display_report",
-        cfg,
-    )
-
-
-def get_target_h5_mapping_interpretation_display_report_write_bool(
-    cfg: dict[str, Any] | None = None,
-) -> bool:
-    """Return whether interpretation display report product should be written."""
-    return get_product_write_bool(
-        "target_h5_mapping_interpretation_display_report",
-        cfg,
-        default=True,
-    )
-
-
-def get_target_h5_mapping_interpretation_display_report_output_kind(
-    cfg: dict[str, Any] | None = None,
-) -> str:
-    """Return output kind for interpretation display report product."""
-    product_cfg = get_target_h5_mapping_interpretation_display_report_config(cfg)
-    value = require_str(
-        product_cfg.get("output_kind", "reports"),
-        key="products.target_h5_mapping_interpretation_display_report.output_kind",
-    ).strip().lower()
-
-    # Accept singular alias while normalizing to paths.yaml key.
-    if value == "report":
-        return "reports"
-
-    return value
-
-
-def get_target_h5_source_code_coverage_config(
-    cfg: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Return product config for target-H5 source code coverage."""
-    return get_product_config(
-        "target_h5_source_code_coverage",
-        cfg,
-        required=True,
-    )
-
-
-def get_target_h5_source_code_coverage_enabled_bool(
-    cfg: dict[str, Any] | None = None,
-) -> bool:
-    """Return whether target-H5 source code coverage product is enabled."""
-    return is_product_enabled(
-        "target_h5_source_code_coverage",
-        cfg,
-        default=False,
-    )
-
-
-def get_target_h5_source_code_coverage_kind(
-    cfg: dict[str, Any] | None = None,
-) -> str:
-    """Return product kind for target-H5 source code coverage."""
-    product_cfg = get_target_h5_source_code_coverage_config(cfg)
-    value = product_cfg.get("kind", "derived")
-    return require_str(
-        value,
-        key="products.target_h5_source_code_coverage.kind",
-    )
-
-
-def get_target_h5_source_code_coverage_dependency(
-    cfg: dict[str, Any] | None = None,
-) -> str | None:
-    """Return dependency for target-H5 source code coverage product."""
-    return get_product_dependency(
-        "target_h5_source_code_coverage",
-        cfg,
-    )
-
-
-def get_target_h5_source_code_coverage_filename(
-    cfg: dict[str, Any] | None = None,
-) -> str:
-    """Return filename for target-H5 source code coverage product."""
-    return get_product_filename(
-        "target_h5_source_code_coverage",
-        cfg,
-    )
-
-
-def get_target_h5_source_code_coverage_write_bool(
-    cfg: dict[str, Any] | None = None,
-) -> bool:
-    """Return whether target-H5 source code coverage product should be written."""
-    return get_product_write_bool(
-        "target_h5_source_code_coverage",
-        cfg,
-        default=True,
-    )
-
-# ---------------------------------------------------------------------
-# Main HS-sync report config getters
-# ---------------------------------------------------------------------
-
-
-def get_report_config(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Return main HS-sync report config."""
-    if cfg is None:
-        cfg = load_hs_sync_config()
-
-    return get_required_block(
-        cfg,
-        "report",
-        config_name="hs_sync.yaml",
-    )
-
-
-def get_report_output_kind(cfg: dict[str, Any] | None = None) -> str:
-    """Return output kind for main HS-sync reports."""
-    report_cfg = get_report_config(cfg)
-    value = report_cfg.get("output_kind", "reports")
-    return require_str(value, key="report.output_kind").strip().lower()
-
-
-def get_concordance_coverage_report_filename(
-    cfg: dict[str, Any] | None = None,
-) -> str:
-    """Return filename for main HS-sync concordance coverage report."""
-    report_cfg = get_report_config(cfg)
-    value = report_cfg.get(
-        "concordance_coverage_filename",
-        "audit_hs_sync_concordance_coverage.txt",
-    )
-    return require_str(value, key="report.concordance_coverage_filename")
-
-
-def get_report_timestamp_bool(cfg: dict[str, Any] | None = None) -> bool:
-    """Return whether main HS-sync reports should be timestamped."""
-    report_cfg = get_report_config(cfg)
-    value = report_cfg.get("timestamp", True)
-    return require_bool(value, key="report.timestamp")
-
-
-def get_report_write_latest_bool(cfg: dict[str, Any] | None = None) -> bool:
-    """Return whether latest main HS-sync report copies should be written."""
-    report_cfg = get_report_config(cfg)
-    value = report_cfg.get("write_latest", True)
-    return require_bool(value, key="report.write_latest")
-
-
-# ---------------------------------------------------------------------
-# Harvard staging config getters
-# ---------------------------------------------------------------------
-
-def get_harvard_staging_input_config(
-    cfg: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Return Harvard staging input config."""
-    if cfg is None:
-        cfg = load_hs_sync_config()
-
-    return get_required_nested_block(
-        cfg,
-        ("harvard_staging", "input"),
-        config_name="hs_sync.yaml",
-    )
-
-
-def get_harvard_staging_input_stage(
-    cfg: dict[str, Any] | None = None,
-) -> str:
-    """Return input data stage for Harvard staging."""
-    input_cfg = get_harvard_staging_input_config(cfg)
-    value = input_cfg.get("stage", "raw")
-    return require_str(value, key="harvard_staging.input.stage")
-
-
-def get_harvard_staging_input_subdir(
-    cfg: dict[str, Any] | None = None,
-) -> str:
-    """Return input subdirectory for Harvard staging."""
-    input_cfg = get_harvard_staging_input_config(cfg)
-    value = input_cfg.get("subdir", "api/single")
-    return require_str(value, key="harvard_staging.input.subdir")
-
-
-def get_harvard_staging_input_pattern(
-    cfg: dict[str, Any] | None = None,
-) -> str:
-    """Return input glob pattern for Harvard staging."""
-    input_cfg = get_harvard_staging_input_config(cfg)
-    value = input_cfg.get("pattern", "*.csv")
-    return require_str(value, key="harvard_staging.input.pattern")
-
-def get_harvard_staging_output_config(
-    cfg: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Return Harvard staging output config."""
-    if cfg is None:
-        cfg = load_hs_sync_config()
-
-    return get_required_nested_block(
-        cfg,
-        ("harvard_staging", "output"),
-        config_name="hs_sync.yaml",
-    )
-
-
-def get_harvard_staging_output_stage(
-    cfg: dict[str, Any] | None = None,
-) -> str:
-    """Return output data stage for Harvard staging."""
-    output_cfg = get_harvard_staging_output_config(cfg)
-    value = output_cfg.get("stage", "external")
-    return require_str(value, key="harvard_staging.output.stage")
-
-
-def get_harvard_staging_output_subdir(
-    cfg: dict[str, Any] | None = None,
-) -> str:
-    """Return output subdirectory for Harvard staging."""
-    output_cfg = get_harvard_staging_output_config(cfg)
-    value = output_cfg.get("subdir", "harvard_comtrade")
-    return require_str(value, key="harvard_staging.output.subdir")
-
-
-# ---------------------------------------------------------------------
-# Harvard staging report config getters
-# ---------------------------------------------------------------------
-
-
-def get_harvard_staging_report_config(
-    cfg: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Return Harvard staging report config."""
-    if cfg is None:
-        cfg = load_hs_sync_config()
-
-    return get_required_nested_block(
-        cfg,
-        ("harvard_staging", "report"),
-        config_name="hs_sync.yaml",
-    )
-
-
-def get_harvard_staging_report_output_kind(
-    cfg: dict[str, Any] | None = None,
-) -> str:
-    """Return output kind for Harvard staging reports."""
-    report_cfg = get_harvard_staging_report_config(cfg)
-    value = report_cfg.get("output_kind", "reports")
-    return require_str(
-        value,
-        key="harvard_staging.report.output_kind",
-    ).strip().lower()
-
-
-def get_harvard_staging_inventory_filename(
-    cfg: dict[str, Any] | None = None,
-) -> str:
-    """Return filename for Harvard staging inventory audit."""
-    report_cfg = get_harvard_staging_report_config(cfg)
-    value = report_cfg.get(
-        "inventory_filename",
-        "audit_hs_sync_harvard_staging_inventory.csv",
-    )
-    return require_str(
-        value,
-        key="harvard_staging.report.inventory_filename",
-    )
-
-
-def get_harvard_staging_preservation_filename(
-    cfg: dict[str, Any] | None = None,
-) -> str:
-    """Return filename for Harvard staging preservation audit."""
-    report_cfg = get_harvard_staging_report_config(cfg)
-    value = report_cfg.get(
-        "preservation_filename",
-        "audit_hs_sync_harvard_staging_preservation.csv",
-    )
-    return require_str(
-        value,
-        key="harvard_staging.report.preservation_filename",
-    )
-
-
-def get_harvard_staging_report_timestamp_bool(
-    cfg: dict[str, Any] | None = None,
-) -> bool:
-    """Return whether Harvard staging reports should be timestamped."""
-    report_cfg = get_harvard_staging_report_config(cfg)
-    value = report_cfg.get("timestamp", True)
-    return require_bool(
-        value,
-        key="harvard_staging.report.timestamp",
-    )
-
-
-def get_harvard_staging_report_write_latest_bool(
-    cfg: dict[str, Any] | None = None,
-) -> bool:
-    """Return whether latest Harvard staging report copies should be written."""
-    report_cfg = get_harvard_staging_report_config(cfg)
-    value = report_cfg.get("write_latest", True)
-    return require_bool(
-        value,
-        key="harvard_staging.report.write_latest",
-    )
-
-# ---------------------------------------------------------------------
-# Harvard staging diagnostics config getters
-# ---------------------------------------------------------------------
-def get_harvard_staging_config(
-    cfg: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Return Harvard staging config block."""
-    if cfg is None:
-        cfg = load_hs_sync_config()
-
-    return get_required_block(
-        cfg,
-        "harvard_staging",
-        config_name="hs_sync.yaml",
-    )
-
-def get_harvard_staging_enabled_bool(
-    cfg: dict[str, Any] | None = None,
-) -> bool:
-    """Return whether Harvard staging is enabled."""
-    staging_cfg = get_harvard_staging_config(cfg)
-    value = staging_cfg.get("enabled", True)
-    return require_bool(value, key="harvard_staging.enabled")
-
-def get_harvard_staging_overwrite_bool(
-    cfg: dict[str, Any] | None = None,
-) -> bool:
-    """Return whether Harvard staging should overwrite existing output."""
-    staging_cfg = get_harvard_staging_config(cfg)
-    value = staging_cfg.get("overwrite", True)
-    return require_bool(value, key="harvard_staging.overwrite")
-
-
-def get_harvard_staging_filters_config(
-    cfg: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Return Harvard staging filters config."""
-    if cfg is None:
-        cfg = load_hs_sync_config()
-
-    return get_required_nested_block(
-        cfg,
-        ("harvard_staging", "filters"),
-        config_name="hs_sync.yaml",
-    )
-
-
-def get_harvard_staging_valid_cmd_regex(
-    cfg: dict[str, Any] | None = None,
-) -> str:
-    """Return regex used to keep valid commodity codes during Harvard staging."""
-    filters_cfg = get_harvard_staging_filters_config(cfg)
-    value = filters_cfg.get("valid_cmd_regex", r"^[0-9]{6}$")
-    return require_str(value, key="harvard_staging.filters.valid_cmd_regex")
-
-
-def get_harvard_staging_hs_years(
-    cfg: dict[str, Any] | None = None,
-) -> dict[str, list[int]]:
-    """Return allowed years by HS system for Harvard staging filters."""
-    filters_cfg = get_harvard_staging_filters_config(cfg)
-    value = filters_cfg.get("hs_years", {})
-    hs_years_cfg = require_dict(value, key="harvard_staging.filters.hs_years")
-
-    normalized: dict[str, list[int]] = {}
-
-    for hs_system, years in hs_years_cfg.items():
-        hs_key = require_str(
-            hs_system,
-            key="harvard_staging.filters.hs_years.<key>",
-        ).strip().upper()
-
-        if not isinstance(years, list):
-            raise TypeError(
-                "'harvard_staging.filters.hs_years.%s' must be a list, got %s."
-                % (hs_key, type(years).__name__)
-            )
-
-        normalized[hs_key] = [
-            require_int(
-                year,
-                key=f"harvard_staging.filters.hs_years.{hs_key}",
-                min_value=0,
-            )
-            for year in years
+    @property
+    def target_hs(self) -> str:
+        """Effective target HS for the active coverage workflow."""
+        return self.coverage.target_hs
+
+    @property
+    def template_context(self) -> TemplateContext:
+        return TemplateContext(target_hs=self.target_hs)
+
+    def render(self, value: str) -> str:
+        return self.template_context.render(value)
+
+    def product(self, name: str) -> ProductConfig:
+        try:
+            return self.products[name]
+        except KeyError as exc:
+            raise KeyError(f"Unknown HS-sync product: {name!r}") from exc
+
+    def is_product_enabled(self, name: str, *, default: bool = False) -> bool:
+        product = self.products.get(name)
+        if product is None:
+            return default
+        return product.enabled
+
+    def enabled_products(self) -> list[str]:
+        return [
+            product_name
+            for product_name, product in self.products.items()
+            if product.enabled
         ]
 
-    return normalized
+    def product_filename(self, name: str) -> str:
+        return self.product(name).filename
 
-def get_harvard_staging_diagnostics_config(
-    cfg: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Return Harvard staging diagnostics config."""
-    staging_cfg = get_harvard_staging_config(cfg)
-    value = staging_cfg.get("diagnostics", {})
-    return require_dict(value, key="harvard_staging.diagnostics")
+    def product_options(self, name: str) -> dict[str, Any]:
+        return self.product(name).options
 
+    def product_write_enabled(self, name: str, *, default: bool = True) -> bool:
+        product = self.products.get(name)
+        if product is None:
+            return default
+        return product.write
 
-def get_harvard_staging_value_abs_tolerance(
-    cfg: dict[str, Any] | None = None,
-) -> float:
-    """Return absolute tolerance for staging value preservation audit."""
-    diagnostics_cfg = get_harvard_staging_diagnostics_config(cfg)
-    value = diagnostics_cfg.get("value_abs_tolerance", 1.0)
-    return require_float(
-        value,
-        key="harvard_staging.diagnostics.value_abs_tolerance",
-        min_value=0.0,
-    )
+    def product_dependency(self, name: str) -> str | None:
+        return self.product(name).depends_on
 
+    def product_output_dir(self, name: str, *, default_dir: Path) -> Path:
+        return self.product(name).resolve_output_dir(default_dir)
 
-def get_harvard_staging_value_rel_tolerance(
-    cfg: dict[str, Any] | None = None,
-) -> float:
-    """Return relative tolerance for staging value preservation audit."""
-    diagnostics_cfg = get_harvard_staging_diagnostics_config(cfg)
-    value = diagnostics_cfg.get("value_rel_tolerance", 1e-10)
-    return require_float(
-        value,
-        key="harvard_staging.diagnostics.value_rel_tolerance",
-        min_value=0.0,
-    )
+    def coverage_output_dir(self) -> Path:
+        return self.coverage.output.resolve_data_dir()
 
+    def coverage_input_dir(self) -> Path:
+        return self.coverage.input.resolve_data_dir()
 
-def get_harvard_staging_columns_config(
-    cfg: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Return Harvard staging columns config."""
-    if cfg is None:
-        cfg = load_hs_sync_config()
+    def coverage_mapping_dir(self) -> Path:
+        return self.coverage.mappings.resolve_dir()
 
-    return get_required_nested_block(
-        cfg,
-        ("harvard_staging", "columns"),
-        config_name="hs_sync.yaml",
-    )
-
-
-def get_harvard_staging_year_col(
-    cfg: dict[str, Any] | None = None,
-) -> str:
-    cols_cfg = get_harvard_staging_columns_config(cfg)
-    value = cols_cfg.get("year", "refYear")
-    return require_str(value, key="harvard_staging.columns.year")
-
-
-def get_harvard_staging_hs_col(
-    cfg: dict[str, Any] | None = None,
-) -> str:
-    cols_cfg = get_harvard_staging_columns_config(cfg)
-    value = cols_cfg.get("hs", "classificationCode")
-    return require_str(value, key="harvard_staging.columns.hs")
-
-
-def get_harvard_staging_cmd_col(
-    cfg: dict[str, Any] | None = None,
-) -> str:
-    cols_cfg = get_harvard_staging_columns_config(cfg)
-    value = cols_cfg.get("cmd", "cmdCode")
-    return require_str(value, key="harvard_staging.columns.cmd")
-
-
-def get_harvard_staging_value_col(
-    cfg: dict[str, Any] | None = None,
-) -> str:
-    cols_cfg = get_harvard_staging_columns_config(cfg)
-    value = cols_cfg.get("value", "primaryValue")
-    return require_str(value, key="harvard_staging.columns.value")
-
-
-def get_harvard_staging_reporter_code_col(
-    cfg: dict[str, Any] | None = None,
-) -> str:
-    cols_cfg = get_harvard_staging_columns_config(cfg)
-    value = cols_cfg.get("reporter_code", "reporterCode")
-    return require_str(value, key="harvard_staging.columns.reporter_code")
-
-
-def get_harvard_staging_partner_code_col(
-    cfg: dict[str, Any] | None = None,
-) -> str:
-    cols_cfg = get_harvard_staging_columns_config(cfg)
-    value = cols_cfg.get("partner_code", "partnerCode")
-    return require_str(value, key="harvard_staging.columns.partner_code")
-
-
-def get_harvard_staging_flow_col(
-    cfg: dict[str, Any] | None = None,
-) -> str:
-    cols_cfg = get_harvard_staging_columns_config(cfg)
-    value = cols_cfg.get("flow", "flowCode")
-    return require_str(value, key="harvard_staging.columns.flow")
-
-
-def get_harvard_staging_quantity_col(
-    cfg: dict[str, Any] | None = None,
-) -> str:
-    cols_cfg = get_harvard_staging_columns_config(cfg)
-    value = cols_cfg.get("quantity", "netWgt")
-    return require_str(value, key="harvard_staging.columns.quantity")
-
-
-def get_harvard_staging_columns(
-    cfg: dict[str, Any] | None = None,
-) -> dict[str, str]:
-    """Return standardized Harvard staging input column mapping."""
-    return {
-        "year": get_harvard_staging_year_col(cfg),
-        "hs": get_harvard_staging_hs_col(cfg),
-        "cmd": get_harvard_staging_cmd_col(cfg),
-        "value": get_harvard_staging_value_col(cfg),
-        "reporter_code": get_harvard_staging_reporter_code_col(cfg),
-        "partner_code": get_harvard_staging_partner_code_col(cfg),
-        "flow": get_harvard_staging_flow_col(cfg),
-        "quantity": get_harvard_staging_quantity_col(cfg),
-    }
-
-
-def get_harvard_staging_country_reference_config(
-    cfg: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Return Harvard staging country reference config."""
-    if cfg is None:
-        cfg = load_hs_sync_config()
-
-    return get_required_nested_block(
-        cfg,
-        ("harvard_staging", "country_reference"),
-        config_name="hs_sync.yaml",
-    )
-
-
-def get_harvard_staging_country_reference_source(
-    cfg: dict[str, Any] | None = None,
-) -> str:
-    ref_cfg = get_harvard_staging_country_reference_config(cfg)
-    value = ref_cfg.get("source", "single_api")
-    return require_str(value, key="harvard_staging.country_reference.source")
-
-
-def get_harvard_staging_country_reference_stage(
-    cfg: dict[str, Any] | None = None,
-) -> str:
-    ref_cfg = get_harvard_staging_country_reference_config(cfg)
-    value = ref_cfg.get("stage", "raw")
-    return require_str(value, key="harvard_staging.country_reference.stage")
-
-
-def get_harvard_staging_country_reference_subdir(
-    cfg: dict[str, Any] | None = None,
-) -> str:
-    ref_cfg = get_harvard_staging_country_reference_config(cfg)
-    value = ref_cfg.get("subdir", "api/single")
-    return require_str(value, key="harvard_staging.country_reference.subdir")
-
-
-def get_harvard_staging_country_reference_pattern(
-    cfg: dict[str, Any] | None = None,
-) -> str:
-    ref_cfg = get_harvard_staging_country_reference_config(cfg)
-    value = ref_cfg.get("pattern", "*.csv")
-    return require_str(value, key="harvard_staging.country_reference.pattern")
-
-
-def get_harvard_staging_country_reference_columns_config(
-    cfg: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Return Harvard staging country reference column config."""
-    ref_cfg = get_harvard_staging_country_reference_config(cfg)
-    value = ref_cfg.get("columns", {})
-    return require_dict(value, key="harvard_staging.country_reference.columns")
-
-
-def get_harvard_staging_country_reference_reporter_code_col(
-    cfg: dict[str, Any] | None = None,
-) -> str:
-    cols_cfg = get_harvard_staging_country_reference_columns_config(cfg)
-    value = cols_cfg.get("reporter_code", "ReporterCode")
-    return require_str(
-        value,
-        key="harvard_staging.country_reference.columns.reporter_code",
-    )
-
-
-def get_harvard_staging_country_reference_reporter_iso_col(
-    cfg: dict[str, Any] | None = None,
-) -> str:
-    cols_cfg = get_harvard_staging_country_reference_columns_config(cfg)
-    value = cols_cfg.get("reporter_iso", "ReporterISO")
-    return require_str(
-        value,
-        key="harvard_staging.country_reference.columns.reporter_iso",
-    )
-
-
-def get_harvard_staging_country_reference_partner_code_col(
-    cfg: dict[str, Any] | None = None,
-) -> str:
-    cols_cfg = get_harvard_staging_country_reference_columns_config(cfg)
-    value = cols_cfg.get("partner_code", "PartnerCode")
-    return require_str(
-        value,
-        key="harvard_staging.country_reference.columns.partner_code",
-    )
-
-
-def get_harvard_staging_country_reference_partner_iso_col(
-    cfg: dict[str, Any] | None = None,
-) -> str:
-    cols_cfg = get_harvard_staging_country_reference_columns_config(cfg)
-    value = cols_cfg.get("partner_iso", "PartnerISO")
-    return require_str(
-        value,
-        key="harvard_staging.country_reference.columns.partner_iso",
-    )
-
-
-# ---------------------------------------------------------------------
-# Harvard weights config getters
-# ---------------------------------------------------------------------
-
-
-def get_harvard_weights_config(
-    cfg: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Return Harvard weight-generation config block."""
-    if cfg is None:
-        cfg = load_hs_sync_config()
-
-    return get_required_block(
-        cfg,
-        "harvard_weights",
-        config_name="hs_sync.yaml",
-    )
-
-
-def get_harvard_weights_enabled_bool(
-    cfg: dict[str, Any] | None = None,
-) -> bool:
-    """Return whether Harvard weight generation is enabled."""
-    weights_cfg = get_harvard_weights_config(cfg)
-    value = weights_cfg.get("enabled", True)
-    return require_bool(value, key="harvard_weights.enabled")
-
-def get_harvard_weights_input_config(
-    cfg: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Return Harvard weights input config."""
-    if cfg is None:
-        cfg = load_hs_sync_config()
-
-    return get_required_nested_block(
-        cfg,
-        ("harvard_weights", "input"),
-        config_name="hs_sync.yaml",
-    )
-
-
-def get_harvard_weights_input_stage(
-    cfg: dict[str, Any] | None = None,
-) -> str:
-    input_cfg = get_harvard_weights_input_config(cfg)
-    value = input_cfg.get("stage", "external")
-    return require_str(value, key="harvard_weights.input.stage")
-
-
-def get_harvard_weights_input_subdir(
-    cfg: dict[str, Any] | None = None,
-) -> str:
-    input_cfg = get_harvard_weights_input_config(cfg)
-    value = input_cfg.get(
-        "subdir",
-        "harvard_comtrade/as_reported/raw_parquet_partitioned",
-    )
-    return require_str(value, key="harvard_weights.input.subdir")
-
-
-def get_harvard_weights_input_pattern(
-    cfg: dict[str, Any] | None = None,
-) -> str:
-    input_cfg = get_harvard_weights_input_config(cfg)
-    value = input_cfg.get(
-        "pattern",
-        "hs_partition=*/year_partition=*/*.parquet",
-    )
-    return require_str(value, key="harvard_weights.input.pattern")
-
-def get_harvard_weights_static_config(
-    cfg: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Return Harvard static input config."""
-    if cfg is None:
-        cfg = load_hs_sync_config()
-
-    return get_required_nested_block(
-        cfg,
-        ("harvard_weights", "static"),
-        config_name="hs_sync.yaml",
-    )
-
-
-def get_harvard_weights_static_stage(
-    cfg: dict[str, Any] | None = None,
-) -> str:
-    static_cfg = get_harvard_weights_static_config(cfg)
-    value = static_cfg.get("stage", "references")
-    return require_str(value, key="harvard_weights.static.stage")
-
-
-def get_harvard_weights_static_subdir(
-    cfg: dict[str, Any] | None = None,
-) -> str:
-    static_cfg = get_harvard_weights_static_config(cfg)
-    value = static_cfg.get("subdir", "harvard_comtrade")
-    return require_str(value, key="harvard_weights.static.subdir")
-
-
-def get_harvard_weights_static_concordance_file(
-    cfg: dict[str, Any] | None = None,
-) -> str:
-    static_cfg = get_harvard_weights_static_config(cfg)
-    value = static_cfg.get("concordance_file")
-    return require_str(
-        value,
-        key="harvard_weights.static.concordance_file",
-    )
-
-def get_harvard_weights_output_config(
-    cfg: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Return Harvard weights output config."""
-    if cfg is None:
-        cfg = load_hs_sync_config()
-
-    return get_required_nested_block(
-        cfg,
-        ("harvard_weights", "output"),
-        config_name="hs_sync.yaml",
-    )
-
-
-def get_harvard_weights_output_stage(
-    cfg: dict[str, Any] | None = None,
-) -> str:
-    output_cfg = get_harvard_weights_output_config(cfg)
-    value = output_cfg.get("stage", "references")
-    return require_str(value, key="harvard_weights.output.stage")
-
-
-def get_harvard_weights_output_subdir(
-    cfg: dict[str, Any] | None = None,
-) -> str:
-    output_cfg = get_harvard_weights_output_config(cfg)
-    value = output_cfg.get("subdir", "hs_sync")
-    return require_str(value, key="harvard_weights.output.subdir")
-
-
-def get_harvard_weights_output_file(
-    cfg: dict[str, Any] | None = None,
-) -> str:
-    output_cfg = get_harvard_weights_output_config(cfg)
-    value = output_cfg.get("file", "harvard_hs_conversion_weights.parquet")
-    return require_str(value, key="harvard_weights.output.file")
-
-
-def get_harvard_weights_report_config(
-    cfg: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Return Harvard weights report config."""
-    if cfg is None:
-        cfg = load_hs_sync_config()
-
-    return get_required_nested_block(
-        cfg,
-        ("harvard_weights", "report"),
-        config_name="hs_sync.yaml",
-    )
-
-
-def get_harvard_weights_report_output_kind(
-    cfg: dict[str, Any] | None = None,
-) -> str:
-    report_cfg = get_harvard_weights_report_config(cfg)
-    value = report_cfg.get("output_kind", "reports")
-    return require_str(
-        value,
-        key="harvard_weights.report.output_kind",
-    ).strip().lower()
-
-
-def get_harvard_weights_report_filename(
-    cfg: dict[str, Any] | None = None,
-) -> str:
-    report_cfg = get_harvard_weights_report_config(cfg)
-    value = report_cfg.get("filename", "audit_hs_sync_harvard_weights.csv")
-    return require_str(value, key="harvard_weights.report.filename")
-
-
-def get_harvard_weights_report_timestamp_bool(
-    cfg: dict[str, Any] | None = None,
-) -> bool:
-    report_cfg = get_harvard_weights_report_config(cfg)
-    value = report_cfg.get("timestamp", True)
-    return require_bool(value, key="harvard_weights.report.timestamp")
-
-
-def get_harvard_weights_report_write_latest_bool(
-    cfg: dict[str, Any] | None = None,
-) -> bool:
-    report_cfg = get_harvard_weights_report_config(cfg)
-    value = report_cfg.get("write_latest", True)
-    return require_bool(value, key="harvard_weights.report.write_latest")
-
-
-def get_coverage_config(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Return target-HS mapping coverage config."""
-    if cfg is None:
-        cfg = load_hs_sync_config()
-
-    return get_required_block(
-        cfg,
-        "coverage",
-        config_name="hs_sync.yaml",
-    )
-
-
-def get_coverage_enabled_bool(cfg: dict[str, Any] | None = None) -> bool:
-    coverage_cfg = get_coverage_config(cfg)
-    value = coverage_cfg.get("enabled", True)
-    return require_bool(value, key="coverage.enabled")
-
-
-def get_coverage_target_hs(cfg: dict[str, Any] | None = None) -> str:
-    coverage_cfg = get_coverage_config(cfg)
-    value = coverage_cfg.get("target_hs", get_target_hs(cfg))
-    return require_str(value, key="coverage.target_hs").strip().upper()
-
-
-def get_coverage_min_year(cfg: dict[str, Any] | None = None) -> int:
-    coverage_cfg = get_coverage_config(cfg)
-    value = coverage_cfg.get("min_year", 2017)
-    return require_int(value, key="coverage.min_year", min_value=0)
-
-
-def get_coverage_max_year(cfg: dict[str, Any] | None = None) -> int:
-    coverage_cfg = get_coverage_config(cfg)
-    value = coverage_cfg.get("max_year", 9999)
-    return require_int(value, key="coverage.max_year", min_value=0)
-
-def get_coverage_input_config(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
-    coverage_cfg = get_coverage_config(cfg)
-    value = coverage_cfg.get("input", {})
-    return require_dict(value, key="coverage.input")
-
-
-def get_coverage_input_stage(cfg: dict[str, Any] | None = None) -> str:
-    input_cfg = get_coverage_input_config(cfg)
-    value = input_cfg.get("stage", "raw")
-    return require_str(value, key="coverage.input.stage")
-
-
-def get_coverage_input_subdir(cfg: dict[str, Any] | None = None) -> str:
-    input_cfg = get_coverage_input_config(cfg)
-    value = input_cfg.get("subdir", "")
-    return require_str(value, key="coverage.input.subdir")
-
-
-def get_coverage_input_pattern(cfg: dict[str, Any] | None = None) -> str:
-    input_cfg = get_coverage_input_config(cfg)
-    value = input_cfg.get("pattern", "*.csv")
-    return require_str(value, key="coverage.input.pattern")
-
-
-def get_coverage_input_format(cfg: dict[str, Any] | None = None) -> str:
-    input_cfg = get_coverage_input_config(cfg)
-    value = input_cfg.get("format", "csv")
-    return require_str(value, key="coverage.input.format").strip().lower()
-
-
-def get_coverage_mappings_config(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
-    coverage_cfg = get_coverage_config(cfg)
-    value = coverage_cfg.get("mappings", {})
-    return require_dict(value, key="coverage.mappings")
-
-
-def get_coverage_mappings_stage(cfg: dict[str, Any] | None = None) -> str:
-    mappings_cfg = get_coverage_mappings_config(cfg)
-    value = mappings_cfg.get("stage", "references")
-    return require_str(value, key="coverage.mappings.stage")
-
-
-def get_coverage_mappings_subdir(cfg: dict[str, Any] | None = None) -> str:
-    mappings_cfg = get_coverage_mappings_config(cfg)
-    value = mappings_cfg.get("subdir", "")
-    return require_str(value, key="coverage.mappings.subdir")
-
-
-def get_coverage_mapping_files(cfg: dict[str, Any] | None = None) -> dict[str, str]:
-    mappings_cfg = get_coverage_mappings_config(cfg)
-    value = mappings_cfg.get("files", {})
-    files_cfg = require_dict(value, key="coverage.mappings.files")
-
-    return {
-        require_str(key, key="coverage.mappings.files.<key>"): require_str(
-            filename,
-            key=f"coverage.mappings.files.{key}",
-        )
-        for key, filename in files_cfg.items()
-    }
-
-
-def get_coverage_mapping_columns_config(
-    cfg: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    mappings_cfg = get_coverage_mappings_config(cfg)
-    value = mappings_cfg.get("columns", {})
-    return require_dict(value, key="coverage.mappings.columns")
-
-
-def get_coverage_mapping_source_cmd_col(cfg: dict[str, Any] | None = None) -> str:
-    cols_cfg = get_coverage_mapping_columns_config(cfg)
-    value = cols_cfg.get("source_cmd", "code.source")
-    return require_str(value, key="coverage.mappings.columns.source_cmd")
-
-
-def get_coverage_mapping_target_cmd_col(cfg: dict[str, Any] | None = None) -> str:
-    cols_cfg = get_coverage_mapping_columns_config(cfg)
-    value = cols_cfg.get("target_cmd", "code.target")
-    return require_str(value, key="coverage.mappings.columns.target_cmd")
-
-
-def get_coverage_mapping_relationship_col(cfg: dict[str, Any] | None = None) -> str:
-    cols_cfg = get_coverage_mapping_columns_config(cfg)
-    value = cols_cfg.get("relationship", "Relationship")
-    return require_str(value, key="coverage.mappings.columns.relationship")
-
-
-def get_coverage_mapping_adjustment_col(cfg: dict[str, Any] | None = None) -> str:
-    cols_cfg = get_coverage_mapping_columns_config(cfg)
-    value = cols_cfg.get("adjustment", "adjustment")
-    return require_str(value, key="coverage.mappings.columns.adjustment")
-
-
-def get_coverage_mapping_group_id_col(cfg: dict[str, Any] | None = None) -> str:
-    cols_cfg = get_coverage_mapping_columns_config(cfg)
-    value = cols_cfg.get("group_id", "group.id")
-    return require_str(value, key="coverage.mappings.columns.group_id")
-
-
-def get_coverage_mapping_columns(cfg: dict[str, Any] | None = None) -> dict[str, str]:
-    return {
-        "source_cmd": get_coverage_mapping_source_cmd_col(cfg),
-        "target_cmd": get_coverage_mapping_target_cmd_col(cfg),
-        "relationship": get_coverage_mapping_relationship_col(cfg),
-        "adjustment": get_coverage_mapping_adjustment_col(cfg),
-        "group_id": get_coverage_mapping_group_id_col(cfg),
-    }
-
-def get_coverage_categories_config(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
-    coverage_cfg = get_coverage_config(cfg)
-    value = coverage_cfg.get("categories", {})
-    return require_dict(value, key="coverage.categories")
-
-
-def get_coverage_easy_without_weights_categories(
-    cfg: dict[str, Any] | None = None,
-) -> list[str]:
-    categories_cfg = get_coverage_categories_config(cfg)
-    value = categories_cfg.get("easy_without_weights", ["already_target", "1:1", "n:1"])
-
-    if not isinstance(value, list):
-        raise TypeError("'coverage.categories.easy_without_weights' must be a list.")
-
-    return [
-        require_str(item, key="coverage.categories.easy_without_weights")
-        for item in value
-    ]
-
-
-def get_coverage_needs_weights_categories(
-    cfg: dict[str, Any] | None = None,
-) -> list[str]:
-    categories_cfg = get_coverage_categories_config(cfg)
-    value = categories_cfg.get("needs_weights", ["1:n", "n:n"])
-
-    if not isinstance(value, list):
-        raise TypeError("'coverage.categories.needs_weights' must be a list.")
-
-    return [
-        require_str(item, key="coverage.categories.needs_weights")
-        for item in value
-    ]
-
-
-def get_coverage_missing_categories(
-    cfg: dict[str, Any] | None = None,
-) -> list[str]:
-    categories_cfg = get_coverage_categories_config(cfg)
-    value = categories_cfg.get("missing", ["missing_mapping"])
-
-    if not isinstance(value, list):
-        raise TypeError("'coverage.categories.missing' must be a list.")
-
-    return [
-        require_str(item, key="coverage.categories.missing")
-        for item in value
-    ]
-
-def get_coverage_report_config(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
-    coverage_cfg = get_coverage_config(cfg)
-    value = coverage_cfg.get("report", {})
-    return require_dict(value, key="coverage.report")
-
-
-def get_coverage_report_output_kind(cfg: dict[str, Any] | None = None) -> str:
-    report_cfg = get_coverage_report_config(cfg)
-    value = report_cfg.get("output_kind", "reports")
-    return require_str(value, key="coverage.report.output_kind")
-
-
-def get_coverage_report_filename(cfg: dict[str, Any] | None = None) -> str:
-    report_cfg = get_coverage_report_config(cfg)
-    value = report_cfg.get(
-        "filename",
-        "audit_hs_sync_target_h5_mapping_coverage.csv",
-    )
-    return require_str(value, key="coverage.report.filename")
-
-
-def get_coverage_report_timestamp_bool(cfg: dict[str, Any] | None = None) -> bool:
-    report_cfg = get_coverage_report_config(cfg)
-    value = report_cfg.get("timestamp", True)
-    return require_bool(value, key="coverage.report.timestamp")
-
-
-def get_coverage_report_write_latest_bool(cfg: dict[str, Any] | None = None) -> bool:
-    report_cfg = get_coverage_report_config(cfg)
-    value = report_cfg.get("write_latest", True)
-    return require_bool(value, key="coverage.report.write_latest")
-
-def get_coverage_supported_source_hs(
-    cfg: dict[str, Any] | None = None,
-) -> list[str]:
-    coverage_cfg = get_coverage_config(cfg)
-    value = coverage_cfg.get("supported_source_hs", ["H4", "H5", "H6"])
-
-    if not isinstance(value, list):
-        raise TypeError("'coverage.supported_source_hs' must be a list.")
-
-    return [
-        require_str(item, key="coverage.supported_source_hs").strip().upper()
-        for item in value
-    ]
-
-def get_coverage_output_config(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
-    coverage_cfg = get_coverage_config(cfg)
-    value = coverage_cfg.get("output", {})
-    return require_dict(value, key="coverage.output")
-
-
-def get_coverage_output_stage(cfg: dict[str, Any] | None = None) -> str:
-    output_cfg = get_coverage_output_config(cfg)
-    value = output_cfg.get("stage", "interim")
-    return require_str(value, key="coverage.output.stage")
-
-
-def get_coverage_output_subdir(cfg: dict[str, Any] | None = None) -> str:
-    output_cfg = get_coverage_output_config(cfg)
-    value = output_cfg.get("subdir", "hs_sync/target_h5_mapping_coverage")
-    return require_str(value, key="coverage.output.subdir")
-
-
-def get_coverage_write_config(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
-    coverage_cfg = get_coverage_config(cfg)
-    value = coverage_cfg.get("write", {})
-    return require_dict(value, key="coverage.write")
-
-
-def get_coverage_write_csv_bool(cfg: dict[str, Any] | None = None) -> bool:
-    write_cfg = get_coverage_write_config(cfg)
-    value = write_cfg.get("csv", True)
-    return require_bool(value, key="coverage.write.csv")
-
-
-def get_coverage_write_parquet_bool(cfg: dict[str, Any] | None = None) -> bool:
-    write_cfg = get_coverage_write_config(cfg)
-    value = write_cfg.get("parquet", True)
-    return require_bool(value, key="coverage.write.parquet")
-
-
-def get_coverage_write_overwrite_bool(cfg: dict[str, Any] | None = None) -> bool:
-    write_cfg = get_coverage_write_config(cfg)
-    value = write_cfg.get("overwrite", True)
-    return require_bool(value, key="coverage.write.overwrite")
-
-
-def get_coverage_write_timestamp_bool(cfg: dict[str, Any] | None = None) -> bool:
-    write_cfg = get_coverage_write_config(cfg)
-    value = write_cfg.get("timestamp", False)
-    return require_bool(value, key="coverage.write.timestamp")
+    def coverage_mapping_files(self) -> dict[str, Path]:
+        return self.coverage.mappings.resolve_files()
