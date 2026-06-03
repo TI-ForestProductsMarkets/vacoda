@@ -1,4 +1,5 @@
 """
+scripts/hs_sync/audit_harvard_correlation_direction.py
 Audit directionality of Harvard/Growth Lab correlation-group CSV files.
 
 This script checks whether files such as:
