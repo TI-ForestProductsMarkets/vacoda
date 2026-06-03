@@ -24,7 +24,7 @@ logging:
 
 
 # ---------------------------------------------------------------------
-# Stage 1: raw Comtrade CSV → Harvard-compatible staged Parquet
+# Stage 1: Raw Comtrade CSV → Harvard-compatible staged Parquet
 # ---------------------------------------------------------------------
 
 harvard_staging:
@@ -85,7 +85,7 @@ harvard_staging:
 # ---------------------------------------------------------------------
 
 harvard_weights:
-  enabled: true
+  enabled: false
   overwrite: true
 
   input:
@@ -111,7 +111,7 @@ harvard_weights:
 
 
 # ---------------------------------------------------------------------
-# Stage 3: target-H5 mapping coverage diagnostics
+# Stage 3: target-HS mapping coverage diagnostics
 # ---------------------------------------------------------------------
 
 coverage:
@@ -155,17 +155,17 @@ coverage:
 
   output:
     stage: "interim"
-    subdir: "hs_sync/target_h5_mapping_coverage"
+    subdir: "hs_sync/target_{target_hs_lower}_mapping_coverage"
 
   write:
     csv: true
-    parquet: true
+    parquet: false
     overwrite: true
     timestamp: false
 
   report:
     output_kind: "reports"
-    filename: "audit_hs_sync_target_h5_mapping_coverage.csv"
+    filename: "audit_hs_sync_{target_hs_lower}_mapping_coverage.txt"
     timestamp: true
     write_latest: true
 
@@ -175,65 +175,65 @@ diagnostics:
 
 report:
   output_kind: "reports"
-  concordance_coverage_filename: "audit_hs_sync_concordance_coverage.csv"
+  concordance_coverage_filename: "audit_hs_sync_concordance_coverage.txt"
   timestamp: true
   write_latest: true
 
 products:
-  target_h5_mapping_coverage:
+  mapping_coverage:
     enabled: true
     kind: "base"
-    filename: "target_h5_mapping_coverage"
+    filename: "{target_hs_lower}_mapping_coverage"
     write: true
 
-  target_h5_mapping_summary:
+  mapping_summary:
     enabled: true
     kind: "derived"
-    depends_on: "target_h5_mapping_coverage"
-    filename: "target_h5_mapping_summary"
+    depends_on: "mapping_coverage"
+    filename: "{target_hs_lower}_mapping_summary"
     write: true
 
-  target_h5_missing_mappings:
+  missing_mappings:
     enabled: true
     kind: "derived"
-    depends_on: "target_h5_mapping_coverage"
-    filename: "target_h5_missing_mappings"
+    depends_on: "mapping_coverage"
+    filename: "{target_hs_lower}_missing_mappings"
     write: true
     options:
       top_n: 50
 
-  target_h5_needs_weights:
+  needs_weights:
     enabled: true
     kind: "derived"
-    depends_on: "target_h5_mapping_coverage"
-    filename: "target_h5_needs_weights"
+    depends_on: "mapping_coverage"
+    filename: "{target_hs_lower}_needs_weights"
     write: true
 
-  target_h5_easy_without_weights:
+  easy_without_weights:
     enabled: true
     kind: "derived"
-    depends_on: "target_h5_mapping_coverage"
-    filename: "target_h5_easy_without_weights"
+    depends_on: "mapping_coverage"
+    filename: "{target_hs_lower}_easy_without_weights"
     write: true
 
-  target_h5_mapping_interpretation_report:
+  mapping_interpretation_report:
     enabled: true
     kind: "derived"
-    depends_on: "target_h5_mapping_summary"
-    filename: "target_h5_mapping_interpretation_report"
+    depends_on: "mapping_summary"
+    filename: "mapping_interpretation_report"
     write: true
 
-  target_h5_mapping_interpretation_display_report:
+  mapping_interpretation_display_report:
     enabled: true
     kind: "derived"
-    depends_on: "target_h5_mapping_interpretation_report"
+    depends_on: "mapping_interpretation_report"
     output_kind: "reports"
-    filename: "target_h5_mapping_interpretation_display_report"
+    filename: "mapping_interpretation_display_report"
     write: true
 
-  target_h5_source_code_coverage:
+  source_code_coverage:
     enabled: true
     kind: "derived"
-    depends_on: "target_h5_mapping_coverage"
-    filename: "target_h5_source_code_coverage"
+    depends_on: "mapping_coverage"
+    filename: "{target_hs_lower}_source_code_coverage"
     write: true
