@@ -70,13 +70,13 @@ def _format_compact_number(value: float) -> str:
     return f"{value:.2f}"
 
 
-def build_target_h5_mapping_interpretation_display_report(
+def build_target_hs_mapping_interpretation_display_report(
     report: pd.DataFrame,
     *,
     output: str = "dataframe",
 ) -> pd.DataFrame | str:
     """
-    Convert the raw target-H5 interpretation report into a compact
+    Convert the raw target-HS interpretation report into a compact
     human-readable display table.
 
     This is meant for reports, slides, and quick inspection.
@@ -267,14 +267,14 @@ def _prepare_mapping_table(
     return out
 
 
-def build_target_h5_source_code_coverage(
+def build_target_hs_source_code_coverage(
     coverage: pd.DataFrame,
 ) -> pd.DataFrame:
     """
     Collapse detailed source→target mapping coverage to one row per
     source HS/code pair.
 
-    This is the decision-level table for the target-H5 audit.
+    This is the decision-level table for the target-HS audit.
 
     It avoids double-counting n_rows/value_total when one source code maps to
     multiple target codes.
@@ -452,7 +452,7 @@ def build_target_h5_source_code_coverage(
         ascending=[True, True, False],
     ).reset_index(drop=True)
 
-def build_target_h5_mapping_coverage(
+def build_target_hs_mapping_coverage(
     *,
     source_summary: pd.DataFrame,
     mappings: dict[str, pd.DataFrame],
@@ -693,11 +693,11 @@ def build_target_h5_mapping_coverage(
     return coverage[existing_cols + other_cols].reset_index(drop=True)
 
 
-def summarize_target_h5_mapping_coverage(
+def summarize_target_hs_mapping_coverage(
     coverage: pd.DataFrame,
 ) -> pd.DataFrame:
     """
-    Summarize target-H5 mapping coverage by conversion need and category.
+    Summarize target-HS mapping coverage by conversion need and category.
     """
 
     total_rows = coverage["n_rows"].sum()
@@ -736,7 +736,7 @@ def summarize_target_h5_mapping_coverage(
     return summary
 
 
-def get_target_h5_missing_mappings(
+def get_target_hs_missing_mappings(
     coverage: pd.DataFrame,
     *,
     top_n: int | None = 50,
@@ -745,7 +745,7 @@ def get_target_h5_missing_mappings(
     Return missing/unsupported source HS-code combinations by value.
 
     This is useful for answering:
-        Which codes block deterministic conversion to target H5?
+        Which codes block deterministic conversion to target HS?
     """
 
     missing = coverage[
@@ -1015,7 +1015,7 @@ def get_missing_hs_mappings(
 
     return missing
 
-def build_target_h5_mapping_interpretation_report(
+def build_target_hs_mapping_interpretation_report(
     source_code_coverage: pd.DataFrame,
 ) -> pd.DataFrame:
     """
