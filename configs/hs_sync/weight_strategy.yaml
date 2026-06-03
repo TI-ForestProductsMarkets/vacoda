@@ -1,0 +1,18 @@
+weight_strategy:
+  enabled: false
+  selected: null
+
+  strategies:
+    harvard:
+      enabled: false
+      stage: references
+      subdir: hs_sync/weights/harvard
+      file: harvard_hs_conversion_weights.parquet
+
+    empirical_trade_share:
+      enabled: false
+      description: "Future strategy based on observed later-year split shares."
+
+    manual_override:
+      enabled: false
+      description: "Future strategy for manually curated exceptional mappings."
