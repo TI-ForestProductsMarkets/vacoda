@@ -1,5 +1,6 @@
 """
-scripts/hs_sync/audit_harvard_correlation_direction.py
+scripts/hs_sync/04_audit_harvard_mapping_direction.py
+
 Audit directionality of Harvard/Growth Lab correlation-group CSV files.
 
 This script checks whether files such as:
@@ -16,29 +17,10 @@ support from the trade source summary.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pandas as pd
 
-from vacoda.config.hs_sync import (
-    get_cmd_col,
-    get_coverage_input_pattern,
-    get_coverage_input_stage,
-    get_coverage_input_subdir,
-    get_coverage_mapping_files,
-    get_coverage_mappings_stage,
-    get_coverage_mappings_subdir,
-    get_engine_name,
-    get_engine_threads,
-    get_hs_col,
-    get_progress_bool,
-    get_value_col,
-    get_year_col,
-    load_hs_sync_config,
-)
-from vacoda.config.paths import get_data_dir
+from vacoda.config.hs_sync import HsSyncConfig
 from vacoda.hs_sync.diagnostics import build_trade_source_pair_summary
-
 
 HS_TO_OFFICIAL = {
     "H0": "HS1988",
@@ -49,11 +31,6 @@ HS_TO_OFFICIAL = {
     "H5": "HS2017",
     "H6": "HS2022",
 }
-
-
-def _resolve_data_stage_dir(stage: str, subdir: str) -> Path:
-    base = get_data_dir(stage)
-    return base / subdir if subdir else base
 
 
 def _normalize_code(s: pd.Series) -> pd.Series:
@@ -68,9 +45,7 @@ def _normalize_code(s: pd.Series) -> pd.Series:
 def _parse_mapping_key(key: str) -> tuple[str, str]:
     parts = key.upper().split("_TO_")
     if len(parts) != 2:
-        raise ValueError(
-            f"Mapping key must look like H4_to_H5 or H6_to_H5. Got: {key}"
-        )
+        raise ValueError(f"Mapping key must look like H4_to_H5 or H6_to_H5. Got: {key}")
     return parts[0], parts[1]
 
 
@@ -89,28 +64,24 @@ def _actual_cardinality(df: pd.DataFrame) -> pd.DataFrame:
         .reset_index()
     )
 
-    out = (
-        df.merge(targets_per_source, on="source_cmd", how="left")
-        .merge(sources_per_target, on="target_cmd", how="left")
+    out = df.merge(targets_per_source, on="source_cmd", how="left").merge(
+        sources_per_target, on="target_cmd", how="left"
     )
 
     out["actual_mapping_category"] = "actual_n_to_n"
 
     out.loc[
-        (out["n_targets_per_source"] == 1)
-        & (out["n_sources_per_target"] == 1),
+        (out["n_targets_per_source"] == 1) & (out["n_sources_per_target"] == 1),
         "actual_mapping_category",
     ] = "actual_1_to_1"
 
     out.loc[
-        (out["n_targets_per_source"] == 1)
-        & (out["n_sources_per_target"] > 1),
+        (out["n_targets_per_source"] == 1) & (out["n_sources_per_target"] > 1),
         "actual_mapping_category",
     ] = "actual_n_to_1"
 
     out.loc[
-        (out["n_targets_per_source"] > 1)
-        & (out["n_sources_per_target"] == 1),
+        (out["n_targets_per_source"] > 1) & (out["n_sources_per_target"] == 1),
         "actual_mapping_category",
     ] = "actual_1_to_n"
 
@@ -142,17 +113,10 @@ def _support_rates(
 
 
 def main() -> None:
-    cfg = load_hs_sync_config()
+    cfg = HsSyncConfig.from_yaml()
 
-    input_dir = _resolve_data_stage_dir(
-        get_coverage_input_stage(cfg),
-        get_coverage_input_subdir(cfg),
-    )
-
-    mapping_dir = _resolve_data_stage_dir(
-        get_coverage_mappings_stage(cfg),
-        get_coverage_mappings_subdir(cfg),
-    )
+    input_dir = cfg.coverage_input_dir()
+    mapping_files = cfg.coverage_mapping_files()
 
     print("=" * 80)
     print("Building observed trade source summary")
@@ -160,15 +124,15 @@ def main() -> None:
 
     source_summary = build_trade_source_pair_summary(
         data_dir=input_dir,
-        pattern=get_coverage_input_pattern(cfg),
-        engine=get_engine_name(cfg),
-        year_col=get_year_col(cfg),
-        hs_col=get_hs_col(cfg),
-        cmd_col=get_cmd_col(cfg),
-        value_col=get_value_col(cfg),
-        min_year=2017,
-        threads=get_engine_threads(cfg),
-        show_progress=get_progress_bool(cfg),
+        pattern=cfg.coverage.input.pattern,
+        engine=cfg.engine.name,
+        year_col=cfg.columns.year,
+        hs_col=cfg.columns.hs,
+        cmd_col=cfg.columns.cmd,
+        value_col=cfg.columns.value,
+        min_year=cfg.coverage.min_year,
+        threads=cfg.engine.threads,
+        show_progress=cfg.progress.enabled,
     )
 
     source_summary = source_summary.copy()
@@ -182,14 +146,10 @@ def main() -> None:
         for hs, group in source_summary.groupby("source_hs")
     }
 
-    mapping_files = get_coverage_mapping_files(cfg)
-
     audit_rows: list[dict[str, object]] = []
 
-    for mapping_key, filename in mapping_files.items():
+    for mapping_key, path in mapping_files.items():
         configured_source_hs, configured_target_hs = _parse_mapping_key(mapping_key)
-
-        path = mapping_dir / filename
 
         raw = pd.read_csv(path, dtype=str)
 
@@ -198,21 +158,26 @@ def main() -> None:
         print(f"{mapping_key}: {path.name}")
         print("=" * 80)
         print("Columns:", list(raw.columns))
-        print("Unique adjustment values:", raw.get("adjustment", pd.Series(dtype=str)).dropna().unique()[:10])
+        print(
+            "Unique adjustment values:",
+            raw.get("adjustment", pd.Series(dtype=str)).dropna().unique()[:10],
+        )
 
-        if "code.source" not in raw.columns or "code.target" not in raw.columns:
+        cols = cfg.coverage.mappings.columns
+
+        if cols.source_cmd not in raw.columns or cols.target_cmd not in raw.columns:
             raise KeyError(
-                f"{path} must contain code.source and code.target. "
+                f"{path} must contain {cols.source_cmd!r} and {cols.target_cmd!r}. "
                 f"Available columns: {list(raw.columns)}"
             )
 
         mapping = raw.rename(
             columns={
-                "code.source": "source_cmd",
-                "code.target": "target_cmd",
-                "Relationship": "relationship_original",
-                "adjustment": "adjustment_original",
-                "group.id": "group_id",
+                cols.source_cmd: "source_cmd",
+                cols.target_cmd: "target_cmd",
+                cols.relationship: "relationship_original",
+                cols.adjustment: "adjustment_original",
+                cols.group_id: "group_id",
             }
         ).copy()
 
@@ -222,7 +187,9 @@ def main() -> None:
         mapping = _actual_cardinality(mapping)
 
         card_summary = (
-            mapping.groupby(["relationship_original", "actual_mapping_category"], dropna=False)
+            mapping.groupby(
+                ["relationship_original", "actual_mapping_category"], dropna=False
+            )
             .agg(
                 n_rows=("source_cmd", "size"),
                 n_source_codes=("source_cmd", "nunique"),
@@ -264,8 +231,12 @@ def main() -> None:
             f"  {configured_source_hs} ({HS_TO_OFFICIAL.get(configured_source_hs)}) "
             f"→ {configured_target_hs} ({HS_TO_OFFICIAL.get(configured_target_hs)})"
         )
-        print(f"  source_code_hit_rate: {configured_support['source_code_hit_rate']:.3f}")
-        print(f"  target_code_hit_rate: {configured_support['target_code_hit_rate']:.3f}")
+        print(
+            f"  source_code_hit_rate: {configured_support['source_code_hit_rate']:.3f}"
+        )
+        print(
+            f"  target_code_hit_rate: {configured_support['target_code_hit_rate']:.3f}"
+        )
         print(f"  mean_hit_rate:        {configured_support['mean_hit_rate']:.3f}")
 
         print()
@@ -285,7 +256,7 @@ def main() -> None:
         audit_rows.append(
             {
                 "mapping_key": mapping_key,
-                "filename": filename,
+                "filename": path.name,
                 "configured_source_hs": configured_source_hs,
                 "configured_target_hs": configured_target_hs,
                 "configured_mean_hit_rate": configured_support["mean_hit_rate"],
