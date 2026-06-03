@@ -1,5 +1,5 @@
 """
-scripts/hs_sync/inspect_hscodes_requiring_weight.py
+scripts/hs_sync/06_inspect_hscodes_requiring_weights.py
 
 Inspect source HS-code pairs that require weights for conversion.
 
@@ -270,12 +270,12 @@ def main() -> None:
     )
 
     outputs = write_text_report(
-        "\n".join(report_lines),
-        report_dir=get_reports_dir(),
-        filename=args.report_name,
-        timestamp=True,
-        write_latest=True,
-    )
+                            "\n".join(report_lines),
+                            report_dir=get_reports_dir(),
+                            filename=args.report_name,
+                            timestamp=True,
+                            write_latest=True,
+                            )
 
     emit()
     emit("Report written:")

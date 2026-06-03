@@ -1,8 +1,8 @@
 """
-Audit Harvard/Growth Lab generator input compatibility.
+scripts/hs_sync/03_audit_harvard_generator_inputs.py
 
-This script checks whether vacoda's Harvard-compatible export is likely
-readable by the Harvard conversion-weight generator.
+Check whether the staged/exported files are readable by the Harvard generator.
+Checks raw_parquet, aggregated files, product codes, matrix completeness, and Harvard dimension tests.
 
 It audits:
 - raw_parquet marker files
