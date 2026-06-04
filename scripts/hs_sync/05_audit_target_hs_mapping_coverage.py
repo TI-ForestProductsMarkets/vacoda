@@ -37,7 +37,7 @@ def main() -> None:
 
     log_path = resolve_log_path(
         cfg.logging.file,
-        timestamp=run_id if cfg.logging.timestamp else None,
+        timestamp=cfg.logging.timestamp,
     )
 
     setup_logging(level=log_level, log_file=log_path)

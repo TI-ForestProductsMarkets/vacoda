@@ -159,7 +159,7 @@ def get_slurm_reports_dir(cfg: dict[str, Any] | None = None) -> Path:
 def resolve_log_path(
     log_file_name: str | Path | None,
     *,
-    timestamp: bool = True,
+    timestamp: bool | str | None = True,
 ) -> Path | None:
     """
     Resolve a log filename against the configured output/logs directory.
@@ -179,6 +179,10 @@ def resolve_log_path(
     log_path = get_output_dir("logs") / Path(log_file_name)
 
     if timestamp:
-        log_path = make_timestamped_log_path(log_path)
+        # Accept bool (legacy) and explicit timestamp strings.
+        if isinstance(timestamp, str):
+            log_path = make_timestamped_log_path(log_path, timestamp=timestamp)
+        else:
+            log_path = make_timestamped_log_path(log_path)
 
     return log_path

@@ -37,7 +37,7 @@ harvard_staging:
   input:
     stage: "raw"
     subdir: "api/bulk"
-    pattern: "Comtrade_bulk_HS_201[67]_all_reporters_*.gz"
+    pattern: "Comtrade_bulk_HS_*_all_reporters_*.gz"
 
   output:
     stage: "external"
@@ -46,8 +46,13 @@ harvard_staging:
   filters:
     valid_cmd_regex: "^[0-9]{6}$"
     hs_years:
-      H4: [2016]
-      H5: [2017]
+      H0: [1995]
+      H1: [1996, 2001]
+      H2: [2002, 2006]
+      H3: [2007, 2011]
+      H4: [2012, 2016]
+      H5: [2017, 2021]
+      H6: [2022]
 
   columns:
     year: "refYear"
