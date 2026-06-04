@@ -40,6 +40,20 @@ def load_hs_sync_config(config_path: Path | None = None) -> dict[str, Any]:
     """Load configs/hs_sync.yaml as a raw dictionary."""
     return load_yaml_config(config_path or HS_SYNC_CONFIG_PATH)
 
+_OUTPUT_KIND_ALIASES = {
+    "report": "reports",
+    "reports": "reports",
+    "manifest": "manifests",
+    "manifests": "manifests",
+    "figure": "figures",
+    "figures": "figures",
+    "log": "logs",
+    "logs": "logs",
+}
+
+
+def _normalize_output_kind(kind: str) -> str:
+    return _OUTPUT_KIND_ALIASES.get(kind.strip().lower(), kind.strip().lower())
 
 def _block(
     cfg: dict[str, Any],
@@ -172,11 +186,13 @@ class StagePathConfig:
 
 
 @dataclass(frozen=True)
-class ReportConfig:
-    output_kind: str = "reports"
+class ArtifactConfig:
+    kind: str
+    subdir: str = ""
     filename: str | None = None
     timestamp: bool = True
     write_latest: bool = True
+    options: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(
@@ -184,13 +200,21 @@ class ReportConfig:
         cfg: dict[str, Any],
         *,
         key: str,
+        default_kind: str = "report",
         default_filename: str | None = None,
         context: TemplateContext | None = None,
-    ) -> "ReportConfig":
-        output_kind = require_str(
-            cfg.get("output_kind", "reports"),
-            key=f"{key}.output_kind",
+    ) -> "ArtifactConfig":
+        kind = require_str(
+            cfg.get("kind", default_kind),
+            key=f"{key}.kind",
         ).strip().lower()
+        kind = _normalize_output_kind(kind)
+
+        subdir = require_str(
+            cfg.get("subdir", ""),
+            key=f"{key}.subdir",
+            allow_empty=True,
+        )
 
         filename = cfg.get("filename", default_filename)
         if filename is not None:
@@ -198,8 +222,12 @@ class ReportConfig:
             if context is not None:
                 filename = context.render(filename)
 
+        if context is not None:
+            subdir = context.render(subdir)
+
         return cls(
-            output_kind=output_kind,
+            kind=kind,
+            subdir=subdir,
             filename=filename,
             timestamp=require_bool(
                 cfg.get("timestamp", True),
@@ -209,10 +237,15 @@ class ReportConfig:
                 cfg.get("write_latest", True),
                 key=f"{key}.write_latest",
             ),
+            options=require_dict(
+                cfg.get("options", {}),
+                key=f"{key}.options",
+            ),
         )
 
     def resolve_output_dir(self) -> Path:
-        return get_output_dir(self.output_kind)
+        base = get_output_dir(_normalize_output_kind(self.kind))
+        return base / self.subdir if self.subdir else base
 
 
 @dataclass(frozen=True)
@@ -558,46 +591,53 @@ class HarvardStagingDiagnosticsConfig:
 
 
 @dataclass(frozen=True)
-class HarvardStagingReportConfig:
-    output_kind: str
+class HarvardStagingArtifactConfig:
+    kind: str
+    subdir: str
     inventory_filename: str
     preservation_filename: str
     timestamp: bool
     write_latest: bool
 
     @classmethod
-    def from_dict(cls, cfg: dict[str, Any]) -> "HarvardStagingReportConfig":
+    def from_dict(cls, cfg: dict[str, Any]) -> "HarvardStagingArtifactConfig":
         return cls(
-            output_kind=require_str(
-                cfg.get("output_kind", "reports"),
-                key="harvard_staging.report.output_kind",
+            kind=require_str(
+                cfg.get("kind", "manifest"),
+                key="harvard_staging.artifact.kind",
             ).strip().lower(),
+            subdir=require_str(
+                cfg.get("subdir", ""),
+                key="harvard_staging.artifact.subdir",
+                allow_empty=True,
+            ),
             inventory_filename=require_str(
                 cfg.get(
                     "inventory_filename",
                     "audit_hs_sync_harvard_staging_inventory.csv",
                 ),
-                key="harvard_staging.report.inventory_filename",
+                key="harvard_staging.artifact.inventory_filename",
             ),
             preservation_filename=require_str(
                 cfg.get(
                     "preservation_filename",
                     "audit_hs_sync_harvard_staging_preservation.csv",
                 ),
-                key="harvard_staging.report.preservation_filename",
+                key="harvard_staging.artifact.preservation_filename",
             ),
             timestamp=require_bool(
                 cfg.get("timestamp", True),
-                key="harvard_staging.report.timestamp",
+                key="harvard_staging.artifact.timestamp",
             ),
             write_latest=require_bool(
                 cfg.get("write_latest", True),
-                key="harvard_staging.report.write_latest",
+                key="harvard_staging.artifact.write_latest",
             ),
         )
 
     def resolve_output_dir(self) -> Path:
-        return get_output_dir(self.output_kind)
+        base = get_output_dir(_normalize_output_kind(self.kind))
+        return base / self.subdir if self.subdir else base
 
 
 @dataclass(frozen=True)
@@ -610,7 +650,7 @@ class HarvardStagingConfig:
     overwrite: bool
     country_reference: HarvardStagingCountryReferenceConfig
     diagnostics: HarvardStagingDiagnosticsConfig
-    report: HarvardStagingReportConfig
+    artifact: HarvardStagingArtifactConfig
 
     @classmethod
     def from_dict(cls, cfg: dict[str, Any]) -> "HarvardStagingConfig":
@@ -651,8 +691,8 @@ class HarvardStagingConfig:
                     key="harvard_staging.diagnostics",
                 )
             ),
-            report=HarvardStagingReportConfig.from_dict(
-                require_dict(cfg.get("report", {}), key="harvard_staging.report")
+            artifact=HarvardStagingArtifactConfig.from_dict(
+                require_dict(cfg.get("artifact", {}), key="harvard_staging.artifact")
             ),
         )
 
@@ -771,106 +811,6 @@ class CoverageCategoriesConfig:
 
 
 @dataclass(frozen=True)
-class CoverageConfig:
-    enabled: bool
-    target_hs: str
-    min_year: int
-    max_year: int
-    input: StagePathConfig
-    mappings: CoverageMappingsConfig
-    categories: CoverageCategoriesConfig
-    output: StagePathConfig
-    write: WriteConfig
-    report: ReportConfig
-
-    @classmethod
-    def from_dict(
-        cls,
-        cfg: dict[str, Any],
-        *,
-        scope: ScopeConfig,
-    ) -> "CoverageConfig":
-        target_hs = require_str(
-            cfg.get("target_hs", scope.target_hs),
-            key="coverage.target_hs",
-        ).strip().upper()
-
-        context = TemplateContext(target_hs=target_hs)
-
-        return cls(
-            enabled=require_bool(
-                cfg.get("enabled", False),
-                key="coverage.enabled",
-            ),
-            target_hs=target_hs,
-            min_year=require_int(
-                cfg.get("min_year", scope.min_year),
-                key="coverage.min_year",
-                min_value=0,
-            ),
-            max_year=require_int(
-                cfg.get("max_year", scope.max_year),
-                key="coverage.max_year",
-                min_value=0,
-            ),
-            input=StagePathConfig.from_dict(
-                require_dict(cfg.get("input", {}), key="coverage.input"),
-                key="coverage.input",
-                default_stage="raw",
-                context=context,
-            ),
-            mappings=CoverageMappingsConfig.from_dict(
-                require_dict(cfg.get("mappings", {}), key="coverage.mappings")
-            ),
-            categories=CoverageCategoriesConfig.from_dict(
-                require_dict(cfg.get("categories", {}), key="coverage.categories")
-            ),
-            output=StagePathConfig.from_dict(
-                require_dict(cfg.get("output", {}), key="coverage.output"),
-                key="coverage.output",
-                default_stage="interim",
-                context=context,
-            ),
-            write=WriteConfig.from_dict(
-                require_dict(cfg.get("write", {}), key="coverage.write"),
-                key="coverage.write",
-            ),
-            report=ReportConfig.from_dict(
-                require_dict(cfg.get("report", {}), key="coverage.report"),
-                key="coverage.report",
-                default_filename="audit_hs_sync_mapping_coverage.txt",
-                context=context,
-            ),
-        )
-
-
-# ---------------------------------------------------------------------
-# Diagnostics, products, future placeholders
-# ---------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class DiagnosticsConfig:
-    weight_sum_tolerance: float
-    missing_mapping_top_n: int
-
-    @classmethod
-    def from_dict(cls, cfg: dict[str, Any]) -> "DiagnosticsConfig":
-        return cls(
-            weight_sum_tolerance=require_float(
-                cfg.get("weight_sum_tolerance", 0.001),
-                key="diagnostics.weight_sum_tolerance",
-                min_value=0.0,
-            ),
-            missing_mapping_top_n=require_int(
-                cfg.get("missing_mapping_top_n", 50),
-                key="diagnostics.missing_mapping_top_n",
-                min_value=1,
-            ),
-        )
-
-
-@dataclass(frozen=True)
 class ProductConfig:
     name: str
     enabled: bool
@@ -927,6 +867,85 @@ class ProductConfig:
         if self.output_kind is None:
             return default_dir
         return get_output_dir(self.output_kind.strip().lower())
+
+@dataclass(frozen=True)
+class CoverageConfig:
+    enabled: bool
+    target_hs: str
+    min_year: int
+    max_year: int
+    input: StagePathConfig
+    mappings: CoverageMappingsConfig
+    categories: CoverageCategoriesConfig
+    output: StagePathConfig
+    write: WriteConfig
+    artifact: ArtifactConfig
+    products: dict[str, ProductConfig]
+
+    @classmethod
+    def from_dict(
+        cls,
+        cfg: dict[str, Any],
+        *,
+        scope: ScopeConfig,
+    ) -> "CoverageConfig":
+        target_hs = require_str(
+            cfg.get("target_hs", scope.target_hs),
+            key="coverage.target_hs",
+        ).strip().upper()
+
+        context = TemplateContext(target_hs=target_hs)
+
+        return cls(
+            enabled=require_bool(
+                cfg.get("enabled", False),
+                key="coverage.enabled",
+            ),
+            target_hs=target_hs,
+            min_year=require_int(
+                cfg.get("min_year", scope.min_year),
+                key="coverage.min_year",
+                min_value=0,
+            ),
+            max_year=require_int(
+                cfg.get("max_year", scope.max_year),
+                key="coverage.max_year",
+                min_value=0,
+            ),
+            input=StagePathConfig.from_dict(
+                require_dict(cfg.get("input", {}), key="coverage.input"),
+                key="coverage.input",
+                default_stage="raw",
+                context=context,
+            ),
+            mappings=CoverageMappingsConfig.from_dict(
+                require_dict(cfg.get("mappings", {}), key="coverage.mappings")
+            ),
+            categories=CoverageCategoriesConfig.from_dict(
+                require_dict(cfg.get("categories", {}), key="coverage.categories")
+            ),
+            output=StagePathConfig.from_dict(
+                require_dict(cfg.get("output", {}), key="coverage.output"),
+                key="coverage.output",
+                default_stage="interim",
+                context=context,
+            ),
+            write=WriteConfig.from_dict(
+                require_dict(cfg.get("write", {}), key="coverage.write"),
+                key="coverage.write",
+            ),
+            artifact=ArtifactConfig.from_dict(
+                require_dict(cfg.get("artifact", {}), key="coverage.artifact"),
+                key="coverage.artifact",
+                default_kind="report",
+                default_filename="{target_hs_lower}_mapping_coverage_report",
+                context=context,
+            ),
+            products={
+                name: ProductConfig.from_dict(name, cfg, context=context)
+                for name, cfg in require_dict(cfg.get("products", {}), key="coverage.products").items()
+            }
+        )
 
 
 @dataclass(frozen=True)
@@ -1014,41 +1033,7 @@ class HarvardWeightsOutputConfig:
 
 @dataclass(frozen=True)
 class HarvardWeightsConfig:
-    enabled: bool
-    overwrite: bool
-    input: StagePathConfig
-    static: HarvardWeightsStaticConfig
-    output: HarvardWeightsOutputConfig
-    report: ReportConfig
-
-    @classmethod
-    def from_dict(cls, cfg: dict[str, Any]) -> "HarvardWeightsConfig":
-        return cls(
-            enabled=require_bool(
-                cfg.get("enabled", False),
-                key="harvard_weights.enabled",
-            ),
-            overwrite=require_bool(
-                cfg.get("overwrite", True),
-                key="harvard_weights.overwrite",
-            ),
-            input=StagePathConfig.from_dict(
-                require_dict(cfg.get("input", {}), key="harvard_weights.input"),
-                key="harvard_weights.input",
-                default_stage="external",
-            ),
-            static=HarvardWeightsStaticConfig.from_dict(
-                require_dict(cfg.get("static", {}), key="harvard_weights.static")
-            ),
-            output=HarvardWeightsOutputConfig.from_dict(
-                require_dict(cfg.get("output", {}), key="harvard_weights.output")
-            ),
-            report=ReportConfig.from_dict(
-                require_dict(cfg.get("report", {}), key="harvard_weights.report"),
-                key="harvard_weights.report",
-                default_filename="audit_hs_sync_harvard_weights.csv",
-            ),
-        )
+    pass
 
 
 # ---------------------------------------------------------------------
@@ -1067,13 +1052,12 @@ class HsSyncConfig:
     logging: LoggingConfig
 
     harvard_staging: HarvardStagingConfig
-    harvard_weights: HarvardWeightsConfig
     coverage: CoverageConfig
 
-    diagnostics: DiagnosticsConfig
-    report: ReportConfig
-    products: dict[str, ProductConfig]
+    references: dict[str, Any]
 
+    harvard_weights: FutureBlockConfig
+    artifact: ArtifactConfig
     un_comtrade_mapping: FutureBlockConfig
     weight_strategy: FutureBlockConfig
 
@@ -1084,7 +1068,7 @@ class HsSyncConfig:
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "HsSyncConfig":
-        scope = ScopeConfig.from_dict(_block(raw, "scope"))
+        scope = ScopeConfig.from_dict(_block(global_cfg, "scope"))
         context = TemplateContext(
             target_hs=require_str(
                 _block(raw, "coverage", required=False).get(
@@ -1116,25 +1100,24 @@ class HsSyncConfig:
         return cls(
             raw=raw,
             scope=scope,
-            engine=EngineConfig.from_dict(_block(raw, "engine", required=False)),
-            progress=ProgressConfig.from_dict(
-                _block(raw, "progress", required=False)
-            ),
-            columns=ColumnsConfig.from_dict(_block(raw, "columns")),
-            logging=LoggingConfig.from_dict(_block(raw, "logging", required=False)),
+            engine=EngineConfig.from_dict(_block(global_cfg, "engine", required=False)),
+            progress=ProgressConfig.from_dict(_block(global_cfg, "progress", required=False)),
+            columns=ColumnsConfig.from_dict(_block(global_cfg, "columns")),
+            logging=LoggingConfig.from_dict(_block(global_cfg, "logging", required=False)),
             harvard_staging=HarvardStagingConfig.from_dict(
                 _block(raw, "harvard_staging")
             ),
-            harvard_weights=HarvardWeightsConfig.from_dict(
-                _block(raw, "harvard_weights")
+            harvard_weights=FutureBlockConfig.from_dict(
+                _block(raw, "harvard_weights", required=False),
+                key="harvard_weights",
             ),
             coverage=coverage,
             diagnostics=DiagnosticsConfig.from_dict(
                 _block(raw, "diagnostics", required=False)
             ),
-            report=ReportConfig.from_dict(
-                _block(raw, "report", required=False),
-                key="report",
+            artifact=ArtifactConfig.from_dict(
+                _block(raw, "artifact", required=False),
+                key="artifact",
                 default_filename="audit_hs_sync_concordance_coverage.txt",
                 context=context,
             ),
