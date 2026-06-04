@@ -1,5 +1,5 @@
 """
-scripts.hs_sync.05_audit_target_hs_mapping_coverage.py
+scripts.hs_sync.04_audit_target_hs_mapping_coverage.py
 
 Script to audit target HS mapping coverage.
 
@@ -24,7 +24,7 @@ from datetime import datetime
 
 from vacoda.config.hs_sync import HsSyncConfig
 from vacoda.config.paths import resolve_log_path
-from vacoda.hs_sync.workflow import run_target_hs_mapping_coverage_audit
+from vacoda.hs_sync.coverage_audit import run_target_hs_mapping_coverage_audit
 from vacoda.utils.logger import get_logger, parse_log_level, setup_logging
 
 

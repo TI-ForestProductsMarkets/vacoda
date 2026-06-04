@@ -54,6 +54,23 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    ## Would like to automate it with some configured product code checks, but for now hardcoding a couple checks for the wood split example:
+    product_code_checks = [
+        {
+        "label": "source HS2012 wood split example",
+        "hs": "H4",
+        "year": 2016,
+        "codes": ["440110"],
+        },
+        {
+        "label": "target HS2017 wood split example",
+        "hs": "H5",
+        "year": 2017,
+        "codes": ["440111", "440112"],
+        },
+    
+    ]
+
     run_harvard_generator_audit(
         harvard_data_root=args.harvard_data_root,
         generator_root=args.generator_root,
@@ -61,6 +78,7 @@ def main() -> None:
         source_year=args.source_year,
         target_hs=args.target_hs,
         target_year=args.target_year,
+        product_code_checks=product_code_checks,
     )
 
 if __name__ == "__main__":
