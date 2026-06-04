@@ -1,0 +1,7 @@
+code.source,841490,841990,842290,842490,846791,846799,850890
+841490,True,False,False,False,False,False,True
+841990,False,True,False,False,False,False,True
+842290,False,False,True,False,False,False,True
+842490,False,False,False,True,False,False,True
+846791,False,False,False,False,True,False,True
+846799,False,False,False,False,False,True,True

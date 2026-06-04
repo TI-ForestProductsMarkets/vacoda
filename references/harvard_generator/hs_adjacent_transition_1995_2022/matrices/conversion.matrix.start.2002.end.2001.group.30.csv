@@ -1,0 +1,17 @@
+code.source,291450,291817,291819,291890,292250,293390,293490,293710,293729,293799
+291450,True,False,False,False,False,False,False,False,False,False
+291819,False,True,True,False,False,False,False,False,False,False
+291890,False,False,False,True,False,False,False,False,False,False
+292250,False,False,False,False,True,False,False,False,False,False
+293391,False,False,False,False,False,True,False,False,False,False
+293399,False,False,False,False,False,True,False,False,False,False
+293491,False,False,False,False,False,False,True,False,False,False
+293499,False,False,False,False,False,False,True,False,False,False
+293711,False,False,False,False,False,True,True,True,False,False
+293719,False,False,False,False,False,True,True,True,False,True
+293729,True,False,False,False,False,False,False,False,True,True
+293731,False,False,False,False,False,False,False,False,False,True
+293739,False,False,False,False,True,False,False,False,False,True
+293740,False,False,False,False,False,False,False,False,False,True
+293750,False,False,True,True,False,False,True,False,False,True
+293790,False,False,False,False,False,True,True,False,False,True

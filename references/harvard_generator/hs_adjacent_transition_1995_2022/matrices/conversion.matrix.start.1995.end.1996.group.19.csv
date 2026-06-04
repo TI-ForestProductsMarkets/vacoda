@@ -1,0 +1,11 @@
+code.source,200490,200540,200551,200559,200560,200570,200580,200590,200600
+200490,True,False,False,False,False,False,False,False,True
+200530,False,False,False,False,False,False,False,True,False
+200540,False,True,False,False,False,False,False,False,True
+200551,False,False,True,False,False,False,False,False,True
+200559,False,False,False,True,False,False,False,False,True
+200560,False,False,False,False,True,False,False,False,True
+200570,False,False,False,False,False,True,False,False,True
+200580,False,False,False,False,False,False,True,False,True
+200590,False,False,False,False,False,False,False,True,True
+200600,False,False,False,False,False,False,False,False,True

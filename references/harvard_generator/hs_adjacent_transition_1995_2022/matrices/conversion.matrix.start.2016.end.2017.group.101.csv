@@ -1,0 +1,8 @@
+code.source,846520,846591,846592,846593,846594,846595,846596,846599
+846591,True,True,False,False,False,False,False,False
+846592,True,False,True,False,False,False,False,False
+846593,True,False,False,True,False,False,False,False
+846594,True,False,False,False,True,False,False,False
+846595,True,False,False,False,False,True,False,False
+846596,True,False,False,False,False,False,True,False
+846599,True,False,False,False,False,False,False,True

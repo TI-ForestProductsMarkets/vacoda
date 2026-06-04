@@ -1,0 +1,8 @@
+code.source,370220,370231,370232,370239,370241,370242,370243,370244
+370231,True,True,False,False,False,False,False,False
+370232,True,False,True,False,False,False,False,False
+370239,True,False,False,True,False,False,False,False
+370241,True,False,False,False,True,False,False,False
+370242,True,False,False,False,False,True,False,False
+370243,True,False,False,False,False,False,True,False
+370244,True,False,False,False,False,False,False,True

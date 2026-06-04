@@ -1,0 +1,7 @@
+code.source,841350,841360,841370,841381,842121,950699
+841350,True,False,False,False,False,False
+841360,False,True,False,False,False,False
+841370,False,False,True,False,False,False
+841381,False,False,False,True,False,False
+842121,False,False,False,False,True,False
+950699,True,True,True,True,True,True

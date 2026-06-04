@@ -1,0 +1,13 @@
+code.source,410120,410150,410190,410411,410419,410441,410449,410711,410712,410719,410791,410792,410799
+410110,True,False,False,False,False,False,False,False,False,False,False,False,False
+410121,True,True,False,False,False,False,False,False,False,False,False,False,False
+410122,False,False,True,False,False,False,False,False,False,False,False,False,False
+410129,False,False,True,False,False,False,False,False,False,False,False,False,False
+410130,True,True,True,False,False,False,False,False,False,False,False,False,False
+410140,True,True,True,False,False,False,False,False,False,False,False,False,False
+410410,True,False,False,True,True,True,True,True,True,True,False,False,False
+410421,True,True,True,True,True,False,False,False,False,False,False,False,False
+410422,True,True,True,True,True,False,False,False,False,False,False,False,False
+410429,True,True,True,True,True,False,False,False,False,False,False,False,False
+410431,False,False,False,False,False,True,False,True,True,False,True,True,False
+410439,False,False,False,False,False,False,True,False,False,True,False,False,True

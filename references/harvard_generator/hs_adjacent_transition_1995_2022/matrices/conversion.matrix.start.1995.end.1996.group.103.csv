@@ -1,0 +1,7 @@
+code.source,843049,846789,847910,847950,847960,847981,847982,847989
+843049,True,True,False,False,False,False,False,False
+846789,False,True,False,False,False,False,False,False
+847910,False,True,True,False,False,False,False,False
+847981,False,False,False,True,False,True,False,False
+847982,False,False,False,True,False,False,True,False
+847989,False,True,False,True,True,False,False,True

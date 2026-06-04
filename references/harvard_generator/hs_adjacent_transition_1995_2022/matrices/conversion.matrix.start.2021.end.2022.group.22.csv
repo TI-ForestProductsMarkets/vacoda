@@ -1,0 +1,11 @@
+code.source,300212,300213,300214,300215,300241,300242,300249,300251,300259,300290,382211,382212,382219,382290
+300211,False,False,False,False,False,False,False,False,False,False,True,False,False,False
+300212,True,False,False,False,False,False,False,False,False,False,False,False,False,False
+300213,False,True,False,False,False,False,False,False,False,False,True,True,True,False
+300214,False,False,True,False,False,False,False,False,False,False,True,True,True,False
+300215,False,False,False,True,False,False,False,False,False,False,True,True,True,False
+300219,True,True,True,True,True,True,True,True,True,True,False,False,False,False
+300220,False,False,False,False,True,False,False,False,False,False,False,False,False,False
+300230,False,False,False,False,False,True,False,False,False,False,False,False,False,False
+300290,False,False,False,False,False,False,True,True,True,True,False,False,False,False
+382200,False,False,False,False,False,False,False,False,False,False,False,True,True,True

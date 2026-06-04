@@ -1,0 +1,9 @@
+code.source,870840,870850,870880,870891,870892,870894,870895,870899
+870840,True,False,False,False,False,False,False,False
+870850,False,True,False,False,False,False,False,False
+870860,False,True,False,False,False,False,False,False
+870880,False,False,True,False,False,False,False,False
+870891,False,False,False,True,False,False,False,False
+870892,False,False,False,False,True,False,False,False
+870894,False,False,False,False,False,True,False,False
+870899,True,True,True,True,True,True,True,True
