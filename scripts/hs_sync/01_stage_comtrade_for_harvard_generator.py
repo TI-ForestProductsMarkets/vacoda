@@ -1,12 +1,13 @@
 """
 scripts.hs_sync.01_stage_comtrade_for_harvard_generator
-Read raw Comtrade CSV/parquet data and create Harvard-compatible staged parquet.
+Read raw Comtrade CSV/GZ data and create Harvard-compatible staged parquet.
 Also fixes/exports reporter/partner ISO compatibility if bulk data lacks ISO fields.
 """
 
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 from vacoda.config.hs_sync import HsSyncConfig
 from vacoda.config.paths import resolve_log_path
 from vacoda.utils.logger import (
@@ -19,31 +20,65 @@ from vacoda.utils.logger import (
 from vacoda.hs_sync.harvard_stage import (
     audit_csv_to_partitioned_parquet_staging,
     audit_harvard_staging_partitioned_output,
-    stage_comtrade_for_harvard_weights_fast,
-    export_harvard_generator_compatibility_layout
+    stage_comtrade_for_harvard_input,
+    export_harvard_generator_compatibility_layout,
 )
 from vacoda.io.reports import write_dataframe_report
 
+
+def validate_staged_harvard_partitions(
+    *,
+    partitioned_dir: Path,
+    years_by_hs: dict[str, list[int]],
+) -> None:
+    missing: list[tuple[str, int, Path]] = []
+
+    for hs, years in years_by_hs.items():
+        for year in years:
+            partition_dir = (
+                partitioned_dir
+                / f"hs_partition={hs}"
+                / f"year_partition={year}"
+            )
+
+            if not list(partition_dir.glob("*.parquet")):
+                missing.append((hs, year, partition_dir))
+
+    if missing:
+        expected = ", ".join(f"{hs}/{year}" for hs, year, _ in missing)
+        missing_dirs = "\n".join(f"  - {path}" for _, _, path in missing)
+
+        raise FileNotFoundError(
+            "Missing staged Harvard parquet partitions for configured "
+            f"HS/year pairs: {expected}.\n"
+            "Missing directories:\n"
+            f"{missing_dirs}\n"
+            "Likely cause: harvard_staging.input.pattern does not include "
+            "all years requested in harvard_staging.filters.hs_years."
+        )
+
+
 def main() -> None:
-    
-    cfg =  HsSyncConfig.from_yaml()
+    cfg = HsSyncConfig.from_yaml()
 
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     log_level = parse_log_level(cfg.logging.level)
-    log_path =  resolve_log_path(
-                        cfg.logging.file,
-                        timestamp=run_id if cfg.logging.timestamp else None,
-                        )
-    if cfg.logging.timestamp:
-        log_path = f"{log_path}_{run_id}"
+    log_path = resolve_log_path(
+        cfg.logging.file,
+        timestamp=cfg.logging.timestamp,
+    )
 
     setup_logging(level=log_level, log_file=log_path)
 
     logger = get_logger("SCRIPT.HS_SYNC_STAGE_HARVARD")
 
     input_dir = cfg.harvard_staging.input.resolve_data_dir()
-    pattern = cfg.harvard_staging.input.pattern
+    pattern = (cfg.harvard_staging.input.pattern or "").strip()
+    if not pattern:
+        raise ValueError(
+            "Missing required 'harvard_staging.input.pattern' in hs_sync.yaml."
+        )
 
     valid_cmd_regex = cfg.harvard_staging.filters.valid_cmd_regex
     years_by_hs = cfg.harvard_staging.filters.hs_years
@@ -56,15 +91,24 @@ def main() -> None:
     partner_code_col = cfg.harvard_staging.columns.partner_code
     flow_col = cfg.harvard_staging.columns.flow
     quantity_col = cfg.harvard_staging.columns.quantity
-    
+
     output_root = cfg.harvard_staging.output.resolve_data_dir()
     output_dir = output_root / "as_reported" / "raw_parquet_partitioned"
 
-    country_reference_dir = (cfg.harvard_staging.country_reference.input.resolve_data_dir())
+    country_reference_dir = (
+        cfg.harvard_staging.country_reference.input.resolve_data_dir()
+    )
+    country_reference_pattern = (
+        cfg.harvard_staging.country_reference.input.pattern or ""
+    ).strip()
+    if not country_reference_pattern:
+        raise ValueError(
+            "Missing required 'harvard_staging.country_reference.pattern' in hs_sync.yaml."
+        )
+
     country_reference_glob = str(
-                country_reference_dir
-                / cfg.harvard_staging.country_reference.input.pattern
-                )
+        country_reference_dir / country_reference_pattern
+    )
     country_reference_cols = cfg.harvard_staging.country_reference.columns
 
     logger.info("Starting Harvard staging.")
@@ -79,7 +123,8 @@ def main() -> None:
         year_col,
         hs_col,
         cmd_col,
-        value_col)
+        value_col,
+    )
     logger.info(
         "Harvard compatibility columns: reporter=%s, partner=%s, flow=%s, quantity=%s",
         reporter_code_col,
@@ -90,8 +135,8 @@ def main() -> None:
 
     logger.info("Country reference directory: %s", rel_path(country_reference_dir))
     logger.info("Country reference glob: %s", country_reference_glob)
-    
-    summary = stage_comtrade_for_harvard_weights_fast(
+
+    summary = stage_comtrade_for_harvard_input(
                     input_dir=input_dir,
                     pattern=pattern,
                     output_dir=output_dir,
@@ -123,6 +168,20 @@ def main() -> None:
                     value_rel_tolerance=cfg.harvard_staging.diagnostics.value_rel_tolerance,
                 )
     
+    ## Validate the partition
+    try:
+        validate_staged_harvard_partitions(
+            partitioned_dir=output_dir,
+            years_by_hs=years_by_hs,
+        )
+    except FileNotFoundError as e:
+        logger.error(
+            "Validation failed, please check the harvard_staging.input.pattern "
+            "and harvard_staging.filters.hs_years: %s",
+            e,
+        )
+        raise
+
     compatibility_summary = export_harvard_generator_compatibility_layout(
                 staged_partitioned_dir=output_dir,
                 output_root=output_root,
@@ -145,8 +204,7 @@ def main() -> None:
                 overwrite=cfg.harvard_staging.overwrite,
                 )
 
-
-    ## Report Writing 
+    ## Report Writing
     report_dir = cfg.harvard_staging.report.resolve_output_dir()
 
     inventory_outputs = write_dataframe_report(
@@ -171,16 +229,23 @@ def main() -> None:
     logger.info("Preservation written: %s", rel_path(preservation_outputs["report"]))
 
     if "latest" in inventory_outputs:
-        logger.info("Latest inventory copy written: %s", rel_path(inventory_outputs["latest"]))
+        logger.info(
+            "Latest inventory copy written: %s",
+            rel_path(inventory_outputs["latest"]),
+        )
 
     if "latest" in preservation_outputs:
-        logger.info("Latest preservation copy written: %s", rel_path(preservation_outputs["latest"]))
+        logger.info(
+            "Latest preservation copy written: %s",
+            rel_path(preservation_outputs["latest"]),
+        )
 
     logger.info("Compatibility export summary: %s", compatibility_summary)
 
     logger.info("Finished Harvard staging.")
     logger.info("Summary: %s", summary)
     logger.info("Log file: %s", log_path)
+
 
 if __name__ == "__main__":
     main()
