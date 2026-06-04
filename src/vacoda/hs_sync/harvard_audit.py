@@ -192,8 +192,67 @@ def audit_aggregated_files(
                 "not ISO3 strings. Harvard may filter these rows out."
             )
 
+def audit_selected_product_codes(
+    *,
+    harvard_data_root: Path,
+    checks: list[dict[str, object]],
+) -> None:
+    """
+    Audit selected product-code presence in aggregated Harvard parquet files.
 
-def audit_specific_product_codes(
+    This is an optional smoke test for known transition examples.
+    It is not a general coverage audit.
+    """
+
+    _print_header("3. Selected product-code checks")
+
+    agg_root = (
+        harvard_data_root
+        / "as_reported"
+        / "aggregated_by_year_not_converted"
+        / "parquet"
+    )
+
+    con = duckdb.connect()
+
+    for check in checks:
+        label = str(check["label"])
+        hs = str(check["hs"])
+        year = int(check["year"])
+        codes = [str(code) for code in check["codes"]]
+
+        path = agg_root / hs / f"{hs}_{year}.parquet"
+
+        print(label)
+        print(f"  file: {path}")
+        print(f"  codes: {codes}")
+
+        if not path.exists():
+            print("  missing file")
+            continue
+
+        codes_sql = ", ".join(f"'{code}'" for code in codes)
+
+        out = con.execute(
+            f"""
+            SELECT
+                cmdCode,
+                COUNT(*) AS n_rows,
+                SUM(primaryValue) AS value_total,
+                COUNT(DISTINCT reporterISO3) AS n_reporters
+            FROM read_parquet('{path}')
+            WHERE CAST(cmdCode AS VARCHAR) IN ({codes_sql})
+            GROUP BY cmdCode
+            ORDER BY cmdCode
+            """
+        ).df()
+
+        if out.empty:
+            print("  WARNING: no rows found for these product codes")
+        else:
+            print(out.to_string(index=False))
+
+def audit_specific_product_codes_deprecated(
     *,
     harvard_data_root: Path,
     target_hs: str,
@@ -313,8 +372,10 @@ def run_harvard_generator_audit(
     source_year: int,
     target_hs: str,
     target_year: int,
+    product_code_checks: list[dict[str, object]] | None = None,
 ) -> None:
     """Run all Harvard generator input audits in a standard order."""
+
     audit_raw_marker_files(
         harvard_data_root=harvard_data_root,
         source_hs=source_hs,
@@ -331,13 +392,11 @@ def run_harvard_generator_audit(
         target_year=target_year,
     )
 
-    audit_specific_product_codes(
-        harvard_data_root=harvard_data_root,
-        source_hs=source_hs,
-        source_year=source_year,
-        target_hs=target_hs,
-        target_year=target_year,
-    )
+    if product_code_checks:
+        audit_selected_product_codes(
+            harvard_data_root=harvard_data_root,
+            checks=product_code_checks,
+        )
 
     audit_matrix_files(
         generator_root=generator_root,

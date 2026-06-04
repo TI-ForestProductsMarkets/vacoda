@@ -1,5 +1,5 @@
 """
-scripts/hs_sync/06_inspect_hscodes_requiring_weights.py
+scripts/hs_sync/05_inspect_hscodes_requiring_weights.py
 
 Inspect source HS-code pairs that require weights for conversion.
 

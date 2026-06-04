@@ -1,26 +1,15 @@
-"""
-scripts/hs_sync/04_audit_harvard_mapping_direction.py
 
-Audit directionality of Harvard/Growth Lab correlation-group CSV files.
-
-This script checks whether files such as:
-
-    from_HS2022_to_HS2017.csv
-
-are being interpreted correctly as:
-
-    source_hs/source_cmd -> target_hs/target_cmd
-
-It does not use weights. It only audits mapping structure and empirical
-support from the trade source summary.
-"""
+"""Mapping direction diagnostics for Harvard correlation-group files."""
 
 from __future__ import annotations
+
+from pathlib import Path
 
 import pandas as pd
 
 from vacoda.config.hs_sync import HsSyncConfig
 from vacoda.hs_sync.diagnostics import build_trade_source_pair_summary
+from vacoda.io.reports import TextReport, write_text_report
 
 HS_TO_OFFICIAL = {
     "H0": "HS1988",
@@ -31,7 +20,6 @@ HS_TO_OFFICIAL = {
     "H5": "HS2017",
     "H6": "HS2022",
 }
-
 
 def _normalize_code(s: pd.Series) -> pd.Series:
     out = s.astype("string").str.strip()
@@ -112,15 +100,20 @@ def _support_rates(
     }
 
 
-def main() -> None:
-    cfg = HsSyncConfig.from_yaml()
-
+def run_harvard_mapping_direction_audit(
+    *,
+    cfg: HsSyncConfig,
+    report_name: str = "inspect_hscodes_requiring_weights.md",
+    report_dir: Path | None = None,
+    logger=None,
+) -> pd.DataFrame:
+    """Audit whether mapping files are interpreted in the correct direction."""
+    report = TextReport()
+  
     input_dir = cfg.coverage_input_dir()
     mapping_files = cfg.coverage_mapping_files()
 
-    print("=" * 80)
-    print("Building observed trade source summary")
-    print("=" * 80)
+    report.section("Building observed trade source summary")
 
     source_summary = build_trade_source_pair_summary(
         data_dir=input_dir,
@@ -153,15 +146,18 @@ def main() -> None:
 
         raw = pd.read_csv(path, dtype=str)
 
-        print()
-        print("=" * 80)
-        print(f"{mapping_key}: {path.name}")
-        print("=" * 80)
-        print("Columns:", list(raw.columns))
-        print(
-            "Unique adjustment values:",
-            raw.get("adjustment", pd.Series(dtype=str)).dropna().unique()[:10],
+        report.section(f"{mapping_key}: {path.name}")
+
+        columns_text = f"Columns: {list(raw.columns)}"
+        adjustments_text = (
+            "Unique adjustment values: "
+            f"{raw.get('adjustment', pd.Series(dtype=str)).dropna().unique()[:10]}"
         )
+        if logger is not None:
+            logger.info(columns_text)
+            logger.info(adjustments_text)
+        report.line(columns_text)
+        report.line(adjustments_text)
 
         cols = cfg.coverage.mappings.columns
 
@@ -188,7 +184,8 @@ def main() -> None:
 
         card_summary = (
             mapping.groupby(
-                ["relationship_original", "actual_mapping_category"], dropna=False
+                ["relationship_original", "actual_mapping_category"],
+                dropna=False,
             )
             .agg(
                 n_rows=("source_cmd", "size"),
@@ -199,9 +196,13 @@ def main() -> None:
             .sort_values(["relationship_original", "actual_mapping_category"])
         )
 
-        print()
-        print("Relationship label vs actual source→target cardinality:")
-        print(card_summary.to_string(index=False))
+        card_header = "Relationship label vs actual source→target cardinality:"
+        card_table = card_summary.to_string(index=False)
+        if logger is not None:
+            logger.info(card_header)
+            logger.info("\n%s", card_table)
+        report.line(card_header)
+        report.dataframe(card_summary)
 
         observed_source_codes = observed_by_hs.get(configured_source_hs, set())
         observed_target_codes = observed_by_hs.get(configured_target_hs, set())
@@ -225,33 +226,39 @@ def main() -> None:
             observed_target_codes=observed_target_codes,
         )
 
-        print()
-        print("Configured direction support:")
-        print(
-            f"  {configured_source_hs} ({HS_TO_OFFICIAL.get(configured_source_hs)}) "
-            f"→ {configured_target_hs} ({HS_TO_OFFICIAL.get(configured_target_hs)})"
-        )
-        print(
-            f"  source_code_hit_rate: {configured_support['source_code_hit_rate']:.3f}"
-        )
-        print(
-            f"  target_code_hit_rate: {configured_support['target_code_hit_rate']:.3f}"
-        )
-        print(f"  mean_hit_rate:        {configured_support['mean_hit_rate']:.3f}")
+        configured_lines = [
+            "Configured direction support:",
+            (
+                f"  {configured_source_hs} ({HS_TO_OFFICIAL.get(configured_source_hs)}) "
+                f"→ {configured_target_hs} ({HS_TO_OFFICIAL.get(configured_target_hs)})"
+            ),
+            f"  source_code_hit_rate: {configured_support['source_code_hit_rate']:.3f}",
+            f"  target_code_hit_rate: {configured_support['target_code_hit_rate']:.3f}",
+            f"  mean_hit_rate:        {configured_support['mean_hit_rate']:.3f}",
+        ]
 
-        print()
-        print("Reversed interpretation support:")
-        print(f"  source_code_hit_rate: {reversed_support['source_code_hit_rate']:.3f}")
-        print(f"  target_code_hit_rate: {reversed_support['target_code_hit_rate']:.3f}")
-        print(f"  mean_hit_rate:        {reversed_support['mean_hit_rate']:.3f}")
+        reversed_lines = [
+            "Reversed interpretation support:",
+            f"  source_code_hit_rate: {reversed_support['source_code_hit_rate']:.3f}",
+            f"  target_code_hit_rate: {reversed_support['target_code_hit_rate']:.3f}",
+            f"  mean_hit_rate:        {reversed_support['mean_hit_rate']:.3f}",
+        ]
+
+        if logger is not None:
+            for line in configured_lines + reversed_lines:
+                logger.info(line)
+        for line in configured_lines + reversed_lines:
+            report.line(line)
 
         if configured_support["mean_hit_rate"] >= reversed_support["mean_hit_rate"]:
             conclusion = "configured_direction_supported"
         else:
             conclusion = "reversed_direction_has_higher_support"
 
-        print()
-        print("Conclusion:", conclusion)
+        conclusion_line = f"Conclusion: {conclusion}"
+        if logger is not None:
+            logger.info(conclusion_line)
+        report.line(conclusion_line)
 
         audit_rows.append(
             {
@@ -266,13 +273,17 @@ def main() -> None:
         )
 
     audit = pd.DataFrame(audit_rows)
+    audit_table = audit.to_string(index=False)
 
-    print()
-    print("=" * 80)
-    print("Overall direction audit")
-    print("=" * 80)
-    print(audit.to_string(index=False))
+    report.section("Overall direction audit")
+    if logger is not None:
+        logger.info("\n%s", audit_table)
+    report.dataframe(audit)
 
+    write_text_report(
+        report.render(),
+        report_dir=report_dir,
+        filename=report_name,
+    )
 
-if __name__ == "__main__":
-    main()
+    return audit

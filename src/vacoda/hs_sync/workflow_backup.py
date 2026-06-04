@@ -1,5 +1,14 @@
 
-
+## Steps to add:
+```
+load data
+load mapping artifacts
+audit coverage
+apply deterministic mappings
+apply weights where needed
+validate output
+write normalized dataset
+````
 
 WORKFLOW_STEPS = {
     1: "Load HS-sync config and resolve paths",

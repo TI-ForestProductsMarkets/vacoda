@@ -7,7 +7,34 @@ from pathlib import Path
 
 import pandas as pd
 
+class TextReport:
+    """Small helper for building plain-text or markdown-style reports."""
 
+    def __init__(self) -> None:
+        self.lines: list[str] = []
+
+    def line(self, text: str = "") -> None:
+        self.lines.append(text)
+
+    def section(self, title: str, *, char: str = "=") -> None:
+        bar = char * 80
+        self.line()
+        self.line(bar)
+        self.line(title)
+        self.line(bar)
+
+    def subsection(self, title: str, *, char: str = "-") -> None:
+        bar = char * 80
+        self.line()
+        self.line(title)
+        self.line(bar)
+
+    def dataframe(self, df: pd.DataFrame, *, index: bool = False) -> None:
+        self.line(df.to_string(index=index))
+
+    def render(self) -> str:
+        return "\n".join(self.lines)
+        
 def _timestamp() -> str:
     return datetime.now().strftime("%Y%m%d_%H%M%S")
 
