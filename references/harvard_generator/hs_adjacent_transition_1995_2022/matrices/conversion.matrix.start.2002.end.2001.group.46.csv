@@ -1,0 +1,14 @@
+code.source,440810,440831,440839,440890,441213,441214,441219,441222,441223,441229,441292,441293,441299
+440810,True,False,False,False,True,True,True,True,False,True,True,False,True
+440831,False,True,False,False,True,False,False,True,False,False,True,False,False
+440839,False,False,True,True,True,False,False,True,False,False,True,False,False
+440890,False,False,False,True,True,True,True,True,True,True,True,True,True
+441213,False,False,False,False,True,True,True,False,False,False,False,False,False
+441214,False,False,False,False,False,True,False,False,False,False,False,False,False
+441219,False,False,False,False,False,False,True,False,False,False,False,False,False
+441222,False,False,False,False,False,False,False,True,True,True,False,False,False
+441223,False,False,False,False,False,False,False,False,True,False,False,False,False
+441229,False,False,False,False,False,False,False,False,False,True,False,False,False
+441292,False,False,False,False,False,False,False,False,False,False,True,True,True
+441293,False,False,False,False,False,False,False,False,False,False,False,True,False
+441299,False,False,False,False,False,False,False,False,False,False,False,False,True

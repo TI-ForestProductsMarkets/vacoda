@@ -1,0 +1,16 @@
+code.source,030541,030542,030549,030551,030559,030561,030562,030563,030569
+030541,True,False,False,False,False,False,False,False,False
+030542,False,True,False,False,False,False,False,False,False
+030543,False,False,True,False,False,False,False,False,False
+030544,False,False,True,False,False,False,False,False,False
+030549,False,False,True,False,False,False,False,False,False
+030551,False,False,False,True,False,False,False,False,False
+030559,False,False,False,False,True,False,False,False,False
+030561,False,False,False,False,False,True,False,False,False
+030562,False,False,False,False,False,False,True,False,False
+030563,False,False,False,False,False,False,False,True,False
+030564,False,False,False,False,False,False,False,False,True
+030569,False,False,False,False,False,False,False,False,True
+030571,False,False,True,False,True,False,False,False,True
+030572,True,True,True,True,True,True,True,True,True
+030579,True,True,True,True,True,True,True,True,True

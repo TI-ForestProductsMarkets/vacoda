@@ -1,0 +1,14 @@
+code.source,870321,870322,870323,870324,870331,870332,870333,870390
+870321,True,False,False,False,False,False,False,False
+870322,False,True,False,False,False,False,False,False
+870323,False,False,True,False,False,False,False,False
+870324,False,False,False,True,False,False,False,False
+870331,False,False,False,False,True,False,False,False
+870332,False,False,False,False,False,True,False,False
+870333,False,False,False,False,False,False,True,False
+870340,True,True,True,True,False,False,False,True
+870350,False,False,False,False,True,True,True,True
+870360,True,True,True,True,False,False,False,True
+870370,False,False,False,False,True,True,True,True
+870380,False,False,False,False,False,False,False,True
+870390,False,False,False,False,False,False,False,True

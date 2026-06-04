@@ -1,0 +1,8 @@
+code.source,851711,851719,852110,852190,852530,852540,852812,852813,852821,852822,852830,900659
+851710,True,True,False,False,False,False,False,False,False,False,False,False
+852110,False,False,True,False,False,True,False,False,False,False,False,False
+852190,False,False,False,True,False,True,False,False,False,False,False,False
+852530,False,True,False,False,True,True,False,False,False,False,False,False
+852810,False,True,False,False,False,False,True,False,True,False,True,False
+852820,False,True,False,False,False,False,False,True,False,True,True,False
+900659,False,False,False,False,False,True,False,False,False,False,False,True

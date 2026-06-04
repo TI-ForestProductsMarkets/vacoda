@@ -1,0 +1,6 @@
+code.source,847130,847141,847149,847150
+847110,True,True,True,True
+847130,True,False,False,False
+847141,False,True,False,False
+847149,False,False,True,False
+847150,False,False,False,True

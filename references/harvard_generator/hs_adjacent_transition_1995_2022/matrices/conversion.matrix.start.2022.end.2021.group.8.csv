@@ -1,0 +1,15 @@
+code.source,300211,300212,300213,300214,300215,300219,300220,300230,300290,382200
+300212,False,True,False,False,False,True,False,False,False,False
+300213,False,False,True,False,False,True,False,False,False,False
+300214,False,False,False,True,False,True,False,False,False,False
+300215,False,False,False,False,True,True,False,False,False,False
+300241,False,False,False,False,False,True,True,False,False,False
+300242,False,False,False,False,False,True,False,True,False,False
+300249,False,False,False,False,False,True,False,False,True,False
+300251,False,False,False,False,False,True,False,False,True,False
+300259,False,False,False,False,False,True,False,False,True,False
+300290,False,False,False,False,False,True,False,False,True,False
+382211,True,False,True,True,True,False,False,False,False,False
+382212,False,False,True,True,True,False,False,False,False,True
+382219,False,False,True,True,True,False,False,False,False,True
+382290,False,False,False,False,False,False,False,False,False,True
