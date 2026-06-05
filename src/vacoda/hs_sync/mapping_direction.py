@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from vacoda.config.paths import get_data_dir, get_repo_references_dir
 from vacoda.config.hs_sync import HsSyncConfig
 from vacoda.hs_sync.diagnostics import build_trade_source_pair_summary
 from vacoda.io.reports import TextReport, write_text_report
@@ -100,18 +101,52 @@ def _support_rates(
     }
 
 
+def _resolve_mapping_files(
+    *,
+    cfg: HsSyncConfig,
+) -> dict[str, Path]:
+    mappings_cfg = cfg.coverage.mappings
+
+    if mappings_cfg.stage.strip().lower() != "references":
+        return mappings_cfg.resolve_files()
+
+    if cfg.harvard_mapping_direction.mappings.references_root == "repo":
+        root = get_repo_references_dir()
+    else:
+        root = get_data_dir("references")
+
+    mapping_dir = root / mappings_cfg.subdir if mappings_cfg.subdir else root
+    files = {
+        key: mapping_dir / filename
+        for key, filename in mappings_cfg.files.items()
+    }
+
+    missing = [path for path in files.values() if not path.exists()]
+    if missing:
+        missing_preview = ", ".join(str(path) for path in missing[:3])
+        raise FileNotFoundError(
+            "Mapping-direction audit could not find mapping files under the "
+            f"configured references root '{cfg.harvard_mapping_direction.mappings.references_root}'. "
+            f"Examples: {missing_preview}"
+        )
+
+    return files
+
+
 def run_harvard_mapping_direction_audit(
     *,
     cfg: HsSyncConfig,
     report_name: str = "inspect_hscodes_requiring_weights.md",
     report_dir: Path | None = None,
+    timestamp: bool = True,
+    write_latest: bool = True,
     logger=None,
 ) -> pd.DataFrame:
     """Audit whether mapping files are interpreted in the correct direction."""
     report = TextReport()
   
     input_dir = cfg.coverage_input_dir()
-    mapping_files = cfg.coverage_mapping_files()
+    mapping_files = _resolve_mapping_files(cfg=cfg)
 
     report.section("Building observed trade source summary")
 
@@ -284,6 +319,49 @@ def run_harvard_mapping_direction_audit(
         report.render(),
         report_dir=report_dir,
         filename=report_name,
+        timestamp=timestamp,
+        write_latest=write_latest,
     )
 
     return audit
+
+
+def run_harvard_mapping_direction_audit_from_config(
+    *,
+    cfg: HsSyncConfig,
+    logger=None,
+) -> dict[str, object]:
+    mapping_cfg = cfg.harvard_mapping_direction
+
+    if not mapping_cfg.enabled:
+        return {
+            "status": "disabled",
+        }
+
+    report_dir = mapping_cfg.artifact.resolve_output_dir()
+    report_name = mapping_cfg.artifact.filename or "inspect_hscodes_requiring_weights.md"
+    if not Path(report_name).suffix:
+        report_name = f"{report_name}.md"
+
+    audit = run_harvard_mapping_direction_audit(
+        cfg=cfg,
+        report_name=report_name,
+        report_dir=report_dir,
+        timestamp=mapping_cfg.artifact.timestamp,
+        write_latest=mapping_cfg.artifact.write_latest,
+        logger=logger,
+    )
+
+    base_path = report_dir / report_name
+    latest_path = None
+    if mapping_cfg.artifact.timestamp:
+        latest_path = base_path.with_name(
+            f"{base_path.stem}_latest{base_path.suffix}"
+        )
+
+    return {
+        "status": "completed",
+        "report_dir": report_dir,
+        "report_latest": latest_path,
+        "audit": audit,
+    }

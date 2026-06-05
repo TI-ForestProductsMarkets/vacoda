@@ -1,85 +1,30 @@
 """
 scripts/hs_sync/02_audit_harvard_generator_inputs.py
 
-* Check whether the staged/exported files are readable by the Harvard generator.
-* Checks raw_parquet, aggregated files, product codes, matrix completeness, and Harvard dimension tests.
+Audit staged Harvard-generator inputs and generated matrices.
 
-It audits:
-- raw_parquet marker files
-- aggregated_by_year_not_converted parquet files
-- reporter/partner identifier style
-- product-code coverage
-- generated matrix completeness, if matrices exist
-
-How to run:
-    python -m scripts.hs_sync.02_audit_harvard_generator_inputs
-       or
-    python scripts/hs_sync/02_audit_harvard_generator_inputs.py \
-            --source-hs H5 \
-            --source-year 2021 \
-            --target-hs H6 \
-            --target-year 2022
-
-Important:
-1. it should be run after staging (01_stage_comtrade_for_harvard_generator.py) and after generating matrices via harvard generator.
+This is a validation/audit step, not a data-producing pipeline step.
 """
 
 from __future__ import annotations
 
-import argparse
-from pathlib import Path
-
-from vacoda.hs_sync.harvard_audit import run_harvard_generator_audit
+from vacoda.config.hs_sync import HsSyncConfig
+from vacoda.hs_sync.harvard_audit import run_harvard_generator_audit_from_config
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
+    cfg = HsSyncConfig.from_yaml()
+    outputs = run_harvard_generator_audit_from_config(cfg)
 
-    parser.add_argument(
-        "--harvard-data-root",
-        type=Path,
-        default=Path("/storage/vacoda/data/external/harvard_comtrade_bulk"),
-    )
-    parser.add_argument(
-        "--generator-root",
-        type=Path,
-        default=Path(
-            "/storage/vacoda/data/references/comtrade-conversion-weights/generator"
-        ),
-    )
-    parser.add_argument("--source-hs", default="H4")
-    parser.add_argument("--source-year", type=int, default=2016)
-    parser.add_argument("--target-hs", default="H5")
-    parser.add_argument("--target-year", type=int, default=2017)
+    if outputs.get("status") == "disabled":
+        print("harvard_generator_audit is disabled in config; skipping.")
+        return
 
-    args = parser.parse_args()
-
-    ## Would like to automate it with some configured product code checks, but for now hardcoding a couple checks for the wood split example:
-    product_code_checks = [
-        {
-        "label": "source HS2012 wood split example",
-        "hs": "H4",
-        "year": 2016,
-        "codes": ["440110"],
-        },
-        {
-        "label": "target HS2017 wood split example",
-        "hs": "H5",
-        "year": 2017,
-        "codes": ["440111", "440112"],
-        },
-    
-    ]
-
-    run_harvard_generator_audit(
-        harvard_data_root=args.harvard_data_root,
-        generator_root=args.generator_root,
-        source_hs=args.source_hs,
-        source_year=args.source_year,
-        target_hs=args.target_hs,
-        target_year=args.target_year,
-        product_code_checks=product_code_checks,
-    )
+    print("Harvard generator audit complete.")
+    print(f"Artifact directory: {outputs.get('artifact_dir')}")
+    print(f"Artifact: {outputs.get('artifact')}")
+    if outputs.get("artifact_latest") is not None:
+        print(f"Artifact latest: {outputs.get('artifact_latest')}")
 
 if __name__ == "__main__":
     main()

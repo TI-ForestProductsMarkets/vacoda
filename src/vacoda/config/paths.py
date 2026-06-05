@@ -46,6 +46,11 @@ def validate_paths_config(cfg: dict[str, Any]) -> None:
         "metadata",
         config_name=PATHS_CONFIG_NAME,
     )
+    repo_cfg = get_required_block(
+        cfg,
+        "repo",
+        config_name=PATHS_CONFIG_NAME,
+    )
 
     for key in ("root", "raw", "external", "interim", "processed", "references"):
         get_required_value(data_cfg, (key,), config_name=f"{PATHS_CONFIG_NAME}: data")
@@ -54,6 +59,9 @@ def validate_paths_config(cfg: dict[str, Any]) -> None:
         get_required_value(output_cfg, (key,), config_name=f"{PATHS_CONFIG_NAME}: output")
 
     get_required_value(metadata_cfg, ("root",), config_name=f"{PATHS_CONFIG_NAME}: metadata")
+
+    for key in ("root", "references"):
+        get_required_value(repo_cfg, (key,), config_name=f"{PATHS_CONFIG_NAME}: repo")
 
 
 def load_paths_config(config_path: Path | None = None) -> dict[str, Any]:
@@ -92,6 +100,32 @@ def get_data_dir(stage: str, cfg: dict[str, Any] | None = None) -> Path:
         raise KeyError(f"Unknown data stage '{stage}'. Valid stages: {valid}")
 
     return require_path(data_cfg[stage], key=f"data.{stage}")
+
+
+def get_repo_root(cfg: dict[str, Any] | None = None) -> Path:
+    """Return repository root directory from paths.yaml repo block."""
+    if cfg is None:
+        cfg = load_paths_config()
+
+    repo_cfg = get_required_block(
+        cfg,
+        "repo",
+        config_name=PATHS_CONFIG_NAME,
+    )
+    return require_path(repo_cfg["root"], key="repo.root")
+
+
+def get_repo_references_dir(cfg: dict[str, Any] | None = None) -> Path:
+    """Return repository references directory from paths.yaml repo block."""
+    if cfg is None:
+        cfg = load_paths_config()
+
+    repo_cfg = get_required_block(
+        cfg,
+        "repo",
+        config_name=PATHS_CONFIG_NAME,
+    )
+    return require_path(repo_cfg["references"], key="repo.references")
 
 
 def get_output_dir(kind: str, cfg: dict[str, Any] | None = None) -> Path:

@@ -253,6 +253,123 @@ def build_needs_weights_inspection_report(
 
     return report.render()
 
+def build_target_hs_mapping_coverage_artifact(
+    *,
+    target_hs: str,
+    min_year: int,
+    max_year: int,
+    interpretation_display_report: pd.DataFrame,
+    source_code_coverage: pd.DataFrame,
+    missing_mappings: pd.DataFrame,
+    needs_weights_top_n: int = 10,
+    unsupported_top_n: int = 30,
+) -> str:
+    """Build the final human-facing target-HS coverage report."""
+    report = TextReport()
+
+    report.line(f"# Target-{target_hs} mapping coverage interpretation")
+    report.line()
+    report.line(
+        f"For all {min_year}–{max_year} records, how much can be expressed "
+        f"in the {target_hs}/HS2017 target system without weights?"
+    )
+    report.line()
+
+    report.line("## Executive summary")
+    report.line()
+    report.markdown_dataframe(interpretation_display_report)
+
+    # HS-system composition
+    report.line()
+    report.line("## HS-system composition of input data")
+    hs_composition = (
+        source_code_coverage.groupby("source_hs")
+        .agg(
+            n_rows=("n_rows", "sum"),
+            n_source_codes=("source_cmd", "nunique"),
+            first_year=("first_year", "min"),
+            last_year=("last_year", "max"),
+            value_total=("value_total", "sum"),
+        )
+        .reset_index()
+        .sort_values("source_hs")
+    )
+    report.dataframe(hs_composition)
+
+    # Unsupported diagnostics
+    unsupported = source_code_coverage[
+        source_code_coverage["conversion_need"] == "unsupported_source_hs"
+    ].copy()
+
+    if not unsupported.empty:
+        report.line()
+        report.line("## Unsupported source-HS diagnostics")
+
+        by_source = (
+            unsupported.groupby("source_hs")
+            .agg(
+                n_source_hs_code_pairs=("source_cmd", "nunique"),
+                n_rows=("n_rows", "sum"),
+                value_total=("value_total", "sum"),
+                first_year=("first_year", "min"),
+                last_year=("last_year", "max"),
+            )
+            .reset_index()
+            .sort_values("value_total", ascending=False)
+        )
+
+        report.line("By source_hs:")
+        report.dataframe(by_source)
+
+        report.line()
+        report.line(f"Top {unsupported_top_n} unsupported source codes by value:")
+        report.dataframe(
+            unsupported.sort_values("value_total", ascending=False)
+            [
+                [
+                    "source_hs",
+                    "source_cmd",
+                    "first_year",
+                    "last_year",
+                    "n_rows",
+                    "value_total",
+                    "actual_mapping_category",
+                    "conversion_need",
+                ]
+            ]
+            .head(unsupported_top_n)
+        )
+
+    # Needs-weights diagnostics from old script 5
+    report.line()
+    report.line("## Needs-weights diagnostics")
+    needs_text = build_needs_weights_inspection_report(
+        source_code_coverage,
+        top_n=needs_weights_top_n,
+    )
+    report.line(needs_text)
+
+    # Consistency checks
+    report.line()
+    report.line("## Consistency checks")
+
+    if {
+        "share_source_codes_percent",
+        "share_rows_percent",
+        "share_value_percent",
+    }.issubset(interpretation_display_report.columns):
+        source_code_share_sum = interpretation_display_report[
+            "share_source_codes_percent"
+        ].sum()
+        row_share_sum = interpretation_display_report["share_rows_percent"].sum()
+        value_share_sum = interpretation_display_report["share_value_percent"].sum()
+
+        report.line(f"Source-code pair share sum: {source_code_share_sum}")
+        report.line(f"Row share sum: {row_share_sum}")
+        report.line(f"Value share sum: {value_share_sum}")
+
+    return report.render()
+
 
 def run_target_hs_mapping_coverage_audit(
     *,
@@ -282,6 +399,9 @@ def run_target_hs_mapping_coverage_audit(
 
     with timed_workflow(logger, "Target-HS mapping coverage audit"):
 
+        ##################################################################
+        ## Step 1: Load config and resolve paths
+        ##################################################################
         with _target_hs_workflow_step(1):
             cfg = HsSyncConfig.from_yaml(config_path)
             
@@ -302,6 +422,11 @@ def run_target_hs_mapping_coverage_audit(
             logger.info("Output directory: %s", rel_path(out_dir))
             logger.info("Coverage target HS: %s", target_hs)
             logger.info("Coverage year range: %s–%s", min_year, max_year)
+
+
+        ##################################################################
+        ## Step 2: Load data and mappings
+        ##################################################################
 
         with _target_hs_workflow_step(2):
             source_summary = build_trade_source_pair_summary(
@@ -335,6 +460,11 @@ def run_target_hs_mapping_coverage_audit(
 
             logger.info("Source summary shape: %s", source_summary.shape)
 
+
+        ##################################################################
+        ## Step 3: Build coverage products
+        ##################################################################
+
         with _target_hs_workflow_step(3):
 
             coverage = build_target_hs_mapping_coverage(
@@ -348,24 +478,24 @@ def run_target_hs_mapping_coverage_audit(
             )
 
             source_code_coverage = build_target_hs_source_code_coverage(coverage)
-            runtime["source_code_coverage"] = source_code_coverage
-            tables["source_code_coverage"] = source_code_coverage
-            
-            runtime["mapping_coverage"] = coverage
-            tables["mapping_coverage"] = coverage
 
+            runtime["source_code_coverage"] = source_code_coverage
+
+            ## Store coverage and source-code coverage tables in runtime and tables dicts for later steps and outputs.
+            tables["source_code_coverage"] = source_code_coverage
+            tables["mapping_coverage"] = coverage
+            runtime["mapping_coverage"] = coverage
+
+            ## Build mapping summary and interpretation report for diagnostics and outputs.
             summary = summarize_target_hs_mapping_coverage(coverage)
             runtime["mapping_summary"] = summary
             tables["mapping_summary"] = summary
 
             interpretation_report = build_target_hs_mapping_interpretation_report(source_code_coverage)
-
             interpretation_display_report = (build_target_hs_mapping_interpretation_display_report(interpretation_report))
-            runtime["mapping_interpretation_report"] = (interpretation_report)
-            tables["mapping_interpretation_report"] = (interpretation_report)
 
-            runtime["mapping_interpretation_display_report"] = interpretation_display_report
-            tables["mapping_interpretation_display_report"] = interpretation_display_report
+            runtime["mapping_interpretation_report"] = interpretation_report
+            runtime["mapping_interpretation_display_report"] = interpretation_display_report 
 
             logger.info(
                 f"{target_hs} interpretation report:\n%s",
@@ -395,15 +525,12 @@ def run_target_hs_mapping_coverage_audit(
             runtime["easy_without_weights"] = easy
             tables["easy_without_weights"] = easy
 
-            if cfg.is_product_enabled("needs_weights_inspection", default=False):
-                needs_weights_report = build_needs_weights_inspection_report(
-                    source_code_coverage,
-                    top_n=cfg.product_options("needs_weights_inspection").get("top_n", 10),
-                )
-                runtime["needs_weights_inspection"] = needs_weights_report
-
             for name, table in tables.items():
                 logger.info("%s shape: %s", name, table.shape)
+
+        ##################################################################
+        ## Step 4: Write coverage products
+        ##################################################################
 
         with _target_hs_workflow_step(4):
             
@@ -415,7 +542,6 @@ def run_target_hs_mapping_coverage_audit(
                 
                 if not cfg.product_write_enabled(product_name, default=True):
                     continue
-                
                 
                 filename = cfg.product_filename(product_name)
                 product_out_dir = cfg.product_output_dir(product_name, default_dir=out_dir,)
@@ -438,30 +564,47 @@ def run_target_hs_mapping_coverage_audit(
                                 allow_empty=True,
                                 )
 
-            if (
-                "needs_weights_inspection" in runtime
-                and cfg.product_write_enabled("needs_weights_inspection", default=True)
-            ):
-                report_filename = cfg.product_filename("needs_weights_inspection")
-                if Path(report_filename).suffix == "":
-                    report_filename = f"{report_filename}.md"
+            # Build and write the final interpretation report artifact.
+            artifact_dir = cfg.coverage.artifact.resolve_output_dir()
+            artifact_dir.mkdir(parents=True, exist_ok=True)
 
-                report_out_dir = cfg.product_output_dir(
-                    "needs_weights_inspection",
-                    default_dir=out_dir,
-                )
-                report_outputs = write_text_report(
-                    runtime["needs_weights_inspection"],
-                    report_dir=report_out_dir,
-                    filename=report_filename,
-                    timestamp=cfg.coverage.report.timestamp,
-                    write_latest=cfg.coverage.report.write_latest,
-                    run_id=run_id,
-                )
+            report_filename = cfg.coverage.artifact.filename
+            if Path(report_filename).suffix == "":
+                report_filename = f"{report_filename}.md"
 
-                outputs["needs_weights_inspection_report"] = report_outputs["report"]
-                if "latest" in report_outputs:
-                    outputs["needs_weights_inspection_latest"] = report_outputs["latest"]
+            coverage_report = build_target_hs_mapping_coverage_artifact(
+                target_hs=target_hs,
+                min_year=min_year,
+                max_year=max_year,
+                interpretation_display_report=runtime[
+                    "mapping_interpretation_display_report"
+                ],
+                source_code_coverage=runtime["source_code_coverage"],
+                missing_mappings=runtime["missing_mappings"],
+                unsupported_top_n=cfg.coverage.artifact.options.get(
+                    "unsupported_top_n",
+                    30,
+                ),
+                needs_weights_top_n=cfg.coverage.artifact.options.get(
+                    "needs_weights_top_n",
+                    10,
+                ),
+            )
+
+            report_outputs = write_text_report(
+                coverage_report,
+                report_dir=artifact_dir,
+                filename=report_filename,
+                timestamp=cfg.coverage.artifact.timestamp,
+                write_latest=cfg.coverage.artifact.write_latest,
+                run_id=run_id,
+            )
+
+            outputs["coverage_report"] = report_outputs["report"]
+            if "latest" in report_outputs:
+                outputs["coverage_report_latest"] = report_outputs["latest"]
+
+            outputs["artifact_dir"] = artifact_dir
 
     outputs["output_dir"] = out_dir
     return outputs

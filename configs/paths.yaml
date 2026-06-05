@@ -29,3 +29,7 @@ metadata:
   flow: "{metadata.root}/flow.parquet"
   unit: "{metadata.root}/unit.parquet"
   estimation: "{metadata.root}/estimation.parquet"
+
+repo:
+  root: "/home/saxena/Projects/vacoda"
+  references: "{repo.root}/references"

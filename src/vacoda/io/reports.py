@@ -7,6 +7,49 @@ from pathlib import Path
 
 import pandas as pd
 
+
+def _dataframe_to_markdown_table(df: pd.DataFrame) -> str:
+    """Serialize a DataFrame into a GitHub-flavored markdown table."""
+
+    def _sanitize(value: object) -> str:
+        text = str(value)
+        return text.replace("\n", " ").replace("|", r"\|")
+
+    headers = [str(col) for col in df.columns]
+    if not headers:
+        return ""
+
+    rows_data = [
+        [_sanitize(value) for value in row]
+        for row in df.itertuples(index=False, name=None)
+    ]
+
+    col_widths = [len(header) for header in headers]
+    for row in rows_data:
+        for idx, cell in enumerate(row):
+            if idx < len(col_widths):
+                col_widths[idx] = max(col_widths[idx], len(cell))
+
+    header_row = "| " + " | ".join(
+        header.ljust(col_widths[idx]) for idx, header in enumerate(headers)
+    ) + " |"
+    divider_row = "| " + " | ".join(
+        "-" * col_widths[idx] for idx in range(len(headers))
+    ) + " |"
+
+    if not rows_data:
+        return "\n".join([header_row, divider_row])
+
+    rows: list[str] = []
+    for row in rows_data:
+        rows.append(
+            "| " + " | ".join(
+                cell.ljust(col_widths[idx]) for idx, cell in enumerate(row)
+            ) + " |"
+        )
+
+    return "\n".join([header_row, divider_row, *rows])
+
 class TextReport:
     """Small helper for building plain-text or markdown-style reports."""
 
@@ -31,6 +74,11 @@ class TextReport:
 
     def dataframe(self, df: pd.DataFrame, *, index: bool = False) -> None:
         self.line(df.to_string(index=index))
+
+    def markdown_dataframe(self, df: pd.DataFrame, *, index: bool = False) -> None:
+        if index:
+            df = df.reset_index()
+        self.line(_dataframe_to_markdown_table(df))
 
     def render(self) -> str:
         return "\n".join(self.lines)

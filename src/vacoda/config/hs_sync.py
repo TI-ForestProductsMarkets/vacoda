@@ -24,7 +24,7 @@ from vacoda.config.base import (
     require_int,
     require_str,
 )
-from vacoda.config.paths import get_data_dir, get_output_dir
+from vacoda.config.paths import get_data_dir, get_output_dir, get_repo_references_dir
 
 
 HS_SYNC_CONFIG_PATH = CONFIG_DIR / "hs_sync.yaml"
@@ -786,6 +786,247 @@ class HarvardStagingConfig:
             ),
         )
 
+
+# ---------------------------------------------------------------------
+# Harvard generator audit
+# ---------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class HarvardGeneratorAuditInputConfig:
+    harvard_data: StagePathConfig
+    generator_root: StagePathConfig
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "HarvardGeneratorAuditInputConfig":
+        return cls(
+            harvard_data=StagePathConfig.from_dict(
+                require_dict(
+                    cfg.get("harvard_data", {}),
+                    key="harvard_generator_audit.input.harvard_data",
+                ),
+                key="harvard_generator_audit.input.harvard_data",
+                default_stage="external",
+                default_subdir="harvard_comtrade_bulk",
+            ),
+            generator_root=StagePathConfig.from_dict(
+                require_dict(
+                    cfg.get("generator_root", {}),
+                    key="harvard_generator_audit.input.generator_root",
+                ),
+                key="harvard_generator_audit.input.generator_root",
+                default_stage="references",
+                default_subdir="comtrade-conversion-weights/generator",
+            ),
+        )
+
+    def resolve_harvard_data_dir(self) -> Path:
+        return self.harvard_data.resolve_data_dir()
+
+    def resolve_generator_root_dir(self) -> Path:
+        # Harvard generator code lives under repository references, not storage references.
+        if self.generator_root.stage.strip().lower() == "references":
+            base = get_repo_references_dir()
+            return base / self.generator_root.subdir if self.generator_root.subdir else base
+        return self.generator_root.resolve_data_dir()
+
+
+@dataclass(frozen=True)
+class HarvardGeneratorAuditTransitionConfig:
+    source_hs: str
+    source_year: int
+    target_hs: str
+    target_year: int
+
+    @classmethod
+    def from_dict(
+        cls,
+        cfg: dict[str, Any],
+    ) -> "HarvardGeneratorAuditTransitionConfig":
+        return cls(
+            source_hs=require_str(
+                cfg.get("source_hs", "H4"),
+                key="harvard_generator_audit.transition.source_hs",
+            ).strip().upper(),
+            source_year=require_int(
+                cfg.get("source_year", 2016),
+                key="harvard_generator_audit.transition.source_year",
+                min_value=0,
+            ),
+            target_hs=require_str(
+                cfg.get("target_hs", "H5"),
+                key="harvard_generator_audit.transition.target_hs",
+            ).strip().upper(),
+            target_year=require_int(
+                cfg.get("target_year", 2017),
+                key="harvard_generator_audit.transition.target_year",
+                min_value=0,
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class HarvardGeneratorAuditProductCodeCheck:
+    label: str
+    hs: str
+    year: int
+    codes: list[str]
+
+    @classmethod
+    def from_dict(
+        cls,
+        cfg: dict[str, Any],
+        *,
+        index: int,
+    ) -> "HarvardGeneratorAuditProductCodeCheck":
+        key = f"harvard_generator_audit.product_code_checks[{index}]"
+
+        codes_raw = cfg.get("codes", [])
+        if not isinstance(codes_raw, list):
+            raise TypeError(f"{key}.codes must be a list.")
+
+        return cls(
+            label=require_str(
+                cfg.get("label", f"check_{index}"),
+                key=f"{key}.label",
+            ),
+            hs=require_str(
+                cfg.get("hs"),
+                key=f"{key}.hs",
+            ).strip().upper(),
+            year=require_int(
+                cfg.get("year"),
+                key=f"{key}.year",
+                min_value=0,
+            ),
+            codes=[
+                require_str(code, key=f"{key}.codes")
+                for code in codes_raw
+            ],
+        )
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "label": self.label,
+            "hs": self.hs,
+            "year": self.year,
+            "codes": self.codes,
+        }
+
+
+@dataclass(frozen=True)
+class HarvardGeneratorAuditConfig:
+    enabled: bool
+    input: HarvardGeneratorAuditInputConfig
+    transition: HarvardGeneratorAuditTransitionConfig
+    product_code_checks: list[HarvardGeneratorAuditProductCodeCheck]
+    artifact: ArtifactConfig
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "HarvardGeneratorAuditConfig":
+        checks_raw = cfg.get("product_code_checks", [])
+        if not isinstance(checks_raw, list):
+            raise TypeError("harvard_generator_audit.product_code_checks must be a list.")
+
+        return cls(
+            enabled=require_bool(
+                cfg.get("enabled", False),
+                key="harvard_generator_audit.enabled",
+            ),
+            input=HarvardGeneratorAuditInputConfig.from_dict(
+                require_dict(
+                    cfg.get("input", {}),
+                    key="harvard_generator_audit.input",
+                )
+            ),
+            transition=HarvardGeneratorAuditTransitionConfig.from_dict(
+                require_dict(
+                    cfg.get("transition", {}),
+                    key="harvard_generator_audit.transition",
+                )
+            ),
+            product_code_checks=[
+                HarvardGeneratorAuditProductCodeCheck.from_dict(
+                    require_dict(item, key=f"harvard_generator_audit.product_code_checks[{i}]"),
+                    index=i,
+                )
+                for i, item in enumerate(checks_raw)
+            ],
+            artifact=ArtifactConfig.from_dict(
+                require_dict(
+                    cfg.get("artifact", {}),
+                    key="harvard_generator_audit.artifact",
+                ),
+                key="harvard_generator_audit.artifact",
+                default_kind="manifest",
+                default_filename="audit_harvard_generator_inputs",
+            ),
+        )
+
+    def product_code_checks_as_dicts(self) -> list[dict[str, Any]]:
+        return [check.as_dict() for check in self.product_code_checks]
+
+
+@dataclass(frozen=True)
+class HarvardMappingDirectionMappingsConfig:
+    references_root: str = "repo"
+
+    @classmethod
+    def from_dict(
+        cls,
+        cfg: dict[str, Any],
+    ) -> "HarvardMappingDirectionMappingsConfig":
+        references_root = require_str(
+            cfg.get("references_root", "repo"),
+            key="harvard_mapping_direction.mappings.references_root",
+        ).strip().lower()
+
+        if references_root not in {"repo", "data"}:
+            raise ValueError(
+                "harvard_mapping_direction.mappings.references_root must be "
+                "'repo' or 'data'."
+            )
+
+        return cls(references_root=references_root)
+
+
+@dataclass(frozen=True)
+class HarvardMappingDirectionConfig:
+    enabled: bool
+    mappings: HarvardMappingDirectionMappingsConfig
+    artifact: ArtifactConfig
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "HarvardMappingDirectionConfig":
+        artifact_cfg = require_dict(
+            cfg.get("artifact", {}),
+            key="harvard_mapping_direction.artifact",
+        )
+        if "subdir" not in artifact_cfg:
+            artifact_cfg = {
+                **artifact_cfg,
+                "subdir": "hs_sync",
+            }
+
+        return cls(
+            enabled=require_bool(
+                cfg.get("enabled", True),
+                key="harvard_mapping_direction.enabled",
+            ),
+            mappings=HarvardMappingDirectionMappingsConfig.from_dict(
+                require_dict(
+                    cfg.get("mappings", {}),
+                    key="harvard_mapping_direction.mappings",
+                )
+            ),
+            artifact=ArtifactConfig.from_dict(
+                artifact_cfg,
+                key="harvard_mapping_direction.artifact",
+                default_kind="reports",
+                default_filename="inspect_hscodes_requiring_weights.md",
+            ),
+        )
+
 # ---------------------------------------------------------------------
 # Coverage
 # ---------------------------------------------------------------------
@@ -836,6 +1077,7 @@ class CoverageMappingColumnsConfig:
 @dataclass(frozen=True)
 class CoverageMappingsConfig:
     stage: str
+    references_root: str
     subdir: str
     files: dict[str, str]
     columns: CoverageMappingColumnsConfig
@@ -847,6 +1089,10 @@ class CoverageMappingsConfig:
                 cfg.get("stage", "references"),
                 key="coverage.mappings.stage",
             ),
+            references_root=require_str(
+                cfg.get("references_root", "data"),
+                key="coverage.mappings.references_root",
+            ).strip().lower(),
             subdir=require_str(
                 cfg.get("subdir", ""),
                 key="coverage.mappings.subdir",
@@ -865,7 +1111,11 @@ class CoverageMappingsConfig:
         )
 
     def resolve_dir(self) -> Path:
-        base = get_data_dir(self.stage)
+        stage = self.stage.strip().lower()
+        if stage == "references" and self.references_root == "repo":
+            base = get_repo_references_dir()
+        else:
+            base = get_data_dir(self.stage)
         return base / self.subdir if self.subdir else base
 
     def resolve_files(self) -> dict[str, Path]:
@@ -1068,6 +1318,8 @@ class HsSyncConfig:
     logging: LoggingConfig
 
     harvard_staging: HarvardStagingConfig
+    harvard_generator_audit: HarvardGeneratorAuditConfig
+    harvard_mapping_direction: HarvardMappingDirectionConfig
     coverage: CoverageConfig
 
     references: dict[str, Any]
@@ -1100,6 +1352,12 @@ class HsSyncConfig:
             columns=ColumnsConfig.from_dict(_block(global_cfg, "columns")),
             logging=LoggingConfig.from_dict(_block(global_cfg, "logging", required=False)),
             harvard_staging=HarvardStagingConfig.from_dict(_block(raw, "harvard_staging")),
+            harvard_generator_audit=HarvardGeneratorAuditConfig.from_dict(
+                _block(raw, "harvard_generator_audit", required=False)
+            ),
+            harvard_mapping_direction=HarvardMappingDirectionConfig.from_dict(
+                _block(raw, "harvard_mapping_direction", required=False)
+            ),
             coverage=coverage,
             references=_block(raw, "references", required=False),
             harvard_weights=FutureBlockConfig.from_dict(_block(raw, "harvard_weights", required=False),
