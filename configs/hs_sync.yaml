@@ -134,6 +134,64 @@ references:
 
 
 # ============================================================ 
+# Harvard generator audit  
+# ============================================================ 
+harvard_generator_audit:
+  enabled: true
+
+  input:
+    harvard_data:
+      stage: "external"
+      subdir: "harvard_comtrade_bulk"
+
+    generator_root:
+      stage: "references"
+      subdir: "comtrade-conversion-weights/generator"
+
+  transition:
+    source_hs: "H4"
+    source_year: 2016
+    target_hs: "H5"
+    target_year: 2017
+
+  product_code_checks:
+    - label: "source HS2012 wood split example"
+      hs: "H4"
+      year: 2016
+      codes: ["440110"]
+
+    - label: "target HS2017 wood split example"
+      hs: "H5"
+      year: 2017
+      codes: ["440111", "440112"]
+
+  artifact:
+    kind: "manifest"
+    subdir: "hs_sync/harvard_generator_audit"
+    filename: "audit_harvard_generator_inputs"
+    timestamp: true
+    write_latest: true
+
+# ============================================================
+# Harvard mapping direction audit
+# ============================================================
+harvard_mapping_direction:
+  enabled: true
+
+  mappings:
+    # Where to read coverage mapping CSVs from when coverage.mappings.stage="references".
+    # - "repo": {repo.references} from paths.yaml
+    # - "data": {data.references} from paths.yaml
+    references_root: "repo"
+
+  artifact:
+    kind: "manifest"
+    subdir: "hs_sync/harvard_mapping_direction"
+    filename: "audit_harvard_mapping_direction.md"
+    timestamp: true
+    write_latest: true
+
+# ============================================================ 
 # Coverage mapping diagnostics 
 # ============================================================ 
 # This is the main HS-sync coverage study. 
@@ -157,7 +215,8 @@ coverage:
 
   mappings:
     stage: "references"
-    subdir: "harvard_generator/hs_adjacent_transition_1995_2022/correlation_group"
+    references_root: "repo"
+    subdir: "harvard_generator/hs_adjacent_transition_1995_2022/correlation_groups"
 
     files:
       H4_to_H5: "from_HS2012_to_HS2017.csv"
@@ -196,7 +255,7 @@ coverage:
   artifact:
     kind: "reports"
     subdir: "hs_sync/coverage"
-    filename: "{target_hs_lower}_mapping_coverage_report"
+    filename: "target_{target_hs_lower}_mapping_coverage_report"
     timestamp: true
     write_latest: true
     options:
@@ -207,28 +266,28 @@ coverage:
     mapping_coverage: 
       enabled: true 
       kind: "base" 
-      filename: "{target_hs_lower}_mapping_coverage" 
+      filename: "target_{target_hs_lower}_mapping_coverage" 
       write: true 
     
     source_code_coverage: 
       enabled: true 
       kind: "derived" 
       depends_on: "mapping_coverage" 
-      filename: "{target_hs_lower}_source_code_coverage" 
+      filename: "target_{target_hs_lower}_source_code_coverage" 
       write: true 
 
     mapping_summary: 
       enabled: true 
       kind: "derived" 
       depends_on: "mapping_coverage" 
-      filename: "{target_hs_lower}_mapping_summary" 
+      filename: "target_{target_hs_lower}_mapping_summary" 
       write: true 
 
     missing_mappings: 
       enabled: true 
       kind: "derived" 
       depends_on: "mapping_coverage" 
-      filename: "{target_hs_lower}_missing_mappings" 
+      filename: "target_{target_hs_lower}_missing_mappings" 
       write: true 
       options: 
         top_n: 50 
@@ -237,14 +296,14 @@ coverage:
       enabled: true 
       kind: "derived" 
       depends_on: "mapping_coverage" 
-      filename: "{target_hs_lower}_needs_weights" 
+      filename: "target_{target_hs_lower}_needs_weights" 
       write: true 
 
     easy_without_weights: 
       enabled: true 
       kind: "derived" 
       depends_on: "mapping_coverage" 
-      filename: "{target_hs_lower}_easy_without_weights" 
+      filename: "target_{target_hs_lower}_easy_without_weights" 
       write: true
 
 

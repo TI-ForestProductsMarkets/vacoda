@@ -6,12 +6,20 @@ Audit helpers for validating Harvard generator inputs and matrix completeness.
 
 from __future__ import annotations
 
+import io
 import re
 from collections import defaultdict
+from contextlib import redirect_stdout
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import duckdb
 import pandas as pd
+
+from vacoda.io.reports import write_text_report
+
+if TYPE_CHECKING:
+    from vacoda.config.hs_sync import HsSyncConfig
 
 def _print_header(title: str) -> None:
     print()
@@ -348,4 +356,47 @@ def run_harvard_generator_audit(
     audit_harvard_dimension_tests(
         generator_root=generator_root,
     )
+
+
+def run_harvard_generator_audit_from_config(cfg: "HsSyncConfig") -> dict[str, object]:
+    audit_cfg = cfg.harvard_generator_audit
+
+    if not audit_cfg.enabled:
+        return {
+            "status": "disabled",
+        }
+
+    capture = io.StringIO()
+    with redirect_stdout(capture):
+        run_harvard_generator_audit(
+            harvard_data_root=audit_cfg.input.resolve_harvard_data_dir(),
+            generator_root=audit_cfg.input.resolve_generator_root_dir(),
+            source_hs=audit_cfg.transition.source_hs,
+            source_year=audit_cfg.transition.source_year,
+            target_hs=audit_cfg.transition.target_hs,
+            target_year=audit_cfg.transition.target_year,
+            product_code_checks=audit_cfg.product_code_checks_as_dicts(),
+        )
+
+    content = capture.getvalue()
+    print(content, end="")
+
+    artifact_filename = audit_cfg.artifact.filename or "audit_harvard_generator_inputs"
+    if not Path(artifact_filename).suffix:
+        artifact_filename = f"{artifact_filename}.txt"
+
+    outputs = write_text_report(
+        content,
+        report_dir=audit_cfg.artifact.resolve_output_dir(),
+        filename=artifact_filename,
+        timestamp=audit_cfg.artifact.timestamp,
+        write_latest=audit_cfg.artifact.write_latest,
+    )
+
+    return {
+        "status": "completed",
+        "artifact_dir": audit_cfg.artifact.resolve_output_dir(),
+        "artifact": outputs.get("report"),
+        "artifact_latest": outputs.get("latest"),
+    }
 

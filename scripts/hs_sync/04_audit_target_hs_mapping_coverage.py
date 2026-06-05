@@ -63,6 +63,8 @@ def main() -> None:
     logger.info("")
     logger.info("HS-sync diagnostics workflow complete.")
     logger.info("  Output directory: %s", outputs.get("output_dir"))
+    logger.info("  Artifact directory: %s", outputs.get("artifact_dir"))
+    logger.info("  Coverage report latest: %s", outputs.get("coverage_report_latest"))
     logger.info("  Log file: %s", log_path)
 
     for name, path in outputs.items():
