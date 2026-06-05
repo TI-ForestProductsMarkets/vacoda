@@ -26,7 +26,7 @@ def main() -> None:
 
     log_level = parse_log_level(cfg.logging.level)
     log_path = resolve_log_path(
-        cfg.logging.file,
+        cfg.logging.resolve_log_file(),
         timestamp=cfg.logging.timestamp,
     )
 
@@ -45,9 +45,26 @@ def main() -> None:
         raise
 
     logger.info("Harvard staging workflow complete.")
+    logger.info("  Status: %s", outputs.get("status", "completed"))
     logger.info("  Output directory: %s", outputs.get("output_dir"))
-    logger.info("  Report directory: %s", outputs.get("report_dir"))
-    logger.info("  Summary: %s", outputs.get("summary"))
+
+    logger.info("  Artifact directory: %s", outputs.get("artifact_dir"))
+
+    if outputs.get("summary") is not None:
+        logger.info("  Summary: %s", outputs.get("summary"))
+
+    if outputs.get("compatibility_summary") is not None:
+        logger.info(
+            "  Compatibility summary: %s",
+            outputs.get("compatibility_summary"),
+        )
+
+    if outputs.get("marker_path") is not None:
+        logger.info("  Success marker: %s", outputs.get("marker_path"))
+
+    if outputs.get("skip_reason") is not None:
+        logger.info("  Skip reason: %s", outputs.get("skip_reason"))
+
     logger.info("Log file: %s", log_path)
 
 

@@ -16,6 +16,10 @@ Output:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+import hashlib
+import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
@@ -31,6 +35,209 @@ if TYPE_CHECKING:
 logger = get_logger("HS_SYNC.HARVARD_STAGE")
 
 VALID_HS_SYSTEMS = {"H0", "H1", "H2", "H3", "H4", "H5", "H6"}
+
+
+@dataclass(frozen=True)
+class HarvardStagingPaths:
+    output_root: Path
+    partitioned_root: Path
+    raw_parquet_root: Path
+    aggregated_root: Path
+    artifact_dir: Path
+    marker_path: Path
+    inventory_latest: Path
+    preservation_latest: Path
+
+
+def _json_sha256(value: Any) -> str:
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _fingerprint_glob(root: Path, pattern: str) -> dict[str, Any]:
+    files = [path for path in sorted(root.glob(pattern)) if path.is_file()]
+    entries = [
+        {
+            "path": str(path.relative_to(root)),
+            "size": path.stat().st_size,
+            "mtime_ns": path.stat().st_mtime_ns,
+        }
+        for path in files
+    ]
+    return {
+        "root": str(root),
+        "pattern": pattern,
+        "n_files": len(entries),
+        "hash": _json_sha256(entries),
+    }
+
+
+def _fingerprint_tree(root: Path, *, exclude: set[Path] | None = None) -> dict[str, Any]:
+    exclude = exclude or set()
+    entries: list[dict[str, Any]] = []
+
+    if root.exists():
+        for path in sorted(p for p in root.rglob("*") if p.is_file()):
+            if path in exclude:
+                continue
+            entries.append(
+                {
+                    "path": str(path.relative_to(root)),
+                    "size": path.stat().st_size,
+                    "mtime_ns": path.stat().st_mtime_ns,
+                }
+            )
+
+    return {
+        "root": str(root),
+        "n_files": len(entries),
+        "hash": _json_sha256(entries),
+    }
+
+
+def _fingerprint_file(path: Path) -> dict[str, Any]:
+    if not path.exists() or not path.is_file():
+        return {
+            "path": str(path),
+            "exists": False,
+            "size": None,
+            "mtime_ns": None,
+        }
+
+    stat = path.stat()
+    return {
+        "path": str(path),
+        "exists": True,
+        "size": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+    }
+
+
+def get_harvard_staging_paths(cfg: HsSyncConfig) -> HarvardStagingPaths:
+    output_root = cfg.harvard_staging.output.resolve_data_dir()
+    layout = cfg.harvard_staging.layout
+
+    artifact_dir = cfg.harvard_staging.artifact.resolve_output_dir()
+
+    inventory_base = Path(cfg.harvard_staging.artifact.inventory_filename)
+    preservation_base = Path(cfg.harvard_staging.artifact.preservation_filename)
+
+    return HarvardStagingPaths(
+        output_root=output_root,
+        partitioned_root=layout.resolve_partitioned_dir(output_root),
+        raw_parquet_root=layout.resolve_raw_parquet_dir(output_root),
+        aggregated_root=layout.resolve_aggregated_dir(output_root),
+        artifact_dir=artifact_dir,
+        marker_path=artifact_dir / cfg.harvard_staging.skip.marker_filename,
+        inventory_latest=artifact_dir
+        / f"{inventory_base.stem}_latest{inventory_base.suffix}",
+        preservation_latest=artifact_dir
+        / f"{preservation_base.stem}_latest{preservation_base.suffix}",
+    )
+
+def build_harvard_staging_fingerprint(cfg: HsSyncConfig) -> dict[str, Any]:
+    paths = get_harvard_staging_paths(cfg)
+
+    config_payload = {
+        "engine": {"threads": cfg.engine.threads},
+        "harvard_staging": cfg.raw.get("harvard_staging", {}),
+    }
+
+    return {
+        "input": {
+            "primary": _fingerprint_glob(
+                cfg.harvard_staging.input.resolve_data_dir(),
+                cfg.harvard_staging.input.pattern or "",
+            ),
+            "country_reference": _fingerprint_glob(
+                cfg.harvard_staging.country_reference.input.resolve_data_dir(),
+                cfg.harvard_staging.country_reference.input.pattern or "",
+            ),
+        },
+        "config": {
+            "hash": _json_sha256(config_payload),
+        },
+        "output": {
+            "staging_tree": _fingerprint_tree(paths.output_root, exclude={paths.marker_path}),
+            "inventory_latest": _fingerprint_file(paths.inventory_latest),
+            "preservation_latest": _fingerprint_file(paths.preservation_latest),
+        },
+    }
+
+def write_harvard_staging_success_marker(
+    *,
+    cfg: HsSyncConfig,
+    run_id: str,
+    summary: dict[str, Any],
+    compatibility_summary: dict[str, Any],
+) -> Path:
+    paths = get_harvard_staging_paths(cfg)
+    paths.marker_path.parent.mkdir(parents=True, exist_ok=True)
+
+    payload = {
+        "status": "success",
+        "run_id": run_id,
+        "written_at_utc": datetime.now(timezone.utc).isoformat(),
+        "marker_version": 1,
+        "paths": {
+            "output_root": str(paths.output_root),
+            "artifact_dir": str(paths.artifact_dir),
+            "inventory_latest": str(paths.inventory_latest),
+            "preservation_latest": str(paths.preservation_latest),
+        },
+        "summary": summary,
+        "compatibility_summary": compatibility_summary,
+        "fingerprint": build_harvard_staging_fingerprint(cfg),
+    }
+
+    paths.marker_path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    return paths.marker_path
+
+
+def harvard_staging_success_marker_valid(
+    *,
+    cfg: HsSyncConfig,
+) -> tuple[bool, list[str]]:
+    paths = get_harvard_staging_paths(cfg)
+    marker_path = paths.marker_path
+
+    reasons: list[str] = []
+
+    if not marker_path.exists():
+        return False, [f"missing success marker: {marker_path}"]
+
+    try:
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return False, [f"cannot read success marker {marker_path}: {exc}"]
+
+    if marker.get("status") != "success":
+        reasons.append("success marker status is not 'success'")
+
+    if marker.get("marker_version") != 1:
+        reasons.append("unsupported success marker version")
+
+    fingerprint = marker.get("fingerprint")
+    if not isinstance(fingerprint, dict):
+        reasons.append("success marker has no valid fingerprint block")
+        return False, reasons
+
+    current = build_harvard_staging_fingerprint(cfg)
+    skip_cfg = cfg.harvard_staging.skip
+
+    if skip_cfg.check_input_fingerprint and fingerprint.get("input") != current["input"]:
+        reasons.append("input fingerprint changed")
+
+    if skip_cfg.check_config_fingerprint and fingerprint.get("config") != current["config"]:
+        reasons.append("config fingerprint changed")
+
+    if skip_cfg.check_output_fingerprint and fingerprint.get("output") != current["output"]:
+        reasons.append("output fingerprint changed")
+
+    return len(reasons) == 0, reasons
 
 def audit_csv_to_harvard_parquet_staging(
     *,
@@ -1254,13 +1461,144 @@ def validate_staged_harvard_partitions(
             "all years requested in harvard_staging.filters.hs_years."
         )
 
+def harvard_staging_outputs_exist(
+    *,
+    partitioned_root: Path,
+    raw_parquet_root: Path,
+    aggregated_root: Path,
+    years_by_hs: dict[str, list[int]],
+) -> tuple[bool, list[str]]:
+    missing: list[str] = []
+
+    for hs, years in years_by_hs.items():
+        for year in years:
+            partition_dir = (
+                partitioned_root
+                / f"hs_partition={hs}"
+                / f"year_partition={year}"
+            )
+            raw_dir = raw_parquet_root / hs / str(year)
+            aggregated_file = aggregated_root / hs / f"{hs}_{year}.parquet"
+
+            if not any(partition_dir.glob("*.parquet")):
+                missing.append(f"partitioned parquet: {partition_dir}")
+
+            if not any(raw_dir.glob("*.parquet")):
+                missing.append(f"raw_parquet layout: {raw_dir}")
+
+            if not aggregated_file.exists():
+                missing.append(f"aggregated parquet: {aggregated_file}")
+
+    return len(missing) == 0, missing
+
+def check_harvard_staging_complete(
+    *,
+    output_root: Path,
+    artifact_dir: Path,
+    preservation_latest_filename: str,
+    years_by_hs: dict[str, list[int]],
+    layout: "HarvardStagingLayoutConfig",
+    threads: int = 16) -> tuple[bool, list[str]]:
+    """
+    Check whether Harvard staging is complete enough to skip rebuilding.
+
+    This checks:
+    - expected partitioned parquet directories
+    - expected raw_parquet layout directories
+    - expected aggregated parquet files
+    - aggregated parquet readability/non-empty rows
+    - latest preservation manifest status
+    """
+
+    missing_or_bad: list[str] = []
+
+    partitioned_root = layout.resolve_partitioned_dir(output_root)
+    raw_parquet_root = layout.resolve_raw_parquet_dir(output_root)
+    aggregated_root = layout.resolve_aggregated_dir(output_root)
+
+    with duckdb.connect() as con:
+        con.execute(f"PRAGMA threads={int(threads)}")
+
+        for hs, years in years_by_hs.items():
+            for year in years:
+                partition_dir = (
+                    partitioned_root
+                    / f"hs_partition={hs}"
+                    / f"year_partition={year}"
+                )
+                raw_dir = raw_parquet_root / hs / str(year)
+                aggregated_file = aggregated_root / hs / f"{hs}_{year}.parquet"
+
+                if not any(partition_dir.glob("*.parquet")):
+                    missing_or_bad.append(
+                        f"missing partitioned parquet files: {partition_dir}"
+                    )
+
+                if not any(raw_dir.glob("*.parquet")):
+                    missing_or_bad.append(
+                        f"missing raw_parquet layout files: {raw_dir}"
+                    )
+
+                if not aggregated_file.exists():
+                    missing_or_bad.append(
+                        f"missing aggregated parquet file: {aggregated_file}"
+                    )
+                    continue
+
+                try:
+                    n_rows = con.execute(
+                        "SELECT COUNT(*) FROM read_parquet(?)",
+                        [str(aggregated_file)],
+                    ).fetchone()[0]
+                except Exception as exc:
+                    missing_or_bad.append(
+                        f"cannot read aggregated parquet {aggregated_file}: {exc}"
+                    )
+                    continue
+
+                if n_rows <= 0:
+                    missing_or_bad.append(
+                        f"aggregated parquet has zero rows: {aggregated_file}"
+                    )
+
+    preservation_latest = artifact_dir / preservation_latest_filename
+
+    if not preservation_latest.exists():
+        missing_or_bad.append(
+            f"missing preservation manifest: {preservation_latest}"
+        )
+    else:
+        try:
+            preservation = pd.read_csv(preservation_latest)
+        except Exception as exc:
+            missing_or_bad.append(
+                f"cannot read preservation manifest {preservation_latest}: {exc}"
+            )
+        else:
+            if "status" not in preservation.columns:
+                missing_or_bad.append(
+                    f"preservation manifest has no status column: {preservation_latest}"
+                )
+            else:
+                bad = preservation[preservation["status"] != "ok"]
+                if not bad.empty:
+                    status_counts = bad["status"].value_counts().to_dict()
+                    missing_or_bad.append(
+                        f"preservation manifest has non-ok statuses: {status_counts}"
+                    )
+
+    return len(missing_or_bad) == 0, missing_or_bad
+
 
 def run_harvard_staging_pipeline(
     *,
     cfg: "HsSyncConfig",
     run_id: str,
 ) -> dict[str, Any]:
-    """Run the full Harvard staging workflow from config to report outputs."""
+    """
+    Run the full Harvard staging workflow from config to manifest artifacts.
+    """
+
     input_dir = cfg.harvard_staging.input.resolve_data_dir()
     pattern = (cfg.harvard_staging.input.pattern or "").strip()
     if not pattern:
@@ -1280,8 +1618,59 @@ def run_harvard_staging_pipeline(
     flow_col = cfg.harvard_staging.columns.flow
     quantity_col = cfg.harvard_staging.columns.quantity
 
-    output_root = cfg.harvard_staging.output.resolve_data_dir()
-    output_dir = output_root / "as_reported" / "raw_parquet_partitioned"
+    paths = get_harvard_staging_paths(cfg)
+
+    output_root = paths.output_root
+    output_dir = paths.partitioned_root
+    raw_parquet_root = paths.raw_parquet_root
+    aggregated_root = paths.aggregated_root
+    artifact_dir = paths.artifact_dir
+
+    if cfg.harvard_staging.skip.if_complete and not cfg.harvard_staging.overwrite:
+        marker_valid, marker_reasons = harvard_staging_success_marker_valid(cfg=cfg)
+
+        if marker_valid:
+            logger.info("Harvard staging success marker is valid; skipping rebuild.")
+            logger.info("Success marker: %s", rel_path(paths.marker_path))
+            return {
+                "status": "skipped_success_marker",
+                "output_dir": paths.partitioned_root,
+                "artifact_dir": paths.artifact_dir,
+                "marker_path": paths.marker_path,
+                "skip_reason": "valid_success_marker",
+            }
+
+        logger.info("Harvard staging success marker is missing or invalid; rebuild required.")
+        for reason in marker_reasons:
+            logger.info("  %s", reason)
+
+
+    ## Check function parameters before starting the pipeline. This avoids doing expensive work
+
+    is_complete, missing_outputs = harvard_staging_outputs_exist(
+        partitioned_root=output_dir,
+        raw_parquet_root=raw_parquet_root,
+        aggregated_root=aggregated_root,
+        years_by_hs=years_by_hs,
+    )
+
+    if is_complete and not cfg.harvard_staging.overwrite:
+        logger.info("==================================")
+        logger.info("Harvard staging outputs already exist; will perform detailed checks.")
+        logger.info("Output root: %s", rel_path(output_root))
+
+
+    if missing_outputs:
+        logger.info("==================================")
+        logger.info(
+            "Harvard staging outputs are incomplete; missing %s expected outputs.",
+            len(missing_outputs),)
+        for item in missing_outputs[:20]:
+            logger.info("  Missing: %s", item)
+
+        if len(missing_outputs) > 20:
+            logger.info("  ... and %s more missing outputs", len(missing_outputs) - 20)
+
 
     country_reference_dir = cfg.harvard_staging.country_reference.input.resolve_data_dir()
     country_reference_pattern = (
@@ -1319,7 +1708,41 @@ def run_harvard_staging_pipeline(
     logger.info("Country reference directory: %s", rel_path(country_reference_dir))
     logger.info("Country reference glob: %s", country_reference_glob)
 
-    summary = stage_comtrade_for_harvard_input(
+    if is_complete and not cfg.harvard_staging.overwrite:
+        detailed_ok, problems = check_harvard_staging_complete(
+            output_root=output_root,
+            artifact_dir=artifact_dir,
+            preservation_latest_filename=preservation_latest_filename,
+            years_by_hs=years_by_hs,
+            layout=layout,
+            threads=cfg.engine.threads,
+        )
+
+        if detailed_ok:
+            marker_path = write_harvard_staging_success_marker(
+                cfg=cfg,
+                run_id=run_id,
+                summary={"status": "reused_existing_outputs"},
+                compatibility_summary={"status": "not_rerun"},
+            )
+
+            logger.info("Existing Harvard staging outputs passed detailed checks; skipping rebuild.")
+            logger.info("Success marker written: %s", rel_path(marker_path))
+
+            return {
+                "status": "skipped_existing_checked",
+                "output_dir": output_dir,
+                "artifact_dir": artifact_dir,
+                "marker_path": marker_path,
+                "skip_reason": "existing_outputs_passed_detailed_check",
+            }
+
+        logger.info("Existing Harvard staging outputs failed detailed checks; rebuild required.")
+        for problem in problems[:20]:
+            logger.info("  %s", problem)
+
+
+    staged_partitioned_dir = stage_comtrade_for_harvard_input(
         input_dir=input_dir,
         pattern=pattern,
         output_dir=output_dir,
@@ -1331,6 +1754,10 @@ def run_harvard_staging_pipeline(
         threads=cfg.engine.threads,
         overwrite=cfg.harvard_staging.overwrite,
     )
+
+    summary: dict[str, Any] = {
+        "staged_partitioned_dir": str(staged_partitioned_dir),
+    }
 
     inventory = audit_harvard_staging_partitioned_output(
         output_dir=output_dir,
@@ -1378,23 +1805,28 @@ def run_harvard_staging_pipeline(
         overwrite=cfg.harvard_staging.overwrite,
     )
 
-    report_dir = cfg.harvard_staging.report.resolve_output_dir()
+    artifact_dir = cfg.harvard_staging.artifact.resolve_output_dir()
+    
+    preservation_base = Path(cfg.harvard_staging.artifact.preservation_filename)
+    preservation_latest_filename = (
+        f"{preservation_base.stem}_latest{preservation_base.suffix}"    
+    )
 
     inventory_outputs = write_dataframe_report(
         inventory,
-        report_dir=report_dir,
-        filename=cfg.harvard_staging.report.inventory_filename,
-        timestamp=cfg.harvard_staging.report.timestamp,
-        write_latest=cfg.harvard_staging.report.write_latest,
+        report_dir=artifact_dir,
+        filename=cfg.harvard_staging.artifact.inventory_filename,
+        timestamp=cfg.harvard_staging.artifact.timestamp,
+        write_latest=cfg.harvard_staging.artifact.write_latest,
         run_id=run_id,
     )
 
     preservation_outputs = write_dataframe_report(
         preservation,
-        report_dir=report_dir,
-        filename=cfg.harvard_staging.report.preservation_filename,
-        timestamp=cfg.harvard_staging.report.timestamp,
-        write_latest=cfg.harvard_staging.report.write_latest,
+        report_dir=artifact_dir,
+        filename=cfg.harvard_staging.artifact.preservation_filename,
+        timestamp=cfg.harvard_staging.artifact.timestamp,
+        write_latest=cfg.harvard_staging.artifact.write_latest,
         run_id=run_id,
     )
 
@@ -1410,6 +1842,30 @@ def run_harvard_staging_pipeline(
             rel_path(preservation_outputs["latest"]),
         )
 
+    is_complete, problems = check_harvard_staging_complete(
+        output_root=output_root,
+        artifact_dir=artifact_dir,
+        preservation_latest_filename=preservation_latest_filename,
+        years_by_hs=years_by_hs,
+        layout=cfg.harvard_staging.layout,
+        threads=cfg.engine.threads,
+    )
+
+    if not is_complete:
+        problem_preview = "; ".join(problems[:10])
+        raise RuntimeError(
+            "Harvard staging completed but final completeness checks failed. "
+            f"Problems: {problem_preview}"
+        )
+
+    marker_path = write_harvard_staging_success_marker(
+            cfg=cfg,
+            run_id=run_id,
+            summary=summary,
+            compatibility_summary=compatibility_summary,
+        )
+    logger.info("Success marker written: %s", rel_path(marker_path))
+
     logger.info("Compatibility export summary: %s", compatibility_summary)
     logger.info("Finished Harvard staging.")
     logger.info("Summary: %s", summary)
@@ -1417,10 +1873,11 @@ def run_harvard_staging_pipeline(
     return {
         "summary": summary,
         "output_dir": output_dir,
-        "report_dir": report_dir,
+        "artifact_dir": artifact_dir,
         "compatibility_summary": compatibility_summary,
-        "inventory_report": inventory_outputs.get("report"),
-        "preservation_report": preservation_outputs.get("report"),
+        "inventory_manifest": inventory_outputs.get("report"),
+        "preservation_manifest": preservation_outputs.get("report"),
         "inventory_latest": inventory_outputs.get("latest"),
         "preservation_latest": preservation_outputs.get("latest"),
+        "marker_path": marker_path,
     }

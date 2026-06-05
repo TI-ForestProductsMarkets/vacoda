@@ -176,7 +176,19 @@ def resolve_log_path(
     if log_file_name is None:
         return None
 
-    log_path = get_output_dir("logs") / Path(log_file_name)
+    logs_root = get_output_dir("logs")
+    candidate = Path(log_file_name)
+
+    if candidate.is_absolute():
+        log_path = candidate
+    else:
+        parts = list(candidate.parts)
+
+        # If caller passed "logs/...", avoid duplicating logs/logs/...
+        if parts and parts[0].lower() == "logs":
+            parts = parts[1:]
+
+        log_path = logs_root / Path(*parts) if parts else logs_root
 
     if timestamp:
         # Accept bool (legacy) and explicit timestamp strings.

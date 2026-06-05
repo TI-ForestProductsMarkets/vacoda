@@ -252,67 +252,6 @@ def audit_selected_product_codes(
         else:
             print(out.to_string(index=False))
 
-def audit_specific_product_codes_deprecated(
-    *,
-    harvard_data_root: Path,
-    target_hs: str,
-    target_year: int,
-    source_hs: str,
-    source_year: int,
-) -> None:
-    _print_header("3. Check known wood transition product codes")
-
-    agg_root = (
-        harvard_data_root
-        / "as_reported"
-        / "aggregated_by_year_not_converted"
-        / "parquet"
-    )
-
-    checks = [
-        (
-            "target HS2017 group 69",
-            agg_root / target_hs / f"{target_hs}_{target_year}.parquet",
-            ["440111", "440112"],
-        ),
-        (
-            "source HS2012 group 69",
-            agg_root / source_hs / f"{source_hs}_{source_year}.parquet",
-            ["440110"],
-        ),
-    ]
-
-    con = duckdb.connect()
-
-    for label, path, codes in checks:
-        print(label)
-        print(f"  file: {path}")
-
-        if not path.exists():
-            print("  missing file")
-            continue
-
-        codes_sql = ", ".join(f"'{c}'" for c in codes)
-
-        out = con.execute(
-            f"""
-            SELECT
-                cmdCode,
-                COUNT(*) AS n_rows,
-                SUM(primaryValue) AS value_total,
-                COUNT(DISTINCT reporterISO3) AS n_reporters
-            FROM read_parquet('{path}')
-            WHERE CAST(cmdCode AS VARCHAR) IN ({codes_sql})
-            GROUP BY cmdCode
-            ORDER BY cmdCode
-            """
-        ).df()
-
-        if out.empty:
-            print("  WARNING: no rows found for these product codes")
-        else:
-            print(out.to_string(index=False))
-
 
 def audit_matrix_files(
     *,
@@ -374,7 +313,9 @@ def run_harvard_generator_audit(
     target_year: int,
     product_code_checks: list[dict[str, object]] | None = None,
 ) -> None:
-    """Run all Harvard generator input audits in a standard order."""
+    """
+    Run all Harvard generator input audits in a standard order.
+    """
 
     audit_raw_marker_files(
         harvard_data_root=harvard_data_root,
