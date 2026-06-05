@@ -36,7 +36,7 @@ def main() -> None:
     log_level = parse_log_level(cfg.logging.level)
 
     log_path = resolve_log_path(
-        cfg.logging.file,
+        cfg.logging.resolve_log_file(),
         timestamp=cfg.logging.timestamp,
     )
 

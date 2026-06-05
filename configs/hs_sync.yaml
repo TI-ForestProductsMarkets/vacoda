@@ -26,6 +26,7 @@ global:
 
   logging:
     level: "DEBUG"
+    subdir: "logs/hs_sync"
     file: "LOG_HS_SYNC_COVERAGE.log"
     timestamp: true
 
@@ -49,6 +50,19 @@ harvard_staging:
   output:
     stage: "external"
     subdir: "harvard_comtrade_bulk"
+
+  layout:
+    base_subdir: "as_reported"
+    partitioned_subdir: "raw_parquet_partitioned"
+    raw_parquet_subdir: "raw_parquet"
+    aggregated_subdir: "aggregated_by_year_not_converted/parquet"
+  
+  skip:
+    if_complete: true
+    marker_filename: "harvard_staging_success.json"
+    check_input_fingerprint: true
+    check_config_fingerprint: true
+    check_output_fingerprint: true
 
   filters:
     valid_cmd_regex: "^[0-9]{6}$"

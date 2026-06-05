@@ -15,7 +15,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-
 from vacoda.config.base import (
     CONFIG_DIR,
     load_yaml_config,
@@ -69,25 +68,6 @@ def _block(
         return {}
 
     return require_dict(value, key=key)
-
-
-def _nested_block(
-    cfg: dict[str, Any],
-    path: tuple[str, ...],
-    *,
-    required: bool = True,
-) -> dict[str, Any]:
-    current: Any = cfg
-    label = ".".join(path)
-
-    for key in path:
-        if not isinstance(current, dict) or key not in current:
-            if required:
-                raise KeyError(f"Missing required config block: {label!r}")
-            return {}
-        current = current[key]
-
-    return require_dict(current, key=label)
 
 
 def _optional_str(value: Any, *, key: str) -> str | None:
@@ -204,11 +184,11 @@ class ArtifactConfig:
         default_filename: str | None = None,
         context: TemplateContext | None = None,
     ) -> "ArtifactConfig":
+
         kind = require_str(
-            cfg.get("kind", default_kind),
-            key=f"{key}.kind",
-        ).strip().lower()
-        kind = _normalize_output_kind(kind)
+                cfg.get("kind", default_kind),
+                key=f"{key}.kind",
+                ).strip().lower()
 
         subdir = require_str(
             cfg.get("subdir", ""),
@@ -380,6 +360,7 @@ class ColumnsConfig:
 @dataclass(frozen=True)
 class LoggingConfig:
     level: str = "INFO"
+    subdir: str = ""
     file: str | None = None
     timestamp: bool = True
 
@@ -390,12 +371,36 @@ class LoggingConfig:
                 cfg.get("level", "INFO"),
                 key="logging.level",
             ).strip().upper(),
+            subdir=require_str(
+                cfg.get("subdir", ""),
+                key="logging.subdir",
+                allow_empty=True,
+            ),
             file=_optional_str(cfg.get("file"), key="logging.file"),
             timestamp=require_bool(
                 cfg.get("timestamp", True),
                 key="logging.timestamp",
             ),
         )
+
+    def resolve_log_dir(self) -> Path:
+        base = get_output_dir("logs")
+        if not self.subdir:
+            return base
+
+        subdir_path = Path(self.subdir)
+        parts = list(subdir_path.parts)
+
+        # Treat "logs/..." as already anchored at output.logs root.
+        if parts and parts[0].lower() == "logs":
+            parts = parts[1:]
+
+        return base / Path(*parts) if parts else base
+
+    def resolve_log_file(self) -> Path | None:
+        if self.file is None:
+            return None
+        return self.resolve_log_dir() / self.file
 
 
 # ---------------------------------------------------------------------
@@ -641,10 +646,89 @@ class HarvardStagingArtifactConfig:
 
 
 @dataclass(frozen=True)
+class HarvardStagingLayoutConfig:
+    base_subdir: str
+    partitioned_subdir: str
+    raw_parquet_subdir: str
+    aggregated_subdir: str
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "HarvardStagingLayoutConfig":
+        return cls(
+            base_subdir=require_str(
+                cfg.get("base_subdir", "as_reported"),
+                key="harvard_staging.layout.base_subdir",
+            ),
+            partitioned_subdir=require_str(
+                cfg.get("partitioned_subdir", "raw_parquet_partitioned"),
+                key="harvard_staging.layout.partitioned_subdir",
+            ),
+            raw_parquet_subdir=require_str(
+                cfg.get("raw_parquet_subdir", "raw_parquet"),
+                key="harvard_staging.layout.raw_parquet_subdir",
+            ),
+            aggregated_subdir=require_str(
+                cfg.get(
+                    "aggregated_subdir",
+                    "aggregated_by_year_not_converted/parquet",
+                ),
+                key="harvard_staging.layout.aggregated_subdir",
+            ),
+        )
+
+    def resolve_base_dir(self, output_root: Path) -> Path:
+        return output_root / self.base_subdir
+
+    def resolve_partitioned_dir(self, output_root: Path) -> Path:
+        return self.resolve_base_dir(output_root) / self.partitioned_subdir
+
+    def resolve_raw_parquet_dir(self, output_root: Path) -> Path:
+        return self.resolve_base_dir(output_root) / self.raw_parquet_subdir
+
+    def resolve_aggregated_dir(self, output_root: Path) -> Path:
+        return self.resolve_base_dir(output_root) / self.aggregated_subdir
+
+
+@dataclass(frozen=True)
+class HarvardStagingSkipConfig:
+    if_complete: bool
+    marker_filename: str
+    check_input_fingerprint: bool
+    check_config_fingerprint: bool
+    check_output_fingerprint: bool
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "HarvardStagingSkipConfig":
+        return cls(
+            if_complete=require_bool(
+                cfg.get("if_complete", False),
+                key="harvard_staging.skip.if_complete",
+            ),
+            marker_filename=require_str(
+                cfg.get("marker_filename", "harvard_staging_success.json"),
+                key="harvard_staging.skip.marker_filename",
+            ),
+            check_input_fingerprint=require_bool(
+                cfg.get("check_input_fingerprint", True),
+                key="harvard_staging.skip.check_input_fingerprint",
+            ),
+            check_config_fingerprint=require_bool(
+                cfg.get("check_config_fingerprint", True),
+                key="harvard_staging.skip.check_config_fingerprint",
+            ),
+            check_output_fingerprint=require_bool(
+                cfg.get("check_output_fingerprint", True),
+                key="harvard_staging.skip.check_output_fingerprint",
+            ),
+        )
+
+@dataclass(frozen=True)
 class HarvardStagingConfig:
     enabled: bool
     input: StagePathConfig
     output: StagePathConfig
+    layout: HarvardStagingLayoutConfig
+    skip: HarvardStagingSkipConfig
     filters: HarvardStagingFiltersConfig
     columns: HarvardStagingColumnsConfig
     overwrite: bool
@@ -668,6 +752,12 @@ class HarvardStagingConfig:
                 require_dict(cfg.get("output", {}), key="harvard_staging.output"),
                 key="harvard_staging.output",
                 default_stage="external",
+            ),
+            layout=HarvardStagingLayoutConfig.from_dict(
+                require_dict(cfg.get("layout", {}), key="harvard_staging.layout")
+            ),
+            skip=HarvardStagingSkipConfig.from_dict(
+                require_dict(cfg.get("skip", {}), key="harvard_staging.skip")
             ),
             filters=HarvardStagingFiltersConfig.from_dict(
                 require_dict(cfg.get("filters", {}), key="harvard_staging.filters")
@@ -818,7 +908,6 @@ class ProductConfig:
     filename: str
     write: bool
     depends_on: str | None = None
-    output_kind: str | None = None
     options: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -853,10 +942,6 @@ class ProductConfig:
                 cfg.get("write", True),
                 key=f"products.{name}.write",
             ),
-            output_kind=_optional_str(
-                cfg.get("output_kind"),
-                key=f"products.{name}.output_kind",
-            ),
             options=require_dict(
                 cfg.get("options", {}),
                 key=f"products.{name}.options",
@@ -864,9 +949,7 @@ class ProductConfig:
         )
 
     def resolve_output_dir(self, default_dir: Path) -> Path:
-        if self.output_kind is None:
-            return default_dir
-        return get_output_dir(self.output_kind.strip().lower())
+        return default_dir
 
 @dataclass(frozen=True)
 class CoverageConfig:
@@ -967,73 +1050,6 @@ class FutureBlockConfig:
 # Harvard weights
 # ---------------------------------------------------------------------
 
-@dataclass(frozen=True)
-class HarvardWeightsStaticConfig:
-    stage: str
-    subdir: str
-    concordance_file: str
-
-    @classmethod
-    def from_dict(cls, cfg: dict[str, Any]) -> "HarvardWeightsStaticConfig":
-        return cls(
-            stage=require_str(
-                cfg.get("stage", "references"),
-                key="harvard_weights.static.stage",
-            ),
-            subdir=require_str(
-                cfg.get("subdir", "harvard_comtrade"),
-                key="harvard_weights.static.subdir",
-                allow_empty=True,
-            ),
-            concordance_file=require_str(
-                cfg.get("concordance_file"),
-                key="harvard_weights.static.concordance_file",
-            ),
-        )
-
-    def resolve_dir(self) -> Path:
-        base = get_data_dir(self.stage)
-        return base / self.subdir if self.subdir else base
-
-    def resolve_concordance_path(self) -> Path:
-        return self.resolve_dir() / self.concordance_file
-
-
-@dataclass(frozen=True)
-class HarvardWeightsOutputConfig:
-    stage: str
-    subdir: str
-    file: str
-
-    @classmethod
-    def from_dict(cls, cfg: dict[str, Any]) -> "HarvardWeightsOutputConfig":
-        return cls(
-            stage=require_str(
-                cfg.get("stage", "references"),
-                key="harvard_weights.output.stage",
-            ),
-            subdir=require_str(
-                cfg.get("subdir", "hs_sync"),
-                key="harvard_weights.output.subdir",
-                allow_empty=True,
-            ),
-            file=require_str(
-                cfg.get("file", "harvard_hs_conversion_weights.parquet"),
-                key="harvard_weights.output.file",
-            ),
-        )
-
-    def resolve_dir(self) -> Path:
-        base = get_data_dir(self.stage)
-        return base / self.subdir if self.subdir else base
-
-    def resolve_path(self) -> Path:
-        return self.resolve_dir() / self.file
-
-
-@dataclass(frozen=True)
-class HarvardWeightsConfig:
-    pass
 
 
 # ---------------------------------------------------------------------
@@ -1057,7 +1073,6 @@ class HsSyncConfig:
     references: dict[str, Any]
 
     harvard_weights: FutureBlockConfig
-    artifact: ArtifactConfig
     un_comtrade_mapping: FutureBlockConfig
     weight_strategy: FutureBlockConfig
 
@@ -1068,34 +1083,14 @@ class HsSyncConfig:
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "HsSyncConfig":
+        global_cfg = _block(raw, "global")
+        
         scope = ScopeConfig.from_dict(_block(global_cfg, "scope"))
-        context = TemplateContext(
-            target_hs=require_str(
-                _block(raw, "coverage", required=False).get(
-                    "target_hs",
-                    scope.target_hs,
-                ),
-                key="coverage.target_hs",
-            ).strip().upper()
-        )
-
+        
         coverage = CoverageConfig.from_dict(
             _block(raw, "coverage"),
             scope=scope,
         )
-
-        products_raw = _block(raw, "products", required=False)
-        products = {
-            product_name: ProductConfig.from_dict(
-                product_name,
-                require_dict(
-                    product_cfg,
-                    key=f"products.{product_name}",
-                ),
-                context=TemplateContext(target_hs=coverage.target_hs),
-            )
-            for product_name, product_cfg in products_raw.items()
-        }
 
         return cls(
             raw=raw,
@@ -1104,34 +1099,20 @@ class HsSyncConfig:
             progress=ProgressConfig.from_dict(_block(global_cfg, "progress", required=False)),
             columns=ColumnsConfig.from_dict(_block(global_cfg, "columns")),
             logging=LoggingConfig.from_dict(_block(global_cfg, "logging", required=False)),
-            harvard_staging=HarvardStagingConfig.from_dict(
-                _block(raw, "harvard_staging")
-            ),
-            harvard_weights=FutureBlockConfig.from_dict(
-                _block(raw, "harvard_weights", required=False),
-                key="harvard_weights",
-            ),
+            harvard_staging=HarvardStagingConfig.from_dict(_block(raw, "harvard_staging")),
             coverage=coverage,
-            diagnostics=DiagnosticsConfig.from_dict(
-                _block(raw, "diagnostics", required=False)
-            ),
-            artifact=ArtifactConfig.from_dict(
-                _block(raw, "artifact", required=False),
-                key="artifact",
-                default_filename="audit_hs_sync_concordance_coverage.txt",
-                context=context,
-            ),
-            products=products,
+            references=_block(raw, "references", required=False),
+            harvard_weights=FutureBlockConfig.from_dict(_block(raw, "harvard_weights", required=False),
+                                                    key="harvard_weights",),
             un_comtrade_mapping=FutureBlockConfig.from_dict(
-                _block(raw, "un_comtrade_mapping", required=False),
-                key="un_comtrade_mapping",
-            ),
+                                                _block(raw, "un_comtrade_mapping", required=False),
+                                                key="un_comtrade_mapping",
+                                                ),
             weight_strategy=FutureBlockConfig.from_dict(
-                _block(raw, "weight_strategy", required=False),
-                key="weight_strategy",
-            ),
+                                        _block(raw, "weight_strategy", required=False),
+                                        key="weight_strategy",
+                                ),
         )
-
     @property
     def target_hs(self) -> str:
         """Effective target HS for the active coverage workflow."""
@@ -1146,12 +1127,12 @@ class HsSyncConfig:
 
     def product(self, name: str) -> ProductConfig:
         try:
-            return self.products[name]
+            return self.coverage.products[name]
         except KeyError as exc:
-            raise KeyError(f"Unknown HS-sync product: {name!r}") from exc
+            raise KeyError(f"Unknown coverage product: {name!r}") from exc
 
     def is_product_enabled(self, name: str, *, default: bool = False) -> bool:
-        product = self.products.get(name)
+        product = self.coverage.products.get(name)
         if product is None:
             return default
         return product.enabled
@@ -1159,7 +1140,7 @@ class HsSyncConfig:
     def enabled_products(self) -> list[str]:
         return [
             product_name
-            for product_name, product in self.products.items()
+            for product_name, product in self.coverage.products.items()
             if product.enabled
         ]
 
@@ -1170,7 +1151,7 @@ class HsSyncConfig:
         return self.product(name).options
 
     def product_write_enabled(self, name: str, *, default: bool = True) -> bool:
-        product = self.products.get(name)
+        product = self.coverage.products.get(name)
         if product is None:
             return default
         return product.write
