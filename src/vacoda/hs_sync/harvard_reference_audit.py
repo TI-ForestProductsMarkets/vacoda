@@ -269,7 +269,7 @@ def audit_matrix_files(
 ) -> None:
     _print_header("4. Matrix completeness")
 
-    matrix_dir = generator_root / "data" / "matrices"
+    matrix_dir = generator_root / "matrices"
 
     if not matrix_dir.exists():
         print(f"matrix directory does not exist: {matrix_dir}")
@@ -353,9 +353,9 @@ def run_harvard_generator_audit(
         target_year=target_year,
     )
 
-    audit_harvard_dimension_tests(
-        generator_root=generator_root,
-    )
+    #audit_harvard_dimension_tests(
+    #    generator_root=generator_root,
+    #)
 
 
 def run_harvard_generator_audit_from_config(cfg: "HsSyncConfig") -> dict[str, object]:

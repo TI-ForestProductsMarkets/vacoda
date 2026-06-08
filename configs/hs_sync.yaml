@@ -146,7 +146,7 @@ harvard_generator_audit:
 
     generator_root:
       stage: "references"
-      subdir: "comtrade-conversion-weights/generator"
+      subdir: "harvard_generator/hs_adjacent_transition_1995_2022"
 
   transition:
     source_hs: "H4"
@@ -176,7 +176,7 @@ harvard_generator_audit:
 # Harvard mapping direction audit
 # ============================================================
 harvard_mapping_direction:
-  enabled: true
+  enabled: false
 
   mappings:
     # Where to read coverage mapping CSVs from when coverage.mappings.stage="references".

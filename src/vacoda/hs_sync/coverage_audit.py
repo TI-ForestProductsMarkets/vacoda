@@ -373,6 +373,7 @@ def build_target_hs_mapping_coverage_artifact(
 
 def run_target_hs_mapping_coverage_audit(
     *,
+    cfg: HsSyncConfig | None = None,
     config_path: Path | None = None,
     run_id: str | None = None) -> dict[str, Path]:
     """
@@ -403,7 +404,8 @@ def run_target_hs_mapping_coverage_audit(
         ## Step 1: Load config and resolve paths
         ##################################################################
         with _target_hs_workflow_step(1):
-            cfg = HsSyncConfig.from_yaml(config_path)
+            if cfg is None:
+                cfg = HsSyncConfig.from_yaml(config_path)
             
             ### define paths and parameters based on config
             input_dir = cfg.coverage_input_dir()
