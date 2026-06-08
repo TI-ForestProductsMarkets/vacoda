@@ -1,264 +1,570 @@
 """
 vacoda.hs_sync.apply
-Functions to apply HS synchronization to trade data, harmonizing product codes to a common HS vintage.
+
+Apply HS-sync mapping weights to observed Comtrade trade rows.
+
+This module consumes the complete mapping-weight table produced by the
+allocation stage. It does not decide allocation weights itself.
+
+Core invariant:
+    Sum of hs_synced value should equal sum of original value,
+    up to floating point tolerance.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+import duckdb
 import pandas as pd
 
-def apply_hs_sync():
-    pass
-
-def expand_rows_with_weights():
-    pass
+from vacoda.utils.logger import get_logger
 
 
-def apply_weighted_hs_concordance(
-    trade_df: pd.DataFrame,
-    concordance_df: pd.DataFrame,
-    target_hs: str = "H5",
-    min_year: int = 2002,
-    year_col: str = "RefYear",
-    hs_col: str = "ClassificationCode",
-    cmd_col: str = "CmdCode",
-    value_col: str = "PrimaryValue",
-    weight_col: str = "weight",
-    keep_unmapped: bool = True) -> pd.DataFrame:
+logger = get_logger("HS_SYNC.APPLY")
+
+
+@dataclass(frozen=True)
+class HsSyncApplyResult:
+    output_path: Path
+    audit_path: Path
+    audit: pd.DataFrame
+
+
+def apply_hs_sync_with_weights(
+    *,
+    input_glob: str,
+    weights_path: Path,
+    output_path: Path,
+    audit_path: Path,
+    min_year: int,
+    max_year: int,
+    year_col: str,
+    hs_col: str,
+    cmd_col: str,
+    value_col: str,
+    output_format: str = "parquet",
+    threads: int = 16,
+    overwrite: bool = True,
+) -> HsSyncApplyResult:
     """
-    Harmonize Comtrade product codes to a target HS system using a weighted
-    concordance table.
-
-    This function does not require the user to provide source_cmd or target_cmd
-    manually. Those are read from concordance_df.
-
-    Expected trade_df columns:
-        RefYear
-        ClassificationCode
-        CmdCode
-        PrimaryValue
-        plus any other dimensions, e.g. ReporterCode, PartnerCode, FlowCode
-
-    Expected concordance_df columns:
-        source_hs
-        source_cmd
-        target_hs
-        target_cmd
-        weight
-    """
-
-    required_trade_cols = {year_col, hs_col, cmd_col, value_col}
-    missing_trade = required_trade_cols - set(trade_df.columns)
-    if missing_trade:
-        raise ValueError(f"trade_df missing columns: {sorted(missing_trade)}")
-
-    required_conc_cols = {
-        "source_hs",
-        "source_cmd",
-        "target_hs",
-        "target_cmd",
-        weight_col,
-    }
-    missing_conc = required_conc_cols - set(concordance_df.columns)
-    if missing_conc:
-        raise ValueError(f"concordance_df missing columns: {sorted(missing_conc)}")
-
-    df = trade_df.loc[trade_df[year_col] >= min_year].copy()
-
-    # Keep original information for diagnostics
-    df["original_hs"] = df[hs_col]
-    df["original_cmd"] = df[cmd_col]
-
-    # Rows already in the target HS system do not need conversion
-    already_target = df[df[hs_col] == target_hs].copy()
-    already_target["harmonized_hs"] = target_hs
-    already_target["harmonized_cmd"] = already_target[cmd_col]
-    already_target[weight_col] = 1.0
-    already_target[f"{value_col}_harmonized"] = already_target[value_col]
-    already_target["mapping_status"] = "already_target"
-
-    # Rows from other HS systems need mapping
-    needs_mapping = df[df[hs_col] != target_hs].copy()
-
-    conc = concordance_df.loc[
-        concordance_df["target_hs"] == target_hs
-    ].copy()
-
-    mapped = needs_mapping.merge(
-        conc,
-        left_on=[hs_col, cmd_col],
-        right_on=["source_hs", "source_cmd"],
-        how="left",
-        validate="many_to_many",
-    )
-
-    has_mapping = mapped["target_cmd"].notna()
-
-    mapped.loc[has_mapping, "harmonized_hs"] = mapped.loc[has_mapping, "target_hs"]
-    mapped.loc[has_mapping, "harmonized_cmd"] = mapped.loc[has_mapping, "target_cmd"]
-    mapped.loc[has_mapping, f"{value_col}_harmonized"] = (
-        mapped.loc[has_mapping, value_col] * mapped.loc[has_mapping, weight_col]
-    )
-    mapped.loc[has_mapping, "mapping_status"] = "mapped"
-
-    if keep_unmapped:
-        mapped.loc[~has_mapping, "harmonized_hs"] = pd.NA
-        mapped.loc[~has_mapping, "harmonized_cmd"] = pd.NA
-        mapped.loc[~has_mapping, f"{value_col}_harmonized"] = pd.NA
-        mapped.loc[~has_mapping, "mapping_status"] = "unmapped"
-    else:
-        mapped = mapped.loc[has_mapping].copy()
-
-    out = pd.concat(
-        [already_target, mapped],
-        ignore_index=True,
-        sort=False,
-    )
-
-    return out
-
-def harmonize_hs_to_target(
-    db: pd.DataFrame,
-    mapping: pd.DataFrame,
-    target_hs: str = "H5",
-    min_year: int = 2002,
-    year_col: str = "RefYear",
-    hs_col: str = "ClassificationCode",
-    cmd_col: str = "CmdCode",
-    value_col: str = "PrimaryValue",
-    weight_col: str = "weight",
-    aggregate: bool = True) -> pd.DataFrame:
-    """
-    Harmonize original HS vintages in a Comtrade-style table to one target HS vintage.
-
-    This follows a Harvard-style weighted concordance idea:
-    one source HS code may map to multiple target HS codes, and trade value is split
-    by conversion weights.
+    Apply complete HS-sync mapping weights to trade data.
 
     Parameters
     ----------
-    db:
-        Trade data with at least year, HS system, product code, and value columns.
+    input_glob:
+        Glob of raw/staged Comtrade CSV files.
 
-    mapping:
-        Concordance table with columns:
-            source_hs
-            source_cmd
-            target_hs
-            target_cmd
-            weight
+    weights_path:
+        Complete mapping-weight table CSV.
 
-        Example:
-            source_hs source_cmd target_hs target_cmd weight
-            H3        441012     H5        441011     0.70
-            H3        441012     H5        441012     0.30
+    output_path:
+        Final synced output path.
 
-    target_hs:
-        Target HS vintage, e.g. "H5".
+    audit_path:
+        CSV audit path.
 
-    min_year:
-        Keep data from this year onward.
+    min_year, max_year:
+        Year range to process.
 
-    aggregate:
-        If True, aggregate duplicated rows after mapping.
+    year_col, hs_col, cmd_col, value_col:
+        Input column names.
 
-    Returns
-    -------
-    pd.DataFrame
-        Harmonized dataframe with:
-            original HS columns preserved
-            harmonized HS columns added
-            weighted value column added
+    output_format:
+        Currently supports parquet or csv.
+
+    threads:
+        DuckDB threads.
+
+    overwrite:
+        Whether to overwrite existing outputs.
     """
 
-    required_db_cols = {year_col, hs_col, cmd_col, value_col}
-    missing_db_cols = required_db_cols - set(db.columns)
-    if missing_db_cols:
-        raise ValueError(f"db is missing required columns: {sorted(missing_db_cols)}")
+    if output_path.exists() and not overwrite:
+        raise FileExistsError(f"Output already exists: {output_path}")
 
-    required_mapping_cols = {
-        "source_hs",
-        "source_cmd",
-        "target_hs",
-        "target_cmd",
-        weight_col,
-    }
-    missing_mapping_cols = required_mapping_cols - set(mapping.columns)
-    if missing_mapping_cols:
+    if audit_path.exists() and not overwrite:
+        raise FileExistsError(f"Audit already exists: {audit_path}")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    audit_path.parent.mkdir(parents=True, exist_ok=True)
+
+    con = duckdb.connect()
+    con.execute(f"PRAGMA threads={int(threads)}")
+
+    try:
+        logger.info("Applying HS-sync mapping weights.")
+        logger.info("  Input glob: %s", input_glob)
+        logger.info("  Weights: %s", weights_path)
+        logger.info("  Output: %s", output_path)
+        logger.info("  Years: %s–%s", min_year, max_year)
+        logger.info("  Threads: %s", threads)
+
+        _register_weights(
+            con=con,
+            weights_path=weights_path,
+        )
+
+        _validate_weight_table(con)
+
+        audit_before = _build_pre_apply_audit(
+            con=con,
+            input_glob=input_glob,
+            min_year=min_year,
+            max_year=max_year,
+            year_col=year_col,
+            hs_col=hs_col,
+            cmd_col=cmd_col,
+            value_col=value_col,
+        )
+
+        _write_synced_output(
+            con=con,
+            input_glob=input_glob,
+            output_path=output_path,
+            min_year=min_year,
+            max_year=max_year,
+            year_col=year_col,
+            hs_col=hs_col,
+            cmd_col=cmd_col,
+            value_col=value_col,
+            output_format=output_format,
+        )
+
+        audit_after = _build_post_apply_audit(
+            con=con,
+            output_path=output_path,
+            output_format=output_format,
+        )
+
+        audit = _combine_apply_audit(
+            audit_before=audit_before,
+            audit_after=audit_after,
+        )
+
+        audit.to_csv(audit_path, index=False)
+
+        failed = audit[audit["status"] == "fail"]
+        if not failed.empty:
+            raise ValueError(
+                "HS-sync apply audit failed:\n"
+                + failed.to_string(index=False)
+            )
+
+        logger.info("HS-sync apply completed.")
+        logger.info("  Output: %s", output_path)
+        logger.info("  Audit: %s", audit_path)
+
+        return HsSyncApplyResult(
+            output_path=output_path,
+            audit_path=audit_path,
+            audit=audit,
+        )
+
+    finally:
+        con.close()
+
+
+def _sql_literal(value: str | Path) -> str:
+    """
+    Safely quote a Python string/path as a SQL string literal.
+
+    DuckDB does not allow prepared parameters in every statement type,
+    for example CREATE VIEW AS SELECT read_csv_auto(?).
+    """
+    text = str(value)
+    return "'" + text.replace("'", "''") + "'"
+
+
+def _register_weights(
+    *,
+    con: duckdb.DuckDBPyConnection,
+    weights_path: Path,
+) -> None:
+    """
+    Register complete mapping-weight table as DuckDB temp view.
+    """
+
+    if not weights_path.exists():
+        raise FileNotFoundError(f"Mapping weights file not found: {weights_path}")
+
+    weights_sql = _sql_literal(weights_path)
+
+    con.execute(
+        f"""
+        CREATE OR REPLACE TEMP VIEW hs_weights_raw AS
+        SELECT *
+        FROM read_csv_auto(
+            {weights_sql},
+            HEADER = TRUE,
+            ALL_VARCHAR = TRUE
+        )
+        """
+    )
+
+    con.execute(
+        """
+        CREATE OR REPLACE TEMP VIEW hs_weights AS
+        SELECT
+            source_hs,
+            lpad(source_cmd, 6, '0') AS source_cmd,
+            target_hs,
+            lpad(target_cmd, 6, '0') AS target_cmd,
+            conversion_need,
+            hs_sync_method,
+            relationship_original,
+            actual_mapping_category,
+            CAST(n_target_codes AS INTEGER) AS n_target_codes,
+            CAST(allocation_weight AS DOUBLE) AS allocation_weight,
+            allocation_strategy,
+            allocation_is_assumption
+        FROM hs_weights_raw
+        """
+    )
+
+def _register_weights_obsolete(
+    *,
+    con: duckdb.DuckDBPyConnection,
+    weights_path: Path,
+) -> None:
+    """
+    Register complete mapping-weight table as DuckDB temp view.
+    """
+
+    if not weights_path.exists():
+        raise FileNotFoundError(f"Mapping weights file not found: {weights_path}")
+
+    con.execute(
+        """
+        CREATE OR REPLACE TEMP VIEW hs_weights_raw AS
+        SELECT *
+        FROM read_csv_auto(?,
+            HEADER = TRUE,
+            ALL_VARCHAR = TRUE
+        )
+        """,
+        [str(weights_path)],
+    )
+
+    con.execute(
+        """
+        CREATE OR REPLACE TEMP VIEW hs_weights AS
+        SELECT
+            source_hs,
+            lpad(source_cmd, 6, '0') AS source_cmd,
+            target_hs,
+            lpad(target_cmd, 6, '0') AS target_cmd,
+            conversion_need,
+            hs_sync_method,
+            relationship_original,
+            actual_mapping_category,
+            CAST(n_target_codes AS INTEGER) AS n_target_codes,
+            CAST(allocation_weight AS DOUBLE) AS allocation_weight,
+            allocation_strategy,
+            allocation_is_assumption
+        FROM hs_weights_raw
+        """
+    )
+
+
+def _validate_weight_table(con: duckdb.DuckDBPyConnection) -> None:
+    """
+    Fail if complete mapping weights are not valid.
+    """
+
+    bad = con.execute(
+        """
+        WITH sums AS (
+            SELECT
+                source_hs,
+                source_cmd,
+                SUM(allocation_weight) AS weight_sum,
+                COUNT(*) AS n_rows
+            FROM hs_weights
+            GROUP BY source_hs, source_cmd
+        )
+        SELECT *
+        FROM sums
+        WHERE abs(weight_sum - 1.0) > 1e-9
+           OR n_rows < 1
+        LIMIT 20
+        """
+    ).fetchdf()
+
+    if not bad.empty:
         raise ValueError(
-            f"mapping is missing required columns: {sorted(missing_mapping_cols)}"
+            "Invalid complete mapping weights. Some source weights do not sum "
+            "to 1.0:\n"
+            + bad.to_string(index=False)
         )
 
-    # 1. Filter years
-    df = db.loc[db[year_col] >= min_year].copy()
 
-    # 2. Preserve original classification information
-    df["original_hs"] = df[hs_col]
-    df["original_cmd"] = df[cmd_col]
+def _build_pre_apply_audit(
+    *,
+    con: duckdb.DuckDBPyConnection,
+    input_glob: str,
+    min_year: int,
+    max_year: int,
+    year_col: str,
+    hs_col: str,
+    cmd_col: str,
+    value_col: str,
+) -> pd.DataFrame:
+    """
+    Audit input rows and whether all source_hs/source_cmd pairs find weights.
+    """
 
-    # 3. Rows already in target HS do not need concordance
-    already_target = df[df[hs_col] == target_hs].copy()
-    already_target["target_hs"] = target_hs
-    already_target["target_cmd"] = already_target[cmd_col]
-    already_target[weight_col] = 1.0
-    already_target[f"{value_col}_mapped"] = already_target[value_col]
+    input_glob_sql = _sql_literal(input_glob)
 
-    # 4. Rows from other HS vintages need weighted mapping
-    needs_mapping = df[df[hs_col] != target_hs].copy()
-
-    mapped = needs_mapping.merge(
-        mapping,
-        left_on=[hs_col, cmd_col],
-        right_on=["source_hs", "source_cmd"],
-        how="left",
-        validate="many_to_many",
-    )
-
-    # 5. Keep only mappings into the desired target HS
-    mapped = mapped[mapped["target_hs"] == target_hs].copy()
-
-    # 6. Apply conversion weights
-    mapped[f"{value_col}_mapped"] = mapped[value_col] * mapped[weight_col]
-
-    # 7. Combine target rows and mapped rows
-    out = pd.concat([already_target, mapped], ignore_index=True, sort=False)
-
-    # 8. Replace working HS/code columns by harmonized target version
-    out[hs_col] = out["target_hs"]
-    out[cmd_col] = out["target_cmd"]
-
-    if not aggregate:
-        return out
-
-    # 9. Aggregate after many-to-many mapping
-    protected_cols = {
-        value_col,
-        f"{value_col}_mapped",
-        weight_col,
-        "source_hs",
-        "source_cmd",
-        "target_hs",
-        "target_cmd",
-        "original_hs",
-        "original_cmd",
-    }
-
-    group_cols = [
-        c
-        for c in out.columns
-        if c not in protected_cols
-        and not c.endswith("_mapped")
-    ]
-
-    agg = (
-        out.groupby(group_cols, dropna=False, as_index=False)
-        .agg(
-            **{
-                f"{value_col}_mapped": (f"{value_col}_mapped", "sum"),
-                "n_source_rows": (value_col, "size"),
-                "n_original_hs_systems": ("original_hs", "nunique"),
-            }
+    query = f"""
+    WITH src AS (
+        SELECT
+            CAST("{year_col}" AS INTEGER) AS ref_year,
+            CAST("{hs_col}" AS VARCHAR) AS source_hs,
+            lpad(CAST("{cmd_col}" AS VARCHAR), 6, '0') AS source_cmd,
+            TRY_CAST("{value_col}" AS DOUBLE) AS value_original
+        FROM read_csv_auto(
+            {input_glob_sql},
+            HEADER = TRUE,
+            ALL_VARCHAR = TRUE,
+            union_by_name = TRUE
         )
+        WHERE CAST("{year_col}" AS INTEGER) BETWEEN ? AND ?
+    ),
+    source_pairs AS (
+        SELECT DISTINCT source_hs, source_cmd
+        FROM src
+    ),
+    missing_pairs AS (
+        SELECT s.*
+        FROM source_pairs s
+        LEFT JOIN (
+            SELECT DISTINCT source_hs, source_cmd
+            FROM hs_weights
+        ) w
+        USING (source_hs, source_cmd)
+        WHERE w.source_cmd IS NULL
+    )
+    SELECT
+        COUNT(*) AS input_rows,
+        SUM(value_original) AS input_value,
+        (SELECT COUNT(*) FROM source_pairs) AS input_source_pairs,
+        (SELECT COUNT(*) FROM missing_pairs) AS missing_source_pairs
+    FROM src
+    """
+
+    row = con.execute(query, [min_year, max_year]).fetchdf().iloc[0]
+
+    checks = []
+
+    checks.append(
+        {
+            "check": "input_rows_defined",
+            "expected": "> 0",
+            "actual": row["input_rows"],
+            "status": "pass" if row["input_rows"] > 0 else "fail",
+            "detail": "",
+        }
     )
 
-    return agg
+    checks.append(
+        {
+            "check": "all_source_pairs_have_weights",
+            "expected": 0,
+            "actual": row["missing_source_pairs"],
+            "status": "pass" if row["missing_source_pairs"] == 0 else "fail",
+            "detail": f"input_source_pairs={row['input_source_pairs']}",
+        }
+    )
+
+    checks.append(
+        {
+            "check": "input_value_total",
+            "expected": "recorded",
+            "actual": row["input_value"],
+            "status": "info",
+            "detail": "",
+        }
+    )
+
+    return pd.DataFrame(checks)
+
+def _write_synced_output(
+    *,
+    con: duckdb.DuckDBPyConnection,
+    input_glob: str,
+    output_path: Path,
+    min_year: int,
+    max_year: int,
+    year_col: str,
+    hs_col: str,
+    cmd_col: str,
+    value_col: str,
+    output_format: str,
+) -> None:
+    """
+    Write HS-synced rows.
+    """
+
+    input_glob_sql = _sql_literal(input_glob)
+    output_path_sql = _sql_literal(output_path)
+
+    synced_query = f"""
+    SELECT
+        src.*,
+
+        src."{hs_col}" AS source_hs_original,
+        lpad(CAST(src."{cmd_col}" AS VARCHAR), 6, '0') AS source_cmd_original,
+
+        w.target_hs AS target_hs,
+        w.target_cmd AS target_cmd,
+
+        w.allocation_weight,
+        w.conversion_need,
+        w.hs_sync_method,
+        w.allocation_strategy,
+        w.allocation_is_assumption,
+
+        TRY_CAST(src."{value_col}" AS DOUBLE) AS primary_value_original,
+        TRY_CAST(src."{value_col}" AS DOUBLE) * w.allocation_weight
+            AS primary_value_hs_synced
+
+    FROM read_csv_auto(
+        {input_glob_sql},
+        HEADER = TRUE,
+        ALL_VARCHAR = TRUE,
+        union_by_name = TRUE
+    ) src
+    INNER JOIN hs_weights w
+      ON CAST(src."{hs_col}" AS VARCHAR) = w.source_hs
+     AND lpad(CAST(src."{cmd_col}" AS VARCHAR), 6, '0') = w.source_cmd
+    WHERE CAST(src."{year_col}" AS INTEGER)
+          BETWEEN {int(min_year)} AND {int(max_year)}
+    """
+
+    if output_format == "parquet":
+        con.execute(
+            f"""
+            COPY (
+                {synced_query}
+            )
+            TO {output_path_sql}
+            (FORMAT PARQUET)
+            """
+        )
+
+    elif output_format == "csv":
+        con.execute(
+            f"""
+            COPY (
+                {synced_query}
+            )
+            TO {output_path_sql}
+            (HEADER, DELIMITER ',')
+            """
+        )
+
+    else:
+        raise ValueError(f"Unsupported output format: {output_format}")
+
+def _build_post_apply_audit(
+    *,
+    con: duckdb.DuckDBPyConnection,
+    output_path: Path,
+    output_format: str,
+) -> pd.DataFrame:
+    """
+    Audit written HS-synced output.
+    """
+
+    output_path_sql = _sql_literal(output_path)
+
+    if output_format == "parquet":
+        scan = f"read_parquet({output_path_sql})"
+    elif output_format == "csv":
+        scan = f"read_csv_auto({output_path_sql}, HEADER = TRUE, ALL_VARCHAR = TRUE)"
+    else:
+        raise ValueError(f"Unsupported output format: {output_format}")
+
+    query = f"""
+    SELECT
+        COUNT(*) AS output_rows,
+        SUM(CAST(primary_value_original AS DOUBLE)) AS expanded_original_value,
+        SUM(CAST(primary_value_hs_synced AS DOUBLE)) AS synced_value,
+        COUNT(DISTINCT source_hs_original || ':' || source_cmd_original)
+            AS output_source_pairs,
+        COUNT(DISTINCT target_hs || ':' || target_cmd)
+            AS output_target_pairs
+    FROM {scan}
+    """
+
+    row = con.execute(query).fetchdf().iloc[0]
+
+    checks = []
+
+    checks.append(
+        {
+            "check": "output_rows_defined",
+            "expected": "> 0",
+            "actual": row["output_rows"],
+            "status": "pass" if row["output_rows"] > 0 else "fail",
+            "detail": "",
+        }
+    )
+
+    checks.append(
+        {
+            "check": "synced_value_total",
+            "expected": "recorded",
+            "actual": row["synced_value"],
+            "status": "info",
+            "detail": (
+                f"expanded_original_value={row['expanded_original_value']}; "
+                f"output_source_pairs={row['output_source_pairs']}; "
+                f"output_target_pairs={row['output_target_pairs']}"
+            ),
+        }
+    )
+
+    return pd.DataFrame(checks)
+
+
+def _combine_apply_audit(
+    *,
+    audit_before: pd.DataFrame,
+    audit_after: pd.DataFrame,
+) -> pd.DataFrame:
+    audit = pd.concat([audit_before, audit_after], ignore_index=True)
+
+    # Compare input_value_total and synced_value_total.
+    input_value_rows = audit[audit["check"] == "input_value_total"]
+    synced_value_rows = audit[audit["check"] == "synced_value_total"]
+
+    if not input_value_rows.empty and not synced_value_rows.empty:
+        input_value = float(input_value_rows["actual"].iloc[0])
+        synced_value = float(synced_value_rows["actual"].iloc[0])
+
+        diff = input_value - synced_value
+        rel_diff = abs(diff) / abs(input_value) if input_value else 0.0
+
+        audit = pd.concat(
+            [
+                audit,
+                pd.DataFrame(
+                    [
+                        {
+                            "check": "value_preserved_after_hs_sync",
+                            "expected": input_value,
+                            "actual": synced_value,
+                            "status": "pass" if rel_diff <= 1e-10 else "fail",
+                            "detail": f"diff={diff}; rel_diff={rel_diff}",
+                        }
+                    ]
+                ),
+            ],
+            ignore_index=True,
+        )
+
+    return audit

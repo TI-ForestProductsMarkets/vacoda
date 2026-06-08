@@ -1281,6 +1281,141 @@ class CoverageConfig:
         )
 
 
+# ---------------------------------------------------------------------
+# Allocation
+# ---------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class AllocationStrategyConfig:
+    name: str
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "AllocationStrategyConfig":
+        return cls(
+            name=require_str(
+                cfg.get("name", "equal_split"),
+                key="allocation.strategy.name",
+            ).strip().lower(),
+        )
+
+
+@dataclass(frozen=True)
+class AllocationInputConfig:
+    coverage_product: str
+    mappings: str
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "AllocationInputConfig":
+        return cls(
+            coverage_product=require_str(
+                cfg.get("coverage_product", "source_code_coverage"),
+                key="allocation.input.coverage_product",
+            ),
+            mappings=require_str(
+                cfg.get("mappings", "coverage.mappings"),
+                key="allocation.input.mappings",
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class AllocationProductConfig:
+    name: str
+    enabled: bool
+    filename: str
+
+    @classmethod
+    def from_dict(
+        cls,
+        name: str,
+        cfg: dict[str, Any],
+        *,
+        context: TemplateContext,
+    ) -> "AllocationProductConfig":
+        return cls(
+            name=name,
+            enabled=require_bool(
+                cfg.get("enabled", False),
+                key=f"allocation.products.{name}.enabled",
+            ),
+            filename=context.render(
+                require_str(
+                    cfg.get("filename"),
+                    key=f"allocation.products.{name}.filename",
+                )
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class AllocationConfig:
+    enabled: bool
+    target_hs: str
+    strategy: AllocationStrategyConfig
+    input: AllocationInputConfig
+    output: StagePathConfig
+    write: WriteConfig
+    products: dict[str, AllocationProductConfig]
+
+    @classmethod
+    def from_dict(
+        cls,
+        cfg: dict[str, Any],
+        *,
+        scope: ScopeConfig,
+    ) -> "AllocationConfig":
+        target_hs = require_str(
+            cfg.get("target_hs", scope.target_hs),
+            key="allocation.target_hs",
+        ).strip().upper()
+
+        context = TemplateContext(target_hs=target_hs)
+
+        return cls(
+            enabled=require_bool(
+                cfg.get("enabled", False),
+                key="allocation.enabled",
+            ),
+            target_hs=target_hs,
+            strategy=AllocationStrategyConfig.from_dict(
+                require_dict(
+                    cfg.get("strategy", {}),
+                    key="allocation.strategy",
+                )
+            ),
+            input=AllocationInputConfig.from_dict(
+                require_dict(
+                    cfg.get("input", {}),
+                    key="allocation.input",
+                )
+            ),
+            output=StagePathConfig.from_dict(
+                require_dict(
+                    cfg.get("output", {}),
+                    key="allocation.output",
+                ),
+                key="allocation.output",
+                default_stage="interim",
+                context=context,
+            ),
+            write=WriteConfig.from_dict(
+                require_dict(
+                    cfg.get("write", {}),
+                    key="allocation.write",
+                ),
+                key="allocation.write",
+            ),
+            products={
+                name: AllocationProductConfig.from_dict(name, item_cfg, context=context)
+                for name, item_cfg in require_dict(
+                    cfg.get("products", {}),
+                    key="allocation.products",
+                ).items()
+            },
+        )
+
+
 @dataclass(frozen=True)
 class FutureBlockConfig:
     enabled: bool
@@ -1321,6 +1456,7 @@ class HsSyncConfig:
     harvard_generator_audit: HarvardGeneratorAuditConfig
     harvard_mapping_direction: HarvardMappingDirectionConfig
     coverage: CoverageConfig
+    allocation: AllocationConfig
 
     references: dict[str, Any]
 
@@ -1344,6 +1480,11 @@ class HsSyncConfig:
             scope=scope,
         )
 
+        allocation = AllocationConfig.from_dict(
+            _block(raw, "allocation", required=False),
+            scope=scope,
+        )
+
         return cls(
             raw=raw,
             scope=scope,
@@ -1359,6 +1500,7 @@ class HsSyncConfig:
                 _block(raw, "harvard_mapping_direction", required=False)
             ),
             coverage=coverage,
+            allocation=allocation,
             references=_block(raw, "references", required=False),
             harvard_weights=FutureBlockConfig.from_dict(_block(raw, "harvard_weights", required=False),
                                                     key="harvard_weights",),
@@ -1431,3 +1573,20 @@ class HsSyncConfig:
 
     def coverage_mapping_files(self) -> dict[str, Path]:
         return self.coverage.mappings.resolve_files()
+
+    def allocation_output_dir(self) -> Path:
+        return self.allocation.output.resolve_data_dir()
+
+    def allocation_input_coverage_path(self) -> Path:
+        filename = self.allocation.products.get(
+            self.allocation.input.coverage_product
+        )
+
+        if filename is not None:
+            coverage_filename = filename.filename
+        else:
+            coverage_filename = self.product_filename(
+                self.allocation.input.coverage_product
+            )
+
+        return self.coverage_output_dir() / f"{coverage_filename}.csv"
