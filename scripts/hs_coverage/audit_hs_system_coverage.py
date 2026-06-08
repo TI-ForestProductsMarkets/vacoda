@@ -35,7 +35,7 @@ def main() -> None:
     try:
         outputs = run_hs_system_coverage_audit(run_id=run_id)
     except Exception as e:
-        logger.exception("HS Coverage audit failed.")
+        logger.exception("HS Coverage audit failed.", exc_info=e)
         logger.info("Log file: %s", log_path)
         raise
 
