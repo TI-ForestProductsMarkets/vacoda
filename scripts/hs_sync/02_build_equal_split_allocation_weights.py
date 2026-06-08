@@ -48,8 +48,6 @@ def main() -> None:
             "This script currently expects 'coverage.mappings'."
         )
 
-    target_hs_lower = cfg.allocation.target_hs.lower()
-
     source_code_coverage_path = cfg.allocation_input_coverage_path()
     logger.info("Loading source code coverage from: %s", source_code_coverage_path)
 
