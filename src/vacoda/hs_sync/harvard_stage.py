@@ -1590,7 +1590,7 @@ def check_harvard_staging_complete(
     return len(missing_or_bad) == 0, missing_or_bad
 
 
-def run_harvard_staging_pipeline(
+def run_harvard_staging(
     *,
     cfg: "HsSyncConfig",
     run_id: str,
