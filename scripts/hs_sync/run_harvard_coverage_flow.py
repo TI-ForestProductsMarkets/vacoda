@@ -16,7 +16,6 @@ It does not apply weighted HS harmonization.
 from __future__ import annotations
 
 from datetime import datetime
-
 from vacoda.config.hs_sync import HsSyncConfig
 from vacoda.config.paths import resolve_log_path
 from vacoda.hs_sync.coverage_flow import run_hs_sync_coverage_flow

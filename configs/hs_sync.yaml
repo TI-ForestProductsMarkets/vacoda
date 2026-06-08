@@ -216,9 +216,12 @@ coverage:
   mappings:
     stage: "references"
     references_root: "repo"
-    subdir: "harvard_generator/hs_adjacent_transition_1995_2022/correlation_groups"
+    #subdir: "harvard_generator/hs_adjacent_transition_1995_2022/correlation_groups"
+    subdir: "comtrade/hs_correlation_groups/normalized"
 
     files:
+      H2_to_H5: "from_HS2002_to_HS2017.csv"
+      H3_to_H5: "from_HS2007_to_HS2017.csv"
       H4_to_H5: "from_HS2012_to_HS2017.csv"
       H6_to_H5: "from_HS2022_to_HS2017.csv"
 
@@ -330,3 +333,35 @@ un_comtrade_mapping:
 weight_strategy:
   enabled: false
   status: planned
+
+# ============================================================
+# weight allocation strategies
+# ============================================================
+allocation:
+  enabled: true
+  target_hs: "H5"
+
+  strategy:
+    name: "equal_split"
+
+  input:
+    coverage_product: "source_code_coverage"
+    mappings: "coverage.mappings"
+
+  output:
+    stage: "interim"
+    subdir: "hs_sync/target_{target_hs_lower}_allocation"
+
+  write:
+    csv: true
+    parquet: false
+    overwrite: true
+
+  products:
+    allocation_weights:
+      enabled: true
+      filename: "target_{target_hs_lower}_equal_split_allocation_weights"
+
+    allocation_audit:
+      enabled: true
+      filename: "target_{target_hs_lower}_equal_split_allocation_audit"
