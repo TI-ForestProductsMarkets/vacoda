@@ -54,15 +54,6 @@ references:
       source: "repo"
       path: "references/comtrade/hs_correlation_groups"
 
-
-# ============================================================
-# Future UN Comtrade mappings
-# ============================================================
-un_comtrade_mapping:
-  enabled: false
-  status: planned
-
-
 # ============================================================
 # weight allocation strategies
 # ============================================================
@@ -87,13 +78,53 @@ weights:
     overwrite: true
 
   products:
-    allocation_weights:
+    equal_split_weights:
       enabled: true
       filename: "target_{target_hs_lower}_equal_split_allocation_weights"
 
-    allocation_audit:
+    complete_mapping_weights:
       enabled: true
-      filename: "target_{target_hs_lower}_equal_split_allocation_audit"
+      filename: "target_{target_hs_lower}_complete_mapping_weights"
+
+  artifact:
+    kind: "manifest"
+    subdir: "hs_sync/target_{target_hs_lower}/weights"
+    equal_split_audit_filename: "target_{target_hs_lower}_equal_split_allocation_audit"
+    complete_weights_audit_filename: "target_{target_hs_lower}_complete_mapping_weights_audit"
+
+
+# ============================================================
+# weight allocation strategies
+# ============================================================
+
+apply:
+  enabled: true
+  target_hs: "H5"
+
+  input:
+    trade_data: "coverage.input"
+    weights: "weights.complete_mapping_weights"
+
+  output:
+    stage: "interim"
+    subdir: "hs_sync/target_{target_hs_lower}/applied"
+
+  write:
+    format: "parquet"
+    overwrite: true
+
+  products:
+    hs_synced_trade:
+      enabled: true
+      filename: "comtrade_target_{target_hs_lower}_hs_synced"
+
+  artifact:
+    kind: "manifest"
+    subdir: "hs_sync/target_{target_hs_lower}/apply"
+    audit_filename: "comtrade_target_{target_hs_lower}_hs_sync_audit"
+    integrity_audit_filename: "comtrade_target_{target_hs_lower}_hs_sync_integrity_audit"
+    timestamp: false
+    write_latest: false
 
 
 # ============================================================ 
@@ -361,3 +392,11 @@ harvard_weights:
   enabled: false
   status: planned
 
+
+
+# ============================================================
+# Future UN Comtrade mappings
+# ============================================================
+un_comtrade_mapping:
+  enabled: false
+  status: planned

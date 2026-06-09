@@ -1434,6 +1434,67 @@ class WeightsProductConfig:
 
 
 @dataclass(frozen=True)
+class WeightsArtifactConfig:
+    kind: str
+    subdir: str
+    equal_split_audit_filename: str
+    complete_weights_audit_filename: str
+    timestamp: bool
+    write_latest: bool
+
+    @classmethod
+    def from_dict(
+        cls,
+        cfg: dict[str, Any],
+        *,
+        context: TemplateContext,
+    ) -> "WeightsArtifactConfig":
+        return cls(
+            kind=require_str(
+                cfg.get("kind", "manifest"),
+                key="weights.artifact.kind",
+            ).strip().lower(),
+            subdir=context.render(
+                require_str(
+                    cfg.get("subdir", ""),
+                    key="weights.artifact.subdir",
+                    allow_empty=True,
+                )
+            ),
+            equal_split_audit_filename=context.render(
+                require_str(
+                    cfg.get(
+                        "equal_split_audit_filename",
+                        "target_{target_hs_lower}_equal_split_allocation_audit",
+                    ),
+                    key="weights.artifact.equal_split_audit_filename",
+                )
+            ),
+            complete_weights_audit_filename=context.render(
+                require_str(
+                    cfg.get(
+                        "complete_weights_audit_filename",
+                        "target_{target_hs_lower}_complete_mapping_weights_audit",
+                    ),
+                    key="weights.artifact.complete_weights_audit_filename",
+                )
+            ),
+            timestamp=require_bool(
+                cfg.get("timestamp", True),
+                key="weights.artifact.timestamp",
+            ),
+            write_latest=require_bool(
+                cfg.get("write_latest", True),
+                key="weights.artifact.write_latest",
+            ),
+        )
+
+    def resolve_output_dir(self) -> Path:
+        base = get_output_dir(_normalize_output_kind(self.kind))
+        return base / self.subdir if self.subdir else base
+
+
+@dataclass(frozen=True)
 class WeightsConfig:
     enabled: bool
     target_hs: str
@@ -1442,6 +1503,7 @@ class WeightsConfig:
     output: StagePathConfig
     write: WriteConfig
     products: dict[str, WeightsProductConfig]
+    artifact: WeightsArtifactConfig
 
     @classmethod
     def from_dict(
@@ -1498,6 +1560,203 @@ class WeightsConfig:
                     key="weights.products",
                 ).items()
             },
+            artifact=WeightsArtifactConfig.from_dict(
+                require_dict(
+                    cfg.get("artifact", {}),
+                    key="weights.artifact",
+                ),
+                context=context,
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class ApplyInputConfig:
+    trade_data: str
+    weights: str
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "ApplyInputConfig":
+        return cls(
+            trade_data=require_str(
+                cfg.get("trade_data", "coverage.input"),
+                key="apply.input.trade_data",
+            ),
+            weights=require_str(
+                cfg.get("weights", "weights.complete_mapping_weights"),
+                key="apply.input.weights",
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class ApplyWriteConfig:
+    format: str
+    overwrite: bool
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "ApplyWriteConfig":
+        return cls(
+            format=require_str(
+                cfg.get("format", "parquet"),
+                key="apply.write.format",
+            ).strip().lower(),
+            overwrite=require_bool(
+                cfg.get("overwrite", True),
+                key="apply.write.overwrite",
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class ApplyProductConfig:
+    name: str
+    enabled: bool
+    filename: str
+
+    @classmethod
+    def from_dict(
+        cls,
+        name: str,
+        cfg: dict[str, Any],
+        *,
+        context: TemplateContext,
+    ) -> "ApplyProductConfig":
+        return cls(
+            name=name,
+            enabled=require_bool(
+                cfg.get("enabled", False),
+                key=f"apply.products.{name}.enabled",
+            ),
+            filename=context.render(
+                require_str(
+                    cfg.get("filename"),
+                    key=f"apply.products.{name}.filename",
+                )
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class ApplyArtifactConfig:
+    kind: str
+    subdir: str
+    audit_filename: str
+    integrity_audit_filename: str
+    timestamp: bool
+    write_latest: bool
+
+    @classmethod
+    def from_dict(
+        cls,
+        cfg: dict[str, Any],
+        *,
+        context: TemplateContext,
+    ) -> "ApplyArtifactConfig":
+        return cls(
+            kind=require_str(
+                cfg.get("kind", "manifest"),
+                key="apply.artifact.kind",
+            ).strip().lower(),
+            subdir=context.render(
+                require_str(
+                    cfg.get("subdir", ""),
+                    key="apply.artifact.subdir",
+                    allow_empty=True,
+                )
+            ),
+            audit_filename=context.render(
+                require_str(
+                    cfg.get("audit_filename", "hs_sync_audit"),
+                    key="apply.artifact.audit_filename",
+                )
+            ),
+            integrity_audit_filename=context.render(
+                require_str(
+                    cfg.get("integrity_audit_filename", "hs_sync_integrity_audit"),
+                    key="apply.artifact.integrity_audit_filename",
+                )
+            ),
+            timestamp=require_bool(
+                cfg.get("timestamp", True),
+                key="apply.artifact.timestamp",
+            ),
+            write_latest=require_bool(
+                cfg.get("write_latest", True),
+                key="apply.artifact.write_latest",
+            ),
+        )
+
+    def resolve_output_dir(self) -> Path:
+        base = get_output_dir(_normalize_output_kind(self.kind))
+        return base / self.subdir if self.subdir else base
+
+
+@dataclass(frozen=True)
+class ApplyConfig:
+    enabled: bool
+    target_hs: str
+    input: ApplyInputConfig
+    output: StagePathConfig
+    write: ApplyWriteConfig
+    products: dict[str, ApplyProductConfig]
+    artifact: ApplyArtifactConfig
+
+    @classmethod
+    def from_dict(
+        cls,
+        cfg: dict[str, Any],
+        *,
+        scope: ScopeConfig,
+    ) -> "ApplyConfig":
+        target_hs = require_str(
+            cfg.get("target_hs", scope.target_hs),
+            key="apply.target_hs",
+        ).strip().upper()
+
+        context = TemplateContext(target_hs=target_hs)
+
+        return cls(
+            enabled=require_bool(
+                cfg.get("enabled", False),
+                key="apply.enabled",
+            ),
+            target_hs=target_hs,
+            input=ApplyInputConfig.from_dict(
+                require_dict(
+                    cfg.get("input", {}),
+                    key="apply.input",
+                )
+            ),
+            output=StagePathConfig.from_dict(
+                require_dict(
+                    cfg.get("output", {}),
+                    key="apply.output",
+                ),
+                key="apply.output",
+                default_stage="interim",
+                context=context,
+            ),
+            write=ApplyWriteConfig.from_dict(
+                require_dict(
+                    cfg.get("write", {}),
+                    key="apply.write",
+                )
+            ),
+            products={
+                name: ApplyProductConfig.from_dict(name, item_cfg, context=context)
+                for name, item_cfg in require_dict(
+                    cfg.get("products", {}),
+                    key="apply.products",
+                ).items()
+            },
+            artifact=ApplyArtifactConfig.from_dict(
+                require_dict(
+                    cfg.get("artifact", {}),
+                    key="apply.artifact",
+                ),
+                context=context,
+            ),
         )
 
 
@@ -1534,6 +1793,7 @@ class HsSyncConfig:
     harvard_mapping_direction: HarvardMappingDirectionConfig
     coverage: CoverageConfig
     weights: WeightsConfig
+    apply: ApplyConfig
 
     references: dict[str, Any]
 
@@ -1554,6 +1814,7 @@ class HsSyncConfig:
         )
 
         weights_cfg = require_dict(raw.get("weights", {}), key="weights")
+        apply_cfg = require_dict(raw.get("apply", {}), key="apply")
 
         return cls(
             raw=raw,
@@ -1572,6 +1833,10 @@ class HsSyncConfig:
             coverage=coverage,
             weights=WeightsConfig.from_dict(
                 weights_cfg,
+                scope=scope,
+            ),
+            apply=ApplyConfig.from_dict(
+                apply_cfg,
                 scope=scope,
             ),
             references=_block(raw, "references", required=False),
@@ -1640,6 +1905,46 @@ class HsSyncConfig:
     def weights_output_dir(self) -> Path:
         return self.weights.output.resolve_data_dir()
 
+    def weights_product_path(self, name: str, *, ext: str = "csv") -> Path:
+        product = self.weights.products.get(name)
+        if product is None:
+            raise KeyError(f"Unknown weights product: {name!r}")
+
+        return self.weights_output_dir() / f"{product.filename}.{ext}"
+
+    def weights_equal_split_weights_path(self) -> Path:
+        if "equal_split_weights" in self.weights.products:
+            return self.weights_product_path("equal_split_weights")
+
+        # Backward-compatible fallback if old key is still present.
+        if "allocation_weights" in self.weights.products:
+            return self.weights_product_path("allocation_weights")
+
+        return self.weights_output_dir() / (
+            f"target_{self.weights.target_hs.lower()}_equal_split_allocation_weights.csv"
+        )
+
+    def weights_complete_mapping_weights_path(self) -> Path:
+        if "complete_mapping_weights" in self.weights.products:
+            return self.weights_product_path("complete_mapping_weights")
+
+        return self.weights_output_dir() / (
+            f"target_{self.weights.target_hs.lower()}_complete_mapping_weights.csv"
+        )
+
+    def weights_equal_split_audit_path(self) -> Path:
+        return self.weights_output_dir() / (
+            f"{self.weights.artifact.equal_split_audit_filename}.csv"
+        )
+
+    def weights_complete_mapping_audit_path(self) -> Path:
+        return self.weights_output_dir() / (
+            f"{self.weights.artifact.complete_weights_audit_filename}.csv"
+        )
+
+    def weights_artifact_output_dir(self) -> Path:
+        return self.weights.artifact.resolve_output_dir()
+
     def weights_input_coverage_path(self) -> Path:
         filename = self.weights.products.get(
             self.weights.input.coverage_product
@@ -1653,6 +1958,66 @@ class HsSyncConfig:
             )
 
         return self.coverage_output_dir() / f"{coverage_filename}.csv"
+
+    def apply_output_dir(self) -> Path:
+        return self.apply.output.resolve_data_dir()
+
+    def apply_trade_data_dir(self) -> Path:
+        ref = self.apply.input.trade_data.strip().lower()
+        if ref == "coverage.input":
+            return self.coverage_input_dir()
+
+        raise ValueError(
+            "Unsupported apply.input.trade_data reference: "
+            f"{self.apply.input.trade_data!r}. Only 'coverage.input' is supported."
+        )
+
+    def apply_weights_path(self) -> Path:
+        ref = self.apply.input.weights
+        parts = [part.strip() for part in ref.split(".", 1)]
+        if len(parts) != 2 or parts[0].lower() != "weights":
+            raise ValueError(
+                "apply.input.weights must be in the form 'weights.<product_name>', "
+                f"got {ref!r}."
+            )
+
+        product_name = parts[1]
+        product = self.weights.products.get(product_name)
+        if product is not None:
+            filename = product.filename
+        elif product_name == "complete_mapping_weights":
+            filename = (
+                f"target_{self.apply.target_hs.lower()}_complete_mapping_weights"
+            )
+        else:
+            raise KeyError(
+                f"Unknown weights product in apply.input.weights: {product_name!r}"
+            )
+
+        return self.weights_output_dir() / f"{filename}.csv"
+
+    def apply_output_path(self) -> Path:
+        product = self.apply.products.get("hs_synced_trade")
+        if product is None:
+            filename = (
+                f"comtrade_target_{self.apply.target_hs.lower()}_hs_synced"
+            )
+        else:
+            filename = product.filename
+
+        return self.apply_output_dir() / f"{filename}.{self.apply.write.format}"
+
+    def apply_audit_path(self) -> Path:
+        return self.apply_output_dir() / f"{self.apply.artifact.audit_filename}.csv"
+
+    def apply_integrity_audit_path(self) -> Path:
+        return (
+            self.apply_output_dir()
+            / f"{self.apply.artifact.integrity_audit_filename}.csv"
+        )
+
+    def apply_artifact_output_dir(self) -> Path:
+        return self.apply.artifact.resolve_output_dir()
 
     def _resolve_reference_block_dir(
         self,
