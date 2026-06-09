@@ -20,7 +20,7 @@ from vacoda.hs_sync.coverage import (
     build_target_hs_mapping_interpretation_display_report,
 )
 
-from vacoda.hs_sync.diagnostics import build_trade_source_pair_summary
+from vacoda.hs_sync.harvard.diagnostics import build_trade_source_pair_summary
 
 from vacoda.io.reports import TextReport, write_text_report
 from vacoda.io.writer import write_csv, write_parquet

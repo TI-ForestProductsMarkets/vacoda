@@ -26,21 +26,21 @@ def run_complete_mapping_weights(
     the later HS-sync apply step.
     """
 
-    if not cfg.allocation.enabled:
+    if not cfg.weights.enabled:
         logger.info("Allocation is disabled in config; skipping complete weights.")
         return {
             "status": "disabled",
             "run_id": run_id,
         }
 
-    target_hs = cfg.allocation.target_hs
+    target_hs = cfg.weights.target_hs
     target_hs_lower = target_hs.lower()
 
-    output_dir = cfg.allocation_output_dir()
+    output_dir = cfg.weights_output_dir()
 
-    source_code_coverage_path = cfg.allocation_input_coverage_path()
+    source_code_coverage_path = cfg.weights_input_coverage_path()
 
-    weights_product = cfg.allocation.products.get("allocation_weights")
+    weights_product = cfg.weights.products.get("allocation_weights")
     if weights_product is None:
         raise KeyError("Missing required allocation product: 'allocation_weights'.")
 
@@ -58,7 +58,7 @@ def run_complete_mapping_weights(
 
     # If you later add allocation.products.complete_mapping_weights to YAML,
     # use that. For now, keep the already proven filename prefix.
-    complete_product = cfg.allocation.products.get("complete_mapping_weights")
+    complete_product = cfg.weights.products.get("complete_mapping_weights")
     if complete_product is not None:
         suffix = "_complete_mapping_weights"
         if not complete_product.filename.endswith(suffix):
@@ -113,7 +113,7 @@ def run_complete_mapping_weights(
         audit=result.audit,
         output_dir=output_dir,
         filename_prefix=filename_prefix,
-        overwrite=cfg.allocation.write.overwrite,
+        overwrite=cfg.weights.write.overwrite,
     )
 
     n_failed = int((result.audit["status"] != "pass").sum())
