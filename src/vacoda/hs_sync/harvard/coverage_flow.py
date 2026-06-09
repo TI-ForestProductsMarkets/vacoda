@@ -178,6 +178,7 @@ def run_hs_sync_coverage_flow(
             coverage_outputs = run_target_hs_mapping_coverage_audit(
                 cfg=cfg,
                 run_id=run_id,
+                logger=logger,
             )
 
             outputs["target_hs_mapping_coverage"] = coverage_outputs

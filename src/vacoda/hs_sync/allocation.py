@@ -845,7 +845,7 @@ def run_equal_split_allocation(
     already been written.
     """
 
-    if not cfg.allocation.enabled:
+    if not cfg.weights.enabled:
         logger.info("Allocation step is disabled in config; skipping.")
         return {
             "status": "disabled",
@@ -854,25 +854,25 @@ def run_equal_split_allocation(
 
     logger.info("Starting HS-sync allocation step.")
     logger.info("  Run ID: %s", run_id)
-    logger.info("  Allocation target HS: %s", cfg.allocation.target_hs)
-    logger.info("  Allocation strategy: %s", cfg.allocation.strategy.name)
-    logger.info("  Allocation mappings source: %s", cfg.allocation.input.mappings)
+    logger.info("  Allocation target HS: %s", cfg.weights.target_hs)
+    logger.info("  Allocation strategy: %s", cfg.weights.strategy.name)
+    logger.info("  Allocation mappings source: %s", cfg.weights.input.mappings)
 
-    if cfg.allocation.strategy.name != "equal_split":
+    if cfg.weights.strategy.name != "equal_split":
         raise ValueError(
             "Unsupported allocation strategy: "
-            f"{cfg.allocation.strategy.name!r}. "
+            f"{cfg.weights.strategy.name!r}. "
             "This backend currently supports only 'equal_split'."
         )
 
-    if cfg.allocation.input.mappings != "coverage.mappings":
+    if cfg.weights.input.mappings != "coverage.mappings":
         raise ValueError(
             "Unsupported allocation.input.mappings value: "
-            f"{cfg.allocation.input.mappings!r}. "
+            f"{cfg.weights.input.mappings!r}. "
             "Expected 'coverage.mappings'."
         )
 
-    source_code_coverage_path = cfg.allocation_input_coverage_path()
+    source_code_coverage_path = cfg.weights_input_coverage_path()
     logger.info("Loading source-code coverage from: %s", source_code_coverage_path)
 
     source_code_coverage = pd.read_csv(
@@ -924,10 +924,10 @@ def run_equal_split_allocation(
     logger.info("Allocation result weight rows: %s", f"{len(result.weights):,}")
     logger.info("Allocation audit rows: %s", f"{len(result.audit):,}")
 
-    output_dir = cfg.allocation_output_dir()
+    output_dir = cfg.weights_output_dir()
     logger.info("Allocation output directory: %s", output_dir)
 
-    weights_product = cfg.allocation.products.get("allocation_weights")
+    weights_product = cfg.weights.products.get("allocation_weights")
     if weights_product is None:
         raise KeyError("Missing required allocation product: 'allocation_weights'.")
 
@@ -943,14 +943,14 @@ def run_equal_split_allocation(
     filename_prefix = prefix[: -len(suffix)]
 
     logger.info("Output filename prefix: %s", filename_prefix)
-    logger.info("Overwrite enabled: %s", cfg.allocation.write.overwrite)
+    logger.info("Overwrite enabled: %s", cfg.weights.write.overwrite)
 
     outputs = write_allocation_outputs(
         weights=result.weights,
         audit=result.audit,
         output_dir=output_dir,
         filename_prefix=filename_prefix,
-        overwrite=cfg.allocation.write.overwrite,
+        overwrite=cfg.weights.write.overwrite,
     )
 
     n_failed = int((result.audit["status"] != "pass").sum())

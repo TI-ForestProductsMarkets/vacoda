@@ -31,6 +31,71 @@ global:
     timestamp: true
 
 
+
+# ============================================================ 
+# Frozen reference artifacts 
+# ============================================================ 
+# These are stable VACODA-owned reference artifacts. 
+# 
+# Important distinction: 
+# - /storage/vacoda/data/references may contain the external Harvard generator package. 
+# - vacoda/references contains copied/frozen artifacts used by VACODA itself.
+references:
+  harvard_generator:
+    hs_adjacent_transition_1995_2022:
+      source: "repo"
+      path: "references/harvard_generator/hs_adjacent_transition_1995_2022"
+      matrices_subdir: "matrices"
+      correlation_group_subdir: "correlation_group"
+      provenance_subdir: "provenance"
+  
+  comtrade:
+    hs_correlation_groups:
+      source: "repo"
+      path: "references/comtrade/hs_correlation_groups"
+
+
+# ============================================================
+# Future UN Comtrade mappings
+# ============================================================
+un_comtrade_mapping:
+  enabled: false
+  status: planned
+
+
+# ============================================================
+# weight allocation strategies
+# ============================================================
+weights:
+  enabled: true
+  target_hs: "H5"
+
+  strategy:
+    name: "equal_split"
+
+  input:
+    coverage_product: "source_code_coverage"
+    mappings: "coverage.mappings"
+
+  output:
+    stage: "interim"
+    subdir: "hs_sync/target_{target_hs_lower}/allocation"
+
+  write:
+    csv: true
+    parquet: false
+    overwrite: true
+
+  products:
+    allocation_weights:
+      enabled: true
+      filename: "target_{target_hs_lower}_equal_split_allocation_weights"
+
+    allocation_audit:
+      enabled: true
+      filename: "target_{target_hs_lower}_equal_split_allocation_audit"
+
+
 # ============================================================ 
 # Harvard reference-build staging 
 # ============================================================ 
@@ -109,28 +174,6 @@ harvard_staging:
     preservation_filename: "audit_hs_sync_harvard_staging_preservation.csv"
     timestamp: true
     write_latest: true
-
-# ============================================================ 
-# Frozen reference artifacts 
-# ============================================================ 
-# These are stable VACODA-owned reference artifacts. 
-# 
-# Important distinction: 
-# - /storage/vacoda/data/references may contain the external Harvard generator package. 
-# - vacoda/references contains copied/frozen artifacts used by VACODA itself.
-references:
-  harvard_generator:
-    hs_adjacent_transition_1995_2022:
-      source: "repo"
-      path: "references/harvard_generator/hs_adjacent_transition_1995_2022"
-      matrices_subdir: "matrices"
-      correlation_group_subdir: "correlation_group"
-      provenance_subdir: "provenance"
-  
-  comtrade:
-    hs_correlation_groups:
-      source: "repo"
-      path: "references/comtrade/hs_correlation_groups"
 
 
 # ============================================================ 
@@ -247,7 +290,7 @@ coverage:
 
   output:
     stage: "interim"
-    subdir: "hs_sync/target_{target_hs_lower}_mapping_coverage"
+    subdir: "hs_sync/target_{target_hs_lower}/mapping_coverage"
 
   write:
     csv: true
@@ -318,50 +361,3 @@ harvard_weights:
   enabled: false
   status: planned
 
-
-# ============================================================
-# Future UN Comtrade mappings
-# ============================================================
-un_comtrade_mapping:
-  enabled: false
-  status: planned
-
-
-# ============================================================
-# Future weight strategies
-# ============================================================
-weight_strategy:
-  enabled: false
-  status: planned
-
-# ============================================================
-# weight allocation strategies
-# ============================================================
-allocation:
-  enabled: true
-  target_hs: "H5"
-
-  strategy:
-    name: "equal_split"
-
-  input:
-    coverage_product: "source_code_coverage"
-    mappings: "coverage.mappings"
-
-  output:
-    stage: "interim"
-    subdir: "hs_sync/target_{target_hs_lower}_allocation"
-
-  write:
-    csv: true
-    parquet: false
-    overwrite: true
-
-  products:
-    allocation_weights:
-      enabled: true
-      filename: "target_{target_hs_lower}_equal_split_allocation_weights"
-
-    allocation_audit:
-      enabled: true
-      filename: "target_{target_hs_lower}_equal_split_allocation_audit"

@@ -593,10 +593,10 @@ def run_hs_sync_apply(
 
     input_glob = str(input_dir / input_pattern)
 
-    allocation_dir = cfg.allocation_output_dir()
+    weights_dir = cfg.weights_output_dir()
 
     weights_path = (
-        allocation_dir
+        weights_dir
         / f"target_{target_hs_lower}_complete_mapping_weights.csv"
     )
 
