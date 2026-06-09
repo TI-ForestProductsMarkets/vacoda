@@ -1,35 +1,16 @@
-"""
-Audit HS-sync applied output against raw Comtrade input.
-
-This script checks that the generated HS-synced parquet preserves the raw
-input coverage after deterministic mapping and equal-split allocation.
-
-Important:
-- CSV and parquet file sizes are not expected to match.
-- Row counts are not expected to match because equal-split allocation expands
-  some rows.
-- Value totals should match after allocation.
-"""
-
-from __future__ import annotations
-
-from datetime import datetime
+from logging import Logger
 from pathlib import Path
 
 import duckdb
 import pandas as pd
 
 from vacoda.config.hs_sync import HsSyncConfig
-from vacoda.config.paths import resolve_log_path
-from vacoda.utils.logger import (
-    get_logger,
-    parse_log_level,
-    setup_logging,
-)
 
 
-logger = get_logger("SCRIPT.HS_SYNC_APPLIED_AUDIT")
-
+def _sql_literal(value: str | Path) -> str:
+    """Safely quote a Python string/path as a SQL string literal."""
+    text = str(value)
+    return "'" + text.replace("'", "''") + "'"
 
 def format_bytes(n_bytes: int) -> str:
     value = float(n_bytes)
@@ -51,38 +32,49 @@ def file_tree_size(path: Path, pattern: str = "*") -> int:
     )
 
 
-def sql_literal(value: str | Path) -> str:
-    text = str(value)
-    return "'" + text.replace("'", "''") + "'"
+def run_hs_sync_applied_output_audit(
+    *,
+    cfg: HsSyncConfig,
+    run_id: str,
+    logger: Logger,
+) -> dict[str, object]:
+    """
+    Audit HS-sync applied output against raw Comtrade input.
 
+    This verifies that the generated target-HS parquet preserves raw input
+    coverage after deterministic mapping and equal-split allocation.
 
-def main() -> None:
-    cfg = HsSyncConfig.from_yaml()
-
-    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-    log_level = parse_log_level(cfg.logging.level)
-    log_path = resolve_log_path(
-        cfg.logging.resolve_log_file(),
-        timestamp=cfg.logging.timestamp,
-    )
-
-    setup_logging(level=log_level, log_file=log_path)
+    Important:
+    - CSV and parquet file sizes are informational only.
+    - Row counts are not expected to match because allocation expands rows.
+    - Value totals should match after allocation.
+    """
 
     target_hs = cfg.coverage.target_hs
     target_hs_lower = target_hs.lower()
 
     input_dir = cfg.coverage_input_dir()
     input_pattern = cfg.coverage.input.pattern
+
+    if input_pattern is None:
+        raise ValueError("coverage.input.pattern is required for applied-output audit.")
+
     input_glob = input_dir / input_pattern
 
-    output_dir = Path(
-        f"/storage/vacoda/data/interim/hs_sync/target_{target_hs_lower}_applied"
+    output_dir = (
+        cfg.coverage_output_dir().parent
+        / f"target_{target_hs_lower}_applied"
     )
 
-    applied_path = output_dir / f"comtrade_target_{target_hs_lower}_hs_synced.parquet"
+    applied_path = (
+        output_dir
+        / f"comtrade_target_{target_hs_lower}_hs_synced.parquet"
+    )
 
-    audit_path = output_dir / f"comtrade_target_{target_hs_lower}_hs_sync_integrity_audit.csv"
+    audit_path = (
+        output_dir
+        / f"comtrade_target_{target_hs_lower}_hs_sync_integrity_audit.csv"
+    )
 
     year_col = cfg.columns.year
     hs_col = cfg.columns.hs
@@ -92,8 +84,6 @@ def main() -> None:
 
     if not applied_path.exists():
         raise FileNotFoundError(f"Applied parquet does not exist: {applied_path}")
-    else:
-        logger.info("Found applied parquet file: %s", applied_path)
 
     raw_size = file_tree_size(input_dir, input_pattern)
     parquet_size = applied_path.stat().st_size
@@ -102,10 +92,11 @@ def main() -> None:
     con.execute(f"PRAGMA threads={int(threads)}")
 
     try:
-        raw_sql = sql_literal(input_glob)
-        parquet_sql = sql_literal(applied_path)
+        raw_sql = _sql_literal(input_glob)
+        parquet_sql = _sql_literal(applied_path)
 
         logger.info("Auditing HS-sync applied output.")
+        logger.info("  Run ID: %s", run_id)
         logger.info("  Raw input glob: %s", input_glob)
         logger.info("  Applied parquet: %s", applied_path)
         logger.info("  Audit output: %s", audit_path)
@@ -226,7 +217,9 @@ def main() -> None:
                 "check": "all_output_rows_target_hs",
                 "expected": 0,
                 "actual": applied_summary["rows_not_target_hs"],
-                "status": "pass" if int(applied_summary["rows_not_target_hs"]) == 0 else "fail",
+                "status": "pass"
+                if int(applied_summary["rows_not_target_hs"]) == 0
+                else "fail",
                 "detail": f"target_hs={target_hs}",
             },
             {
@@ -246,7 +239,10 @@ def main() -> None:
             {
                 "check": "raw_year_range",
                 "expected": f"{cfg.coverage.min_year}-{cfg.coverage.max_year}",
-                "actual": f"{int(raw_summary['raw_min_year'])}-{int(raw_summary['raw_max_year'])}",
+                "actual": (
+                    f"{int(raw_summary['raw_min_year'])}-"
+                    f"{int(raw_summary['raw_max_year'])}"
+                ),
                 "status": "pass",
                 "detail": "",
             },
@@ -260,6 +256,7 @@ def main() -> None:
         ]
 
         audit = pd.DataFrame(audit_rows)
+        audit_path.parent.mkdir(parents=True, exist_ok=True)
         audit.to_csv(audit_path, index=False)
 
         failed = audit[audit["status"] == "fail"]
@@ -274,7 +271,6 @@ def main() -> None:
         logger.info("  Relative value diff: %.3e", value_rel_diff)
         logger.info("  Failed checks: %s", len(failed))
         logger.info("  Audit file: %s", audit_path)
-        logger.info("  Log file: %s", log_path)
 
         if not failed.empty:
             raise ValueError(
@@ -282,9 +278,25 @@ def main() -> None:
                 + failed.to_string(index=False)
             )
 
+        return {
+            "status": "completed",
+            "run_id": run_id,
+            "audit_path": audit_path,
+            "applied_path": applied_path,
+            "raw_file_size": raw_size,
+            "applied_parquet_size": parquet_size,
+            "raw_rows": int(raw_summary["raw_rows"]),
+            "applied_rows": int(applied_summary["applied_rows"]),
+            "raw_value_total": raw_value,
+            "applied_value_total": applied_value,
+            "value_diff": value_diff,
+            "value_rel_diff": value_rel_diff,
+            "n_failed_audit_rows": len(failed),
+        }
+
     finally:
         con.close()
 
 
-if __name__ == "__main__":
-    main()
+
+        

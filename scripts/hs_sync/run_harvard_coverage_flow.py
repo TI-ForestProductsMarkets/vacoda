@@ -18,7 +18,7 @@ from __future__ import annotations
 from datetime import datetime
 from vacoda.config.hs_sync import HsSyncConfig
 from vacoda.config.paths import resolve_log_path
-from vacoda.hs_sync.coverage_flow import run_hs_sync_coverage_flow
+from vacoda.hs_sync.harvard.coverage_flow import run_hs_sync_coverage_flow
 from vacoda.utils.logger import (
     get_logger,
     parse_log_level,

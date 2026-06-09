@@ -1,3 +1,8 @@
+
+"""
+This script implements the HS-sync allocation workflow for the "equal_split" strategy, which assigns equal weights to all observed needs for the target HS. It reads source code coverage and mapping tables, builds allocation weights, and writes the results to output files. The script is designed to be run as part of a larger HS-sync process, and it relies on configuration settings defined in `HsSyncConfig`.
+"""
+
 from __future__ import annotations
 
 import pandas as pd

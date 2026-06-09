@@ -17,11 +17,9 @@ from typing import Any
 
 from vacoda.config.hs_sync import HsSyncConfig
 from vacoda.hs_sync.coverage_audit import run_target_hs_mapping_coverage_audit
-from vacoda.hs_sync.harvard_reference_audit import run_harvard_generator_audit_from_config
-from vacoda.hs_sync.harvard_stage import run_harvard_staging
-from vacoda.hs_sync.mapping_direction import (
-    run_harvard_mapping_direction_audit_from_config,
-)
+from vacoda.hs_sync.harvard.harvard_reference_audit import run_harvard_generator_audit_from_config
+from vacoda.hs_sync.harvard.harvard_stage import run_harvard_staging
+from vacoda.hs_sync.harvard.mapping_direction import run_harvard_mapping_direction_audit_from_config
 from vacoda.utils.logger import get_logger
 from vacoda.utils.timing import timed_step, timed_workflow
 

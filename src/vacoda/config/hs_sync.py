@@ -1027,6 +1027,91 @@ class HarvardMappingDirectionConfig:
             ),
         )
 
+
+def _resolve_reference_block_dir(
+    self,
+    *,
+    block: dict[str, Any],
+    key: str,
+) -> Path:
+    """
+    Resolve a reference block with:
+
+        source: "repo" | "data"
+        path: "..."
+
+    For source="repo":
+        path may be relative to repo.root or repo.references.
+
+    For source="data":
+        path may be relative to data.references.
+    """
+
+    source = require_str(
+        block.get("source", "repo"),
+        key=f"{key}.source",
+    ).strip().lower()
+
+    path = Path(
+        require_str(
+            block.get("path"),
+            key=f"{key}.path",
+        )
+    )
+
+    if source == "repo":
+        # paths.py already knows both repo.root and repo.references.
+        # Your YAML currently uses:
+        #   path: "references/comtrade/hs_correlation_groups"
+        # so this is naturally relative to repo.root.
+        if path.parts and path.parts[0] == "references":
+            return get_repo_root() / path
+
+        # Also allow shorter style:
+        #   path: "comtrade/hs_correlation_groups"
+        # relative to repo.references.
+        return get_repo_references_dir() / path
+
+    if source == "data":
+        # data.references already points to /storage/vacoda/data/references.
+        # If YAML includes leading "references", strip it to avoid duplication.
+        if path.parts and path.parts[0] == "references":
+            path = Path(*path.parts[1:])
+
+        return get_data_dir("references") / path
+
+    raise ValueError(
+        f"{key}.source must be 'repo' or 'data', got {source!r}."
+    )
+
+
+def comtrade_hs_correlation_root(self) -> Path:
+    """
+    Resolve references.comtrade.hs_correlation_groups from hs_sync.yaml.
+    """
+    try:
+        block = self.references["comtrade"]["hs_correlation_groups"]
+    except KeyError as exc:
+        raise KeyError(
+            "Missing required config block: "
+            "references.comtrade.hs_correlation_groups"
+        ) from exc
+
+    return self._resolve_reference_block_dir(
+        block=block,
+        key="references.comtrade.hs_correlation_groups",
+    )
+
+
+def comtrade_hs_correlation_raw_dir(self) -> Path:
+    return self.comtrade_hs_correlation_root() / "raw"
+
+
+def comtrade_hs_correlation_normalized_dir(self) -> Path:
+    return self.comtrade_hs_correlation_root() / "normalized"
+
+
+
 # ---------------------------------------------------------------------
 # Coverage
 # ---------------------------------------------------------------------
@@ -1590,3 +1675,59 @@ class HsSyncConfig:
             )
 
         return self.coverage_output_dir() / f"{coverage_filename}.csv"
+
+    def _resolve_reference_block_dir(
+        self,
+        *,
+        block: dict[str, Any],
+        key: str,
+    ) -> Path:
+        source = require_str(
+            block.get("source", "repo"),
+            key=f"{key}.source",
+        ).strip().lower()
+
+        path = Path(
+            require_str(
+                block.get("path"),
+                key=f"{key}.path",
+            )
+        )
+
+        if source == "repo":
+            # Resolve against repo.references; allow optional leading "references".
+            if path.parts and path.parts[0] == "references":
+                path = Path(*path.parts[1:])
+
+            return get_repo_references_dir() / path
+
+        if source == "data":
+            # Resolve against data.references; allow optional leading "references".
+            if path.parts and path.parts[0] == "references":
+                path = Path(*path.parts[1:])
+
+            return get_data_dir("references") / path
+
+        raise ValueError(
+            f"{key}.source must be 'repo' or 'data', got {source!r}."
+        )
+
+    def comtrade_hs_correlation_root(self) -> Path:
+        try:
+            block = self.references["comtrade"]["hs_correlation_groups"]
+        except KeyError as exc:
+            raise KeyError(
+                "Missing required config block: "
+                "references.comtrade.hs_correlation_groups"
+            ) from exc
+
+        return self._resolve_reference_block_dir(
+            block=block,
+            key="references.comtrade.hs_correlation_groups",
+        )
+
+    def comtrade_hs_correlation_raw_dir(self) -> Path:
+        return self.comtrade_hs_correlation_root() / "raw"
+
+    def comtrade_hs_correlation_normalized_dir(self) -> Path:
+        return self.comtrade_hs_correlation_root() / "normalized"
