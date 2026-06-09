@@ -34,17 +34,11 @@ def run_complete_mapping_weights(
         }
 
     target_hs = cfg.weights.target_hs
-    target_hs_lower = target_hs.lower()
-
-    output_dir = cfg.weights_output_dir()
 
     source_code_coverage_path = cfg.weights_input_coverage_path()
-
-    weights_product = cfg.weights.products.get("allocation_weights")
-    if weights_product is None:
-        raise KeyError("Missing required allocation product: 'allocation_weights'.")
-
-    allocation_weights_path = output_dir / f"{weights_product.filename}.csv"
+    allocation_weights_path = cfg.weights_equal_split_weights_path()
+    output_weights_path = cfg.weights_complete_mapping_weights_path()
+    output_audit_path = cfg.weights_complete_mapping_audit_path()
 
     if not source_code_coverage_path.exists():
         raise FileNotFoundError(
@@ -56,27 +50,13 @@ def run_complete_mapping_weights(
             f"Missing equal-split allocation weights file: {allocation_weights_path}"
         )
 
-    # If you later add allocation.products.complete_mapping_weights to YAML,
-    # use that. For now, keep the already proven filename prefix.
-    complete_product = cfg.weights.products.get("complete_mapping_weights")
-    if complete_product is not None:
-        suffix = "_complete_mapping_weights"
-        if not complete_product.filename.endswith(suffix):
-            raise ValueError(
-                "allocation.products.complete_mapping_weights.filename must end "
-                f"with {suffix!r}; got {complete_product.filename!r}."
-            )
-        filename_prefix = complete_product.filename[: -len(suffix)]
-    else:
-        filename_prefix = f"target_{target_hs_lower}"
-
     logger.info("Starting complete target-HS mapping-weight step.")
     logger.info("  Run ID: %s", run_id)
     logger.info("  Target HS: %s", target_hs)
     logger.info("  Source coverage: %s", source_code_coverage_path)
     logger.info("  Allocation weights: %s", allocation_weights_path)
-    logger.info("  Output directory: %s", output_dir)
-    logger.info("  Output filename prefix: %s", filename_prefix)
+    logger.info("  Output weights path: %s", output_weights_path)
+    logger.info("  Output audit path: %s", output_audit_path)
 
     source_code_coverage = pd.read_csv(
         source_code_coverage_path,
@@ -111,8 +91,8 @@ def run_complete_mapping_weights(
     outputs = write_complete_mapping_weight_outputs(
         weights=result.weights,
         audit=result.audit,
-        output_dir=output_dir,
-        filename_prefix=filename_prefix,
+        weights_path=output_weights_path,
+        audit_path=output_audit_path,
         overwrite=cfg.weights.write.overwrite,
     )
 

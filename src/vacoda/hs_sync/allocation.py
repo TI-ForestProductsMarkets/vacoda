@@ -256,18 +256,30 @@ def write_allocation_outputs(
     *,
     weights: pd.DataFrame,
     audit: pd.DataFrame,
-    output_dir: Path,
-    filename_prefix: str,
+    output_dir: Path | None = None,
+    filename_prefix: str | None = None,
+    weights_path: Path | None = None,
+    audit_path: Path | None = None,
     overwrite: bool = True,
 ) -> dict[str, Path]:
     """
     Write allocation weights and audit tables.
     """
 
-    output_dir.mkdir(parents=True, exist_ok=True)
+    if weights_path is None or audit_path is None:
+        if output_dir is None or filename_prefix is None:
+            raise ValueError(
+                "Either explicit output paths or output_dir/filename_prefix must be provided."
+            )
 
-    weights_path = output_dir / f"{filename_prefix}_allocation_weights.csv"
-    audit_path = output_dir / f"{filename_prefix}_allocation_audit.csv"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        if weights_path is None:
+            weights_path = output_dir / f"{filename_prefix}_allocation_weights.csv"
+        if audit_path is None:
+            audit_path = output_dir / f"{filename_prefix}_allocation_audit.csv"
+    else:
+        weights_path.parent.mkdir(parents=True, exist_ok=True)
+        audit_path.parent.mkdir(parents=True, exist_ok=True)
 
     if not overwrite:
         for path in [weights_path, audit_path]:
@@ -802,18 +814,30 @@ def write_complete_mapping_weight_outputs(
     *,
     weights: pd.DataFrame,
     audit: pd.DataFrame,
-    output_dir: Path,
-    filename_prefix: str,
+    output_dir: Path | None = None,
+    filename_prefix: str | None = None,
+    weights_path: Path | None = None,
+    audit_path: Path | None = None,
     overwrite: bool = True,
 ) -> dict[str, Path]:
     """
     Write complete mapping-weight table and audit.
     """
 
-    output_dir.mkdir(parents=True, exist_ok=True)
+    if weights_path is None or audit_path is None:
+        if output_dir is None or filename_prefix is None:
+            raise ValueError(
+                "Either explicit output paths or output_dir/filename_prefix must be provided."
+            )
 
-    weights_path = output_dir / f"{filename_prefix}_complete_mapping_weights.csv"
-    audit_path = output_dir / f"{filename_prefix}_complete_mapping_weights_audit.csv"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        if weights_path is None:
+            weights_path = output_dir / f"{filename_prefix}_complete_mapping_weights.csv"
+        if audit_path is None:
+            audit_path = output_dir / f"{filename_prefix}_complete_mapping_weights_audit.csv"
+    else:
+        weights_path.parent.mkdir(parents=True, exist_ok=True)
+        audit_path.parent.mkdir(parents=True, exist_ok=True)
 
     if not overwrite:
         for path in [weights_path, audit_path]:
@@ -924,32 +948,18 @@ def run_equal_split_allocation(
     logger.info("Allocation result weight rows: %s", f"{len(result.weights):,}")
     logger.info("Allocation audit rows: %s", f"{len(result.audit):,}")
 
-    output_dir = cfg.weights_output_dir()
-    logger.info("Allocation output directory: %s", output_dir)
+    weights_path = cfg.weights_equal_split_weights_path()
+    audit_path = cfg.weights_equal_split_audit_path()
 
-    weights_product = cfg.weights.products.get("allocation_weights")
-    if weights_product is None:
-        raise KeyError("Missing required allocation product: 'allocation_weights'.")
-
-    prefix = weights_product.filename
-    suffix = "_allocation_weights"
-
-    if not prefix.endswith(suffix):
-        raise ValueError(
-            "allocation.products.allocation_weights.filename must end with "
-            f"{suffix!r}; got {prefix!r}."
-        )
-
-    filename_prefix = prefix[: -len(suffix)]
-
-    logger.info("Output filename prefix: %s", filename_prefix)
+    logger.info("Allocation weights output path: %s", weights_path)
+    logger.info("Allocation audit output path: %s", audit_path)
     logger.info("Overwrite enabled: %s", cfg.weights.write.overwrite)
 
     outputs = write_allocation_outputs(
         weights=result.weights,
         audit=result.audit,
-        output_dir=output_dir,
-        filename_prefix=filename_prefix,
+        weights_path=weights_path,
+        audit_path=audit_path,
         overwrite=cfg.weights.write.overwrite,
     )
 
