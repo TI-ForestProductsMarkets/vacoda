@@ -17,10 +17,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
-
 import pandas as pd
 
 from vacoda.utils.logger import get_logger
+from vacoda.config.hs_sync import HsSyncConfig
 
 
 logger = get_logger("HS_SYNC.ALLOCATION")
@@ -829,4 +829,143 @@ def write_complete_mapping_weight_outputs(
     return {
         "complete_weights": weights_path,
         "complete_weights_audit": audit_path,
+    }
+
+
+def run_equal_split_allocation(
+    *,
+    cfg: HsSyncConfig,
+    run_id: str,
+    logger: Logger,
+) -> dict[str, Path]:
+    """
+    Build equal-split allocation weights for observed needs-weights cases.
+
+    This is a workflow backend function. It assumes coverage products have
+    already been written.
+    """
+
+    if not cfg.allocation.enabled:
+        logger.info("Allocation step is disabled in config; skipping.")
+        return {
+            "status": "disabled",
+            "run_id": run_id,
+        }
+
+    logger.info("Starting HS-sync allocation step.")
+    logger.info("  Run ID: %s", run_id)
+    logger.info("  Allocation target HS: %s", cfg.allocation.target_hs)
+    logger.info("  Allocation strategy: %s", cfg.allocation.strategy.name)
+    logger.info("  Allocation mappings source: %s", cfg.allocation.input.mappings)
+
+    if cfg.allocation.strategy.name != "equal_split":
+        raise ValueError(
+            "Unsupported allocation strategy: "
+            f"{cfg.allocation.strategy.name!r}. "
+            "This backend currently supports only 'equal_split'."
+        )
+
+    if cfg.allocation.input.mappings != "coverage.mappings":
+        raise ValueError(
+            "Unsupported allocation.input.mappings value: "
+            f"{cfg.allocation.input.mappings!r}. "
+            "Expected 'coverage.mappings'."
+        )
+
+    source_code_coverage_path = cfg.allocation_input_coverage_path()
+    logger.info("Loading source-code coverage from: %s", source_code_coverage_path)
+
+    source_code_coverage = pd.read_csv(
+        source_code_coverage_path,
+        dtype={"source_cmd": str},
+    )
+
+    logger.info(
+        "Loaded source-code coverage rows: %s",
+        f"{len(source_code_coverage):,}",
+    )
+
+    mapping_paths = cfg.coverage_mapping_files()
+
+    logger.info(
+        "Loading %s mapping table(s) from: %s",
+        len(mapping_paths),
+        cfg.coverage_mapping_dir(),
+    )
+
+    mapping_tables = {
+        key: pd.read_csv(
+            path,
+            dtype={
+                "code.source": str,
+                "code.target": str,
+            },
+        )
+        for key, path in mapping_paths.items()
+    }
+
+    for key, df in mapping_tables.items():
+        logger.info("  Mapping %s rows: %s", key, f"{len(df):,}")
+
+    observed_mapping = build_observed_needs_mapping(
+        mapping_tables=mapping_tables,
+        source_code_coverage=source_code_coverage,
+    )
+
+    logger.info(
+        "Observed mapping rows requiring allocation: %s",
+        f"{len(observed_mapping):,}",
+    )
+
+    result = build_allocation_weights(
+        mapping=observed_mapping,
+    )
+
+    logger.info("Allocation result weight rows: %s", f"{len(result.weights):,}")
+    logger.info("Allocation audit rows: %s", f"{len(result.audit):,}")
+
+    output_dir = cfg.allocation_output_dir()
+    logger.info("Allocation output directory: %s", output_dir)
+
+    weights_product = cfg.allocation.products.get("allocation_weights")
+    if weights_product is None:
+        raise KeyError("Missing required allocation product: 'allocation_weights'.")
+
+    prefix = weights_product.filename
+    suffix = "_allocation_weights"
+
+    if not prefix.endswith(suffix):
+        raise ValueError(
+            "allocation.products.allocation_weights.filename must end with "
+            f"{suffix!r}; got {prefix!r}."
+        )
+
+    filename_prefix = prefix[: -len(suffix)]
+
+    logger.info("Output filename prefix: %s", filename_prefix)
+    logger.info("Overwrite enabled: %s", cfg.allocation.write.overwrite)
+
+    outputs = write_allocation_outputs(
+        weights=result.weights,
+        audit=result.audit,
+        output_dir=output_dir,
+        filename_prefix=filename_prefix,
+        overwrite=cfg.allocation.write.overwrite,
+    )
+
+    n_failed = int((result.audit["status"] != "pass").sum())
+
+    logger.info("HS-sync equal-split allocation step complete.")
+    logger.info("  Weights file: %s", outputs["weights"])
+    logger.info("  Audit file: %s", outputs["audit"])
+    logger.info("  Allocation audit failed rows: %s", n_failed)
+
+    return {
+        "status": "completed",
+        "run_id": run_id,
+        "weights": outputs["weights"],
+        "audit": outputs["audit"],
+        "n_weight_rows": len(result.weights),
+        "n_audit_rows": len(result.audit),
+        "n_failed_audit_rows": n_failed,
     }

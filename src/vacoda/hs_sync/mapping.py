@@ -29,17 +29,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from logging import Logger
 
 import pandas as pd
-
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
-
-RAW_DIR = REPO_ROOT / "references" / "comtrade" / "hs_correlation_groups" / "raw"
-NORMALIZED_DIR = (
-    REPO_ROOT / "references" / "comtrade" / "hs_correlation_groups" / "normalized"
-)
-
+from vacoda.config.hs_sync import HsSyncConfig
 
 RELATIONSHIP_REVERSE = {
     "1:1": "1:1",
@@ -187,9 +180,13 @@ def read_relationship_sheet(path: Path, spec: MappingSpec) -> pd.DataFrame:
     # sheet_name=1 means the second sheet.
     raw = pd.read_excel(path, sheet_name=1, header=None, dtype=str)
 
+    raw_source_col = _normalize_colname(spec.raw_source_col)
+    raw_target_col = _normalize_colname(spec.raw_target_col)
+
+
     required_columns = {
-        spec.raw_source_col,
-        spec.raw_target_col,
+        raw_source_col,
+        raw_target_col,
         "Relationship",
     }
 
@@ -217,22 +214,19 @@ def read_relationship_sheet(path: Path, spec: MappingSpec) -> pd.DataFrame:
             + ", ".join(sorted(missing))
         )
 
-    return df[
-        [
-            spec.raw_source_col,
-            spec.raw_target_col,
-            "Relationship",
-        ]
-    ].copy()
+    return df[[
+        raw_source_col,
+        raw_target_col,
+        "Relationship",]].copy()
 
 
 def normalize_mapping(df: pd.DataFrame, spec: MappingSpec) -> pd.DataFrame:
     """
     Convert one raw UNSD mapping table to VACODA source -> target direction.
     """
-    raw_source = spec.raw_source_col
-    raw_target = spec.raw_target_col
-
+    raw_source = _normalize_colname(spec.raw_source_col)
+    raw_target = _normalize_colname(spec.raw_target_col)
+    
     df = df.copy()
 
     df[raw_source] = df[raw_source].map(_clean_code)
@@ -285,29 +279,49 @@ def output_filename(spec: MappingSpec) -> str:
     )
 
 
-def main() -> None:
-    NORMALIZED_DIR.mkdir(parents=True, exist_ok=True)
+def run_comtrade_mapping_preparation(
+    *,
+    cfg: HsSyncConfig,
+    run_id: str,
+    logger: Logger,
+) -> dict[str, object]:
 
-    print("Preparing UN Comtrade / UNSD HS mappings")
-    print(f"Raw directory:        {RAW_DIR}")
-    print(f"Normalized directory: {NORMALIZED_DIR}")
-    print()
+    raw_dir = cfg.comtrade_hs_correlation_raw_dir()
+    normalized_dir = cfg.comtrade_hs_correlation_normalized_dir()
+
+    normalized_dir.mkdir(parents=True, exist_ok=True)
+
+    logger.info("Preparing UN Comtrade / UNSD HS mappings")
+    logger.info("Run ID: %s", run_id)
+    logger.info("Raw directory:        %s", raw_dir)
+    logger.info("Normalized directory: %s", normalized_dir)
+
+    outputs: dict[str, object] = {
+        "status": "started",
+        "run_id": run_id,
+        "raw_dir": raw_dir,
+        "normalized_dir": normalized_dir,
+        "files": {},
+    }
+
+    file_outputs: dict[str, dict[str, object]] = {}
 
     for spec in MAPPING_SPECS:
-        raw_path = RAW_DIR / spec.raw_filename
+        raw_path = raw_dir / spec.raw_filename
+        out_path = normalized_dir / output_filename(spec)
 
-        print("=" * 72)
-        print(f"Input:  {raw_path.name}")
-        print(
-            "Output direction: "
-            f"{spec.normalized_source_system} -> {spec.normalized_target_system}"
+        logger.info("=" * 72)
+        logger.info("Input: %s", raw_path.name)
+        logger.info(
+            "Output direction: %s -> %s",
+            spec.normalized_source_system,
+            spec.normalized_target_system,
         )
-        print(f"Reverse direction: {spec.reverse_direction}")
+        logger.info("Reverse direction: %s", spec.reverse_direction)
 
         raw_df = read_relationship_sheet(raw_path, spec)
         normalized = normalize_mapping(raw_df, spec)
 
-        out_path = NORMALIZED_DIR / output_filename(spec)
         normalized.to_csv(out_path, index=False)
 
         relationship_counts = (
@@ -318,15 +332,23 @@ def main() -> None:
             .sort_values("Relationship")
         )
 
-        print(f"Rows written: {len(normalized):,}")
-        print(f"Output: {out_path}")
-        print("Relationship counts:")
-        print(relationship_counts.to_string(index=False))
-        print()
+        logger.info("Rows written: %s", f"{len(normalized):,}")
+        logger.info("Output: %s", out_path)
+        logger.info(
+            "Relationship counts:\n%s",
+            relationship_counts.to_string(index=False),
+        )
 
-    print("=" * 72)
-    print("Done.")
+        file_outputs[spec.raw_filename] = {
+            "status": "written",
+            "input": raw_path,
+            "output": out_path,
+            "rows": len(normalized),
+        }
 
+    outputs["status"] = "completed"
+    outputs["files"] = file_outputs
 
-if __name__ == "__main__":
-    main()
+    logger.info("Comtrade HS mapping preparation complete.")
+
+    return outputs

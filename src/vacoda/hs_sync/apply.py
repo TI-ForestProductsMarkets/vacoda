@@ -21,7 +21,7 @@ import duckdb
 import pandas as pd
 
 from vacoda.utils.logger import get_logger
-
+from vacoda.config.hs_sync import HsSyncConfig
 
 logger = get_logger("HS_SYNC.APPLY")
 
@@ -568,3 +568,95 @@ def _combine_apply_audit(
         )
 
     return audit
+
+def run_hs_sync_apply(
+    *,
+    cfg: HsSyncConfig,
+    run_id: str,
+    logger: Logger,
+) -> dict[str, object]:
+    """
+    Apply complete HS-sync mapping weights to raw Comtrade rows.
+
+    This is the config-driven workflow backend for the HS-sync apply step.
+    It expects the complete mapping-weight table to already exist.
+    """
+
+    target_hs = cfg.coverage.target_hs
+    target_hs_lower = target_hs.lower()
+
+    input_dir = cfg.coverage_input_dir()
+    input_pattern = cfg.coverage.input.pattern
+
+    if input_pattern is None:
+        raise ValueError("coverage.input.pattern is required for HS-sync apply.")
+
+    input_glob = str(input_dir / input_pattern)
+
+    allocation_dir = cfg.allocation_output_dir()
+
+    weights_path = (
+        allocation_dir
+        / f"target_{target_hs_lower}_complete_mapping_weights.csv"
+    )
+
+    output_dir = (
+        cfg.coverage_output_dir().parent
+        / f"target_{target_hs_lower}_applied"
+    )
+
+    output_path = (
+        output_dir
+        / f"comtrade_target_{target_hs_lower}_hs_synced.parquet"
+    )
+
+    audit_path = (
+        output_dir
+        / f"comtrade_target_{target_hs_lower}_hs_sync_audit.csv"
+    )
+
+    if not weights_path.exists():
+        raise FileNotFoundError(
+            f"Complete mapping-weight table does not exist: {weights_path}"
+        )
+
+    logger.info("Starting HS-sync apply step.")
+    logger.info("  Run ID: %s", run_id)
+    logger.info("  Target HS: %s", target_hs)
+    logger.info("  Input glob: %s", input_glob)
+    logger.info("  Mapping weights: %s", weights_path)
+    logger.info("  Output path: %s", output_path)
+    logger.info("  Audit path: %s", audit_path)
+
+    result = apply_hs_sync_with_weights(
+        input_glob=input_glob,
+        weights_path=weights_path,
+        output_path=output_path,
+        audit_path=audit_path,
+        min_year=cfg.coverage.min_year,
+        max_year=cfg.coverage.max_year,
+        year_col=cfg.columns.year,
+        hs_col=cfg.columns.hs,
+        cmd_col=cfg.columns.cmd,
+        value_col=cfg.columns.value,
+        output_format="parquet",
+        threads=cfg.engine.threads,
+        overwrite=cfg.coverage.write.overwrite,
+    )
+
+    failed = result.audit[result.audit["status"] == "fail"]
+    n_failed = len(failed)
+
+    logger.info("HS-sync apply step completed.")
+    logger.info("  Output file: %s", result.output_path)
+    logger.info("  Audit file: %s", result.audit_path)
+    logger.info("  Failed audit rows: %s", n_failed)
+
+    return {
+        "status": "completed",
+        "run_id": run_id,
+        "output_path": result.output_path,
+        "audit_path": result.audit_path,
+        "n_audit_rows": len(result.audit),
+        "n_failed_audit_rows": n_failed,
+    }
