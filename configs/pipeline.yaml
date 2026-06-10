@@ -1,5 +1,30 @@
 # Configuration file for pipeline settings in the vacoda project.
 
+# configs/pipeline.yaml
+
+pipeline:
+  enabled_steps:
+    - hs_sync
+    - cif_fob
+
+inputs:
+  raw_comtrade:
+    stage: raw
+    subdir: api/single
+    pattern: "*.csv"
+
+outputs:
+  hs_synced_trade:
+    stage: interim
+    subdir: hs_sync/target_h5/applied
+    file: comtrade_target_h5_hs_synced.parquet
+
+  cif_fob_trade:
+    stage: interim
+    subdir: cif_fob/target_h5
+    file: comtrade_target_h5_cif_fob_corrected.parquet
+    
+
 # Pipeline mode:
 # - 'per_file' : each matched raw file is processed and saved separately
 # - 'merged'   : all matched raw files are concatenated and saved as one output
