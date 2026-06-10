@@ -59,7 +59,6 @@ references:
 # ============================================================
 weights:
   enabled: true
-  target_hs: "H5"
 
   strategy:
     name: "equal_split"
@@ -70,7 +69,7 @@ weights:
 
   output:
     stage: "interim"
-    subdir: "hs_sync/target_{target_hs_lower}/allocation"
+    subdir: "hs_sync/target_{target_hs_lower}/weights"
 
   write:
     csv: true
@@ -80,26 +79,25 @@ weights:
   products:
     equal_split_weights:
       enabled: true
-      filename: "target_{target_hs_lower}_equal_split_allocation_weights"
+      filename: "target_{target_hs_lower}_equal_split_weights.csv"
 
     complete_mapping_weights:
       enabled: true
-      filename: "target_{target_hs_lower}_complete_mapping_weights"
+      filename: "target_{target_hs_lower}_complete_mapping_weights.csv"
 
   artifact:
     kind: "manifest"
     subdir: "hs_sync/target_{target_hs_lower}/weights"
-    equal_split_audit_filename: "target_{target_hs_lower}_equal_split_allocation_audit"
-    complete_weights_audit_filename: "target_{target_hs_lower}_complete_mapping_weights_audit"
+    equal_split_audit_filename: "target_{target_hs_lower}_equal_split_weights_audit.csv"
+    complete_weights_audit_filename: "target_{target_hs_lower}_complete_mapping_weights_audit.csv"
 
 
 # ============================================================
-# weight allocation strategies
+# weight apply strategies
 # ============================================================
 
 apply:
   enabled: true
-  target_hs: "H5"
 
   input:
     trade_data: "coverage.input"
@@ -121,8 +119,8 @@ apply:
   artifact:
     kind: "manifest"
     subdir: "hs_sync/target_{target_hs_lower}/apply"
-    audit_filename: "comtrade_target_{target_hs_lower}_hs_sync_audit"
-    integrity_audit_filename: "comtrade_target_{target_hs_lower}_hs_sync_integrity_audit"
+    audit_filename: "comtrade_target_{target_hs_lower}_hs_sync_audit.csv"
+    integrity_audit_filename: "comtrade_target_{target_hs_lower}_hs_sync_integrity_audit.csv"
     timestamp: false
     write_latest: false
 
@@ -200,7 +198,7 @@ harvard_staging:
 
   artifact:
     kind: "manifest"
-    subdir: "hs_sync/harvard_staging"
+    subdir: "hs_sync/target_{target_hs_lower}/harvard/staging"
     inventory_filename: "audit_hs_sync_harvard_staging_inventory.csv"
     preservation_filename: "audit_hs_sync_harvard_staging_preservation.csv"
     timestamp: true
@@ -241,7 +239,7 @@ harvard_generator_audit:
 
   artifact:
     kind: "manifest"
-    subdir: "hs_sync/harvard_generator_audit"
+    subdir: "hs_sync/target_{target_hs_lower}/harvard/generator_audit"
     filename: "audit_harvard_generator_inputs"
     timestamp: true
     write_latest: true
@@ -260,7 +258,7 @@ harvard_mapping_direction:
 
   artifact:
     kind: "manifest"
-    subdir: "hs_sync/harvard_mapping_direction"
+    subdir: "hs_sync/target_{target_hs_lower}/harvard/mapping_direction"
     filename: "audit_harvard_mapping_direction.md"
     timestamp: true
     write_latest: true
@@ -274,10 +272,7 @@ harvard_mapping_direction:
 # how much can be expressed in the target HS system without weights?
 
 coverage:
-  # Diagnostic target HS system for coverage/audit studies.
-  # May differ from scope.target_hs during experiments.
   enabled: true
-  target_hs: "H5"
   min_year: 2017
   max_year: 2025
 
@@ -331,7 +326,7 @@ coverage:
 
   artifact:
     kind: "reports"
-    subdir: "hs_sync/coverage"
+    subdir: "hs_sync/target_{target_hs_lower}/coverage"
     filename: "target_{target_hs_lower}_mapping_coverage_report"
     timestamp: true
     write_latest: true

@@ -50,10 +50,10 @@ def run_hs_sync_applied_output_audit(
     - Value totals should match after allocation.
     """
 
-    target_hs = cfg.coverage.target_hs
-    target_hs_lower = target_hs.lower()
+    target_hs = cfg.apply.target_hs
+    output_format = cfg.apply.write.format.strip().lower()
 
-    input_dir = cfg.coverage_input_dir()
+    input_dir = cfg.apply_trade_data_dir()
     input_pattern = cfg.coverage.input.pattern
 
     if input_pattern is None:
@@ -61,20 +61,8 @@ def run_hs_sync_applied_output_audit(
 
     input_glob = input_dir / input_pattern
 
-    output_dir = (
-        cfg.coverage_output_dir().parent
-        / f"target_{target_hs_lower}_applied"
-    )
-
-    applied_path = (
-        output_dir
-        / f"comtrade_target_{target_hs_lower}_hs_synced.parquet"
-    )
-
-    audit_path = (
-        output_dir
-        / f"comtrade_target_{target_hs_lower}_hs_sync_integrity_audit.csv"
-    )
+    applied_path = cfg.apply_output_path()
+    audit_path = cfg.apply_integrity_audit_path()
 
     year_col = cfg.columns.year
     hs_col = cfg.columns.hs
@@ -82,8 +70,14 @@ def run_hs_sync_applied_output_audit(
     value_col = cfg.columns.value
     threads = cfg.engine.threads
 
+    if output_format != "parquet":
+        raise ValueError(
+            "applied_output_audit currently supports only apply.write.format='parquet'. "
+            f"Got {output_format!r}."
+        )
+
     if not applied_path.exists():
-        raise FileNotFoundError(f"Applied parquet does not exist: {applied_path}")
+        raise FileNotFoundError(f"Applied output does not exist: {applied_path}")
 
     raw_size = file_tree_size(input_dir, input_pattern)
     parquet_size = applied_path.stat().st_size
@@ -98,7 +92,8 @@ def run_hs_sync_applied_output_audit(
         logger.info("Auditing HS-sync applied output.")
         logger.info("  Run ID: %s", run_id)
         logger.info("  Raw input glob: %s", input_glob)
-        logger.info("  Applied parquet: %s", applied_path)
+        logger.info("  Applied output: %s", applied_path)
+        logger.info("  Applied output format: %s", output_format)
         logger.info("  Audit output: %s", audit_path)
 
         raw_summary = con.execute(

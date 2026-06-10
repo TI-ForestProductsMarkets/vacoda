@@ -605,16 +605,23 @@ class HarvardStagingArtifactConfig:
     write_latest: bool
 
     @classmethod
-    def from_dict(cls, cfg: dict[str, Any]) -> "HarvardStagingArtifactConfig":
+    def from_dict(
+        cls,
+        cfg: dict[str, Any],
+        *,
+        context: TemplateContext,
+    ) -> "HarvardStagingArtifactConfig":
         return cls(
             kind=require_str(
                 cfg.get("kind", "manifest"),
                 key="harvard_staging.artifact.kind",
             ).strip().lower(),
-            subdir=require_str(
-                cfg.get("subdir", ""),
-                key="harvard_staging.artifact.subdir",
-                allow_empty=True,
+            subdir=context.render(
+                require_str(
+                    cfg.get("subdir", ""),
+                    key="harvard_staging.artifact.subdir",
+                    allow_empty=True,
+                )
             ),
             inventory_filename=require_str(
                 cfg.get(
@@ -737,7 +744,14 @@ class HarvardStagingConfig:
     artifact: HarvardStagingArtifactConfig
 
     @classmethod
-    def from_dict(cls, cfg: dict[str, Any]) -> "HarvardStagingConfig":
+    def from_dict(
+        cls,
+        cfg: dict[str, Any],
+        *,
+        scope: ScopeConfig,
+    ) -> "HarvardStagingConfig":
+        context = TemplateContext(target_hs=scope.target_hs)
+
         return cls(
             enabled=require_bool(
                 cfg.get("enabled", False),
@@ -782,7 +796,8 @@ class HarvardStagingConfig:
                 )
             ),
             artifact=HarvardStagingArtifactConfig.from_dict(
-                require_dict(cfg.get("artifact", {}), key="harvard_staging.artifact")
+                require_dict(cfg.get("artifact", {}), key="harvard_staging.artifact"),
+                context=context,
             ),
         )
 
@@ -923,10 +938,17 @@ class HarvardGeneratorAuditConfig:
     artifact: ArtifactConfig
 
     @classmethod
-    def from_dict(cls, cfg: dict[str, Any]) -> "HarvardGeneratorAuditConfig":
+    def from_dict(
+        cls,
+        cfg: dict[str, Any],
+        *,
+        scope: ScopeConfig,
+    ) -> "HarvardGeneratorAuditConfig":
         checks_raw = cfg.get("product_code_checks", [])
         if not isinstance(checks_raw, list):
             raise TypeError("harvard_generator_audit.product_code_checks must be a list.")
+
+        context = TemplateContext(target_hs=scope.target_hs)
 
         return cls(
             enabled=require_bool(
@@ -960,6 +982,7 @@ class HarvardGeneratorAuditConfig:
                 key="harvard_generator_audit.artifact",
                 default_kind="manifest",
                 default_filename="audit_harvard_generator_inputs",
+                context=context,
             ),
         )
 
@@ -997,7 +1020,12 @@ class HarvardMappingDirectionConfig:
     artifact: ArtifactConfig
 
     @classmethod
-    def from_dict(cls, cfg: dict[str, Any]) -> "HarvardMappingDirectionConfig":
+    def from_dict(
+        cls,
+        cfg: dict[str, Any],
+        *,
+        scope: ScopeConfig,
+    ) -> "HarvardMappingDirectionConfig":
         artifact_cfg = require_dict(
             cfg.get("artifact", {}),
             key="harvard_mapping_direction.artifact",
@@ -1007,6 +1035,8 @@ class HarvardMappingDirectionConfig:
                 **artifact_cfg,
                 "subdir": "hs_sync",
             }
+
+        context = TemplateContext(target_hs=scope.target_hs)
 
         return cls(
             enabled=require_bool(
@@ -1024,92 +1054,9 @@ class HarvardMappingDirectionConfig:
                 key="harvard_mapping_direction.artifact",
                 default_kind="reports",
                 default_filename="inspect_hscodes_requiring_weights.md",
+                context=context,
             ),
         )
-
-
-def _resolve_reference_block_dir(
-    self,
-    *,
-    block: dict[str, Any],
-    key: str,
-) -> Path:
-    """
-    Resolve a reference block with:
-
-        source: "repo" | "data"
-        path: "..."
-
-    For source="repo":
-        path may be relative to repo.root or repo.references.
-
-    For source="data":
-        path may be relative to data.references.
-    """
-
-    source = require_str(
-        block.get("source", "repo"),
-        key=f"{key}.source",
-    ).strip().lower()
-
-    path = Path(
-        require_str(
-            block.get("path"),
-            key=f"{key}.path",
-        )
-    )
-
-    if source == "repo":
-        # paths.py already knows both repo.root and repo.references.
-        # Your YAML currently uses:
-        #   path: "references/comtrade/hs_correlation_groups"
-        # so this is naturally relative to repo.root.
-        if path.parts and path.parts[0] == "references":
-            return get_repo_root() / path
-
-        # Also allow shorter style:
-        #   path: "comtrade/hs_correlation_groups"
-        # relative to repo.references.
-        return get_repo_references_dir() / path
-
-    if source == "data":
-        # data.references already points to /storage/vacoda/data/references.
-        # If YAML includes leading "references", strip it to avoid duplication.
-        if path.parts and path.parts[0] == "references":
-            path = Path(*path.parts[1:])
-
-        return get_data_dir("references") / path
-
-    raise ValueError(
-        f"{key}.source must be 'repo' or 'data', got {source!r}."
-    )
-
-
-def comtrade_hs_correlation_root(self) -> Path:
-    """
-    Resolve references.comtrade.hs_correlation_groups from hs_sync.yaml.
-    """
-    try:
-        block = self.references["comtrade"]["hs_correlation_groups"]
-    except KeyError as exc:
-        raise KeyError(
-            "Missing required config block: "
-            "references.comtrade.hs_correlation_groups"
-        ) from exc
-
-    return self._resolve_reference_block_dir(
-        block=block,
-        key="references.comtrade.hs_correlation_groups",
-    )
-
-
-def comtrade_hs_correlation_raw_dir(self) -> Path:
-    return self.comtrade_hs_correlation_root() / "raw"
-
-
-def comtrade_hs_correlation_normalized_dir(self) -> Path:
-    return self.comtrade_hs_correlation_root() / "normalized"
-
 
 
 # ---------------------------------------------------------------------
@@ -1307,10 +1254,21 @@ class CoverageConfig:
         *,
         scope: ScopeConfig,
     ) -> "CoverageConfig":
-        target_hs = require_str(
-            cfg.get("target_hs", scope.target_hs),
-            key="coverage.target_hs",
-        ).strip().upper()
+        target_hs = scope.target_hs
+
+        # target_hs is governed by global.scope.target_hs.
+        # If coverage.target_hs is still present during migration, require equality.
+        coverage_target_hs = cfg.get("target_hs")
+        if coverage_target_hs is not None:
+            parsed = require_str(
+                coverage_target_hs,
+                key="coverage.target_hs",
+            ).strip().upper()
+            if parsed != target_hs:
+                raise ValueError(
+                    "coverage.target_hs must match global.scope.target_hs "
+                    f"({target_hs!r}); got {parsed!r}."
+                )
 
         context = TemplateContext(target_hs=target_hs)
 
@@ -1463,19 +1421,13 @@ class WeightsArtifactConfig:
             ),
             equal_split_audit_filename=context.render(
                 require_str(
-                    cfg.get(
-                        "equal_split_audit_filename",
-                        "target_{target_hs_lower}_equal_split_allocation_audit",
-                    ),
+                    cfg.get("equal_split_audit_filename"),
                     key="weights.artifact.equal_split_audit_filename",
                 )
             ),
             complete_weights_audit_filename=context.render(
                 require_str(
-                    cfg.get(
-                        "complete_weights_audit_filename",
-                        "target_{target_hs_lower}_complete_mapping_weights_audit",
-                    ),
+                    cfg.get("complete_weights_audit_filename"),
                     key="weights.artifact.complete_weights_audit_filename",
                 )
             ),
@@ -1512,10 +1464,21 @@ class WeightsConfig:
         *,
         scope: ScopeConfig,
     ) -> "WeightsConfig":
-        target_hs = require_str(
-            cfg.get("target_hs", scope.target_hs),
-            key="weights.target_hs",
-        ).strip().upper()
+        target_hs = scope.target_hs
+
+        # target_hs is governed by global.scope.target_hs.
+        # If weights.target_hs is still present during migration, require equality.
+        weights_target_hs = cfg.get("target_hs")
+        if weights_target_hs is not None:
+            parsed = require_str(
+                weights_target_hs,
+                key="weights.target_hs",
+            ).strip().upper()
+            if parsed != target_hs:
+                raise ValueError(
+                    "weights.target_hs must match global.scope.target_hs "
+                    f"({target_hs!r}); got {parsed!r}."
+                )
 
         context = TemplateContext(target_hs=target_hs)
 
@@ -1667,13 +1630,13 @@ class ApplyArtifactConfig:
             ),
             audit_filename=context.render(
                 require_str(
-                    cfg.get("audit_filename", "hs_sync_audit"),
+                    cfg.get("audit_filename"),
                     key="apply.artifact.audit_filename",
                 )
             ),
             integrity_audit_filename=context.render(
                 require_str(
-                    cfg.get("integrity_audit_filename", "hs_sync_integrity_audit"),
+                    cfg.get("integrity_audit_filename"),
                     key="apply.artifact.integrity_audit_filename",
                 )
             ),
@@ -1709,10 +1672,21 @@ class ApplyConfig:
         *,
         scope: ScopeConfig,
     ) -> "ApplyConfig":
-        target_hs = require_str(
-            cfg.get("target_hs", scope.target_hs),
-            key="apply.target_hs",
-        ).strip().upper()
+        target_hs = scope.target_hs
+
+        # target_hs is governed by global.scope.target_hs.
+        # If apply.target_hs is still present during migration, require equality.
+        apply_target_hs = cfg.get("target_hs")
+        if apply_target_hs is not None:
+            parsed = require_str(
+                apply_target_hs,
+                key="apply.target_hs",
+            ).strip().upper()
+            if parsed != target_hs:
+                raise ValueError(
+                    "apply.target_hs must match global.scope.target_hs "
+                    f"({target_hs!r}); got {parsed!r}."
+                )
 
         context = TemplateContext(target_hs=target_hs)
 
@@ -1823,12 +1797,17 @@ class HsSyncConfig:
             progress=ProgressConfig.from_dict(_block(global_cfg, "progress", required=False)),
             columns=ColumnsConfig.from_dict(_block(global_cfg, "columns")),
             logging=LoggingConfig.from_dict(_block(global_cfg, "logging", required=False)),
-            harvard_staging=HarvardStagingConfig.from_dict(_block(raw, "harvard_staging")),
+            harvard_staging=HarvardStagingConfig.from_dict(
+                _block(raw, "harvard_staging"),
+                scope=scope,
+            ),
             harvard_generator_audit=HarvardGeneratorAuditConfig.from_dict(
-                _block(raw, "harvard_generator_audit", required=False)
+                _block(raw, "harvard_generator_audit", required=False),
+                scope=scope,
             ),
             harvard_mapping_direction=HarvardMappingDirectionConfig.from_dict(
-                _block(raw, "harvard_mapping_direction", required=False)
+                _block(raw, "harvard_mapping_direction", required=False),
+                scope=scope,
             ),
             coverage=coverage,
             weights=WeightsConfig.from_dict(
@@ -1843,8 +1822,8 @@ class HsSyncConfig:
         )
     @property
     def target_hs(self) -> str:
-        """Effective target HS for the active coverage workflow."""
-        return self.coverage.target_hs
+        """Effective target HS from global.scope.target_hs."""
+        return self.scope.target_hs
 
     @property
     def template_context(self) -> TemplateContext:
@@ -1905,41 +1884,56 @@ class HsSyncConfig:
     def weights_output_dir(self) -> Path:
         return self.weights.output.resolve_data_dir()
 
+    @staticmethod
+    def _filename_with_ext(filename: str, ext: str) -> str:
+        """
+        Normalize a configured filename token.
+
+        If filename already includes any suffix (e.g. '.csv', '.parquet'),
+        return it unchanged. Otherwise append the requested extension.
+        """
+        name = require_str(filename, key="filename").strip()
+        if Path(name).suffix:
+            return name
+
+        normalized_ext = ext.lstrip(".")
+        return f"{name}.{normalized_ext}"
+
     def weights_product_path(self, name: str, *, ext: str = "csv") -> Path:
         product = self.weights.products.get(name)
         if product is None:
             raise KeyError(f"Unknown weights product: {name!r}")
 
-        return self.weights_output_dir() / f"{product.filename}.{ext}"
+        return self.weights_output_dir() / self._filename_with_ext(product.filename, ext)
 
     def weights_equal_split_weights_path(self) -> Path:
-        if "equal_split_weights" in self.weights.products:
-            return self.weights_product_path("equal_split_weights")
+        if "equal_split_weights" not in self.weights.products:
+            raise KeyError(
+                "Missing required config: weights.products.equal_split_weights. "
+                "Define this product in configs/hs_sync.yaml."
+            )
 
-        # Backward-compatible fallback if old key is still present.
-        if "allocation_weights" in self.weights.products:
-            return self.weights_product_path("allocation_weights")
-
-        return self.weights_output_dir() / (
-            f"target_{self.weights.target_hs.lower()}_equal_split_allocation_weights.csv"
-        )
+        return self.weights_product_path("equal_split_weights")
 
     def weights_complete_mapping_weights_path(self) -> Path:
-        if "complete_mapping_weights" in self.weights.products:
-            return self.weights_product_path("complete_mapping_weights")
+        if "complete_mapping_weights" not in self.weights.products:
+            raise KeyError(
+                "Missing required config: weights.products.complete_mapping_weights. "
+                "Define this product in configs/hs_sync.yaml."
+            )
 
-        return self.weights_output_dir() / (
-            f"target_{self.weights.target_hs.lower()}_complete_mapping_weights.csv"
-        )
+        return self.weights_product_path("complete_mapping_weights")
 
     def weights_equal_split_audit_path(self) -> Path:
-        return self.weights_output_dir() / (
-            f"{self.weights.artifact.equal_split_audit_filename}.csv"
+        return self.weights_artifact_output_dir() / self._filename_with_ext(
+            self.weights.artifact.equal_split_audit_filename,
+            "csv",
         )
 
     def weights_complete_mapping_audit_path(self) -> Path:
-        return self.weights_output_dir() / (
-            f"{self.weights.artifact.complete_weights_audit_filename}.csv"
+        return self.weights_artifact_output_dir() / self._filename_with_ext(
+            self.weights.artifact.complete_weights_audit_filename,
+            "csv",
         )
 
     def weights_artifact_output_dir(self) -> Path:
@@ -1957,7 +1951,10 @@ class HsSyncConfig:
                 self.weights.input.coverage_product
             )
 
-        return self.coverage_output_dir() / f"{coverage_filename}.csv"
+        return self.coverage_output_dir() / self._filename_with_ext(
+            coverage_filename,
+            "csv",
+        )
 
     def apply_output_dir(self) -> Path:
         return self.apply.output.resolve_data_dir()
@@ -1983,37 +1980,42 @@ class HsSyncConfig:
 
         product_name = parts[1]
         product = self.weights.products.get(product_name)
-        if product is not None:
-            filename = product.filename
-        elif product_name == "complete_mapping_weights":
-            filename = (
-                f"target_{self.apply.target_hs.lower()}_complete_mapping_weights"
-            )
-        else:
+        if product is None:
             raise KeyError(
-                f"Unknown weights product in apply.input.weights: {product_name!r}"
+                "Unknown weights product in apply.input.weights: "
+                f"{product_name!r}. Define weights.products.{product_name} "
+                "in configs/hs_sync.yaml."
             )
 
-        return self.weights_output_dir() / f"{filename}.csv"
+        filename = product.filename
+
+        return self.weights_output_dir() / self._filename_with_ext(filename, "csv")
 
     def apply_output_path(self) -> Path:
         product = self.apply.products.get("hs_synced_trade")
         if product is None:
-            filename = (
-                f"comtrade_target_{self.apply.target_hs.lower()}_hs_synced"
+            raise KeyError(
+                "Missing required config: apply.products.hs_synced_trade. "
+                "Define this product in configs/hs_sync.yaml."
             )
-        else:
-            filename = product.filename
 
-        return self.apply_output_dir() / f"{filename}.{self.apply.write.format}"
+        filename = product.filename
+
+        return self.apply_output_dir() / self._filename_with_ext(
+            filename,
+            self.apply.write.format,
+        )
 
     def apply_audit_path(self) -> Path:
-        return self.apply_output_dir() / f"{self.apply.artifact.audit_filename}.csv"
+        return self.apply_artifact_output_dir() / self._filename_with_ext(
+            self.apply.artifact.audit_filename,
+        "csv",
+    )
 
     def apply_integrity_audit_path(self) -> Path:
-        return (
-            self.apply_output_dir()
-            / f"{self.apply.artifact.integrity_audit_filename}.csv"
+        return self.apply_artifact_output_dir() / self._filename_with_ext(
+            self.apply.artifact.integrity_audit_filename,
+            "csv",
         )
 
     def apply_artifact_output_dir(self) -> Path:
@@ -2023,8 +2025,7 @@ class HsSyncConfig:
         self,
         *,
         block: dict[str, Any],
-        key: str,
-    ) -> Path:
+        key: str,) -> Path:
         source = require_str(
             block.get("source", "repo"),
             key=f"{key}.source",
