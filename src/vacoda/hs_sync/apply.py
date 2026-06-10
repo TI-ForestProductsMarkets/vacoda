@@ -442,12 +442,30 @@ def _write_synced_output(
 ) -> None:
     """
     Write HS-synced rows.
+
+    The output includes hs_sync_input_row_id, a workflow-local identifier
+    assigned before HS mapping expansion. This makes it possible to audit
+    row-level value preservation after one input row expands to multiple
+    target-HS rows.
     """
 
     input_glob_sql = _sql_literal(input_glob)
     output_path_sql = _sql_literal(output_path)
 
     synced_query = f"""
+    WITH src AS (
+        SELECT
+            row_number() OVER () AS hs_sync_input_row_id,
+            raw.*
+        FROM read_csv_auto(
+            {input_glob_sql},
+            HEADER = TRUE,
+            ALL_VARCHAR = TRUE,
+            union_by_name = TRUE
+        ) raw
+        WHERE CAST(raw."{year_col}" AS INTEGER)
+              BETWEEN {int(min_year)} AND {int(max_year)}
+    )
     SELECT
         src.*,
 
@@ -467,17 +485,10 @@ def _write_synced_output(
         TRY_CAST(src."{value_col}" AS DOUBLE) * w.allocation_weight
             AS primary_value_hs_synced
 
-    FROM read_csv_auto(
-        {input_glob_sql},
-        HEADER = TRUE,
-        ALL_VARCHAR = TRUE,
-        union_by_name = TRUE
-    ) src
+    FROM src
     INNER JOIN hs_weights w
       ON CAST(src."{hs_col}" AS VARCHAR) = w.source_hs
      AND lpad(CAST(src."{cmd_col}" AS VARCHAR), 6, '0') = w.source_cmd
-    WHERE CAST(src."{year_col}" AS INTEGER)
-          BETWEEN {int(min_year)} AND {int(max_year)}
     """
 
     if output_format == "parquet":
