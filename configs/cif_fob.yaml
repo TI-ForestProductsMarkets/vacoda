@@ -1,0 +1,13 @@
+cif_fob:
+  enabled: true
+
+  input:
+    trade_data: "hs_sync.applied_output"
+
+  output:
+    stage: "interim"
+    subdir: "cif_fob/target_{target_hs_lower}"
+
+  products:
+    corrected_trade:
+      filename: "comtrade_target_{target_hs_lower}_cif_fob_corrected"
