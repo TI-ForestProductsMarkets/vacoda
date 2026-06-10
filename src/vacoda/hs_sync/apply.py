@@ -47,8 +47,7 @@ def apply_hs_sync_with_weights(
     value_col: str,
     output_format: str = "parquet",
     threads: int = 16,
-    overwrite: bool = True,
-) -> HsSyncApplyResult:
+    overwrite: bool = True) -> HsSyncApplyResult:
     """
     Apply complete HS-sync mapping weights to trade data.
 
@@ -177,7 +176,44 @@ def _sql_literal(value: str | Path) -> str:
     text = str(value)
     return "'" + text.replace("'", "''") + "'"
 
+def _combine_apply_audit(
+    *,
+    audit_before: pd.DataFrame,
+    audit_after: pd.DataFrame,
+) -> pd.DataFrame:
+    audit = pd.concat([audit_before, audit_after], ignore_index=True)
 
+    # Compare input_value_total and synced_value_total.
+    input_value_rows = audit[audit["check"] == "input_value_total"]
+    synced_value_rows = audit[audit["check"] == "synced_value_total"]
+
+    if not input_value_rows.empty and not synced_value_rows.empty:
+        input_value = float(input_value_rows["actual"].iloc[0])
+        synced_value = float(synced_value_rows["actual"].iloc[0])
+
+        diff = input_value - synced_value
+        rel_diff = abs(diff) / abs(input_value) if input_value else 0.0
+
+        audit = pd.concat(
+            [
+                audit,
+                pd.DataFrame(
+                    [
+                        {
+                            "check": "value_preserved_after_hs_sync",
+                            "expected": input_value,
+                            "actual": synced_value,
+                            "status": "pass" if rel_diff <= 1e-10 else "fail",
+                            "detail": f"diff={diff}; rel_diff={rel_diff}",
+                        }
+                    ]
+                ),
+            ],
+            ignore_index=True,
+        )
+
+    return audit
+    
 def _register_weights(
     *,
     con: duckdb.DuckDBPyConnection,
@@ -531,43 +567,6 @@ def _build_post_apply_audit(
     return pd.DataFrame(checks)
 
 
-def _combine_apply_audit(
-    *,
-    audit_before: pd.DataFrame,
-    audit_after: pd.DataFrame,
-) -> pd.DataFrame:
-    audit = pd.concat([audit_before, audit_after], ignore_index=True)
-
-    # Compare input_value_total and synced_value_total.
-    input_value_rows = audit[audit["check"] == "input_value_total"]
-    synced_value_rows = audit[audit["check"] == "synced_value_total"]
-
-    if not input_value_rows.empty and not synced_value_rows.empty:
-        input_value = float(input_value_rows["actual"].iloc[0])
-        synced_value = float(synced_value_rows["actual"].iloc[0])
-
-        diff = input_value - synced_value
-        rel_diff = abs(diff) / abs(input_value) if input_value else 0.0
-
-        audit = pd.concat(
-            [
-                audit,
-                pd.DataFrame(
-                    [
-                        {
-                            "check": "value_preserved_after_hs_sync",
-                            "expected": input_value,
-                            "actual": synced_value,
-                            "status": "pass" if rel_diff <= 1e-10 else "fail",
-                            "detail": f"diff={diff}; rel_diff={rel_diff}",
-                        }
-                    ]
-                ),
-            ],
-            ignore_index=True,
-        )
-
-    return audit
 
 def run_hs_sync_apply(
     *,
@@ -582,10 +581,9 @@ def run_hs_sync_apply(
     It expects the complete mapping-weight table to already exist.
     """
 
-    target_hs = cfg.coverage.target_hs
-    target_hs_lower = target_hs.lower()
+    target_hs = cfg.apply.target_hs
 
-    input_dir = cfg.coverage_input_dir()
+    input_dir = cfg.apply_trade_data_dir()
     input_pattern = cfg.coverage.input.pattern
 
     if input_pattern is None:
@@ -593,27 +591,9 @@ def run_hs_sync_apply(
 
     input_glob = str(input_dir / input_pattern)
 
-    weights_dir = cfg.weights_output_dir()
-
-    weights_path = (
-        weights_dir
-        / f"target_{target_hs_lower}_complete_mapping_weights.csv"
-    )
-
-    output_dir = (
-        cfg.coverage_output_dir().parent
-        / f"target_{target_hs_lower}_applied"
-    )
-
-    output_path = (
-        output_dir
-        / f"comtrade_target_{target_hs_lower}_hs_synced.parquet"
-    )
-
-    audit_path = (
-        output_dir
-        / f"comtrade_target_{target_hs_lower}_hs_sync_audit.csv"
-    )
+    weights_path = cfg.apply_weights_path()
+    output_path = cfg.apply_output_path()
+    audit_path = cfg.apply_audit_path()
 
     if not weights_path.exists():
         raise FileNotFoundError(
@@ -639,9 +619,9 @@ def run_hs_sync_apply(
         hs_col=cfg.columns.hs,
         cmd_col=cfg.columns.cmd,
         value_col=cfg.columns.value,
-        output_format="parquet",
+        output_format=cfg.apply.write.format,
         threads=cfg.engine.threads,
-        overwrite=cfg.coverage.write.overwrite,
+        overwrite=cfg.apply.write.overwrite,
     )
 
     failed = result.audit[result.audit["status"] == "fail"]

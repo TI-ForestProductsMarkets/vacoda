@@ -36,7 +36,7 @@ def run_complete_mapping_weights(
     target_hs = cfg.weights.target_hs
 
     source_code_coverage_path = cfg.weights_input_coverage_path()
-    allocation_weights_path = cfg.weights_equal_split_weights_path()
+    weights_path = cfg.weights_equal_split_weights_path()
     output_weights_path = cfg.weights_complete_mapping_weights_path()
     output_audit_path = cfg.weights_complete_mapping_audit_path()
 
@@ -45,16 +45,16 @@ def run_complete_mapping_weights(
             f"Missing source-code coverage file: {source_code_coverage_path}"
         )
 
-    if not allocation_weights_path.exists():
+    if not weights_path.exists():
         raise FileNotFoundError(
-            f"Missing equal-split allocation weights file: {allocation_weights_path}"
+            f"Missing equal-split allocation weights file: {weights_path}"
         )
 
     logger.info("Starting complete target-HS mapping-weight step.")
     logger.info("  Run ID: %s", run_id)
     logger.info("  Target HS: %s", target_hs)
     logger.info("  Source coverage: %s", source_code_coverage_path)
-    logger.info("  Allocation weights: %s", allocation_weights_path)
+    logger.info("  Allocation weights: %s", weights_path)
     logger.info("  Output weights path: %s", output_weights_path)
     logger.info("  Output audit path: %s", output_audit_path)
 
@@ -67,7 +67,7 @@ def run_complete_mapping_weights(
     )
 
     allocation_weights = pd.read_csv(
-        allocation_weights_path,
+        weights_path,
         dtype={
             "source_cmd": str,
             "target_cmd": str,
