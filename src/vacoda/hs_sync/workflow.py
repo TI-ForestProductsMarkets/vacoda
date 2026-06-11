@@ -301,7 +301,8 @@ def run_hs_sync_workflow(
         if row.get("status") == "fail"
     ]
 
-    outputs["status"] = "failed" if failed_steps else "completed"
+    final_status = "failed" if failed_steps else "completed"
+    outputs["status"] = final_status
 
     logger.info("")
     logger.info("HS-sync workflow step summary:")
@@ -312,5 +313,8 @@ def run_hs_sync_workflow(
             row["status"],
             row.get("n_failed_audit_rows"),
         )
+
+    outputs["ready_for_next_step"] = final_status == "completed"
+    outputs["ready_for_cif_fob"] = final_status == "completed"
 
     return outputs

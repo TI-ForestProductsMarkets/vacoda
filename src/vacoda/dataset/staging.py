@@ -132,7 +132,7 @@ def build_comtrade_staging_dataset(
 
             return {
                 "status": "skipped_existing",
-                "ready_for_next_step": True,
+                "ready_for_cif_fob": True,
                 "ready_for_hs_sync": True,
                 "staged_parquet": output_path,
                 "audit_file": audit_path,
