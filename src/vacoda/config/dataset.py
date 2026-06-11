@@ -1,736 +1,273 @@
-"""
-vacoda.config.dataset
-
-Config reader for configs/dataset.yaml.
-
-This module handles dataset-build configuration only.
-It does not resolve global storage paths directly; paths are resolved via
-vacoda.config.paths using stage/subdir/file information from this config.
-"""
+# src/vacoda/config/dataset.py
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-from dataclasses import dataclass, field
 
 from vacoda.config.base import (
     CONFIG_DIR,
-    get_required_block,
-    get_required_value,
     load_yaml_config,
     require_bool,
     require_dict,
     require_int,
     require_str,
 )
+from vacoda.config.paths import get_data_dir, get_output_dir
 
 
-DATASET_CONFIG_NAME = "dataset.yaml"
-DATASET_CONFIG_PATH = CONFIG_DIR / DATASET_CONFIG_NAME
+DATASET_CONFIG_PATH = CONFIG_DIR / "dataset.yaml"
 
 
+def load_dataset_config(config_path: Path | None = None) -> dict[str, Any]:
+    return load_yaml_config(config_path or DATASET_CONFIG_PATH)
+
+
+@dataclass(frozen=True)
+class StagePathConfig:
+    stage: str
+    subdir: str = ""
+    pattern: str | None = None
+    file: str | None = None
+    format: str | None = None
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any], *, key: str) -> "StagePathConfig":
+        fmt = cfg.get("format")
+
+        pattern = cfg.get("pattern")
+        file = cfg.get("file")
+
+        return cls(
+            stage=require_str(cfg.get("stage"), key=f"{key}.stage").strip().lower(),
+            subdir=require_str(
+                cfg.get("subdir", ""),
+                key=f"{key}.subdir",
+                allow_empty=True,
+            ),
+            pattern=None if pattern is None else require_str(pattern, key=f"{key}.pattern"),
+            file=None if file is None else require_str(file, key=f"{key}.file"),
+            format=None if fmt is None else require_str(fmt, key=f"{key}.format").strip().lower(),
+        )
+
+    def resolve_dir(self) -> Path:
+        base = get_data_dir(self.stage)
+        return base / self.subdir if self.subdir else base
+
+    def resolve_input_glob(self) -> Path:
+        if self.pattern is None:
+            raise ValueError("input.pattern is required for multi-file input.")
+        return self.resolve_dir() / self.pattern
+
+    def resolve_file(self) -> Path:
+        if self.file is None:
+            raise ValueError("file is required for this path config.")
+        return self.resolve_dir() / self.file
+        
 @dataclass(frozen=True)
 class DatasetInfoConfig:
     name: str
     mode: str
     source: str
 
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "DatasetInfoConfig":
+        return cls(
+            name=require_str(cfg.get("name"), key="dataset.name"),
+            mode=require_str(cfg.get("mode"), key="dataset.mode").strip().lower(),
+            source=require_str(cfg.get("source"), key="dataset.source").strip().lower(),
+        )
+
 
 @dataclass(frozen=True)
-class DatasetInputConfig:
-    stage: str
-    subdir: str
-    pattern: str = "*.csv"
-    files: list[str] = field(default_factory=list)
+class EngineConfig:
+    name: str
+    threads: int
 
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "EngineConfig":
+        name = require_str(cfg.get("name", "duckdb"), key="engine.name").strip().lower()
 
-@dataclass(frozen=True)
-class DatasetOutputConfig:
-    stage: str
-    subdir: str
-    format: str
-    files: list[str] = field(default_factory=list)
+        if name != "duckdb":
+            raise ValueError(
+                f"Unsupported dataset engine: {name!r}. "
+                "Currently only 'duckdb' is supported."
+            )
 
+        return cls(
+            name=name,
+            threads=require_int(cfg.get("threads", 1), key="engine.threads", min_value=1),
+        )
 
 @dataclass(frozen=True)
 class RawSchemaConfig:
     required_fields: list[str]
 
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "RawSchemaConfig":
+        fields = cfg.get("required_fields", [])
+        if not isinstance(fields, list):
+            raise TypeError("schema.raw.required_fields must be a list.")
+
+        return cls(
+            required_fields=[
+                require_str(item, key="schema.raw.required_fields")
+                for item in fields
+            ]
+        )
+
 
 @dataclass(frozen=True)
 class StandardizedSchemaConfig:
     name: str
-    field_mapping: dict[str, str]
     drop_unmapped_fields: bool
+    field_mapping: dict[str, str]
     required_fields: list[str]
     dtypes: dict[str, str]
 
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "StandardizedSchemaConfig":
+        mapping = require_dict(cfg.get("field_mapping", {}), key="schema.standardized.field_mapping")
+        dtypes = require_dict(cfg.get("dtypes", {}), key="schema.standardized.dtypes")
+
+        required_fields = cfg.get("required_fields", [])
+        if not isinstance(required_fields, list):
+            raise TypeError("schema.standardized.required_fields must be a list.")
+
+        return cls(
+            name=require_str(cfg.get("name"), key="schema.standardized.name"),
+            drop_unmapped_fields=require_bool(
+                cfg.get("drop_unmapped_fields", True),
+                key="schema.standardized.drop_unmapped_fields",
+            ),
+            field_mapping={
+                require_str(k, key="schema.standardized.field_mapping.<key>"):
+                require_str(v, key=f"schema.standardized.field_mapping.{k}")
+                for k, v in mapping.items()
+            },
+            required_fields=[
+                require_str(item, key="schema.standardized.required_fields")
+                for item in required_fields
+            ],
+            dtypes={
+                require_str(k, key="schema.standardized.dtypes.<key>"):
+                require_str(v, key=f"schema.standardized.dtypes.{k}")
+                for k, v in dtypes.items()
+            },
+        )
+
 
 @dataclass(frozen=True)
-class DatasetSchemaConfig:
+class SchemaConfig:
     name: str
+    version: int
     strict: bool
     raw: RawSchemaConfig
     standardized: StandardizedSchemaConfig
 
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "SchemaConfig":
+        return cls(
+            name=require_str(cfg.get("name"), key="schema.name"),
+            version=require_int(cfg.get("version", 1), key="schema.version", min_value=1),
+            strict=require_bool(cfg.get("strict", False), key="schema.strict"),
+            raw=RawSchemaConfig.from_dict(
+                require_dict(cfg.get("raw", {}), key="schema.raw")
+            ),
+            standardized=StandardizedSchemaConfig.from_dict(
+                require_dict(cfg.get("standardized", {}), key="schema.standardized")
+            ),
+        )
+
 
 @dataclass(frozen=True)
-class DatasetWriteConfig:
-    overwrite: bool = True
-    allow_empty: bool = False
+class WriteConfig:
+    overwrite: bool
+    allow_empty: bool
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "WriteConfig":
+        return cls(
+            overwrite=require_bool(cfg.get("overwrite", True), key="write.overwrite"),
+            allow_empty=require_bool(cfg.get("allow_empty", False), key="write.allow_empty"),
+        )
 
 
 @dataclass(frozen=True)
-class DatasetLoggingConfig:
-    level: str = "INFO"
-    file: str | None = "LOG_DATASET_BUILD.log"
-    timestamp: bool = True
+class AuditConfig:
+    enabled: bool
+    kind: str
+    subdir: str
+    filename: str
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "AuditConfig":
+        return cls(
+            enabled=require_bool(cfg.get("enabled", True), key="audit.enabled"),
+            kind=require_str(cfg.get("kind", "manifest"), key="audit.kind").strip().lower(),
+            subdir=require_str(cfg.get("subdir", ""), key="audit.subdir", allow_empty=True),
+            filename=require_str(cfg.get("filename"), key="audit.filename"),
+        )
+
+    def resolve_output_path(self) -> Path:
+        base = get_output_dir("manifests" if self.kind in {"manifest", "manifests"} else self.kind)
+        return base / self.subdir / self.filename
 
 
 @dataclass(frozen=True)
-class DatasetBuildConfig:
+class LoggingConfig:
+    level: str
+    file: str
+    timestamp: bool
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "LoggingConfig":
+        return cls(
+            level=require_str(cfg.get("level", "INFO"), key="logging.level").upper(),
+            file=require_str(cfg.get("file", "LOG_DATASET_BUILD.log"), key="logging.file"),
+            timestamp=require_bool(cfg.get("timestamp", True), key="logging.timestamp"),
+        )
+
+    def resolve_log_file(self) -> Path:
+        from vacoda.config.paths import get_output_dir
+
+        return get_output_dir("logs") / self.file
+
+@dataclass(frozen=True)
+class DatasetConfig:
     dataset: DatasetInfoConfig
-    input: DatasetInputConfig
-    output: DatasetOutputConfig
-    schema: DatasetSchemaConfig
-    write: DatasetWriteConfig
-    logging: DatasetLoggingConfig
+    input: StagePathConfig
+    output: StagePathConfig
+    engine: EngineConfig
+    schema: SchemaConfig
+    write: WriteConfig
+    audit: AuditConfig
+    logging: LoggingConfig
+    @classmethod
+    def from_yaml(cls, config_path: Path | None = None) -> "DatasetConfig":
+        return cls.from_dict(load_dataset_config(config_path))
 
-
-def load_dataset_build_config(
-    config_path: Path | None = None,
-) -> DatasetBuildConfig:
-    """Load configs/dataset.yaml as a typed DatasetBuildConfig."""
-    cfg = load_dataset_config(config_path)
-
-    return DatasetBuildConfig(
-        dataset=DatasetInfoConfig(
-            name=get_dataset_name(cfg),
-            mode=get_dataset_mode(cfg),
-            source=get_dataset_source(cfg),
-        ),
-        input=DatasetInputConfig(
-            stage=get_dataset_input_stage(cfg),
-            subdir=get_dataset_input_subdir(cfg),
-            pattern=get_dataset_input_pattern(cfg),
-            files=get_dataset_input_files(cfg),
-        ),
-        output=DatasetOutputConfig(
-            stage=get_dataset_output_stage(cfg),
-            subdir=get_dataset_output_subdir(cfg),
-            format=get_dataset_output_format(cfg),
-            files=get_dataset_output_files(cfg),
-        ),
-        schema=DatasetSchemaConfig(
-            name=get_dataset_schema_name(cfg),
-            strict=get_dataset_schema_strict_bool(cfg),
-            raw=RawSchemaConfig(
-                required_fields=get_dataset_raw_required_fields(cfg),
-            ),
-            standardized=StandardizedSchemaConfig(
-                name=get_dataset_standardized_name(cfg),
-                drop_unmapped_fields=get_dataset_standardized_schema_config(cfg).get("drop_unmapped_fields", False),
-                field_mapping=get_dataset_field_mapping(cfg),
-                required_fields=get_dataset_standardized_required_fields(cfg),
-                dtypes=get_dataset_standardized_dtype_mapping(cfg),
-            ),
-        ),
-        write=DatasetWriteConfig(
-            overwrite=get_dataset_overwrite_bool(cfg),
-            allow_empty=get_dataset_allow_empty_bool(cfg),
-        ),
-        logging=DatasetLoggingConfig(
-            level=get_dataset_logging_level(cfg),
-            file=get_dataset_logging_file(cfg),
-            timestamp=get_dataset_logging_timestamp_bool(cfg),
-        ),
-    )
-
-
-def load_dataset_config(config_path: Path | None = None) -> dict[str, Any]:
-    """Load and validate configs/dataset.yaml."""
-    cfg = load_yaml_config(config_path or DATASET_CONFIG_PATH)
-    validate_dataset_config(cfg)
-    return cfg
-
-
-def validate_dataset_config(cfg: dict[str, Any]) -> None:
-    """Validate required dataset.yaml structure."""
-    dataset_cfg = get_required_block(
-        cfg,
-        "dataset",
-        config_name=DATASET_CONFIG_NAME,
-    )
-    input_cfg = get_required_block(
-        cfg,
-        "input",
-        config_name=DATASET_CONFIG_NAME,
-    )
-    output_cfg = get_required_block(
-        cfg,
-        "output",
-        config_name=DATASET_CONFIG_NAME,
-    )
-    schema_cfg = get_required_block(
-        cfg,
-        "schema",
-        config_name=DATASET_CONFIG_NAME,
-    )
-
-    # dataset block
-    require_str(
-        get_required_value(dataset_cfg, ("name",), config_name=f"{DATASET_CONFIG_NAME}: dataset"),
-        key="dataset.name",
-    )
-    require_str(
-        get_required_value(dataset_cfg, ("mode",), config_name=f"{DATASET_CONFIG_NAME}: dataset"),
-        key="dataset.mode",
-    )
-    require_str(
-        get_required_value(dataset_cfg, ("source",), config_name=f"{DATASET_CONFIG_NAME}: dataset"),
-        key="dataset.source",
-    )
-
-    # input block
-    require_str(
-        get_required_value(input_cfg, ("stage",), config_name=f"{DATASET_CONFIG_NAME}: input"),
-        key="input.stage",
-    )
-    require_str(
-        get_required_value(input_cfg, ("subdir",), config_name=f"{DATASET_CONFIG_NAME}: input"),
-        key="input.subdir",
-        allow_empty=True,
-    )
-
-    # output block
-    require_str(
-        get_required_value(output_cfg, ("stage",), config_name=f"{DATASET_CONFIG_NAME}: output"),
-        key="output.stage",
-    )
-    require_str(
-        get_required_value(output_cfg, ("subdir",), config_name=f"{DATASET_CONFIG_NAME}: output"),
-        key="output.subdir",
-        allow_empty=True,
-    )
-    require_str(
-        get_required_value(output_cfg, ("format",), config_name=f"{DATASET_CONFIG_NAME}: output"),
-        key="output.format",
-    )
-
-    # schema block
-    require_str(
-        get_required_value(
-            schema_cfg,
-            ("name",),
-            config_name=f"{DATASET_CONFIG_NAME}: schema",
-        ),
-        key="schema.name",
-    )
-
-    if "strict" in schema_cfg:
-        require_bool(schema_cfg["strict"], key="schema.strict")
-
-    raw_schema_cfg = get_required_block(
-        schema_cfg,
-        "raw",
-        config_name=f"{DATASET_CONFIG_NAME}: schema",
-    )
-
-    standardized_schema_cfg = get_required_block(
-        schema_cfg,
-        "standardized",
-        config_name=f"{DATASET_CONFIG_NAME}: schema",
-    )
-
-    standardized_required_fields = get_required_value(
-        standardized_schema_cfg,
-        ("required_fields",),
-        config_name=f"{DATASET_CONFIG_NAME}: schema.standardized",
-    )
-
-
-    raw_required_fields = get_required_value(
-                raw_schema_cfg,
-                ("required_fields",),
-                config_name=f"{DATASET_CONFIG_NAME}: schema.raw",
-                )
-
-    require_list_of_str(
-        standardized_required_fields,
-        key="schema.standardized.required_fields",
-    )
-
-    require_str(
-        get_required_value(
-            standardized_schema_cfg,
-            ("name",),
-            config_name=f"{DATASET_CONFIG_NAME}: schema.standardized",
-        ),
-        key="schema.standardized.name",
-    )
-
-    field_mapping = get_required_value(
-        standardized_schema_cfg,
-        ("field_mapping",),
-        config_name=f"{DATASET_CONFIG_NAME}: schema.standardized",
-    )
-
-    require_dict_of_str(
-        field_mapping,
-        key="schema.standardized.field_mapping",
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "DatasetConfig":
+        return cls(
+            dataset=DatasetInfoConfig.from_dict(require_dict(raw.get("dataset"), key="dataset")),
+            input=StagePathConfig.from_dict(require_dict(raw.get("input"), key="input"), key="input"),
+            output=StagePathConfig.from_dict(require_dict(raw.get("output"), key="output"), key="output"),
+            engine=EngineConfig.from_dict(require_dict(raw.get("engine", {}), key="engine")),
+            schema=SchemaConfig.from_dict(require_dict(raw.get("schema"), key="schema")),
+            write=WriteConfig.from_dict(require_dict(raw.get("write", {}), key="write")),
+            audit=AuditConfig.from_dict(require_dict(raw.get("audit", {}), key="audit")),
+            logging=LoggingConfig.from_dict(require_dict(raw.get("logging", {}), key="logging")),
         )
 
-    dtypes = get_required_value(
-        standardized_schema_cfg,
-        ("dtypes",),
-        config_name=f"{DATASET_CONFIG_NAME}: schema.standardized",
-    )
+    def input_glob(self) -> Path:
+        return self.input.resolve_input_glob()
 
-    require_dict_of_str(
-        dtypes,
-        key="schema.standardized.dtypes",
-    )
+    def output_path(self) -> Path:
+        return self.output.resolve_file()
 
-    # optional blocks
-    if "write" in cfg:
-        write_cfg = get_required_block(
-            cfg,
-            "write",
-            config_name=DATASET_CONFIG_NAME,
-        )
+    def audit_path(self) -> Path:
+        return self.audit.resolve_output_path()
 
-        if "overwrite" in write_cfg:
-            require_bool(write_cfg["overwrite"], key="write.overwrite")
-
-        if "allow_empty" in write_cfg:
-            require_bool(write_cfg["allow_empty"], key="write.allow_empty")
-
-    if "logging" in cfg:
-        logging_cfg = get_required_block(
-            cfg,
-            "logging",
-            config_name=DATASET_CONFIG_NAME,
-        )
-
-        if "level" in logging_cfg:
-            require_str(logging_cfg["level"], key="logging.level")
-
-        if "file" in logging_cfg:
-            require_str(logging_cfg["file"], key="logging.file")
-
-        if "timestamp" in logging_cfg:
-            require_bool(logging_cfg["timestamp"], key="logging.timestamp")
-
-
-# ---------------------------------------------------------------------
-# Small local validators
-# You can move these to config.base later if you want them globally.
-# ---------------------------------------------------------------------
-
-
-def require_list(value: Any, *, key: str) -> list[Any]:
-    """Require a config value to be a list."""
-    if not isinstance(value, list):
-        raise TypeError(
-            f"'{key}' must be a list, got {value!r} "
-            f"({type(value).__name__})."
-        )
-
-    return value
-
-
-def require_list_of_str(value: Any, *, key: str) -> list[str]:
-    """Require a config value to be a list of strings."""
-    items = require_list(value, key=key)
-
-    bad_items = [
-        item
-        for item in items
-        if not isinstance(item, str)
-    ]
-
-    if bad_items:
-        raise TypeError(
-            f"'{key}' must contain only strings. Invalid item(s): {bad_items!r}"
-        )
-
-    return items
-
-
-def require_dict_of_str(value: Any, *, key: str) -> dict[str, str]:
-    """Require a config value to be a dict[str, str]."""
-    items = require_dict(value, key=key)
-
-    bad_keys = [
-        item_key
-        for item_key in items
-        if not isinstance(item_key, str)
-    ]
-    bad_values = [
-        item_value
-        for item_value in items.values()
-        if not isinstance(item_value, str)
-    ]
-
-    if bad_keys:
-        raise TypeError(
-            f"'{key}' must have only string keys. Invalid key(s): {bad_keys!r}"
-        )
-
-    if bad_values:
-        raise TypeError(
-            f"'{key}' must have only string values. Invalid value(s): {bad_values!r}"
-        )
-
-    return items
-
-
-# ---------------------------------------------------------------------
-# Top-level block getters
-# ---------------------------------------------------------------------
-
-
-def get_dataset_config(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Return dataset config block."""
-    if cfg is None:
-        cfg = load_dataset_config()
-
-    return get_required_block(
-        cfg,
-        "dataset",
-        config_name=DATASET_CONFIG_NAME,
-    )
-
-
-def get_dataset_input_config(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Return input config block."""
-    if cfg is None:
-        cfg = load_dataset_config()
-
-    return get_required_block(
-        cfg,
-        "input",
-        config_name=DATASET_CONFIG_NAME,
-    )
-
-
-def get_dataset_output_config(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Return output config block."""
-    if cfg is None:
-        cfg = load_dataset_config()
-
-    return get_required_block(
-        cfg,
-        "output",
-        config_name=DATASET_CONFIG_NAME,
-    )
-
-
-def get_dataset_schema_config(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Return schema config block."""
-    if cfg is None:
-        cfg = load_dataset_config()
-
-    return get_required_block(
-        cfg,
-        "schema",
-        config_name=DATASET_CONFIG_NAME,
-    )
-
-
-def get_dataset_write_config(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Return write config block."""
-    if cfg is None:
-        cfg = load_dataset_config()
-
-    return cfg.get(
-        "write",
-        {
-            "overwrite": True,
-            "allow_empty": False,
-        },
-    )
-
-
-def get_dataset_logging_config(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Return logging config block."""
-    if cfg is None:
-        cfg = load_dataset_config()
-
-    return cfg.get(
-        "logging",
-        {
-            "level": "INFO",
-            "file": "LOG_DATASET_BUILD.log",
-            "timestamp": True,
-        },
-    )
-
-
-# ---------------------------------------------------------------------
-# Dataset block getters
-# ---------------------------------------------------------------------
-
-
-def get_dataset_name(cfg: dict[str, Any] | None = None) -> str:
-    """Return dataset name."""
-    dataset_cfg = get_dataset_config(cfg)
-    value = dataset_cfg.get("name")
-    return require_str(value, key="dataset.name").strip()
-
-
-def get_dataset_mode(cfg: dict[str, Any] | None = None) -> str:
-    """Return dataset build mode."""
-    dataset_cfg = get_dataset_config(cfg)
-    value = dataset_cfg.get("mode", "per_file")
-    mode = require_str(value, key="dataset.mode").strip().lower()
-
-    valid_modes = {"per_file", "merged"}
-    if mode not in valid_modes:
-        raise ValueError(
-            f"Invalid dataset.mode: {mode!r}. "
-            f"Valid modes: {sorted(valid_modes)}"
-        )
-
-    return mode
-
-
-def get_dataset_source(cfg: dict[str, Any] | None = None) -> str:
-    """Return dataset source name."""
-    dataset_cfg = get_dataset_config(cfg)
-    value = dataset_cfg.get("source", "api")
-    source = require_str(value, key="dataset.source").strip().lower()
-
-    valid_sources = {"api", "local"}
-    if source not in valid_sources:
-        raise ValueError(
-            f"Invalid dataset.source: {source!r}. "
-            f"Valid sources: {sorted(valid_sources)}"
-        )
-
-    return source
-
-
-# ---------------------------------------------------------------------
-# Input block getters
-# ---------------------------------------------------------------------
-
-
-def get_dataset_input_stage(cfg: dict[str, Any] | None = None) -> str:
-    """Return input data stage."""
-    input_cfg = get_dataset_input_config(cfg)
-    value = input_cfg.get("stage", "raw")
-    return require_str(value, key="input.stage").strip()
-
-
-def get_dataset_input_subdir(cfg: dict[str, Any] | None = None) -> str:
-    """Return input subdirectory below the input stage."""
-    input_cfg = get_dataset_input_config(cfg)
-    value = input_cfg.get("subdir", "")
-    return require_str(value, key="input.subdir", allow_empty=True).strip()
-
-
-def get_dataset_input_pattern(cfg: dict[str, Any] | None = None) -> str:
-    """Return input glob pattern."""
-    input_cfg = get_dataset_input_config(cfg)
-    value = input_cfg.get("pattern", "*.csv")
-    return require_str(value, key="input.pattern").strip()
-
-
-def get_dataset_input_files(cfg: dict[str, Any] | None = None) -> list[str]:
-    """Return explicit input file names/patterns."""
-    input_cfg = get_dataset_input_config(cfg)
-    value = input_cfg.get("files", [])
-
-    return require_list_of_str(value, key="input.files")
-
-
-# ---------------------------------------------------------------------
-# Output block getters
-# ---------------------------------------------------------------------
-
-
-def get_dataset_output_stage(cfg: dict[str, Any] | None = None) -> str:
-    """Return output data stage."""
-    output_cfg = get_dataset_output_config(cfg)
-    value = output_cfg.get("stage", "processed")
-    return require_str(value, key="output.stage").strip()
-
-
-def get_dataset_output_subdir(cfg: dict[str, Any] | None = None) -> str:
-    """Return output subdirectory below the output stage."""
-    output_cfg = get_dataset_output_config(cfg)
-    value = output_cfg.get("subdir", "")
-    return require_str(value, key="output.subdir", allow_empty=True).strip()
-
-
-def get_dataset_output_format(cfg: dict[str, Any] | None = None) -> str:
-    """Return output file format."""
-    output_cfg = get_dataset_output_config(cfg)
-    value = output_cfg.get("format", "parquet")
-    fmt = require_str(value, key="output.format").strip().lower()
-
-    valid_formats = {"csv", "parquet"}
-    if fmt not in valid_formats:
-        raise ValueError(
-            f"Invalid output.format: {fmt!r}. "
-            f"Valid formats: {sorted(valid_formats)}"
-        )
-
-    return fmt
-
-
-def get_dataset_output_files(cfg: dict[str, Any] | None = None) -> list[str]:
-    """Return explicit output file names/patterns."""
-    output_cfg = get_dataset_output_config(cfg)
-    value = output_cfg.get("files", [])
-
-    return require_list_of_str(value, key="output.files")
-
-
-# ---------------------------------------------------------------------
-# Schema block getters
-# ---------------------------------------------------------------------
-
-
-def get_dataset_schema_name(cfg: dict[str, Any] | None = None) -> str:
-    """Return schema name."""
-    schema_cfg = get_dataset_schema_config(cfg)
-    value = schema_cfg.get("name")
-    return require_str(value, key="schema.name").strip()
-
-
-def get_dataset_schema_strict_bool(cfg: dict[str, Any] | None = None) -> bool:
-    """Return whether schema validation should reject extra fields."""
-    schema_cfg = get_dataset_schema_config(cfg)
-    value = schema_cfg.get("strict", False)
-    return require_bool(value, key="schema.strict")
-
-
-def get_dataset_raw_schema_config(
-    cfg: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Return raw schema config block."""
-    schema_cfg = get_dataset_schema_config(cfg)
-    return get_required_block(
-        schema_cfg,
-        "raw",
-        config_name=DATASET_CONFIG_NAME,
-    )
-
-
-def get_dataset_standardized_schema_config(
-    cfg: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Return standardized schema config block."""
-    schema_cfg = get_dataset_schema_config(cfg)
-    return get_required_block(
-        schema_cfg,
-        "standardized",
-        config_name=DATASET_CONFIG_NAME,
-    )
-
-
-def get_dataset_raw_required_fields(
-    cfg: dict[str, Any] | None = None,
-) -> list[str]:
-    """Return required raw input fields."""
-    raw_schema_cfg = get_dataset_raw_schema_config(cfg)
-    value = raw_schema_cfg.get("required_fields", [])
-    return require_list_of_str(value, key="schema.raw.required_fields")
-
-
-def get_dataset_standardized_name(
-    cfg: dict[str, Any] | None = None,
-) -> str:
-    """Return standardized schema name."""
-    standardized_schema_cfg = get_dataset_standardized_schema_config(cfg)
-    value = standardized_schema_cfg.get("name")
-    return require_str(value, key="schema.standardized.name").strip()
-
-def get_dataset_standardized_drop_unmapped_bool(
-    cfg: dict[str, Any] | None = None,
-) -> bool:
-    """Return whether to drop unmapped fields in standardized output."""
-    standardized_schema_cfg = get_dataset_standardized_schema_config(cfg)
-    value = standardized_schema_cfg.get("drop_unmapped_fields", False)
-    return require_bool(value, key="schema.standardized.drop_unmapped_fields")
-
-def get_dataset_field_mapping(
-    cfg: dict[str, Any] | None = None,
-) -> dict[str, str]:
-    """Return raw-to-standardized field mapping."""
-    standardized_schema_cfg = get_dataset_standardized_schema_config(cfg)
-    value = standardized_schema_cfg.get("field_mapping", {})
-    return require_dict_of_str(value, key="schema.standardized.field_mapping")
-
-
-def get_dataset_standardized_required_fields(
-    cfg: dict[str, Any] | None = None,
-) -> list[str]:
-    """Return required standardized fields."""
-    standardized_schema_cfg = get_dataset_standardized_schema_config(cfg)
-    value = standardized_schema_cfg.get("required_fields", [])
-    return require_list_of_str(
-        value,
-        key="schema.standardized.required_fields",
-    )
-
-
-def get_dataset_standardized_dtype_mapping(
-    cfg: dict[str, Any] | None = None,
-) -> dict[str, str]:
-    """Return standardized dtype mapping."""
-    standardized_schema_cfg = get_dataset_standardized_schema_config(cfg)
-    value = standardized_schema_cfg.get("dtypes", {})
-    return require_dict_of_str(value, key="schema.standardized.dtypes")
-
-
-# ---------------------------------------------------------------------
-# Write block getters
-# ---------------------------------------------------------------------
-
-
-def get_dataset_overwrite_bool(cfg: dict[str, Any] | None = None) -> bool:
-    """Return whether outputs should be overwritten."""
-    write_cfg = get_dataset_write_config(cfg)
-    value = write_cfg.get("overwrite", True)
-    return require_bool(value, key="write.overwrite")
-
-
-def get_dataset_allow_empty_bool(cfg: dict[str, Any] | None = None) -> bool:
-    """Return whether empty DataFrames may be written."""
-    write_cfg = get_dataset_write_config(cfg)
-    value = write_cfg.get("allow_empty", False)
-    return require_bool(value, key="write.allow_empty")
-
-
-# ---------------------------------------------------------------------
-# Logging block getters
-# ---------------------------------------------------------------------
-
-
-def get_dataset_logging_level(cfg: dict[str, Any] | None = None) -> str:
-    """Return logging level."""
-    logging_cfg = get_dataset_logging_config(cfg)
-    value = logging_cfg.get("level", "INFO")
-    return require_str(value, key="logging.level").strip().upper()
-
-
-def get_dataset_logging_file(cfg: dict[str, Any] | None = None) -> str | None:
-    """Return logging filename."""
-    logging_cfg = get_dataset_logging_config(cfg)
-    value = logging_cfg.get("file")
-
-    if value is None:
-        return None
-
-    return require_str(value, key="logging.file").strip()
-
-
-def get_dataset_logging_timestamp_bool(cfg: dict[str, Any] | None = None) -> bool:
-    """Return whether dataset log filename should be timestamped."""
-    logging_cfg = get_dataset_logging_config(cfg)
-    value = logging_cfg.get("timestamp", True)
-    return require_bool(value, key="logging.timestamp")
+    
