@@ -40,6 +40,7 @@ class PipelineInfoConfig:
     enabled_steps: list[str]
     fail_fast: bool
     allow_skip_existing: bool
+    force_run_all: bool
 
     @classmethod
     def from_dict(cls, cfg: dict[str, Any]) -> "PipelineInfoConfig":
@@ -54,6 +55,7 @@ class PipelineInfoConfig:
             enabled_steps=[str(step) for step in enabled_steps],
             fail_fast=bool(cfg.get("fail_fast", True)),
             allow_skip_existing=bool(cfg.get("allow_skip_existing", True)),
+            force_run_all=bool(cfg.get("force_run_all", False)),
         )
 
 
