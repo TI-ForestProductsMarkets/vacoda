@@ -1,106 +1,84 @@
-# Configuration file for pipeline settings in the vacoda project.
-
 # configs/pipeline.yaml
+# VACODA master pipeline configuration.
+#
+# The pipeline orchestrates module-level workflows.
+# Each module keeps its own detailed config and audit logic.
 
 pipeline:
+  name: "vacoda_main_pipeline"
+  version: 1
+  enabled: true
+
+  # Run order matters.
   enabled_steps:
-    - hs_sync
-    - cif_fob
+    - "staging"
+    - "hs_sync"
+    # - "cif_fob"
+    # - "trade_sync"
+    # - "processed_export"
 
-inputs:
-  raw_comtrade:
-    stage: raw
-    subdir: api/single
-    pattern: "*.csv"
+  # Stop immediately if a step fails or reports ready_for_next_step=false.
+  fail_fast: true
 
-outputs:
-  hs_synced_trade:
-    stage: interim
-    subdir: hs_sync/target_h5/applied
-    file: comtrade_target_h5_hs_synced.parquet
+  # If true, completed existing outputs may be reused by module logic
+  # when the module config has overwrite=false.
+  allow_skip_existing: true
 
-  cif_fob_trade:
-    stage: interim
-    subdir: cif_fob/target_h5
-    file: comtrade_target_h5_cif_fob_corrected.parquet
-    
+steps:
+  staging:
+    enabled: true
+    config: "configs/dataset.yaml"
+    expected_status:
+      - "completed"
+      - "skipped_existing"
+    required_ready_flag: "ready_for_hs_sync"
 
-# Pipeline mode:
-# - 'per_file' : each matched raw file is processed and saved separately
-# - 'merged'   : all matched raw files are concatenated and saved as one output
-# Configuration for one vacoda processing pipeline run.
+  hs_sync:
+    enabled: true
+    config: "configs/hs_sync.yaml"
+    expected_status:
+      - "completed"
+    required_ready_flag: "ready_for_cif_fob"
 
-pipeline:
-  mode: per_file      # options: per_file, merged
-  source: api         # options: api, local
+  cif_fob:
+    enabled: false
+    config: "configs/cif_fob.yaml"
+    expected_status:
+      - "completed"
+    required_ready_flag: "ready_for_trade_sync"
 
-input:
-  stage: raw
-  subdir: api/single
-  files:
-    - Comtrade_hs_441012_trade.csv
-    # - Comtrade_*.csv
+  trade_sync:
+    enabled: false
+    config: "configs/trade_sync.yaml"
+    expected_status:
+      - "completed"
+    required_ready_flag: "ready_for_processed_export"
 
-output:
-  stage: processed
-  subdir: single
-  files:
-    - comtrade_code_5_base.parquet
+  processed_export:
+    enabled: false
+    config: "configs/processed_export.yaml"
+    expected_status:
+      - "completed"
+    required_ready_flag: null
 
-external:
-  country_codes_file: country_codes.csv
-  hs_codes_file: hs_codes.csv
+
+checkpoint:
+  enabled: true
+  kind: "manifests"
+  subdir: "pipeline/checkpoints"
+  reuse_successful_steps: true
+  fingerprint_mode: "strong_metadata"  # fast | strong_metadata | content_hash
+  
+manifest:
+  stage: "output"
+  kind: "manifests"
+  subdir: "pipeline"
+  filename: "vacoda_pipeline_manifest.csv"
+  timestamp: true
 
 logging:
-  level: DEBUG
-  file: LOG_PIPELINE_PATHS.log
+  level: "INFO"
+  subdir: "pipeline"
+  file: "LOG_VACODA_PIPELINE.log"
+  timestamp: true
 
-
-########## NEED TO CLEAN UP BELOW ##########
-# Paths to data files
-raw_data:
-  files:
-    - "Comtrade_hs_441012_trade.csv"
-    #- "Comtrade_*.csv"
-
-# Paths to processed data files
-processed_data:
-  files:
-    - "comtrade_code_5_base.parquet"
-
-# Paths to external data files (e.g., country codes, HS codes)
-external_data:
-  country_codes_file: "country_codes.csv"
-  hs_codes_file: "hs_codes.csv"
-
-# Logging configuration
-logging:
-  level: "DEBUG"  # Options: DEBUG, INFO, WARNING, ERROR, CRITICAL
-  file: "LOG_PIPELINE_PATHS.log"
-
-
-#### ADDITIONAL CONFIGURATION OPTIONS BELOW AS NEEDED ####
-#### NEED TO CLEAN UP
-
-# Logging options (optional)
-log_level: DEBUG  # Options: DEBUG, INFO, WARNING, ERROR, CRITICAL
-log_file: "/storage/data/comtrade/output/reports/LOG_PIPELINE_PATHS.log"
-
-
-## Pipeline configuration for vacoda.
-
-reference_prices:
-  lower_count: 5
-  max_cv: 1.5
-  year_window: 1
-
-hidden_flow_matching:
-  year_window: 1
-  price_rel_tol: 0.35
-  value_rel_tol: 0.60
-  weight_rel_tol: 0.60
-  plausible_score_threshold: 0.55
-
-imputation:
-  min_reference_count: 5
-  use_year_window: true
