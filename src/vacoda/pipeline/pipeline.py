@@ -291,9 +291,14 @@ def run_pipeline(
     logger.info("Run ID: %s", run_id)
     logger.info("Pipeline: %s", cfg.pipeline.name)
     logger.info("Enabled steps: %s", ", ".join(cfg.pipeline.enabled_steps))
+    logger.info("Checkpoint reuse: %s", cfg.checkpoint.reuse_successful_steps)
+    logger.info("Force run all: %s", cfg.pipeline.force_run_all)
     logger.info("Checkpoint dir: %s", checkpoint_dir)
     logger.info("Manifest: %s", manifest_path)
     logger.info("Log file: %s", log_path)
+
+    if cfg.pipeline.force_run_all:
+        logger.warning("FORCE RUN ALL is enabled — valid checkpoints will be ignored.")
 
     if not cfg.pipeline.enabled:
         logger.warning("Pipeline is disabled in config. Nothing to run.")
@@ -349,7 +354,7 @@ def run_pipeline(
             step_name=step_name,
         )
 
-        if cfg.checkpoint.enabled and cfg.checkpoint.reuse_successful_steps:
+        if cfg.checkpoint.enabled and cfg.checkpoint.reuse_successful_steps and not cfg.pipeline.force_run_all:
             checkpoint = load_checkpoint(step_checkpoint_path)
 
             if checkpoint is not None:

@@ -24,6 +24,10 @@ pipeline:
   # when the module config has overwrite=false.
   allow_skip_existing: true
 
+  # If true, all steps will run even if they are already completed and reusable. Overrides allow_skip_existing.
+  force_run_all: false  
+
+
 steps:
   staging:
     enabled: true
