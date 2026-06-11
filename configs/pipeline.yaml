@@ -9,6 +9,15 @@ pipeline:
   version: 1
   enabled: true
 
+  scope:
+    target_hs: "H5"
+    min_year: 2017
+    max_year: 2025
+
+  engine:
+    name: "duckdb"
+    threads: 48
+
   # Run order matters.
   enabled_steps:
     - "staging"
