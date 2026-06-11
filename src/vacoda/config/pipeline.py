@@ -104,6 +104,40 @@ class PipelineManifestConfig:
 
 
 @dataclass(frozen=True)
+class PipelineCheckpointConfig:
+    enabled: bool
+    kind: str
+    subdir: str
+    reuse_successful_steps: bool
+    fingerprint_mode: str
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "PipelineCheckpointConfig":
+        fingerprint_mode = require_str(
+            cfg.get("fingerprint_mode", "strong_metadata"),
+            key="checkpoint.fingerprint_mode",
+        )
+
+        allowed_modes = {"fast", "strong_metadata", "content_hash"}
+        if fingerprint_mode not in allowed_modes:
+            raise ValueError(
+                "checkpoint.fingerprint_mode must be one of "
+                f"{sorted(allowed_modes)!r}, got {fingerprint_mode!r}."
+            )
+
+        return cls(
+            enabled=bool(cfg.get("enabled", True)),
+            kind=require_str(cfg.get("kind", "manifests"), key="checkpoint.kind"),
+            subdir=require_str(cfg.get("subdir", "pipeline/checkpoints"), key="checkpoint.subdir"),
+            reuse_successful_steps=bool(cfg.get("reuse_successful_steps", True)),
+            fingerprint_mode=fingerprint_mode,
+        )
+
+    def resolve_dir(self) -> Path:
+        return get_output_dir(self.kind) / self.subdir
+
+
+@dataclass(frozen=True)
 class PipelineLoggingConfig:
     level: str
     subdir: str
@@ -127,6 +161,7 @@ class PipelineLoggingConfig:
 class PipelineConfig:
     pipeline: PipelineInfoConfig
     steps: dict[str, PipelineStepConfig]
+    checkpoint: PipelineCheckpointConfig
     manifest: PipelineManifestConfig
     logging: PipelineLoggingConfig
 
@@ -145,6 +180,9 @@ class PipelineConfig:
                 )
                 for name, step_cfg in steps_raw.items()
             },
+            checkpoint=PipelineCheckpointConfig.from_dict(
+                require_dict(raw.get("checkpoint"), key="checkpoint")
+            ),
             manifest=PipelineManifestConfig.from_dict(
                 require_dict(raw.get("manifest"), key="manifest")
             ),

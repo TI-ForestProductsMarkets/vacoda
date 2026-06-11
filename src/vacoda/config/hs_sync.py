@@ -1878,6 +1878,14 @@ class HsSyncConfig:
     def coverage_mapping_dir(self) -> Path:
         return self.coverage.mappings.resolve_dir()
 
+    def coverage_mapping_file_paths(self) -> list[Path]:
+        mapping_dir = self.coverage_mapping_dir()
+
+        return [
+            mapping_dir / filename
+            for filename in self.coverage.mappings.files.values()
+        ]
+
     def coverage_mapping_files(self) -> dict[str, Path]:
         return self.coverage.mappings.resolve_files()
 

@@ -956,6 +956,20 @@ def run_hs_sync_applied_output_audit(
         audit.to_csv(audit_path, index=False)
 
         failed = audit[audit["status"] == "fail"]
+        ready_for_cif_fob = failed.empty
+
+        audit_rows.append(
+            _audit_row(
+                    check="ready_for_cif_fob",
+                    expected=True,
+                    actual=ready_for_cif_fob,
+                    status="pass" if ready_for_cif_fob else "fail",
+                    detail="HS-sync output passed integrity audit and is ready for CIF-FOB correction.",
+                )
+            )  
+
+        audit = pd.DataFrame(audit_rows)
+        failed = audit[audit["status"] == "fail"]
 
         logger.info("HS-sync applied-output integrity audit complete.")
         logger.info("  Input file size: %s", format_bytes(raw_size))

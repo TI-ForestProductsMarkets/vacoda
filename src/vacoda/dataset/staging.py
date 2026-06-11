@@ -132,13 +132,13 @@ def build_comtrade_staging_dataset(
 
             return {
                 "status": "skipped_existing",
-                "ready_for_cif_fob": True,
+                "ready_for_next_step": True,
                 "ready_for_hs_sync": True,
                 "staged_parquet": output_path,
                 "audit_file": audit_path,
                 "output_path": output_path,
                 "audit_path": audit_path,
-                "n_failed_audit_rows": None,
+                "n_failed_audit_rows": 0,
             }
 
         logger.info("Output will be overwritten: %s", output_path)
@@ -375,6 +375,7 @@ def build_comtrade_staging_dataset(
 
         return {
                 "status": "completed",
+                "ready_for_next_step": ready_for_hs_sync,
                 "ready_for_hs_sync": ready_for_hs_sync,
                 "staged_parquet": output_path,
                 "audit_file": audit_path,
