@@ -40,6 +40,14 @@ class StepPlan:
     audit_path: Path
     runner: Callable[[str], dict[str, Any]]
 
+@dataclass(frozen=True)
+class StepDecision:
+    step_name: str
+    step_config: Any
+    plan: StepPlan
+    checkpoint_path: Path
+    action: str  # "run" or "skip"
+    reason: str
 
 def _run_staging_step(
     *,
@@ -54,6 +62,126 @@ def _run_staging_step(
         logger=get_logger("PIPELINE.STAGING"),
     )
 
+def _build_step_decisions(
+    *,
+    cfg: PipelineConfig,
+    checkpoint_dir: Path,
+    logger,
+) -> list[StepDecision]:
+    decisions: list[StepDecision] = []
+
+    for step_name, step_cfg in cfg.enabled_steps():
+        plan = _build_step_plan(
+            step_name=step_name,
+            config_path=step_cfg.config,
+        )
+
+        step_checkpoint_path = checkpoint_path(
+            checkpoint_dir=checkpoint_dir,
+            step_name=step_name,
+        )
+
+        action = "run"
+        reason = "no reusable checkpoint"
+
+        if (
+            cfg.checkpoint.enabled
+            and cfg.checkpoint.reuse_successful_steps
+            and not cfg.pipeline.force_run_all
+        ):
+            checkpoint = load_checkpoint(step_checkpoint_path)
+
+            if checkpoint is not None:
+                reusable, checkpoint_reason = validate_checkpoint(
+                    checkpoint=checkpoint,
+                    expected_status=step_cfg.expected_status,
+                    required_ready_flag=step_cfg.required_ready_flag,
+                    current_config=plan.config_fingerprint,
+                    current_input=plan.input_fingerprint,
+                )
+
+                if reusable:
+                    action = "skip"
+                    reason = "valid checkpoint exists"
+                else:
+                    action = "run"
+                    reason = f"checkpoint not reusable: {checkpoint_reason}"
+
+        elif cfg.pipeline.force_run_all:
+            action = "run"
+            reason = "pipeline.force_run_all=true"
+
+        elif not cfg.checkpoint.enabled:
+            action = "run"
+            reason = "checkpointing disabled"
+
+        elif not cfg.checkpoint.reuse_successful_steps:
+            action = "run"
+            reason = "checkpoint reuse disabled"
+
+        decisions.append(
+            StepDecision(
+                step_name=step_name,
+                step_config=step_cfg,
+                plan=plan,
+                checkpoint_path=step_checkpoint_path,
+                action=action,
+                reason=reason,
+            )
+        )
+
+    return decisions
+
+def _confirm_pipeline_run(
+    *,
+    cfg: PipelineConfig,
+    run_id: str,
+    manifest_path: Path,
+    log_path: Path,
+    checkpoint_dir: Path,
+    decisions: list[StepDecision],
+) -> bool:
+    print()
+    print("=" * 72)
+    print("VACODA PIPELINE PREFLIGHT CHECK")
+    print("=" * 72)
+    print(f"Run ID:              {run_id}")
+    print(f"Pipeline:            {cfg.pipeline.name}")
+    print(f"Enabled:             {cfg.pipeline.enabled}")
+    print(f"Enabled steps:       {', '.join(cfg.pipeline.enabled_steps)}")
+    print(f"Fail fast:           {cfg.pipeline.fail_fast}")
+    print(f"Force run all:       {cfg.pipeline.force_run_all}")
+    print(f"Checkpoint enabled:  {cfg.checkpoint.enabled}")
+    print(f"Checkpoint reuse:    {cfg.checkpoint.reuse_successful_steps}")
+    print(f"Checkpoint dir:      {checkpoint_dir}")
+    print(f"Manifest:            {manifest_path}")
+    print(f"Log file:            {log_path}")
+    print("-" * 72)
+    print("Step plan:")
+    print("-" * 72)
+
+    for decision in decisions:
+        step_cfg = decision.step_config
+        plan = decision.plan
+
+        print(f"Step:                {decision.step_name}")
+        print(f"  Action:            {decision.action.upper()}")
+        print(f"  Reason:            {decision.reason}")
+        print(f"  Config:            {step_cfg.config}")
+        print(f"  Expected status:   {step_cfg.expected_status}")
+        print(f"  Required flag:     {step_cfg.required_ready_flag}")
+        print(f"  Output:            {plan.output_path}")
+        print(f"  Audit:             {plan.audit_path}")
+        print(f"  Checkpoint:        {decision.checkpoint_path}")
+        print("-" * 72)
+
+    if cfg.pipeline.force_run_all:
+        print("WARNING: force_run_all=true. All enabled steps will run even if valid checkpoints exist.")
+        print("-" * 72)
+
+    answer = input("Continue with this pipeline run? Type 'y' to continue: ").strip().lower()
+
+    return answer == "y"
 
 def _run_hs_sync_step(
     *,
@@ -285,6 +413,36 @@ def run_pipeline(
     checkpoint_dir = cfg.checkpoint.resolve_dir()
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
+    try:
+        decisions = _build_step_decisions(
+            cfg=cfg,
+            checkpoint_dir=checkpoint_dir,
+            logger=logger,
+        )
+    except Exception as exc:
+        logger.exception("Could not build pipeline preflight plan.")
+        raise SystemExit(1) from exc
+    
+    if cfg.pipeline.require_confirmation:
+        confirmed = _confirm_pipeline_run(
+            cfg=cfg,
+            run_id=run_id,
+            manifest_path=manifest_path,
+            log_path=log_path,
+            checkpoint_dir=checkpoint_dir,
+            decisions=decisions,
+        )
+
+        if not confirmed:
+            logger.info("Pipeline run cancelled by user.")
+            return {
+                "status": "cancelled",
+                "run_id": run_id,
+                "manifest_path": manifest_path,
+                "log_path": log_path,
+                "n_steps": len(decisions),
+            }
+
     logger.info("=" * 72)
     logger.info("START — VACODA master pipeline")
     logger.info("=" * 72)
@@ -300,6 +458,7 @@ def run_pipeline(
     if cfg.pipeline.force_run_all:
         logger.warning("FORCE RUN ALL is enabled — valid checkpoints will be ignored.")
 
+
     if not cfg.pipeline.enabled:
         logger.warning("Pipeline is disabled in config. Nothing to run.")
         return {
@@ -312,7 +471,14 @@ def run_pipeline(
     manifest_rows: list[dict[str, Any]] = []
     pipeline_status = "completed"
 
-    for step_name, step_cfg in cfg.enabled_steps():
+    
+    #for step_name, step_cfg in cfg.enabled_steps():
+    for decision in decisions:
+        step_name = decision.step_name
+        step_cfg = decision.step_config
+        plan = decision.plan
+        step_checkpoint_path = decision.checkpoint_path
+
         logger.info("=" * 72)
         logger.info("STEP — %s", step_name)
         logger.info("=" * 72)
@@ -320,83 +486,41 @@ def run_pipeline(
         logger.info("Expected status: %s", step_cfg.expected_status)
         logger.info("Required ready flag: %s", step_cfg.required_ready_flag)
 
-        try:
-            plan = _build_step_plan(
-                step_name=step_name,
-                config_path=step_cfg.config,
+        if decision.action == "skip":
+            checkpoint = load_checkpoint(step_checkpoint_path)
+
+            logger.info("SKIP — %s", step_name)
+            logger.info("  Reason: %s", decision.reason)
+            logger.info("  Checkpoint: %s", step_checkpoint_path)
+            logger.info(
+                "  Output: %s",
+                checkpoint.get("output", {}).get("path") if checkpoint else None,
             )
-        except Exception as exc:
-            message = f"Could not build pipeline plan for {step_name!r}: {exc}"
-            logger.exception(message)
+            logger.info(
+                "  Audit: %s",
+                checkpoint.get("audit", {}).get("path") if checkpoint else None,
+            )
 
             manifest_rows.append(
                 _manifest_row(
                     run_id=run_id,
                     step_name=step_name,
-                    status="failed",
+                    status="skipped_checkpoint",
                     ready_flag=step_cfg.required_ready_flag,
-                    ready_value=None,
+                    ready_value=checkpoint.get("ready_value") if checkpoint else None,
                     duration_seconds=0.0,
-                    output_path=None,
-                    audit_path=None,
-                    n_failed_audit_rows=None,
-                    message=message,
+                    output_path=checkpoint.get("output", {}).get("path") if checkpoint else None,
+                    audit_path=checkpoint.get("audit", {}).get("path") if checkpoint else None,
+                    n_failed_audit_rows=(
+                        checkpoint.get("audit", {}).get("n_failed_audit_rows")
+                        if checkpoint
+                        else None
+                    ),
+                    message="Reused valid previous checkpoint.",
                 )
             )
 
-            pipeline_status = "failed"
-            if cfg.pipeline.fail_fast:
-                break
             continue
-
-        step_checkpoint_path = checkpoint_path(
-            checkpoint_dir=checkpoint_dir,
-            step_name=step_name,
-        )
-
-        if cfg.checkpoint.enabled and cfg.checkpoint.reuse_successful_steps and not cfg.pipeline.force_run_all:
-            checkpoint = load_checkpoint(step_checkpoint_path)
-
-            if checkpoint is not None:
-                reusable, reason = validate_checkpoint(
-                    checkpoint=checkpoint,
-                    expected_status=step_cfg.expected_status,
-                    required_ready_flag=step_cfg.required_ready_flag,
-                    current_config=plan.config_fingerprint,
-                    current_input=plan.input_fingerprint,
-                )
-
-                if reusable:
-                    logger.info("SKIP — %s", step_name)
-                    logger.info("  Reason: valid checkpoint exists.")
-                    logger.info("  Checkpoint: %s", step_checkpoint_path)
-                    logger.info("  Output: %s", checkpoint.get("output", {}).get("path"))
-                    logger.info("  Audit: %s", checkpoint.get("audit", {}).get("path"))
-
-                    manifest_rows.append(
-                        _manifest_row(
-                            run_id=run_id,
-                            step_name=step_name,
-                            status="skipped_checkpoint",
-                            ready_flag=step_cfg.required_ready_flag,
-                            ready_value=checkpoint.get("ready_value"),
-                            duration_seconds=0.0,
-                            output_path=checkpoint.get("output", {}).get("path"),
-                            audit_path=checkpoint.get("audit", {}).get("path"),
-                            n_failed_audit_rows=checkpoint.get("audit", {}).get(
-                                "n_failed_audit_rows"
-                            ),
-                            message="Reused valid previous checkpoint.",
-                        )
-                    )
-
-                    continue
-
-                logger.info("Checkpoint exists but is not reusable.")
-                logger.info("  Checkpoint: %s", step_checkpoint_path)
-                logger.info("  old: %s", checkpoint.get("input"))
-                logger.info("  new: %s", plan.input_fingerprint)
-                logger.info("  Reason: %s", reason)
 
         start = perf_counter()
 
