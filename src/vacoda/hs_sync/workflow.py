@@ -317,4 +317,23 @@ def run_hs_sync_workflow(
     outputs["ready_for_next_step"] = final_status == "completed"
     outputs["ready_for_cif_fob"] = final_status == "completed"
 
-    return outputs
+    final_parquet = cfg.apply_output_path()
+    final_audit = cfg.apply_integrity_audit_path()
+
+    n_failed = sum(
+        1 for row in outputs["workflow_summary"]
+        if row.get("status") == "fail"
+    )
+
+    return {
+        "status": final_status,
+        "ready_for_next_step": final_status == "completed",
+        "ready_for_cif_fob": final_status == "completed",
+        "run_id": run_id,
+        "output_path": final_parquet,
+        "audit_path": final_audit,
+        "final_parquet": final_parquet,
+        "final_audit": final_audit,
+        "n_failed_audit_rows": n_failed,
+        "workflow_summary": outputs["workflow_summary"],
+    }
