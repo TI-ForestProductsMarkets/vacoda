@@ -25,7 +25,7 @@ pipeline:
   allow_skip_existing: true
 
   # If true, all steps will run even if they are already completed and reusable. Overrides allow_skip_existing.
-  force_run_all: true  
+  force_run_all: false  
   # Safety gate before running expensive pipeline steps.
   require_confirmation: true
 
