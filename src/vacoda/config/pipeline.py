@@ -13,9 +13,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import yaml
-
+from vacoda.config.base import CONFIG_DIR, load_yaml_config
 from vacoda.config.paths import get_output_dir
+
+
+PIPELINE_CONFIG_PATH = CONFIG_DIR / "pipeline.yaml"
 
 
 def require_dict(value: Any, *, key: str) -> dict[str, Any]:
@@ -192,12 +194,11 @@ class PipelineConfig:
         )
 
     @classmethod
-    def from_yaml(cls, path: str | Path = "configs/pipeline.yaml") -> "PipelineConfig":
-        with Path(path).open("r", encoding="utf-8") as f:
-            raw = yaml.safe_load(f)
+    def from_yaml(cls) -> "PipelineConfig":
+        raw = load_yaml_config(PIPELINE_CONFIG_PATH)
 
         if raw is None:
-            raise ValueError(f"Empty pipeline config: {path}")
+            raise ValueError(f"Empty pipeline config: {PIPELINE_CONFIG_PATH}")
 
         return cls.from_dict(raw)
 
