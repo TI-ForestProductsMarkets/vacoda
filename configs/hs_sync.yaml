@@ -8,7 +8,7 @@ global:
   scope:
     # Final target HS system for normalized HS-sync outputs.
     target_hs: "H5"
-    min_year: 2002
+    min_year: 2017
     max_year: 2025
 
   engine:
@@ -19,10 +19,10 @@ global:
     enabled: true
 
   columns:
-    year: "RefYear"
-    hs: "ClassificationCode"
-    cmd: "CmdCode"
-    value: "PrimaryValue"
+    year: "year"
+    hs: "source_hs"
+    cmd: "source_cmd"
+    value: "primary_value"
 
   logging:
     level: "DEBUG"
@@ -30,6 +30,122 @@ global:
     file: "LOG_HS_SYNC_COVERAGE.log"
     timestamp: true
 
+
+
+# ============================================================ 
+# Coverage mapping diagnostics 
+# ============================================================ 
+# This is the main HS-sync coverage study. 
+#
+# It consumes observed trade data and mapping/correlation files, then asks: 
+# how much can be expressed in the target HS system without weights?
+
+coverage:
+  enabled: true
+  min_year: 2017  ## take this from global scope, but allow override for testing/diagnostics with older HS systems
+  max_year: 2025
+
+  input:
+    stage: "interim"
+    subdir: "staging/api_single"
+    pattern: "*.parquet"  # file: "comtrade_api_single_annual_hs_staged.parquet"
+    format: "parquet"
+
+  mappings:
+    stage: "references"
+    references_root: "repo"
+    #subdir: "harvard_generator/hs_adjacent_transition_1995_2022/correlation_groups"
+    subdir: "comtrade/hs_correlation_groups/normalized"
+
+    files:
+      H2_to_H5: "from_HS2002_to_HS2017.csv"
+      H3_to_H5: "from_HS2007_to_HS2017.csv"
+      H4_to_H5: "from_HS2012_to_HS2017.csv"
+      H6_to_H5: "from_HS2022_to_HS2017.csv"
+
+    columns:
+      source_cmd: "code.source"
+      target_cmd: "code.target"
+      relationship: "relationship"
+      adjustment: "adjustment"
+      group_id: "group.id"
+
+  categories:
+    easy_without_weights:
+      - "already_target"
+      - "1:1"
+      - "n:1"
+
+    needs_weights:
+      - "1:n"
+      - "n:n"
+
+    missing:
+      - "missing_mapping"
+
+  output:
+    stage: "interim"
+    subdir: "hs_sync/target_{target_hs_lower}/mapping_coverage"
+
+  write:
+    csv: true
+    parquet: false
+    overwrite: true
+    timestamp: false
+
+  artifact:
+    kind: "reports"
+    subdir: "hs_sync/target_{target_hs_lower}/coverage"
+    filename: "target_{target_hs_lower}_mapping_coverage_report"
+    timestamp: true
+    write_latest: true
+    options:
+      unsupported_top_n: 30
+      needs_weights_top_n: 10
+
+  products: 
+    mapping_coverage: 
+      enabled: true 
+      kind: "base" 
+      filename: "target_{target_hs_lower}_mapping_coverage" 
+      write: true 
+    
+    source_code_coverage: 
+      enabled: true 
+      kind: "derived" 
+      depends_on: "mapping_coverage" 
+      filename: "target_{target_hs_lower}_source_code_coverage" 
+      write: true 
+
+    mapping_summary: 
+      enabled: true 
+      kind: "derived" 
+      depends_on: "mapping_coverage" 
+      filename: "target_{target_hs_lower}_mapping_summary" 
+      write: true 
+
+    missing_mappings: 
+      enabled: true 
+      kind: "derived" 
+      depends_on: "mapping_coverage" 
+      filename: "target_{target_hs_lower}_missing_mappings" 
+      write: true 
+      options: 
+        top_n: 50 
+
+    needs_weights: 
+      enabled: true 
+      kind: "derived" 
+      depends_on: "mapping_coverage" 
+      filename: "target_{target_hs_lower}_needs_weights" 
+      write: true 
+
+    easy_without_weights: 
+      enabled: true 
+      kind: "derived" 
+      depends_on: "mapping_coverage" 
+      filename: "target_{target_hs_lower}_easy_without_weights" 
+      write: true
 
 
 # ============================================================ 
@@ -170,14 +286,14 @@ harvard_staging:
       H6: [2022]
 
   columns:
-    year: "refYear"
-    hs: "classificationCode"
-    cmd: "cmdCode"
-    value: "primaryValue"
-    reporter_code: "reporterCode"
-    partner_code: "partnerCode"
-    flow: "flowCode"
-    quantity: "netWgt"
+    year: "year"
+    hs: "source_hs"
+    cmd: "source_cmd"
+    value: "primary_value"
+    reporter_code: "reporter_code"
+    partner_code: "partner_code"
+    flow: "flow_code"
+    quantity: "quantity"
 
   overwrite: false
 
@@ -187,10 +303,10 @@ harvard_staging:
     subdir: "api/single"
     pattern: "*.csv"
     columns:
-      reporter_code: "ReporterCode"
-      reporter_iso: "ReporterISO"
-      partner_code: "PartnerCode"
-      partner_iso: "PartnerISO"
+      reporter_code: "reporter_code"
+      reporter_iso: "reporter_iso"
+      partner_code: "partner_code"
+      partner_iso: "partner_iso"
 
   diagnostics:
     value_abs_tolerance: 1.0
@@ -262,122 +378,6 @@ harvard_mapping_direction:
     filename: "audit_harvard_mapping_direction.md"
     timestamp: true
     write_latest: true
-
-# ============================================================ 
-# Coverage mapping diagnostics 
-# ============================================================ 
-# This is the main HS-sync coverage study. 
-#
-# It consumes observed trade data and mapping/correlation files, then asks: 
-# how much can be expressed in the target HS system without weights?
-
-coverage:
-  enabled: true
-  min_year: 2017
-  max_year: 2025
-
-  input:
-    stage: "raw"
-    subdir: "api/single"
-    pattern: "*.csv"
-    format: "csv"
-
-  mappings:
-    stage: "references"
-    references_root: "repo"
-    #subdir: "harvard_generator/hs_adjacent_transition_1995_2022/correlation_groups"
-    subdir: "comtrade/hs_correlation_groups/normalized"
-
-    files:
-      H2_to_H5: "from_HS2002_to_HS2017.csv"
-      H3_to_H5: "from_HS2007_to_HS2017.csv"
-      H4_to_H5: "from_HS2012_to_HS2017.csv"
-      H6_to_H5: "from_HS2022_to_HS2017.csv"
-
-    columns:
-      source_cmd: "code.source"
-      target_cmd: "code.target"
-      relationship: "Relationship"
-      adjustment: "adjustment"
-      group_id: "group.id"
-
-  categories:
-    easy_without_weights:
-      - "already_target"
-      - "1:1"
-      - "n:1"
-
-    needs_weights:
-      - "1:n"
-      - "n:n"
-
-    missing:
-      - "missing_mapping"
-
-  output:
-    stage: "interim"
-    subdir: "hs_sync/target_{target_hs_lower}/mapping_coverage"
-
-  write:
-    csv: true
-    parquet: false
-    overwrite: true
-    timestamp: false
-
-  artifact:
-    kind: "reports"
-    subdir: "hs_sync/target_{target_hs_lower}/coverage"
-    filename: "target_{target_hs_lower}_mapping_coverage_report"
-    timestamp: true
-    write_latest: true
-    options:
-      unsupported_top_n: 30
-      needs_weights_top_n: 10
-
-  products: 
-    mapping_coverage: 
-      enabled: true 
-      kind: "base" 
-      filename: "target_{target_hs_lower}_mapping_coverage" 
-      write: true 
-    
-    source_code_coverage: 
-      enabled: true 
-      kind: "derived" 
-      depends_on: "mapping_coverage" 
-      filename: "target_{target_hs_lower}_source_code_coverage" 
-      write: true 
-
-    mapping_summary: 
-      enabled: true 
-      kind: "derived" 
-      depends_on: "mapping_coverage" 
-      filename: "target_{target_hs_lower}_mapping_summary" 
-      write: true 
-
-    missing_mappings: 
-      enabled: true 
-      kind: "derived" 
-      depends_on: "mapping_coverage" 
-      filename: "target_{target_hs_lower}_missing_mappings" 
-      write: true 
-      options: 
-        top_n: 50 
-
-    needs_weights: 
-      enabled: true 
-      kind: "derived" 
-      depends_on: "mapping_coverage" 
-      filename: "target_{target_hs_lower}_needs_weights" 
-      write: true 
-
-    easy_without_weights: 
-      enabled: true 
-      kind: "derived" 
-      depends_on: "mapping_coverage" 
-      filename: "target_{target_hs_lower}_easy_without_weights" 
-      write: true
-
 
 
 # ============================================================
