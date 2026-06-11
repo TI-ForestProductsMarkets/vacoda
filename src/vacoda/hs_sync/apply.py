@@ -20,6 +20,7 @@ from typing import Any
 import duckdb
 import pandas as pd
 
+from vacoda.io.duckdb_scan import duckdb_scan_relation
 from vacoda.utils.logger import get_logger
 from vacoda.config.hs_sync import HsSyncConfig
 
@@ -36,6 +37,7 @@ class HsSyncApplyResult:
 def apply_hs_sync_with_weights(
     *,
     input_glob: str,
+    input_format: str,
     weights_path: Path,
     output_path: Path,
     audit_path: Path,
@@ -111,6 +113,7 @@ def apply_hs_sync_with_weights(
         audit_before = _build_pre_apply_audit(
             con=con,
             input_glob=input_glob,
+            input_format=input_format,
             min_year=min_year,
             max_year=max_year,
             year_col=year_col,
@@ -122,6 +125,7 @@ def apply_hs_sync_with_weights(
         _write_synced_output(
             con=con,
             input_glob=input_glob,
+            input_format=input_format,
             output_path=output_path,
             min_year=min_year,
             max_year=max_year,
@@ -228,15 +232,17 @@ def _register_weights(
 
     weights_sql = _sql_literal(weights_path)
 
+    scan = duckdb_scan_relation(
+        path=weights_path,
+        file_format="csv",
+        alias="src",
+    )
+
     con.execute(
         f"""
         CREATE OR REPLACE TEMP VIEW hs_weights_raw AS
         SELECT *
-        FROM read_csv_auto(
-            {weights_sql},
-            HEADER = TRUE,
-            ALL_VARCHAR = TRUE
-        )
+        FROM {scan}
         """
     )
 
@@ -341,6 +347,7 @@ def _build_pre_apply_audit(
     *,
     con: duckdb.DuckDBPyConnection,
     input_glob: str,
+    input_format: str,
     min_year: int,
     max_year: int,
     year_col: str,
@@ -353,21 +360,21 @@ def _build_pre_apply_audit(
     """
 
     input_glob_sql = _sql_literal(input_glob)
-
+    scan = duckdb_scan_relation(
+        path=input_glob,
+        file_format=input_format,
+        alias="src",
+    )
+    
     query = f"""
     WITH src AS (
         SELECT
-            CAST("{year_col}" AS INTEGER) AS ref_year,
-            CAST("{hs_col}" AS VARCHAR) AS source_hs,
-            lpad(CAST("{cmd_col}" AS VARCHAR), 6, '0') AS source_cmd,
-            TRY_CAST("{value_col}" AS DOUBLE) AS value_original
-        FROM read_csv_auto(
-            {input_glob_sql},
-            HEADER = TRUE,
-            ALL_VARCHAR = TRUE,
-            union_by_name = TRUE
-        )
-        WHERE CAST("{year_col}" AS INTEGER) BETWEEN ? AND ?
+            TRY_CAST(src."{year_col}" AS INTEGER) AS ref_year,
+            CAST(src."{hs_col}" AS VARCHAR) AS source_hs,
+            lpad(CAST(src."{cmd_col}" AS VARCHAR), 6, '0') AS source_cmd,
+            TRY_CAST(src."{value_col}" AS DOUBLE) AS value_original
+        FROM {scan}
+        WHERE TRY_CAST(src."{year_col}" AS INTEGER) BETWEEN ? AND ?
     ),
     source_pairs AS (
         SELECT DISTINCT source_hs, source_cmd
@@ -431,6 +438,7 @@ def _write_synced_output(
     *,
     con: duckdb.DuckDBPyConnection,
     input_glob: str,
+    input_format: str,
     output_path: Path,
     min_year: int,
     max_year: int,
@@ -451,19 +459,19 @@ def _write_synced_output(
 
     input_glob_sql = _sql_literal(input_glob)
     output_path_sql = _sql_literal(output_path)
+    scan = duckdb_scan_relation(
+        path=input_glob,
+        file_format=input_format,
+        alias="raw",
+    )
 
     synced_query = f"""
     WITH src AS (
         SELECT
             row_number() OVER () AS hs_sync_input_row_id,
             raw.*
-        FROM read_csv_auto(
-            {input_glob_sql},
-            HEADER = TRUE,
-            ALL_VARCHAR = TRUE,
-            union_by_name = TRUE
-        ) raw
-        WHERE CAST(raw."{year_col}" AS INTEGER)
+        FROM {scan}
+        WHERE TRY_CAST(raw."{year_col}" AS INTEGER)
               BETWEEN {int(min_year)} AND {int(max_year)}
     )
     SELECT
@@ -596,6 +604,7 @@ def run_hs_sync_apply(
 
     input_dir = cfg.apply_trade_data_dir()
     input_pattern = cfg.coverage.input.pattern
+    input_format = cfg.coverage.input.format
 
     if input_pattern is None:
         raise ValueError("coverage.input.pattern is required for HS-sync apply.")
@@ -621,6 +630,7 @@ def run_hs_sync_apply(
 
     result = apply_hs_sync_with_weights(
         input_glob=input_glob,
+        input_format=cfg.coverage.input.format,
         weights_path=weights_path,
         output_path=output_path,
         audit_path=audit_path,
