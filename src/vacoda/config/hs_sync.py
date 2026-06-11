@@ -1347,6 +1347,8 @@ class WeightsStrategyConfig:
 class WeightsInputConfig:
     coverage_product: str
     mappings: str
+    equal_split_product: str
+    complete_mapping_product: str
 
     @classmethod
     def from_dict(cls, cfg: dict[str, Any]) -> "WeightsInputConfig":
@@ -1358,6 +1360,14 @@ class WeightsInputConfig:
             mappings=require_str(
                 cfg.get("mappings", "coverage.mappings"),
                 key="weights.input.mappings",
+            ),
+            equal_split_product=require_str(
+                cfg.get("equal_split_product"),
+                key="weights.input.equal_split_product",
+            ),
+            complete_mapping_product=require_str(
+                cfg.get("complete_mapping_product"),
+                key="weights.input.complete_mapping_product",
             ),
         )
 
@@ -1537,6 +1547,7 @@ class WeightsConfig:
 class ApplyInputConfig:
     trade_data: str
     weights: str
+    output_product: str
 
     @classmethod
     def from_dict(cls, cfg: dict[str, Any]) -> "ApplyInputConfig":
@@ -1548,6 +1559,10 @@ class ApplyInputConfig:
             weights=require_str(
                 cfg.get("weights", "weights.complete_mapping_weights"),
                 key="apply.input.weights",
+            ),
+            output_product=require_str(
+                cfg.get("output_product"),
+                key="apply.input.output_product",
             ),
         )
 
@@ -1872,6 +1887,14 @@ class HsSyncConfig:
     def coverage_output_dir(self) -> Path:
         return self.coverage.output.resolve_data_dir()
 
+    def raw_mapping_file_paths(self) -> list[Path]:
+        raw_dir = self.comtrade_hs_correlation_raw_dir()
+
+        if not raw_dir.exists():
+            raise FileNotFoundError(f"Expected raw mapping directory does not exist: {raw_dir}")
+
+        return sorted(path for path in raw_dir.iterdir() if path.is_file())
+        
     def coverage_input_dir(self) -> Path:
         return self.coverage.input.resolve_data_dir()
 
@@ -1915,22 +1938,28 @@ class HsSyncConfig:
         return self.weights_output_dir() / self._filename_with_ext(product.filename, ext)
 
     def weights_equal_split_weights_path(self) -> Path:
-        if "equal_split_weights" not in self.weights.products:
+        product_name = self.weights.input.equal_split_product
+
+        if product_name not in self.weights.products:
             raise KeyError(
-                "Missing required config: weights.products.equal_split_weights. "
+                "Missing required config: "
+                f"weights.products.{product_name}. "
                 "Define this product in configs/hs_sync.yaml."
             )
 
-        return self.weights_product_path("equal_split_weights")
+        return self.weights_product_path(product_name)
 
     def weights_complete_mapping_weights_path(self) -> Path:
-        if "complete_mapping_weights" not in self.weights.products:
+        product_name = self.weights.input.complete_mapping_product
+
+        if product_name not in self.weights.products:
             raise KeyError(
-                "Missing required config: weights.products.complete_mapping_weights. "
+                "Missing required config: "
+                f"weights.products.{product_name}. "
                 "Define this product in configs/hs_sync.yaml."
             )
 
-        return self.weights_product_path("complete_mapping_weights")
+        return self.weights_product_path(product_name)
 
     def weights_equal_split_audit_path(self) -> Path:
         return self.weights_artifact_output_dir() / self._filename_with_ext(
@@ -1967,14 +1996,43 @@ class HsSyncConfig:
     def apply_output_dir(self) -> Path:
         return self.apply.output.resolve_data_dir()
 
-    def apply_trade_data_dir(self) -> Path:
-        ref = self.apply.input.trade_data.strip().lower()
-        if ref == "coverage.input":
-            return self.coverage_input_dir()
+    def _resolve_stage_path_reference(
+        self,
+        ref: str,
+        *,
+        key: str,
+    ) -> Path:
+        parts = [part.strip() for part in ref.split(".") if part.strip()]
+        if len(parts) < 2:
+            raise ValueError(
+                f"{key} must be a dotted stage reference like 'coverage.input', got {ref!r}."
+            )
+
+        current: Any = self
+
+        for part in parts:
+            if isinstance(current, dict):
+                if part not in current:
+                    raise KeyError(f"Unknown reference segment {part!r} in {key}={ref!r}.")
+                current = current[part]
+                continue
+
+            if not hasattr(current, part):
+                raise KeyError(f"Unknown reference segment {part!r} in {key}={ref!r}.")
+
+            current = getattr(current, part)
+
+        if hasattr(current, "resolve_data_dir"):
+            return current.resolve_data_dir()
 
         raise ValueError(
-            "Unsupported apply.input.trade_data reference: "
-            f"{self.apply.input.trade_data!r}. Only 'coverage.input' is supported."
+            f"{key}={ref!r} does not resolve to a stage path configuration."
+        )
+
+    def apply_trade_data_dir(self) -> Path:
+        return self._resolve_stage_path_reference(
+            self.apply.input.trade_data,
+            key="apply.input.trade_data",
         )
 
     def apply_weights_path(self) -> Path:
@@ -2000,10 +2058,12 @@ class HsSyncConfig:
         return self.weights_output_dir() / self._filename_with_ext(filename, "csv")
 
     def apply_output_path(self) -> Path:
-        product = self.apply.products.get("hs_synced_trade")
+        product_name = self.apply.input.output_product
+        product = self.apply.products.get(product_name)
         if product is None:
             raise KeyError(
-                "Missing required config: apply.products.hs_synced_trade. "
+                "Missing required config: "
+                f"apply.products.{product_name}. "
                 "Define this product in configs/hs_sync.yaml."
             )
 
@@ -2065,17 +2125,33 @@ class HsSyncConfig:
         )
 
     def comtrade_hs_correlation_root(self) -> Path:
-        try:
-            block = self.references["comtrade"]["hs_correlation_groups"]
-        except KeyError as exc:
-            raise KeyError(
-                "Missing required config block: "
-                "references.comtrade.hs_correlation_groups"
-            ) from exc
+        return self.reference_path("comtrade.hs_correlation_groups")
+
+    def reference_path(self, dotted_key: str) -> Path:
+        parts = [part.strip() for part in dotted_key.split(".") if part.strip()]
+        if not parts:
+            raise ValueError("reference key must not be empty")
+
+        current: Any = self.references
+        traversed: list[str] = []
+
+        for part in parts:
+            traversed.append(part)
+            if not isinstance(current, dict) or part not in current:
+                raise KeyError(
+                    "Missing required config block: references."
+                    + ".".join(traversed)
+                )
+            current = current[part]
+
+        if not isinstance(current, dict):
+            raise TypeError(
+                f"references.{dotted_key} must be a dictionary block with source/path keys."
+            )
 
         return self._resolve_reference_block_dir(
-            block=block,
-            key="references.comtrade.hs_correlation_groups",
+            block=current,
+            key=f"references.{dotted_key}",
         )
 
     def comtrade_hs_correlation_raw_dir(self) -> Path:

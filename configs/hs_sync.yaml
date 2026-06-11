@@ -169,6 +169,12 @@ references:
     hs_correlation_groups:
       source: "repo"
       path: "references/comtrade/hs_correlation_groups"
+    harvard_static_concordance_source:
+      source: "data"
+      path: "references/comtrade-conversion-weights/generator/data/static/HS_consolidated_comtrade_concordances.csv"
+    static_adjacent_concordance_output:
+      source: "data"
+      path: "references/hs_static_adjacent_concordance_equal_weights.parquet"
 
 # ============================================================
 # weight allocation strategies
@@ -182,6 +188,8 @@ weights:
   input:
     coverage_product: "source_code_coverage"
     mappings: "coverage.mappings"
+    equal_split_product: "equal_split_weights"
+    complete_mapping_product: "complete_mapping_weights"
 
   output:
     stage: "interim"
@@ -218,6 +226,7 @@ apply:
   input:
     trade_data: "coverage.input"
     weights: "weights.complete_mapping_weights"
+    output_product: "hs_synced_trade"
 
   output:
     stage: "interim"

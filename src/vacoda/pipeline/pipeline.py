@@ -119,7 +119,17 @@ def _build_hs_sync_plan(
     # Mapping/reference files are currently covered indirectly by hs_sync.yaml
     # and by the final audit. Later, add a mapping file-tree fingerprint here
     # if your HsSyncConfig exposes the normalized mapping directory cleanly.
-    mapping_files = cfg.coverage_mapping_file_paths()
+    mapping_files = cfg.raw_mapping_file_paths()
+
+    if not mapping_files:
+        raise ValueError("No raw HS mapping files found in hs_sync config.")
+
+    missing = [path for path in mapping_files if not path.exists()]
+    if missing:
+        raise FileNotFoundError(
+        "Missing configured raw HS mapping files:\n"
+        + "\n".join(str(path) for path in missing)
+    )
 
     input_fp = {
         "trade_input": file_manifest_fingerprint(
@@ -128,7 +138,7 @@ def _build_hs_sync_plan(
         ),
         "mapping_files": file_list_fingerprint(
             paths=mapping_files,
-            label="configured_hs_mapping_files",
+            label="configured_raw_mapping_files",
         ),
     }
 
@@ -250,12 +260,10 @@ def _result_audit_path(result: dict[str, Any], fallback: Path) -> Path:
 
 
 def run_pipeline(
-    *,
-    config_path: str | Path = "configs/pipeline.yaml",
 ) -> dict[str, Any]:
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    cfg = PipelineConfig.from_yaml(config_path)
+    cfg = PipelineConfig.from_yaml()
 
     log_level = parse_log_level(cfg.logging.level)
     log_path = resolve_log_path(
@@ -381,6 +389,8 @@ def run_pipeline(
 
                 logger.info("Checkpoint exists but is not reusable.")
                 logger.info("  Checkpoint: %s", step_checkpoint_path)
+                logger.info("  old: %s", checkpoint.get("input"))
+                logger.info("  new: %s", plan.input_fingerprint)
                 logger.info("  Reason: %s", reason)
 
         start = perf_counter()

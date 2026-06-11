@@ -12,6 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pandas as pd
+from vacoda.config.hs_sync import HsSyncConfig
 
 
 HS_YEAR_TO_H = {
@@ -140,15 +141,10 @@ def build_static_adjacent_concordance(
 
 
 def main() -> None:
-    src = Path(
-        "/storage/vacoda/data/references/comtrade-conversion-weights/"
-        "generator/data/static/HS_consolidated_comtrade_concordances.csv"
-    )
+    cfg = HsSyncConfig.from_yaml()
 
-    out = Path(
-        "/storage/vacoda/data/references/"
-        "hs_static_adjacent_concordance_equal_weights.parquet"
-    )
+    src = cfg.reference_path("comtrade.harvard_static_concordance_source")
+    out = cfg.reference_path("comtrade.static_adjacent_concordance_output")
 
     raw = pd.read_csv(src)
 
