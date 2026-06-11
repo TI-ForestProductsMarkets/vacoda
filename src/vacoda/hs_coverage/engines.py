@@ -20,6 +20,7 @@ def build_year_hs_counts_duckdb(
     data_dir: str | Path,
     *,
     pattern: str = "*.csv",
+    input_format: str,
     year_col: str = "RefYear",
     hs_col: str = "ClassificationCode",
     threads: int = 16,
@@ -28,6 +29,7 @@ def build_year_hs_counts_duckdb(
     Build year × HS-system counts using DuckDB.
     """
     data_dir = Path(data_dir)
+    input_format = cfg.coverage.input.format
 
     if not data_dir.exists():
         raise FileNotFoundError(f"Data directory does not exist: {data_dir}")
@@ -35,6 +37,11 @@ def build_year_hs_counts_duckdb(
     glob_path = str(data_dir / pattern)
     year_id = _quote_ident(year_col)
     hs_id = _quote_ident(hs_col)
+
+    scan = duckdb_scan_relation(
+        path=glob_path,
+        file_format=input_format,
+        alias = "src")
 
     con = duckdb.connect(database=":memory:")
     con.execute(f"PRAGMA threads={int(threads)}")
@@ -44,11 +51,7 @@ def build_year_hs_counts_duckdb(
             CAST({year_id} AS INTEGER) AS {year_id},
             CAST({hs_id} AS VARCHAR) AS {hs_id},
             COUNT(*) AS n_rows
-        FROM read_csv_auto(
-            ?,
-            union_by_name=true,
-            filename=true
-        )
+        FROM {scan}
         GROUP BY 1, 2
         ORDER BY 1, 2
     """

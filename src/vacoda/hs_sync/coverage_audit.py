@@ -351,13 +351,13 @@ def load_target_hs_coverage_inputs(
     out_dir = cfg.coverage_output_dir()
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    input_pattern = cfg.coverage.input.pattern
+    input_format = cfg.coverage.input.format
     target_hs = cfg.coverage.target_hs
     min_year = cfg.coverage.min_year
     max_year = cfg.coverage.max_year
 
     logger.info("Coverage input directory: %s", rel_path(input_dir))
-    logger.info("Coverage input pattern: %s", input_pattern)
+    logger.info("Coverage input format: %s", input_format)
     logger.info("Mapping directory: %s", rel_path(mapping_dir))
     logger.info("Output directory: %s", rel_path(out_dir))
     logger.info("Coverage target HS: %s", target_hs)
@@ -365,7 +365,8 @@ def load_target_hs_coverage_inputs(
 
     source_summary = build_trade_source_pair_summary(
         data_dir=input_dir,
-        pattern=input_pattern,
+        pattern=cfg.coverage.input.pattern,
+        input_format=input_format,
         engine=cfg.engine.name,
         year_col=cfg.columns.year,
         hs_col=cfg.columns.hs,

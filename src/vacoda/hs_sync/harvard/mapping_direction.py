@@ -153,6 +153,7 @@ def run_harvard_mapping_direction_audit(
     source_summary = build_trade_source_pair_summary(
         data_dir=input_dir,
         pattern=cfg.coverage.input.pattern,
+        input_format=cfg.coverage.input.format,
         engine=cfg.engine.name,
         year_col=cfg.columns.year,
         hs_col=cfg.columns.hs,

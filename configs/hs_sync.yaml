@@ -66,7 +66,7 @@ coverage:
     columns:
       source_cmd: "code.source"
       target_cmd: "code.target"
-      relationship: "relationship"
+      relationship: "Relationship"
       adjustment: "adjustment"
       group_id: "group.id"
 

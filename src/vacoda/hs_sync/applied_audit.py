@@ -8,7 +8,7 @@ import duckdb
 import pandas as pd
 
 from vacoda.config.hs_sync import HsSyncConfig
-
+from vacoda.io.duckdb_scan import duckdb_scan_relation
 
 def _sql_literal(value: str | Path) -> str:
     """Safely quote a Python string/path as a SQL string literal."""
@@ -72,7 +72,8 @@ def _to_float(value: Any) -> float:
 def _create_audit_views(
     *,
     con: duckdb.DuckDBPyConnection,
-    raw_sql: str,
+    raw_input_glob: Path | str,
+    raw_format: str,
     parquet_sql: str,
     weights_sql: str,
     year_col: str,
@@ -86,23 +87,24 @@ def _create_audit_views(
     Register normalized raw, applied, and weight views for integrity checks.
     """
 
+    raw_scan = duckdb_scan_relation(
+        path=raw_input_glob,
+        file_format=raw_format,
+        alias = "raw",
+    )
+
     con.execute(
         f"""
         CREATE OR REPLACE TEMP VIEW raw_rows AS
         SELECT
-            CAST("{year_col}" AS INTEGER) AS ref_year,
-            CAST("{hs_col}" AS VARCHAR) AS source_hs,
-            lpad(CAST("{cmd_col}" AS VARCHAR), 6, '0') AS source_cmd,
-            TRY_CAST("{value_col}" AS DOUBLE) AS value_original
-        FROM read_csv_auto(
-            {raw_sql},
-            HEADER = TRUE,
-            ALL_VARCHAR = TRUE,
-            union_by_name = TRUE
-        )
-        WHERE CAST("{year_col}" AS INTEGER)
-              BETWEEN {int(min_year)} AND {int(max_year)}
-        """
+            TRY_CAST(raw."{year_col}" AS INTEGER) AS ref_year,
+            CAST(raw."{hs_col}" AS VARCHAR) AS source_hs,
+            lpad(CAST(raw."{cmd_col}" AS VARCHAR), 6, '0') AS source_cmd,
+            TRY_CAST(raw."{value_col}" AS DOUBLE) AS value_original
+        FROM {raw_scan}
+        WHERE TRY_CAST(raw."{year_col}" AS INTEGER)
+            BETWEEN {int(min_year)} AND {int(max_year)}
+    """
     )
 
     con.execute(
@@ -545,6 +547,7 @@ def run_hs_sync_applied_output_audit(
 
     target_hs = cfg.apply.target_hs
     output_format = cfg.apply.write.format.strip().lower()
+    raw_format = cfg.coverage.input.format
 
     input_dir = cfg.apply_trade_data_dir()
     input_pattern = cfg.coverage.input.pattern
@@ -596,17 +599,18 @@ def run_hs_sync_applied_output_audit(
         logger.info("  Audit output: %s", audit_path)
 
         _create_audit_views(
-            con=con,
-            raw_sql=raw_sql,
-            parquet_sql=parquet_sql,
-            weights_sql=weights_sql,
-            year_col=year_col,
-            hs_col=hs_col,
-            cmd_col=cmd_col,
-            value_col=value_col,
-            min_year=cfg.coverage.min_year,
-            max_year=cfg.coverage.max_year,
-        )
+                con=con,
+                raw_input_glob=input_glob,
+                raw_format=raw_format,
+                parquet_sql=parquet_sql,
+                weights_sql=weights_sql,
+                year_col=year_col,
+                hs_col=hs_col,
+                cmd_col=cmd_col,
+                value_col=value_col,
+                min_year=cfg.coverage.min_year,
+                max_year=cfg.coverage.max_year,
+            )
 
         row_level_summary = con.execute(
     f"""
@@ -954,12 +958,12 @@ def run_hs_sync_applied_output_audit(
         failed = audit[audit["status"] == "fail"]
 
         logger.info("HS-sync applied-output integrity audit complete.")
-        logger.info("  Raw file size: %s", format_bytes(raw_size))
+        logger.info("  Input file size: %s", format_bytes(raw_size))
         logger.info("  Parquet file size: %s", format_bytes(parquet_size))
-        logger.info("  Raw rows: %s", f"{_to_int(raw_summary['raw_rows']):,}")
+        logger.info("  Input rows: %s", f"{_to_int(raw_summary['raw_rows']):,}")
         logger.info("  Applied rows: %s", f"{_to_int(applied_summary['applied_rows']):,}")
         logger.info("  Expected applied rows: %s", f"{expected_applied_rows:,}")
-        logger.info("  Raw value: %.6f", raw_value)
+        logger.info("  Input value: %.6f", raw_value)
         logger.info("  Applied synced value: %.6f", applied_value)
         logger.info("  Relative value diff: %.3e", value_rel_diff)
         logger.info("  Failed checks: %s", len(failed))

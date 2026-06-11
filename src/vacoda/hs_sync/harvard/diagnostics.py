@@ -10,7 +10,7 @@ import duckdb
 import pandas as pd
 
 from vacoda.utils.logger import get_logger, rel_path
-
+from vacoda.io.duckdb_scan import duckdb_scan_relation
 
 logger = get_logger("HS_SYNC.COVERAGE")
 
@@ -19,6 +19,7 @@ def build_trade_source_pair_summary(
     *,
     data_dir: Path,
     pattern: str,
+    input_format: str,
     engine: str,
     year_col: str,
     hs_col: str,
@@ -34,6 +35,7 @@ def build_trade_source_pair_summary(
         return build_trade_source_pair_summary_duckdb(
             data_dir=data_dir,
             pattern=pattern,
+            input_format=input_format,
             year_col=year_col,
             hs_col=hs_col,
             cmd_col=cmd_col,
@@ -46,6 +48,7 @@ def build_trade_source_pair_summary(
         return build_trade_source_pair_summary_pandas(
             data_dir=data_dir,
             pattern=pattern,
+            input_format=input_format,
             year_col=year_col,
             hs_col=hs_col,
             cmd_col=cmd_col,
@@ -55,11 +58,14 @@ def build_trade_source_pair_summary(
         )
 
     raise ValueError(f"Unsupported HS-sync engine: {engine!r}")
+
+
     
 def build_trade_source_pair_summary_pandas(
     *,
     data_dir: Path,
     pattern: str,
+    input_format: str,
     year_col: str,
     hs_col: str,
     cmd_col: str,
@@ -67,12 +73,16 @@ def build_trade_source_pair_summary_pandas(
     min_year: int | None = None,
     show_progress: bool = True,
 ) -> pd.DataFrame:
+
     files = sorted(data_dir.glob(pattern))
 
     if not files:
         raise FileNotFoundError(
             f"No input files found in {rel_path(data_dir)} matching {pattern!r}"
         )
+
+    if input_format != "csv":
+        raise ValueError("Pandas source-pair summary currently supports only csv input.")
 
     parts: list[pd.DataFrame] = []
 
@@ -148,6 +158,7 @@ def build_trade_source_pair_summary_duckdb(
     *,
     data_dir: Path,
     pattern: str,
+    input_format: str,
     year_col: str,
     hs_col: str,
     cmd_col: str,
@@ -156,42 +167,41 @@ def build_trade_source_pair_summary_duckdb(
     threads: int = 16,
 ) -> pd.DataFrame:
     """
-    Build compact source HS/code summary from many raw Comtrade CSV files.
+    Build compact source HS/code summary from staged or raw Comtrade trade files.
 
-    This avoids loading the full raw dataset into pandas.
+    pattern:
+        File pattern, e.g. "*.parquet" or "*.csv".
 
-    Output columns:
-        source_hs
-        source_cmd
-        n_trade_rows
-        first_year
-        last_year
-        trade_value_total
+    input_format:
+        Reader format, e.g. "parquet" or "csv".
     """
 
     file_glob = str(data_dir / pattern)
 
     logger.info("Building source-pair summary with DuckDB.")
     logger.info("Input glob: %s", file_glob)
+    logger.info("Input format: %s", input_format)
     logger.info("Threads: %s", threads)
 
     where_clause = ""
     if min_year is not None:
-        where_clause = f'WHERE "{year_col}" >= {int(min_year)}'
+        where_clause = f'WHERE TRY_CAST(src."{year_col}" AS INTEGER) >= {int(min_year)}'
+
+    scan = duckdb_scan_relation(
+        path=file_glob,
+        file_format=input_format,
+        alias="src",
+    )
 
     query = f"""
         SELECT
-            CAST("{hs_col}" AS VARCHAR) AS source_hs,
-            CAST("{cmd_col}" AS VARCHAR) AS source_cmd,
+            CAST(src."{hs_col}" AS VARCHAR) AS source_hs,
+            lpad(CAST(src."{cmd_col}" AS VARCHAR), 6, '0') AS source_cmd,
             COUNT(*) AS n_trade_rows,
-            MIN(CAST("{year_col}" AS INTEGER)) AS first_year,
-            MAX(CAST("{year_col}" AS INTEGER)) AS last_year,
-            SUM(CAST("{value_col}" AS DOUBLE)) AS trade_value_total
-        FROM read_csv_auto(
-            '{file_glob}',
-            union_by_name = true,
-            filename = true
-        )
+            MIN(TRY_CAST(src."{year_col}" AS INTEGER)) AS first_year,
+            MAX(TRY_CAST(src."{year_col}" AS INTEGER)) AS last_year,
+            SUM(TRY_CAST(src."{value_col}" AS DOUBLE)) AS trade_value_total
+        FROM {scan}
         {where_clause}
         GROUP BY
             source_hs,
@@ -208,6 +218,8 @@ def build_trade_source_pair_summary_duckdb(
     logger.info("Source-pair summary shape: %s", out.shape)
 
     return out
+
+
 
 def summarize_hs_concordance_coverage(coverage: pd.DataFrame) -> dict:
     """
