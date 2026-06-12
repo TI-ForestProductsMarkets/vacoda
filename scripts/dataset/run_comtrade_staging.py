@@ -11,6 +11,7 @@ from datetime import datetime
 from time import perf_counter
 
 from vacoda.config.dataset import DatasetConfig
+from vacoda.config.pipeline import PipelineConfig
 from vacoda.dataset.staging import build_comtrade_staging_dataset
 from vacoda.utils.logger import get_logger
 from vacoda.config.paths import resolve_log_path
@@ -21,8 +22,12 @@ from vacoda.utils.logger import (
 )
 
 def main() -> None:
-    
-    cfg = DatasetConfig.from_yaml()
+    pipeline_cfg = PipelineConfig.from_yaml()
+
+    cfg = DatasetConfig.from_yaml(
+        scope=pipeline_cfg.scope,
+        engine=pipeline_cfg.engine,
+    )
 
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
 

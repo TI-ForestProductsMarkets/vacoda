@@ -97,10 +97,25 @@ class PipelineScopeConfig:
 
     @classmethod
     def from_dict(cls, cfg: dict[str, Any]) -> "PipelineScopeConfig":
+        if "target_hs" not in cfg:
+            raise KeyError("Missing required scope.target_hs in pipeline.yaml")
+        if "min_year" not in cfg:
+            raise KeyError("Missing required scope.min_year in pipeline.yaml")
+        if "max_year" not in cfg:
+            raise KeyError("Missing required scope.max_year in pipeline.yaml")
+
+        min_year = int(cfg.get("min_year"))
+        max_year = int(cfg.get("max_year"))
+
+        if min_year > max_year:
+            raise ValueError(
+                f"scope.min_year must be <= scope.max_year, got {min_year} > {max_year}."
+            )
+
         return cls(
-            target_hs=require_str(cfg.get("target_hs", "H5"), key="scope.target_hs").strip().upper(),
-            min_year=int(cfg.get("min_year", 1962)),
-            max_year=int(cfg.get("max_year", 9999)),
+            target_hs=require_str(cfg.get("target_hs"), key="scope.target_hs").strip().upper(),
+            min_year=min_year,
+            max_year=max_year,
         )
 
 

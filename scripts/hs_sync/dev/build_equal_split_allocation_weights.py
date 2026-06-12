@@ -8,6 +8,7 @@ from __future__ import annotations
 import pandas as pd
 
 from vacoda.config.hs_sync import HsSyncConfig
+from vacoda.config.pipeline import PipelineConfig
 from vacoda.config.paths import resolve_log_path
 from vacoda.hs_sync.allocation import (
     build_allocation_weights,
@@ -21,7 +22,11 @@ logger = get_logger("SCRIPT.HS_SYNC_ALLOCATION")
 
 
 def main() -> None:
-    cfg = HsSyncConfig.from_yaml()
+    pipeline_cfg = PipelineConfig.from_yaml()
+    cfg = HsSyncConfig.from_yaml(
+        scope=pipeline_cfg.scope,
+        engine=pipeline_cfg.engine,
+    )
 
     log_level = parse_log_level(cfg.logging.level)
     log_path = resolve_log_path(

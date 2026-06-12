@@ -58,9 +58,14 @@ class StepDecision:
 def _run_staging_step(
     *,
     config_path: Path,
+    pipeline_cfg: PipelineConfig,
     run_id: str,
 ) -> dict[str, Any]:
-    cfg = DatasetConfig.from_yaml(config_path)
+    cfg = DatasetConfig.from_yaml(
+        config_path,
+        scope=pipeline_cfg.scope,
+        engine=pipeline_cfg.engine,
+    )
 
     return build_comtrade_staging_dataset(
         cfg=cfg,
@@ -78,9 +83,10 @@ def _build_step_decisions(
 
     for step_name, step_cfg in cfg.enabled_steps():
         plan = _build_step_plan(
-            step_name=step_name,
-            config_path=step_cfg.config,
-        )
+                        step_name=step_name,
+                        config_path=step_cfg.config,
+                        pipeline_cfg=cfg,
+                    )
 
         step_checkpoint_path = checkpoint_path(
             checkpoint_dir=checkpoint_dir,
@@ -192,9 +198,14 @@ def _confirm_pipeline_run(
 def _run_hs_sync_step(
     *,
     config_path: Path,
+    pipeline_cfg: PipelineConfig,
     run_id: str,
 ) -> dict[str, Any]:
-    cfg = HsSyncConfig.from_yaml(config_path)
+    cfg = HsSyncConfig.from_yaml(
+        config_path,
+        scope=pipeline_cfg.scope,
+        engine=pipeline_cfg.engine,
+    )
 
     return run_hs_sync_workflow(
         cfg=cfg,
@@ -207,8 +218,13 @@ def _build_staging_plan(
     *,
     step_name: str,
     config_path: Path,
+    pipeline_cfg: PipelineConfig,
 ) -> StepPlan:
-    cfg = DatasetConfig.from_yaml(config_path)
+    cfg = DatasetConfig.from_yaml(
+        config_path,
+        scope=pipeline_cfg.scope,
+        engine=pipeline_cfg.engine,
+    )
 
     if cfg.input.pattern is None:
         raise ValueError("dataset input.pattern is required for staging checkpointing.")
@@ -219,7 +235,7 @@ def _build_staging_plan(
     return StepPlan(
         step_name=step_name,
         config_path=config_path,
-        config_fingerprint=config_fingerprint(config_path),
+        config_fingerprint=_step_config_fingerprint(config_path=config_path, pipeline_cfg=pipeline_cfg),
         input_fingerprint=file_manifest_fingerprint(
             root=input_dir,
             pattern=input_pattern,
@@ -228,6 +244,7 @@ def _build_staging_plan(
         audit_path=cfg.audit_path(),
         runner=lambda run_id: _run_staging_step(
             config_path=config_path,
+            pipeline_cfg=pipeline_cfg,
             run_id=run_id,
         ),
     )
@@ -237,8 +254,14 @@ def _build_hs_sync_plan(
     *,
     step_name: str,
     config_path: Path,
+    pipeline_cfg: PipelineConfig,
 ) -> StepPlan:
-    cfg = HsSyncConfig.from_yaml(config_path)
+
+    cfg = HsSyncConfig.from_yaml(
+        config_path,
+        scope=pipeline_cfg.scope,
+        engine=pipeline_cfg.engine,
+    )
 
     input_dir = cfg.apply_trade_data_dir()
     input_pattern = cfg.coverage.input.pattern
@@ -285,26 +308,48 @@ def _build_hs_sync_plan(
         audit_path=cfg.apply_integrity_audit_path(),
         runner=lambda run_id: _run_hs_sync_step(
             config_path=config_path,
+            pipeline_cfg=pipeline_cfg,
             run_id=run_id,
         ),
     )
 
+def _step_config_fingerprint(
+    *,
+    config_path: Path,
+    pipeline_cfg: PipelineConfig,
+) -> dict[str, Any]:
+    return {
+        "step_config": config_fingerprint(config_path),
+        "pipeline_scope": {
+            "target_hs": pipeline_cfg.scope.target_hs,
+            "min_year": pipeline_cfg.scope.min_year,
+            "max_year": pipeline_cfg.scope.max_year,
+        },
+        "pipeline_engine": {
+            "name": pipeline_cfg.engine.name,
+            "threads": pipeline_cfg.engine.threads,
+        },
+    }
 
 def _build_step_plan(
     *,
     step_name: str,
     config_path: Path,
+    pipeline_cfg: PipelineConfig,
 ) -> StepPlan:
+
     if step_name == "staging":
         return _build_staging_plan(
             step_name=step_name,
             config_path=config_path,
+            pipeline_cfg=pipeline_cfg,
         )
 
     if step_name == "hs_sync":
         return _build_hs_sync_plan(
             step_name=step_name,
             config_path=config_path,
+            pipeline_cfg=pipeline_cfg,
         )
 
     raise NotImplementedError(f"No pipeline plan implemented for step {step_name!r}.")
@@ -561,6 +606,7 @@ def run_pipeline(
                     checkpoint_plan = _build_step_plan(
                                         step_name=step_name,
                                         config_path=step_cfg.config,
+                                        pipeline_cfg=cfg,
                                     )
 
                     write_checkpoint(
