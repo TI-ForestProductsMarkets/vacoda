@@ -235,7 +235,7 @@ def _build_staging_plan(
     return StepPlan(
         step_name=step_name,
         config_path=config_path,
-        config_fingerprint=_step_config_fingerprint(config_path=config_path, pipeline_cfg=pipeline_cfg),
+        config_fingerprint=_step_config_fingerprint(config_path=config_path, pipeline_cfg=pipeline_cfg, include_scope=True, include_engine=False),
         input_fingerprint=file_manifest_fingerprint(
             root=input_dir,
             pattern=input_pattern,
@@ -302,7 +302,7 @@ def _build_hs_sync_plan(
     return StepPlan(
         step_name=step_name,
         config_path=config_path,
-        config_fingerprint=config_fingerprint(config_path),
+        config_fingerprint=_step_config_fingerprint(config_path=config_path, pipeline_cfg=pipeline_cfg, include_scope=True, include_engine=False),
         input_fingerprint=input_fp,
         output_path=cfg.apply_output_path(),
         audit_path=cfg.apply_integrity_audit_path(),
@@ -317,19 +317,28 @@ def _step_config_fingerprint(
     *,
     config_path: Path,
     pipeline_cfg: PipelineConfig,
+    include_scope: bool,
+    include_engine: bool,
 ) -> dict[str, Any]:
-    return {
+    out = {
         "step_config": config_fingerprint(config_path),
-        "pipeline_scope": {
+    }
+
+    if include_scope:
+        out["pipeline_scope"] = {
             "target_hs": pipeline_cfg.scope.target_hs,
             "min_year": pipeline_cfg.scope.min_year,
             "max_year": pipeline_cfg.scope.max_year,
-        },
-        "pipeline_engine": {
+        }
+
+    if include_engine:
+        out["pipeline_engine"] = {
             "name": pipeline_cfg.engine.name,
             "threads": pipeline_cfg.engine.threads,
-        },
-    }
+        }
+
+    return out
+
 
 def _build_step_plan(
     *,
