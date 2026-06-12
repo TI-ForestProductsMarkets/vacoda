@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from vacoda.config.base import (
-    CONFIG_DIR,
+    get_step_config_path,
     load_yaml_config,
     require_bool,
     require_dict,
@@ -27,8 +27,7 @@ from vacoda.config.base import (
 from vacoda.config.paths import get_data_dir, get_output_dir, get_repo_references_dir
 
 
-HS_SYNC_CONFIG_PATH = CONFIG_DIR / "hs_sync.yaml"
-
+HS_SYNC_CONFIG_PATH = get_step_config_path("hs_sync")
 
 # ---------------------------------------------------------------------
 # Small parsing helpers

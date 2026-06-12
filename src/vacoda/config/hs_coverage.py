@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from vacoda.config.base import (
-    CONFIG_DIR,
+    get_step_config_path,
     get_required_block,
     get_required_nested_block,
     load_yaml_config,
@@ -21,7 +21,7 @@ from vacoda.config.base import (
 )
 
 ## HS-coverage specific config getters
-HS_COVERAGE_CONFIG_PATH = CONFIG_DIR / "hs_coverage.yaml"
+HS_COVERAGE_CONFIG_PATH = get_step_config_path("hs_coverage")
 
 
 def load_hs_coverage_config(config_path: Path | None = None) -> dict[str, Any]:

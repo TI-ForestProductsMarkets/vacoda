@@ -13,11 +13,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from vacoda.config.base import CONFIG_DIR, load_yaml_config
+from vacoda.config.base import get_config_path, load_yaml_config
 from vacoda.config.paths import get_output_dir
 
 
-PIPELINE_CONFIG_PATH = CONFIG_DIR / "pipeline.yaml"
+PIPELINE_CONFIG_PATH = get_config_path("pipeline")
 
 
 def require_dict(value: Any, *, key: str) -> dict[str, Any]:

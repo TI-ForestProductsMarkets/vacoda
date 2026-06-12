@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from vacoda.config.base import (
-    CONFIG_DIR,
+    get_step_config_path,
     load_yaml_config,
     require_bool,
     require_dict,
@@ -17,7 +17,7 @@ from vacoda.config.base import (
 from vacoda.config.paths import get_data_dir, get_output_dir
 
 
-DATASET_CONFIG_PATH = CONFIG_DIR / "dataset.yaml"
+DATASET_CONFIG_PATH = get_step_config_path("dataset")
 
 
 def load_dataset_config(config_path: Path | None = None) -> dict[str, Any]:
