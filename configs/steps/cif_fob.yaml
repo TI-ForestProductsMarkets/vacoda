@@ -11,3 +11,19 @@ cif_fob:
   products:
     corrected_trade:
       filename: "comtrade_target_{target_hs_lower}_cif_fob_corrected"
+  
+  input:
+  from_step: "hs_sync"
+
+method:
+  name: "mirror_ratio"
+  grouping:
+    - year
+    - reporter
+    - partner
+    - target_cmd
+
+output:
+  stage: "interim"
+  subdir_template: "cif_fob/target_{target_hs_lower}"
+  file_template: "comtrade_target_{target_hs_lower}_cif_fob_corrected.parquet"
