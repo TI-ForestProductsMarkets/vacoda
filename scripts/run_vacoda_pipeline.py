@@ -1,10 +1,10 @@
-#!/usr/bin/env python3
 """
-Run the VACODA master pipeline.
+scripts.run_vacoda_pipeline
+Thin wrapper around vacoda.pipeline.cli.main() to run the VACODA master pipeline.
 """
 
-from vacoda.pipeline.pipeline_workflow import run_pipeline
 
+from vacoda.pipeline.cli import main
 
 if __name__ == "__main__":
-    run_pipeline()
+    main()
