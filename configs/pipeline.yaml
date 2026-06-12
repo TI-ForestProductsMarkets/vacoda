@@ -21,18 +21,27 @@ pipeline:
   fail_fast: true
 
   # If true, completed existing outputs may be reused by module logic
-  # when the module config has overwrite=false.
   allow_skip_existing: true
 
   # If true, all steps will run even if they are already completed and reusable. Overrides allow_skip_existing.
   force_run_all: false  
+  
   # Safety gate before running expensive pipeline steps.
   require_confirmation: true
+
+scope:
+  target_hs: "H5"
+  min_year: 2017
+  max_year: 2025
+
+engine:
+  name: "duckdb"
+  threads: 48
 
 steps:
   staging:
     enabled: true
-    config: "configs/dataset.yaml"
+    config: "configs/steps/dataset.yaml"
     expected_status:
       - "completed"
       - "skipped_existing"
@@ -40,28 +49,28 @@ steps:
 
   hs_sync:
     enabled: true
-    config: "configs/hs_sync.yaml"
+    config: "configs/steps/hs_sync.yaml"
     expected_status:
       - "completed"
     required_ready_flag: "ready_for_cif_fob"
 
   cif_fob:
     enabled: false
-    config: "configs/cif_fob.yaml"
+    config: "configs/steps/cif_fob.yaml"
     expected_status:
       - "completed"
     required_ready_flag: "ready_for_trade_sync"
 
   trade_sync:
     enabled: false
-    config: "configs/trade_sync.yaml"
+    config: "configs/steps/trade_sync.yaml"
     expected_status:
       - "completed"
     required_ready_flag: "ready_for_processed_export"
 
   processed_export:
     enabled: false
-    config: "configs/processed_export.yaml"
+    config: "configs/steps/processed_export.yaml"
     expected_status:
       - "completed"
     required_ready_flag: null

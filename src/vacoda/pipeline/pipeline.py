@@ -1,3 +1,9 @@
+"""
+vacoda.pipeline.pipeline
+
+VACODA master pipeline implementation.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -551,6 +557,12 @@ def run_pipeline(
                 logger.info("  Ready flag %s: %s", step_cfg.required_ready_flag, ready_value)
 
                 if cfg.checkpoint.enabled:
+
+                    checkpoint_plan = _build_step_plan(
+                                        step_name=step_name,
+                                        config_path=step_cfg.config,
+                                    )
+
                     write_checkpoint(
                         path=step_checkpoint_path,
                         run_id=run_id,
@@ -558,8 +570,8 @@ def run_pipeline(
                         status=status,
                         ready_flag=step_cfg.required_ready_flag,
                         ready_value=ready_value,
-                        config=plan.config_fingerprint,
-                        input_fingerprint=plan.input_fingerprint,
+                        config=checkpoint_plan.config_fingerprint,
+                        input_fingerprint=checkpoint_plan.input_fingerprint,
                         output_path=output_path,
                         audit_path=audit_path,
                         result=result,

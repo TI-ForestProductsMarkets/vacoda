@@ -13,11 +13,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from vacoda.config.base import get_config_path, load_yaml_config
+from vacoda.config.base import CONFIG_DIR, load_yaml_config
 from vacoda.config.paths import get_output_dir
 
 
-PIPELINE_CONFIG_PATH = get_config_path("pipeline")
+PIPELINE_CONFIG_PATH = CONFIG_DIR / "pipeline.yaml"
 
 
 def require_dict(value: Any, *, key: str) -> dict[str, Any]:
@@ -86,6 +86,34 @@ class PipelineStepConfig:
             config=Path(require_str(cfg.get("config"), key=f"{key}.config")),
             expected_status=[str(status) for status in expected_status],
             required_ready_flag=required_ready_flag,
+        )
+
+
+@dataclass(frozen=True)
+class PipelineScopeConfig:
+    target_hs: str
+    min_year: int
+    max_year: int
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "PipelineScopeConfig":
+        return cls(
+            target_hs=require_str(cfg.get("target_hs", "H5"), key="scope.target_hs").strip().upper(),
+            min_year=int(cfg.get("min_year", 1962)),
+            max_year=int(cfg.get("max_year", 9999)),
+        )
+
+
+@dataclass(frozen=True)
+class PipelineEngineConfig:
+    name: str
+    threads: int
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "PipelineEngineConfig":
+        return cls(
+            name=require_str(cfg.get("name", "duckdb"), key="engine.name").strip().lower(),
+            threads=int(cfg.get("threads", 16)),
         )
 
 
@@ -166,6 +194,8 @@ class PipelineLoggingConfig:
 @dataclass(frozen=True)
 class PipelineConfig:
     pipeline: PipelineInfoConfig
+    scope: PipelineScopeConfig
+    engine: PipelineEngineConfig
     steps: dict[str, PipelineStepConfig]
     checkpoint: PipelineCheckpointConfig
     manifest: PipelineManifestConfig
@@ -178,6 +208,12 @@ class PipelineConfig:
         return cls(
             pipeline=PipelineInfoConfig.from_dict(
                 require_dict(raw.get("pipeline"), key="pipeline")
+            ),
+            scope=PipelineScopeConfig.from_dict(
+                require_dict(raw.get("scope", {}), key="scope")
+            ),
+            engine=PipelineEngineConfig.from_dict(
+                require_dict(raw.get("engine", {}), key="engine")
             ),
             steps={
                 name: PipelineStepConfig.from_dict(
