@@ -53,6 +53,19 @@ def get_symbols(name):
         return "\U0001F44E"  #  👎
     elif name == "sparkles":
         return "\U0001F496"  # 💖
-
+    elif name =="time":
+        return "\U0001F551"  # 🕑
+    elif name == "duckdb":
+        return "\U0001F986"  # 🦆
+    elif name == "pandas":
+        return "\U0001F43C"  #  🐼
+    elif name == "python":
+        return "\U0001F40D"  #  🐍
+    elif name == "warning_light":
+        return "\U0001F6A8"  # 🚨
+    elif name == "construction":
+        return "\U0001F6A7"  # 🚧
+    elif name == "recycle":
+        return "\U0001F504"  # 🔄
     else:
         raise ValueError(f"Unknown symbol name: {name}")
