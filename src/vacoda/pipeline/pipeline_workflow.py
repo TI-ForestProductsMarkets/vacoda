@@ -237,7 +237,7 @@ def _build_staging_plan(
         config_path=config_path,
         config_fingerprint=_step_config_fingerprint(config_path=config_path, 
                                                     pipeline_cfg=pipeline_cfg, 
-                                                    include_scope=True, 
+                                                    include_scope=False, 
                                                     include_engine_name=False),
         input_fingerprint=file_manifest_fingerprint(
             root=input_dir,
@@ -305,7 +305,10 @@ def _build_hs_sync_plan(
     return StepPlan(
         step_name=step_name,
         config_path=config_path,
-        config_fingerprint=_step_config_fingerprint(config_path=config_path, pipeline_cfg=pipeline_cfg, include_scope=True, include_engine_name=False),
+        config_fingerprint=_step_config_fingerprint(config_path=config_path, 
+                                                    pipeline_cfg=pipeline_cfg, 
+                                                    include_scope=True, 
+                                                    include_engine_name=False),
         input_fingerprint=input_fp,
         output_path=cfg.apply_output_path(),
         audit_path=cfg.apply_integrity_audit_path(),

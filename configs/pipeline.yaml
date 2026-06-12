@@ -36,7 +36,7 @@ scope:
 
 engine:
   name: "duckdb"
-  threads: 48
+  threads: 54
 
 steps:
   staging:
