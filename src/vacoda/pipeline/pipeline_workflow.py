@@ -439,10 +439,25 @@ def _result_audit_path(result: dict[str, Any], fallback: Path) -> Path:
 
 
 def run_pipeline(
-) -> dict[str, Any]:
+    *,
+    force_run_all: bool | None = None,
+    require_confirmation: bool | None = None,
+    target_hs: str | None = None,
+    min_year: int | None = None,
+    max_year: int | None = None,
+    threads: int | None = None) -> dict[str, Any]:
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
 
+
     cfg = PipelineConfig.from_yaml()
+    cfg = cfg.with_cli_overrides(
+            force_run_all=force_run_all,
+            require_confirmation=require_confirmation,
+            target_hs=target_hs,
+            min_year=min_year,
+            max_year=max_year,
+            threads=threads,
+        )
 
     log_level = parse_log_level(cfg.logging.level)
     log_path = resolve_log_path(

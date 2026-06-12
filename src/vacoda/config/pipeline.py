@@ -9,7 +9,7 @@ This module provides classes to load and validate the pipeline configuration fro
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -256,6 +256,62 @@ class PipelineConfig:
             raise ValueError(f"Empty pipeline config: {PIPELINE_CONFIG_PATH}")
 
         return cls.from_dict(raw)
+
+    def with_cli_overrides(
+        self,
+        *,
+        force_run_all: bool | None = None,
+        require_confirmation: bool | None = None,
+        target_hs: str | None = None,
+        min_year: int | None = None,
+        max_year: int | None = None,
+        threads: int | None = None,
+    ) -> "PipelineConfig":
+        cfg = self
+
+        if force_run_all is not None or require_confirmation is not None:
+            cfg = replace(
+                cfg,
+                pipeline=replace(
+                    cfg.pipeline,
+                    force_run_all=(
+                        cfg.pipeline.force_run_all
+                        if force_run_all is None
+                        else force_run_all
+                    ),
+                    require_confirmation=(
+                        cfg.pipeline.require_confirmation
+                        if require_confirmation is None
+                        else require_confirmation
+                    ),
+                ),
+            )
+
+        if target_hs is not None or min_year is not None or max_year is not None:
+            cfg = replace(
+                cfg,
+                scope=replace(
+                    cfg.scope,
+                    target_hs=(
+                        cfg.scope.target_hs
+                        if target_hs is None
+                        else target_hs.strip().upper()
+                    ),
+                    min_year=cfg.scope.min_year if min_year is None else min_year,
+                    max_year=cfg.scope.max_year if max_year is None else max_year,
+                ),
+            )
+
+        if threads is not None:
+            cfg = replace(
+                cfg,
+                engine=replace(
+                    cfg.engine,
+                    threads=threads,
+                ),
+            )
+
+        return cfg
 
     def enabled_steps(self) -> list[tuple[str, PipelineStepConfig]]:
         out = []

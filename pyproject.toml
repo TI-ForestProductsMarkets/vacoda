@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vacoda"
-version = "1.6.0"
+version = "1.8.0"
 description = "VAlidation of COmtrade DAta - A Python package for validating and preprocessing UN-Comtrade data for trade analysis."
 authors = [
     {name = "Pooja Saxena"},
@@ -27,6 +27,9 @@ dependencies = [
     # Runtime utilities
     "tqdm>=4.66",
 ]
+
+[project.scripts]
+vacoda-pipeline = "vacoda.pipeline.cli:main"
 
 [project.optional-dependencies]
 dev = [
