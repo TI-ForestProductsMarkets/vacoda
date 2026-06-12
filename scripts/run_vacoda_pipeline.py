@@ -3,7 +3,7 @@
 Run the VACODA master pipeline.
 """
 
-from vacoda.pipeline.pipeline import run_pipeline
+from vacoda.pipeline.pipeline_workflow import run_pipeline
 
 
 if __name__ == "__main__":
