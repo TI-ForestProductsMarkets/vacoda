@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from vacoda.config.base import (
-    get_step_config_path,
+    CONFIG_DIR,
     load_yaml_config,
     require_bool,
     require_dict,
@@ -27,7 +27,8 @@ from vacoda.config.base import (
 from vacoda.config.paths import get_data_dir, get_output_dir, get_repo_references_dir
 
 
-HS_SYNC_CONFIG_PATH = get_step_config_path("hs_sync")
+HS_SYNC_CONFIG_PATH = CONFIG_DIR / "hs_sync.yaml"
+
 
 # ---------------------------------------------------------------------
 # Small parsing helpers
@@ -265,22 +266,11 @@ class ScopeConfig:
     max_year: int
 
     @classmethod
-    def from_dict(cls, cfg: dict[str, Any]) -> "ScopeConfig":
+    def from_pipeline_scope(cls, scope: Any) -> "ScopeConfig":
         return cls(
-            target_hs=require_str(
-                cfg.get("target_hs"),
-                key="scope.target_hs",
-            ).strip().upper(),
-            min_year=require_int(
-                cfg.get("min_year", 1962),
-                key="scope.min_year",
-                min_value=1962,
-            ),
-            max_year=require_int(
-                cfg.get("max_year", 9999),
-                key="scope.max_year",
-                min_value=1962,
-            ),
+            target_hs=require_str(scope.target_hs, key="pipeline.scope.target_hs").strip().upper(),
+            min_year=require_int(scope.min_year, key="pipeline.scope.min_year"),
+            max_year=require_int(scope.max_year, key="pipeline.scope.max_year"),
         )
 
 
@@ -290,17 +280,10 @@ class EngineConfig:
     threads: int
 
     @classmethod
-    def from_dict(cls, cfg: dict[str, Any]) -> "EngineConfig":
+    def from_pipeline_engine(cls, engine: Any) -> "EngineConfig":
         return cls(
-            name=require_str(
-                cfg.get("name", "duckdb"),
-                key="engine.name",
-            ).strip().lower(),
-            threads=require_int(
-                cfg.get("threads", 16),
-                key="engine.threads",
-                min_value=1,
-            ),
+            name=require_str(engine.name, key="pipeline.engine.name").strip().lower(),
+            threads=require_int(engine.threads, key="pipeline.engine.threads", min_value=1),
         )
 
 
@@ -1269,6 +1252,12 @@ class CoverageConfig:
                     f"({target_hs!r}); got {parsed!r}."
                 )
 
+        if "min_year" in cfg or "max_year" in cfg:
+            raise ValueError(
+                "coverage.min_year and coverage.max_year must be defined in "
+                "pipeline.yaml scope and are not overridable in hs_sync.yaml."
+            )
+
         context = TemplateContext(target_hs=target_hs)
 
         return cls(
@@ -1277,16 +1266,8 @@ class CoverageConfig:
                 key="coverage.enabled",
             ),
             target_hs=target_hs,
-            min_year=require_int(
-                cfg.get("min_year", scope.min_year),
-                key="coverage.min_year",
-                min_value=0,
-            ),
-            max_year=require_int(
-                cfg.get("max_year", scope.max_year),
-                key="coverage.max_year",
-                min_value=0,
-            ),
+            min_year=scope.min_year,
+            max_year=scope.max_year,
             input=StagePathConfig.from_dict(
                 require_dict(cfg.get("input", {}), key="coverage.input"),
                 key="coverage.input",
@@ -1786,19 +1767,33 @@ class HsSyncConfig:
     references: dict[str, Any]
 
     @classmethod
-    def from_yaml(cls, config_path: Path | None = None) -> "HsSyncConfig":
-        raw = load_hs_sync_config(config_path)
-        return cls.from_dict(raw)
+    def from_yaml(
+            cls,
+            config_path: Path | None = None,
+            *,
+            scope: Any | None = None,
+            engine: Any | None = None) -> "HsSyncConfig":
+            return cls.from_dict(
+                    load_hs_sync_config(config_path),
+                    scope=scope,
+                    engine=engine,
+                )
 
     @classmethod
-    def from_dict(cls, raw: dict[str, Any]) -> "HsSyncConfig":
+    def from_dict(cls, raw: dict[str, Any], *, scope: Any | None = None, engine: Any | None = None) -> "HsSyncConfig":
         global_cfg = _block(raw, "global")
-        
-        scope = ScopeConfig.from_dict(_block(global_cfg, "scope"))
+
+        if scope is None:
+            raise ValueError("HsSyncConfig requires pipeline scope.")
+        if engine is None:
+            raise ValueError("HsSyncConfig requires pipeline engine.")
+
+        parsed_scope = ScopeConfig.from_pipeline_scope(scope)
+        parsed_engine = EngineConfig.from_pipeline_engine(engine)
         
         coverage = CoverageConfig.from_dict(
             _block(raw, "coverage"),
-            scope=scope,
+            scope=parsed_scope,
         )
 
         weights_cfg = require_dict(raw.get("weights", {}), key="weights")
@@ -1806,31 +1801,31 @@ class HsSyncConfig:
 
         return cls(
             raw=raw,
-            scope=scope,
-            engine=EngineConfig.from_dict(_block(global_cfg, "engine", required=False)),
+            scope=parsed_scope,
+            engine=parsed_engine,
             progress=ProgressConfig.from_dict(_block(global_cfg, "progress", required=False)),
             columns=ColumnsConfig.from_dict(_block(global_cfg, "columns")),
             logging=LoggingConfig.from_dict(_block(global_cfg, "logging", required=False)),
             harvard_staging=HarvardStagingConfig.from_dict(
                 _block(raw, "harvard_staging"),
-                scope=scope,
+                scope=parsed_scope,
             ),
             harvard_generator_audit=HarvardGeneratorAuditConfig.from_dict(
                 _block(raw, "harvard_generator_audit", required=False),
-                scope=scope,
+                scope=parsed_scope,
             ),
             harvard_mapping_direction=HarvardMappingDirectionConfig.from_dict(
                 _block(raw, "harvard_mapping_direction", required=False),
-                scope=scope,
+                scope=parsed_scope,
             ),
             coverage=coverage,
             weights=WeightsConfig.from_dict(
                 weights_cfg,
-                scope=scope,
+                scope=parsed_scope,
             ),
             apply=ApplyConfig.from_dict(
                 apply_cfg,
-                scope=scope,
+                scope=parsed_scope,
             ),
             references=_block(raw, "references", required=False),
         )

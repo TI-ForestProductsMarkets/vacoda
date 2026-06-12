@@ -17,6 +17,7 @@ from pathlib import Path
 import pandas as pd
 
 from vacoda.config.hs_sync import HsSyncConfig
+from vacoda.config.pipeline import PipelineConfig
 from vacoda.config.paths import resolve_log_path
 from vacoda.hs_sync.allocation import (
     build_complete_mapping_weight_table,
@@ -33,7 +34,11 @@ logger = get_logger("SCRIPT.HS_SYNC_COMPLETE_WEIGHTS")
 
 
 def main() -> None:
-    cfg = HsSyncConfig.from_yaml()
+    pipeline_cfg = PipelineConfig.from_yaml()
+    cfg = HsSyncConfig.from_yaml(
+        scope=pipeline_cfg.scope,
+        engine=pipeline_cfg.engine,
+    )
 
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
 

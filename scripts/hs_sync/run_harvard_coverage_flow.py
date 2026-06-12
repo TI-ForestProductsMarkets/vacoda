@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from vacoda.config.hs_sync import HsSyncConfig
+from vacoda.config.pipeline import PipelineConfig
 from vacoda.config.paths import resolve_log_path
 from vacoda.hs_sync.harvard.coverage_flow import run_hs_sync_coverage_flow
 from vacoda.utils.logger import (
@@ -27,7 +28,11 @@ from vacoda.utils.logger import (
 
 
 def main() -> None:
-    cfg = HsSyncConfig.from_yaml()
+    pipeline_cfg = PipelineConfig.from_yaml()
+    cfg = HsSyncConfig.from_yaml(
+        scope=pipeline_cfg.scope,
+        engine=pipeline_cfg.engine,
+    )
 
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
 

@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pandas as pd
 from vacoda.config.hs_sync import HsSyncConfig
+from vacoda.config.pipeline import PipelineConfig
 
 
 HS_YEAR_TO_H = {
@@ -141,7 +142,11 @@ def build_static_adjacent_concordance(
 
 
 def main() -> None:
-    cfg = HsSyncConfig.from_yaml()
+    pipeline_cfg = PipelineConfig.from_yaml()
+    cfg = HsSyncConfig.from_yaml(
+        scope=pipeline_cfg.scope,
+        engine=pipeline_cfg.engine,
+    )
 
     src = cfg.reference_path("comtrade.harvard_static_concordance_source")
     out = cfg.reference_path("comtrade.static_adjacent_concordance_output")

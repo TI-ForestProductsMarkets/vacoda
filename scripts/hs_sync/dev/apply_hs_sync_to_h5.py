@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from vacoda.config.hs_sync import HsSyncConfig
+from vacoda.config.pipeline import PipelineConfig
 from vacoda.config.paths import resolve_log_path
 from vacoda.hs_sync.apply import run_hs_sync_apply_from_config
 from vacoda.utils.logger import (
@@ -16,7 +17,11 @@ logger = get_logger("SCRIPT.HS_SYNC_APPLY")
 
 
 def main() -> None:
-    cfg = HsSyncConfig.from_yaml()
+    pipeline_cfg = PipelineConfig.from_yaml()
+    cfg = HsSyncConfig.from_yaml(
+        scope=pipeline_cfg.scope,
+        engine=pipeline_cfg.engine,
+    )
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     log_level = parse_log_level(cfg.logging.level)

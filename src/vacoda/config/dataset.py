@@ -86,18 +86,10 @@ class EngineConfig:
     threads: int
 
     @classmethod
-    def from_dict(cls, cfg: dict[str, Any]) -> "EngineConfig":
-        name = require_str(cfg.get("name", "duckdb"), key="engine.name").strip().lower()
-
-        if name != "duckdb":
-            raise ValueError(
-                f"Unsupported dataset engine: {name!r}. "
-                "Currently only 'duckdb' is supported."
-            )
-
+    def from_pipeline_engine(cls, engine: Any) -> "EngineConfig":
         return cls(
-            name=name,
-            threads=require_int(cfg.get("threads", 1), key="engine.threads", min_value=1),
+            name=require_str(engine.name, key="pipeline.engine.name").strip().lower(),
+            threads=require_int(engine.threads, key="pipeline.engine.threads", min_value=1),
         )
 
 @dataclass(frozen=True)
@@ -245,16 +237,32 @@ class DatasetConfig:
     audit: AuditConfig
     logging: LoggingConfig
     @classmethod
-    def from_yaml(cls, config_path: Path | None = None) -> "DatasetConfig":
-        return cls.from_dict(load_dataset_config(config_path))
+    def from_yaml(cls,
+                config_path: Path | None = None,
+                *,
+                scope: Any | None = None,
+                engine: Any | None = None) -> "DatasetConfig":
+                return cls.from_dict(
+                    load_dataset_config(config_path),
+                    scope=scope,
+                    engine=engine,
+                )
 
     @classmethod
-    def from_dict(cls, raw: dict[str, Any]) -> "DatasetConfig":
+    def from_dict(
+                cls,
+                raw: dict[str, Any],
+                *,
+                scope: Any | None = None,
+                engine: Any | None = None) -> "DatasetConfig":
+        if engine is None:
+            raise ValueError("DatasetConfig requires pipeline engine.")
+
         return cls(
             dataset=DatasetInfoConfig.from_dict(require_dict(raw.get("dataset"), key="dataset")),
             input=StagePathConfig.from_dict(require_dict(raw.get("input"), key="input"), key="input"),
             output=StagePathConfig.from_dict(require_dict(raw.get("output"), key="output"), key="output"),
-            engine=EngineConfig.from_dict(require_dict(raw.get("engine", {}), key="engine")),
+            engine=(EngineConfig.from_pipeline_engine(engine)),
             schema=SchemaConfig.from_dict(require_dict(raw.get("schema"), key="schema")),
             write=WriteConfig.from_dict(require_dict(raw.get("write", {}), key="write")),
             audit=AuditConfig.from_dict(require_dict(raw.get("audit", {}), key="audit")),
