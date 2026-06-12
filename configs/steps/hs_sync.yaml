@@ -1,0 +1,406 @@
+## HS Synchronization Configuration
+
+# ============================================================
+# Global HS-sync scope
+# ============================================================
+
+global:
+  scope:
+    # Final target HS system for normalized HS-sync outputs.
+    target_hs: "H5"
+    min_year: 2017
+    max_year: 2025
+
+  engine:
+    name: "duckdb"
+    threads: 48
+
+  progress:
+    enabled: true
+
+  columns:
+    year: "year"
+    hs: "source_hs"
+    cmd: "source_cmd"
+    value: "primary_value"
+
+  logging:
+    level: "DEBUG"
+    subdir: "logs/hs_sync"
+    file: "LOG_HS_SYNC_COVERAGE.log"
+    timestamp: true
+
+
+
+# ============================================================ 
+# Coverage mapping diagnostics 
+# ============================================================ 
+# This is the main HS-sync coverage study. 
+#
+# It consumes observed trade data and mapping/correlation files, then asks: 
+# how much can be expressed in the target HS system without weights?
+
+coverage:
+  enabled: true
+  min_year: 2017  ## take this from global scope, but allow override for testing/diagnostics with older HS systems
+  max_year: 2025
+
+  input:
+    stage: "interim"
+    subdir: "staging/api_single"
+    pattern: "*.parquet"  # file: "comtrade_api_single_annual_hs_staged.parquet"
+    format: "parquet"
+
+  mappings:
+    stage: "references"
+    references_root: "repo"
+    #subdir: "harvard_generator/hs_adjacent_transition_1995_2022/correlation_groups"
+    subdir: "comtrade/hs_correlation_groups/normalized"
+
+    files:
+      H2_to_H5: "from_HS2002_to_HS2017.csv"
+      H3_to_H5: "from_HS2007_to_HS2017.csv"
+      H4_to_H5: "from_HS2012_to_HS2017.csv"
+      H6_to_H5: "from_HS2022_to_HS2017.csv"
+
+    columns:
+      source_cmd: "code.source"
+      target_cmd: "code.target"
+      relationship: "Relationship"
+      adjustment: "adjustment"
+      group_id: "group.id"
+
+  categories:
+    easy_without_weights:
+      - "already_target"
+      - "1:1"
+      - "n:1"
+
+    needs_weights:
+      - "1:n"
+      - "n:n"
+
+    missing:
+      - "missing_mapping"
+
+  output:
+    stage: "interim"
+    subdir: "hs_sync/target_{target_hs_lower}/mapping_coverage"
+
+  write:
+    csv: true
+    parquet: false
+    overwrite: true
+    timestamp: false
+
+  artifact:
+    kind: "reports"
+    subdir: "hs_sync/target_{target_hs_lower}/coverage"
+    filename: "target_{target_hs_lower}_mapping_coverage_report"
+    timestamp: true
+    write_latest: true
+    options:
+      unsupported_top_n: 30
+      needs_weights_top_n: 10
+
+  products: 
+    mapping_coverage: 
+      enabled: true 
+      kind: "base" 
+      filename: "target_{target_hs_lower}_mapping_coverage" 
+      write: true 
+    
+    source_code_coverage: 
+      enabled: true 
+      kind: "derived" 
+      depends_on: "mapping_coverage" 
+      filename: "target_{target_hs_lower}_source_code_coverage" 
+      write: true 
+
+    mapping_summary: 
+      enabled: true 
+      kind: "derived" 
+      depends_on: "mapping_coverage" 
+      filename: "target_{target_hs_lower}_mapping_summary" 
+      write: true 
+
+    missing_mappings: 
+      enabled: true 
+      kind: "derived" 
+      depends_on: "mapping_coverage" 
+      filename: "target_{target_hs_lower}_missing_mappings" 
+      write: true 
+      options: 
+        top_n: 50 
+
+    needs_weights: 
+      enabled: true 
+      kind: "derived" 
+      depends_on: "mapping_coverage" 
+      filename: "target_{target_hs_lower}_needs_weights" 
+      write: true 
+
+    easy_without_weights: 
+      enabled: true 
+      kind: "derived" 
+      depends_on: "mapping_coverage" 
+      filename: "target_{target_hs_lower}_easy_without_weights" 
+      write: true
+
+
+# ============================================================ 
+# Frozen reference artifacts 
+# ============================================================ 
+# These are stable VACODA-owned reference artifacts. 
+# 
+# Important distinction: 
+# - /storage/vacoda/data/references may contain the external Harvard generator package. 
+# - vacoda/references contains copied/frozen artifacts used by VACODA itself.
+references:
+  harvard_generator:
+    hs_adjacent_transition_1995_2022:
+      source: "repo"
+      path: "references/harvard_generator/hs_adjacent_transition_1995_2022"
+      matrices_subdir: "matrices"
+      correlation_group_subdir: "correlation_group"
+      provenance_subdir: "provenance"
+  
+  comtrade:
+    hs_correlation_groups:
+      source: "repo"
+      path: "references/comtrade/hs_correlation_groups"
+    harvard_static_concordance_source:
+      source: "data"
+      path: "references/comtrade-conversion-weights/generator/data/static/HS_consolidated_comtrade_concordances.csv"
+    static_adjacent_concordance_output:
+      source: "data"
+      path: "references/hs_static_adjacent_concordance_equal_weights.parquet"
+
+# ============================================================
+# weight allocation strategies
+# ============================================================
+weights:
+  enabled: true
+
+  strategy:
+    name: "equal_split"
+
+  input:
+    coverage_product: "source_code_coverage"
+    mappings: "coverage.mappings"
+    equal_split_product: "equal_split_weights"
+    complete_mapping_product: "complete_mapping_weights"
+
+  output:
+    stage: "interim"
+    subdir: "hs_sync/target_{target_hs_lower}/weights"
+
+  write:
+    csv: true
+    parquet: false
+    overwrite: true
+
+  products:
+    equal_split_weights:
+      enabled: true
+      filename: "target_{target_hs_lower}_equal_split_weights.csv"
+
+    complete_mapping_weights:
+      enabled: true
+      filename: "target_{target_hs_lower}_complete_mapping_weights.csv"
+
+  artifact:
+    kind: "manifest"
+    subdir: "hs_sync/target_{target_hs_lower}/weights"
+    equal_split_audit_filename: "target_{target_hs_lower}_equal_split_weights_audit.csv"
+    complete_weights_audit_filename: "target_{target_hs_lower}_complete_mapping_weights_audit.csv"
+
+
+# ============================================================
+# weight apply strategies
+# ============================================================
+
+apply:
+  enabled: true
+
+  input:
+    trade_data: "coverage.input"
+    weights: "weights.complete_mapping_weights"
+    output_product: "hs_synced_trade"
+
+  output:
+    stage: "interim"
+    subdir: "hs_sync/target_{target_hs_lower}/applied"
+
+  write:
+    format: "parquet"
+    overwrite: true
+
+  products:
+    hs_synced_trade:
+      enabled: true
+      filename: "comtrade_target_{target_hs_lower}_hs_synced"
+
+  artifact:
+    kind: "manifest"
+    subdir: "hs_sync/target_{target_hs_lower}/apply"
+    audit_filename: "comtrade_target_{target_hs_lower}_hs_sync_audit.csv"
+    integrity_audit_filename: "comtrade_target_{target_hs_lower}_hs_sync_integrity_audit.csv"
+    timestamp: false
+    write_latest: false
+
+
+# ============================================================ 
+# Harvard reference-build staging 
+# ============================================================ 
+# This block prepares Comtrade bulk data in the layout expected by the 
+# external Harvard/Growth Lab generator. 
+# 
+# It is not part of the normal HS-sync coverage workflow. 
+# It is run rarely, only when Harvard generator inputs need to be rebuilt.
+harvard_staging:
+  enabled: true
+
+  input:
+    stage: "raw"
+    subdir: "api/bulk"
+    pattern: "Comtrade_bulk_HS_*_all_reporters_*.gz"
+
+  output:
+    stage: "external"
+    subdir: "harvard_comtrade_bulk"
+
+  layout:
+    base_subdir: "as_reported"
+    partitioned_subdir: "raw_parquet_partitioned"
+    raw_parquet_subdir: "raw_parquet"
+    aggregated_subdir: "aggregated_by_year_not_converted/parquet"
+  
+  skip:
+    if_complete: true
+    marker_filename: "harvard_staging_success.json"
+    check_input_fingerprint: true
+    check_config_fingerprint: true
+    check_output_fingerprint: true
+
+  filters:
+    valid_cmd_regex: "^[0-9]{6}$"
+    hs_years:
+      H0: [1995]
+      H1: [1996, 2001]
+      H2: [2002, 2006]
+      H3: [2007, 2011]
+      H4: [2012, 2016]
+      H5: [2017, 2021]
+      H6: [2022]
+
+  columns:
+    year: "year"
+    hs: "source_hs"
+    cmd: "source_cmd"
+    value: "primary_value"
+    reporter_code: "reporter_code"
+    partner_code: "partner_code"
+    flow: "flow_code"
+    quantity: "quantity"
+
+  overwrite: false
+
+  country_reference:
+    source: "single_api"
+    stage: "raw"
+    subdir: "api/single"
+    pattern: "*.csv"
+    columns:
+      reporter_code: "reporter_code"
+      reporter_iso: "reporter_iso"
+      partner_code: "partner_code"
+      partner_iso: "partner_iso"
+
+  diagnostics:
+    value_abs_tolerance: 1.0
+    value_rel_tolerance: 1.0e-10
+
+  artifact:
+    kind: "manifest"
+    subdir: "hs_sync/target_{target_hs_lower}/harvard/staging"
+    inventory_filename: "audit_hs_sync_harvard_staging_inventory.csv"
+    preservation_filename: "audit_hs_sync_harvard_staging_preservation.csv"
+    timestamp: true
+    write_latest: true
+
+
+# ============================================================ 
+# Harvard generator audit  
+# ============================================================ 
+harvard_generator_audit:
+  enabled: true
+
+  input:
+    harvard_data:
+      stage: "external"
+      subdir: "harvard_comtrade_bulk"
+
+    generator_root:
+      stage: "references"
+      subdir: "harvard_generator/hs_adjacent_transition_1995_2022"
+
+  transition:
+    source_hs: "H4"
+    source_year: 2016
+    target_hs: "H5"
+    target_year: 2017
+
+  product_code_checks:
+    - label: "source HS2012 wood split example"
+      hs: "H4"
+      year: 2016
+      codes: ["440110"]
+
+    - label: "target HS2017 wood split example"
+      hs: "H5"
+      year: 2017
+      codes: ["440111", "440112"]
+
+  artifact:
+    kind: "manifest"
+    subdir: "hs_sync/target_{target_hs_lower}/harvard/generator_audit"
+    filename: "audit_harvard_generator_inputs"
+    timestamp: true
+    write_latest: true
+
+# ============================================================
+# Harvard mapping direction audit
+# ============================================================
+harvard_mapping_direction:
+  enabled: false
+
+  mappings:
+    # Where to read coverage mapping CSVs from when coverage.mappings.stage="references".
+    # - "repo": {repo.references} from paths.yaml
+    # - "data": {data.references} from paths.yaml
+    references_root: "repo"
+
+  artifact:
+    kind: "manifest"
+    subdir: "hs_sync/target_{target_hs_lower}/harvard/mapping_direction"
+    filename: "audit_harvard_mapping_direction.md"
+    timestamp: true
+    write_latest: true
+
+
+# ============================================================
+# Harvard weights / optional weight generation
+# ============================================================
+harvard_weights:
+  enabled: false
+  status: planned
+
+
+
+# ============================================================
+# Future UN Comtrade mappings
+# ============================================================
+un_comtrade_mapping:
+  enabled: false
+  status: planned
