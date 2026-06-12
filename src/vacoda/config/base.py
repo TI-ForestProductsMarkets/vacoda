@@ -13,7 +13,11 @@ from copy import deepcopy
 import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
+
+## subdirectories under configs/ for different config types
 CONFIG_DIR = PROJECT_ROOT / "configs"
+CONFIG_STEPS_DIR = CONFIG_DIR / "steps"
+CONFIG_RUNS_DIR = CONFIG_DIR / "runs"
 
 _PLACEHOLDER_PATTERN = re.compile(r"{([^{}]+)}")
 
@@ -22,8 +26,7 @@ def get_required_value(
     cfg: dict[str, Any],
     path: tuple[str, ...],
     *,
-    config_name: str,
-) -> Any:
+    config_name: str,) -> Any:
     """Return a required nested config value.
 
     Unlike get_required_nested_block(), the final value does not need to be a dict.
@@ -188,6 +191,27 @@ def get_config_dir() -> Path:
     """Return the config directory."""
     return CONFIG_DIR
 
+def get_config_path(name: str) -> Path:
+    """Return path to a top-level YAML config."""
+    if not name.endswith(".yaml"):
+        name = f"{name}.yaml"
+
+    return CONFIG_DIR / name
+
+def get_step_config_path(name: str) -> Path:
+    """Return path to a step-level YAML config."""
+    if not name.endswith(".yaml"):
+        name = f"{name}.yaml"
+
+    return CONFIG_STEPS_DIR / name
+
+
+def get_run_config_path(name: str) -> Path:
+    """Return path to a run-level YAML config."""
+    if not name.endswith(".yaml"):
+        name = f"{name}.yaml"
+
+    return CONFIG_RUNS_DIR / name
 
 def load_yaml_config(path: Path) -> dict[str, Any]:
     """Load a YAML config file as a dictionary."""
