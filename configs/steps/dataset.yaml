@@ -1,0 +1,197 @@
+## configs/dataset.yaml
+## Raw UN Comtrade API CSVs -> staged Comtrade parquet.
+## This is the first technical standardization layer before HS-sync.
+
+dataset:
+  name: comtrade_api_single_annual_hs_staged
+  mode: multi_file
+  source: api_single
+
+input:
+  stage: raw
+  subdir: api/single
+  pattern: "*.csv"
+  format: csv
+
+output:
+  stage: interim
+  subdir: staging/api_single
+  file: comtrade_api_single_annual_hs_staged.parquet
+  format: parquet
+
+engine:
+  name: "duckdb"
+  threads: 48
+
+schema:
+  name: comtrade_api_single_annual_hs_staging
+  version: 1
+  strict: false
+
+  raw:
+    required_fields:
+      - RefYear
+      - ReporterCode
+      - ReporterISO
+      - PartnerCode
+      - PartnerISO
+      - FlowCode
+      - ClassificationCode
+      - CmdCode
+      - PrimaryValue
+
+  standardized:
+    name: comtrade_annual_hs_staged
+    drop_unmapped_fields: true
+
+    field_mapping:
+      TypeCode: type_code
+      FreqCode: frequency_code
+      RefPeriodId: ref_period_id
+      RefYear: year
+      RefMonth: month
+      Period: period
+
+      ReporterCode: reporter_code
+      ReporterISO: reporter_iso
+      ReporterDesc: reporter_name
+
+      FlowCode: flow_code
+      FlowDesc: flow_name
+
+      PartnerCode: partner_code
+      PartnerISO: partner_iso
+      PartnerDesc: partner_name
+
+      Partner2Code: partner2_code
+      Partner2ISO: partner2_iso
+      Partner2Desc: partner2_name
+
+      ClassificationCode: source_hs
+      ClassificationSearchCode: classification_search
+      IsOriginalClassification: is_original_classification
+
+      CmdCode: source_cmd
+      CmdDesc: commodity_name
+      aggrLevel: aggregation_level
+      IsLeaf: is_leaf
+
+      CustomsCode: customs_code
+      CustomsDesc: customs_name
+
+      MosCode: mos_code
+      MotCode: mot_code
+      MotDesc: mot_name
+
+      QtyUnitCode: quantity_unit_code
+      QtyUnitAbbr: quantity_unit
+      Qty: quantity
+      IsQtyEstimated: is_quantity_estimated
+
+      AltQtyUnitCode: alt_quantity_unit_code
+      AltQtyUnitAbbr: alt_quantity_unit
+      AltQty: alt_quantity
+      IsAltQtyEstimated: is_alt_quantity_estimated
+
+      NetWgt: net_weight_kg
+      IsNetWgtEstimated: is_net_weight_estimated
+
+      GrossWgt: gross_weight_kg
+      IsGrossWgtEstimated: is_gross_weight_estimated
+
+      Cifvalue: cif_value_usd
+      Fobvalue: fob_value_usd
+      PrimaryValue: primary_value
+
+      LegacyEstimationFlag: legacy_estimation_flag
+      IsReported: is_reported
+      IsAggregate: is_aggregate
+
+    required_fields:
+      - year
+      - reporter_code
+      - reporter_iso
+      - partner_code
+      - partner_iso
+      - flow_code
+      - source_hs
+      - source_cmd
+      - primary_value
+
+    dtypes:
+      type_code: string
+      frequency_code: string
+      ref_period_id: int32
+      year: int16
+      month: int8
+      period: string
+
+      reporter_code: int32
+      reporter_iso: string
+      reporter_name: string
+
+      flow_code: string
+      flow_name: string
+
+      partner_code: int32
+      partner_iso: string
+      partner_name: string
+
+      partner2_code: int32
+      partner2_iso: string
+      partner2_name: string
+
+      source_hs: string
+      classification_search: string
+      is_original_classification: boolean
+
+      source_cmd: string
+      commodity_name: string
+      aggregation_level: int8
+      is_leaf: boolean
+
+      customs_code: string
+      customs_name: string
+
+      mos_code: string
+      mot_code: string
+      mot_name: string
+
+      quantity_unit_code: int32
+      quantity_unit: string
+      quantity: float64
+      is_quantity_estimated: boolean
+
+      alt_quantity_unit_code: int32
+      alt_quantity_unit: string
+      alt_quantity: float64
+      is_alt_quantity_estimated: boolean
+
+      net_weight_kg: float64
+      is_net_weight_estimated: boolean
+
+      gross_weight_kg: float64
+      is_gross_weight_estimated: boolean
+
+      cif_value_usd: float64
+      fob_value_usd: float64
+      primary_value: float64
+
+      legacy_estimation_flag: string
+      is_reported: boolean
+      is_aggregate: boolean
+
+write:
+  overwrite: true
+  allow_empty: false
+
+audit:
+  enabled: true
+  kind: manifest
+  subdir: staging/api_single
+  filename: comtrade_api_single_annual_hs_staged_audit.csv
+
+logging:
+  level: DEBUG
+  file: LOG_DATASET_BUILD.log
+  timestamp: true
