@@ -1,29 +1,94 @@
-cif_fob:
-  enabled: true
+# configs.steps.cif_fob.yaml
+# Configuration for the CIF/FOB correction step.
 
+cif_fob:
   input:
-    trade_data: "hs_sync.applied_output"
+    stage: "interim"
+    subdir: "hs_sync/target_{target_hs_lower}/applied"
+    filename: "comtrade_target_{target_hs_lower}_hs_synced.parquet"
+    format: "parquet"
 
   output:
     stage: "interim"
     subdir: "cif_fob/target_{target_hs_lower}"
+    format: "parquet"
+
+  source_data:
+    supported_flows:
+      import: "M"
+      export: "X"
+
+    columns:
+      year: "year"
+      reporter: "reporter_iso"
+      partner: "partner_iso"
+      flow: "flow_code"
+      commodity: "target_cmd"
+
+      canonical_value: "primary_value_hs_synced"
+      source_value: "primary_value"
+
+      direct_cif_value: "cif_value_usd"
+      direct_fob_value: "fob_value_usd"
+      allocation_weight: "allocation_weight"
+
+      quantity: "quantity"
+      quantity_unit: "quantity_unit"
+      quantity_estimated: "is_quantity_estimated"
+      
+      alt_quantity: "alt_quantity"
+      alt_quantity_unit: "alt_quantity_unit"
+      alt_quantity_estimated: "is_alt_quantity_estimated"
+      
+      net_weight: "net_weight_kg"
+      net_weight_estimated: "is_net_weight_estimated"
+
+      gross_weight: "gross_weight_kg"
+      gross_weight_estimated: "is_gross_weight_estimated"
+      
+    allocate_supplementary_measures: true
 
   products:
+
+    prepared_input:
+      filename: "prepared/comtrade_target_{target_hs_lower}_cif_fob_prepared.parquet"
+
+    mirror_pairs:
+      filename: "target_{target_hs_lower}_cif_fob_mirror_pairs.parquet"
+
+    training_sample:
+      filename: "target_{target_hs_lower}_cif_fob_training_sample.parquet"
+
+    estimated_rates:
+      filename: "target_{target_hs_lower}_cif_fob_estimated_rates.parquet"
+
     corrected_trade:
-      filename: "comtrade_target_{target_hs_lower}_cif_fob_corrected"
-  
-  input:
-  from_step: "hs_sync"
+      filename: "comtrade_target_{target_hs_lower}_cif_fob_corrected.parquet"
 
-method:
-  name: "mirror_ratio"
-  grouping:
-    - year
-    - reporter
-    - partner
-    - target_cmd
+  method:
+    name: "gravity_unit_value_ratio"
 
-output:
-  stage: "interim"
-  subdir_template: "cif_fob/target_{target_hs_lower}"
-  file_template: "comtrade_target_{target_hs_lower}_cif_fob_corrected.parquet"
+    flow_keys:
+      - year
+      - exporter
+      - importer
+      - target_cmd
+
+    training:
+      require_both_mirrors: true
+      require_positive_value: true
+      require_positive_quantity: true
+      minimum_quantity_concordance: 0.90
+
+    predictors:
+      - log_distance
+      - log_distance_squared
+      - contiguity
+      - exporter_landlocked
+      - importer_landlocked
+      - product_median_unit_value
+      - year
+      - product_group
+
+    outliers:
+      method: "robust_residual"
