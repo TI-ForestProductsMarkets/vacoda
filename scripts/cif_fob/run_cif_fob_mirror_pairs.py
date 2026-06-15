@@ -23,6 +23,7 @@ def main() -> None:
     result = run_cif_fob_workflow(
         cfg=cfg,
         run_id=datetime.now().strftime("%Y%m%d_%H%M%S"),
+        force=False,
         logger=get_logger("CIF_FOB"),
     )
 

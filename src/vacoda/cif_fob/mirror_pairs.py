@@ -12,7 +12,94 @@ from typing import Any
 import duckdb
 
 from vacoda.config.cif_fob import CifFobConfig
+from vacoda.cif_fob.prepare_input import valid_output
 
+
+def _inspect_existing_mirror_pairs(
+    *,
+    output_path: Path,
+    threads: int,
+) -> dict[str, Any]:
+    """Read summary metrics from an existing mirror-pair output."""
+
+    con = duckdb.connect()
+
+    try:
+        con.execute(f"SET threads = {int(threads)}")
+
+        summary = con.execute(
+            """
+            SELECT
+                COUNT(*) AS n_mirror_groups,
+
+                COUNT(*) FILTER (
+                    WHERE has_export_report
+                ) AS n_with_export,
+
+                COUNT(*) FILTER (
+                    WHERE has_import_report
+                ) AS n_with_import,
+
+                COUNT(*) FILTER (
+                    WHERE has_both_mirrors
+                ) AS n_with_both_mirrors,
+
+                COUNT(*) FILTER (
+                    WHERE training_eligible
+                ) AS n_training_eligible,
+
+                MEDIAN(raw_value_ratio)
+                    FILTER (
+                        WHERE raw_value_ratio IS NOT NULL
+                    )
+                    AS median_raw_value_ratio,
+
+                MEDIAN(unit_value_ratio)
+                    FILTER (
+                        WHERE unit_value_ratio IS NOT NULL
+                    )
+                    AS median_unit_value_ratio,
+
+                MEDIAN(weight_concordance)
+                    FILTER (
+                        WHERE weight_concordance IS NOT NULL
+                    )
+                    AS median_weight_concordance
+
+            FROM read_parquet(?)
+            """,
+            [str(output_path)],
+        ).fetchone()
+
+    finally:
+        con.close()
+
+    if summary is None:
+        raise RuntimeError(
+            f"Could not inspect mirror-pair output: {output_path}"
+        )
+
+    columns_out = [
+        "n_mirror_groups",
+        "n_with_export",
+        "n_with_import",
+        "n_with_both_mirrors",
+        "n_training_eligible",
+        "median_raw_value_ratio",
+        "median_unit_value_ratio",
+        "median_weight_concordance",
+    ]
+
+    metrics = dict(
+        zip(columns_out, summary, strict=True)
+    )
+
+    return {
+        "status": "reused",
+        "output_path": output_path,
+        "mirror_pairs_path": output_path,
+        **metrics,
+    }
 
 def _sql_literal(value: str | Path) -> str:
     """Return a safely quoted SQL string literal."""
@@ -28,6 +115,7 @@ def build_mirror_pairs(
     *,
     cfg: CifFobConfig,
     input_path: Path,
+    force: bool = False,
     logger,
 ) -> dict[str, Any]:
     """Build the canonical CIF/FOB mirror-pair diagnostic table.
@@ -39,6 +127,17 @@ def build_mirror_pairs(
     Only canonical total-import and total-export flows are included.
     """
     output_path = cfg.product_path("mirror_pairs")
+
+    if not force and valid_output(output_path):
+        logger.info(
+        "REUSE — Mirror-pair output already exists: %s",
+        output_path,
+    )
+        return _inspect_existing_mirror_pairs(
+            output_path=output_path,
+            threads=cfg.engine.threads,
+        )
+
 
     if not input_path.exists():
         raise FileNotFoundError(

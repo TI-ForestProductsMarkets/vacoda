@@ -19,7 +19,6 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
-
 import duckdb
 
 from vacoda.config.cif_fob import CifFobConfig
@@ -35,9 +34,15 @@ def _quote_identifier(value: str) -> str:
     return '"' + value.replace('"', '""') + '"'
 
 
+def valid_output(path: Path) -> bool:
+    """Return True when an existing output appears usable."""
+    return path.is_file() and path.stat().st_size > 0
+
+
 def prepare_cif_fob_input(
     *,
     cfg: CifFobConfig,
+    force: bool = False,
     logger,
 ) -> dict[str, Any]:
     """Create the prepared CIF/FOB input parquet."""
@@ -48,6 +53,17 @@ def prepare_cif_fob_input(
         raise FileNotFoundError(
             f"CIF/FOB source parquet not found: {input_path}"
         )
+
+    if not force and valid_output(output_path):
+        logger.info(
+            "REUSE — Prepared CIF/FOB input already exists: %s",
+            output_path,
+        )
+
+        return {
+            "status": "reused",
+            "prepared_input_path": output_path,
+        }
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
