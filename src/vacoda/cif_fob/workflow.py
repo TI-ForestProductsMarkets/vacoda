@@ -12,7 +12,7 @@ from vacoda.cif_fob.mirror_pairs import build_mirror_pairs
 from vacoda.cif_fob.prepare_input import prepare_cif_fob_input
 from vacoda.config.cif_fob import CifFobConfig
 from vacoda.cif_fob.training_sample import build_training_sample
-from vacoda.utils import logger
+from vacoda.utils.display import get_symbols
 from vacoda.utils.logger import get_logger
 
 WORKFLOW_STEPS = ["STEP 1 — Prepare CIF/FOB input",
@@ -34,9 +34,14 @@ def run_cif_fob_workflow(
     Model estimation and trade correction are added in later stages.
     """
     logger = logger or get_logger("CIF_FOB")
+    info = get_symbols("info")
+    build = get_symbols("construction")
+    ok = get_symbols("check")
+    warn = get_symbols("warning")
+    no = get_symbols("cross")
 
     logger.info("=" * 72)
-    logger.info("START — CIF/FOB workflow")
+    logger.info("%s START - CIF/FOB workflow", info)
     logger.info("=" * 72)
     logger.info("Run ID: %s", run_id)
     logger.info("Target HS: %s", cfg.scope.target_hs)
@@ -81,25 +86,34 @@ def run_cif_fob_workflow(
         "median_observed_factor_high_weight_concordance": None,
     }
 
-    #### STEP 1: Prepare CIF/FOB input ###########################################
+    #### STEP 1: Prepare CIF/FOB input ####################################################
 
     if cfg.products.prepared_input.enable:
         logger.info("=" * 72)
-        logger.info(WORKFLOW_STEPS[0])
+        logger.info("%s %s", build, WORKFLOW_STEPS[0])
         logger.info("=" * 72)
         prepared_result = prepare_cif_fob_input(
             cfg=cfg,
             force=force,
             logger=logger,
         )
+
+        if not prepared_result.get("audit_passed", False):
+            logger.warning(
+                "%s CIF/FOB input preparation audit did not pass. Mirror-pair construction may fail or produce poor results. Check logs for details.",
+                warn,
+            )
+        else:
+            logger.info("%s CIF/FOB input preparation audit passed.", ok)
     else:
-        logger.info("SKIP — %s (disabled in config)", WORKFLOW_STEPS[0])
+        logger.info("%s SKIP - %s (disabled in config)", warn, WORKFLOW_STEPS[0])
 
 
-    #### STEP 2: Build CIF/FOB mirror pairs ###################################
+    #### STEP 2: Build CIF/FOB mirror pairs ############################################
+    
     if cfg.products.mirror_pairs.enable:
         logger.info("=" * 72)
-        logger.info(WORKFLOW_STEPS[1])
+        logger.info("%s %s", build, WORKFLOW_STEPS[1])
         logger.info("=" * 72)
         if not prepared_result["prepared_input_path"].exists():
             raise FileNotFoundError(
@@ -115,13 +129,13 @@ def run_cif_fob_workflow(
             logger=logger,
         )
     else:
-        logger.info("SKIP — %s (disabled in config)", WORKFLOW_STEPS[1])
+        logger.info("%s SKIP - %s (disabled in config)", warn, WORKFLOW_STEPS[1])
 
 
-    #### STEP 3: Build CIF/FOB training sample #############################
+    #### STEP 3: Build CIF/FOB training sample ######################################
     if cfg.products.training_sample.enable:
         logger.info("=" * 72)
-        logger.info(WORKFLOW_STEPS[2])
+        logger.info("%s %s", build, WORKFLOW_STEPS[2])
         logger.info("=" * 72)
         if not mirror_result["mirror_pairs_path"].exists():
             raise FileNotFoundError(
@@ -137,16 +151,18 @@ def run_cif_fob_workflow(
             logger=logger,
         )
     else:
-        logger.info("SKIP — %s (disabled in config)", WORKFLOW_STEPS[2])
+        logger.info("%s SKIP - %s (disabled in config)", warn, WORKFLOW_STEPS[2])
 
     if cfg.products.estimated_rates.enable:
         logger.warning(
-            "ENABLE requested for estimated_rates, but this workflow does not implement rate estimation yet."
+            "%s ENABLE requested for estimated_rates, but this workflow does not implement rate estimation yet.",
+            warn,
         )
 
     if cfg.products.corrected_trade.enable:
         logger.warning(
-            "ENABLE requested for corrected_trade, but this workflow does not implement trade correction yet."
+            "%s ENABLE requested for corrected_trade, but this workflow does not implement trade correction yet.",
+            warn,
         )
 
     ready_for_rate_estimation = (
@@ -163,9 +179,10 @@ def run_cif_fob_workflow(
         output_path = prepared_result["prepared_input_path"]
 
     logger.info("=" * 72)
-    logger.info("CIF/FOB mirror-pair workflow finished.")
+    logger.info("%s CIF/FOB mirror-pair workflow finished.", info)
     logger.info(
-        "Ready for rate estimation: %s",
+        "%s Ready for rate estimation: %s",
+        ok if ready_for_rate_estimation else no,
         ready_for_rate_estimation,
     )
     logger.info("=" * 72)

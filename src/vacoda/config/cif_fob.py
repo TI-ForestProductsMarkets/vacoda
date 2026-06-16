@@ -16,6 +16,7 @@ from vacoda.config.base import (
     require_bool,
     require_dict,
     require_float,
+    require_int,
     require_str,
 )
 from vacoda.config.paths import get_data_dir
@@ -225,6 +226,7 @@ class CifFobProductsConfig:
     prepared_input: CifFobProductConfig
     mirror_pairs: CifFobProductConfig
     training_sample: CifFobProductConfig
+    training_features: CifFobProductConfig
     estimated_rates: CifFobProductConfig
     corrected_trade: CifFobProductConfig
 
@@ -243,6 +245,10 @@ class CifFobProductsConfig:
                 require_dict(cfg.get("training_sample"), key="cif_fob.products.training_sample"),
                 key="cif_fob.products.training_sample",
             ),
+            training_features=CifFobProductConfig.from_dict(
+                require_dict(cfg.get("training_features"), key="cif_fob.products.training_features"),
+                key="cif_fob.products.training_features",
+            ),
             estimated_rates=CifFobProductConfig.from_dict(
                 require_dict(cfg.get("estimated_rates"), key="cif_fob.products.estimated_rates"),
                 key="cif_fob.products.estimated_rates",
@@ -256,32 +262,240 @@ class CifFobProductsConfig:
 
 @dataclass(frozen=True)
 class CifFobTrainingConfig:
-    require_both_mirrors: bool
-    require_positive_value: bool
-    require_positive_quantity: bool
     minimum_quantity_concordance: float
+    minimum_direct_value_coverage: float
 
     @classmethod
     def from_dict(cls, cfg: dict[str, Any]) -> "CifFobTrainingConfig":
         return cls(
-            require_both_mirrors=require_bool(
-                cfg.get("require_both_mirrors", True),
-                key="cif_fob.method.training.require_both_mirrors",
-            ),
-            require_positive_value=require_bool(
-                cfg.get("require_positive_value", True),
-                key="cif_fob.method.training.require_positive_value",
-            ),
-            require_positive_quantity=require_bool(
-                cfg.get("require_positive_quantity", True),
-                key="cif_fob.method.training.require_positive_quantity",
-            ),
             minimum_quantity_concordance=require_float(
                 cfg.get("minimum_quantity_concordance", 0.9),
                 key="cif_fob.method.training.minimum_quantity_concordance",
                 min_value=0.0,
                 max_value=1.0,
-                    ),
+            ),
+            minimum_direct_value_coverage=require_float(
+                cfg.get("minimum_direct_value_coverage", 0.9),
+                key="cif_fob.method.training.minimum_direct_value_coverage",
+                min_value=0.0,
+                max_value=1.0,
+            ),
+        )
+
+
+def _require_str_list(value: Any, *, key: str) -> list[str]:
+    if not isinstance(value, list):
+        raise TypeError(f"{key} must be a list")
+    return [require_str(item, key=key) for item in value]
+
+
+@dataclass(frozen=True)
+class CifFobFeatureInputConfig:
+    stage: str
+    subdir: str
+    filename: str
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any], *, key: str) -> "CifFobFeatureInputConfig":
+        return cls(
+            stage=require_str(cfg.get("stage"), key=f"{key}.stage").strip().lower(),
+            subdir=require_str(cfg.get("subdir", ""), key=f"{key}.subdir"),
+            filename=require_str(cfg.get("filename"), key=f"{key}.filename"),
+        )
+
+    def resolve_dir(self) -> Path:
+        base = get_data_dir(self.stage)
+        return base / self.subdir if self.subdir else base
+
+    def resolve_path(self) -> Path:
+        return self.resolve_dir() / self.filename
+
+
+@dataclass(frozen=True)
+class CifFobProductMedianUnitValueConfig:
+    method: str
+    minimum_observations: int
+    fallback: list[str]
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "CifFobProductMedianUnitValueConfig":
+        return cls(
+            method=require_str(
+                cfg.get("method"),
+                key="cif_fob.features.product.median_unit_value.method",
+            ),
+            minimum_observations=require_int(
+                cfg.get("minimum_observations", 20),
+                key="cif_fob.features.product.median_unit_value.minimum_observations",
+                min_value=1,
+            ),
+            fallback=_require_str_list(
+                cfg.get("fallback", []),
+                key="cif_fob.features.product.median_unit_value.fallback",
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class CifFobProductFeaturesConfig:
+    group_digits: int
+    median_unit_value: CifFobProductMedianUnitValueConfig
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "CifFobProductFeaturesConfig":
+        return cls(
+            group_digits=require_int(
+                cfg.get("group_digits", 4),
+                key="cif_fob.features.product.group_digits",
+                min_value=1,
+            ),
+            median_unit_value=CifFobProductMedianUnitValueConfig.from_dict(
+                require_dict(
+                    cfg.get("median_unit_value", {}),
+                    key="cif_fob.features.product.median_unit_value",
+                )
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class CifFobFeaturesConfig:
+    geography: CifFobFeatureInputConfig
+    oil_price: CifFobFeatureInputConfig
+    product: CifFobProductFeaturesConfig
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "CifFobFeaturesConfig":
+        return cls(
+            geography=CifFobFeatureInputConfig.from_dict(
+                require_dict(cfg.get("geography"), key="cif_fob.features.geography"),
+                key="cif_fob.features.geography",
+            ),
+            oil_price=CifFobFeatureInputConfig.from_dict(
+                require_dict(cfg.get("oil_price"), key="cif_fob.features.oil_price"),
+                key="cif_fob.features.oil_price",
+            ),
+            product=CifFobProductFeaturesConfig.from_dict(
+                require_dict(cfg.get("product"), key="cif_fob.features.product")
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class CifFobEstimationSourceWeightsConfig:
+    direct_reported_weight: float
+    direct_estimated_weight: float
+    mirror_reported_weight: float
+    mirror_estimated_weight: float
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "CifFobEstimationSourceWeightsConfig":
+        return cls(
+            direct_reported_weight=require_float(
+                cfg.get("direct_reported_weight", 1.0),
+                key="cif_fob.method.estimation.source_weights.direct_reported_weight",
+                min_value=0.0,
+            ),
+            direct_estimated_weight=require_float(
+                cfg.get("direct_estimated_weight", 0.75),
+                key="cif_fob.method.estimation.source_weights.direct_estimated_weight",
+                min_value=0.0,
+            ),
+            mirror_reported_weight=require_float(
+                cfg.get("mirror_reported_weight", 0.5),
+                key="cif_fob.method.estimation.source_weights.mirror_reported_weight",
+                min_value=0.0,
+            ),
+            mirror_estimated_weight=require_float(
+                cfg.get("mirror_estimated_weight", 0.25),
+                key="cif_fob.method.estimation.source_weights.mirror_estimated_weight",
+                min_value=0.0,
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class CifFobEstimationConfig:
+    minimum_evidence_value_usd: float
+    minimum_factor: float
+    maximum_factor: float
+    exclude_proxy_weights: bool
+    source_weights: CifFobEstimationSourceWeightsConfig
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "CifFobEstimationConfig":
+        minimum_factor = require_float(
+            cfg.get("minimum_factor", 1.0),
+            key="cif_fob.method.estimation.minimum_factor",
+            min_value=0.0,
+        )
+        maximum_factor = require_float(
+            cfg.get("maximum_factor", 3.0),
+            key="cif_fob.method.estimation.maximum_factor",
+            min_value=minimum_factor,
+        )
+
+        return cls(
+            minimum_evidence_value_usd=require_float(
+                cfg.get("minimum_evidence_value_usd", 1000.0),
+                key="cif_fob.method.estimation.minimum_evidence_value_usd",
+                min_value=0.0,
+            ),
+            minimum_factor=minimum_factor,
+            maximum_factor=maximum_factor,
+            exclude_proxy_weights=require_bool(
+                cfg.get("exclude_proxy_weights", True),
+                key="cif_fob.method.estimation.exclude_proxy_weights",
+            ),
+            source_weights=CifFobEstimationSourceWeightsConfig.from_dict(
+                require_dict(
+                    cfg.get("source_weights", {}),
+                    key="cif_fob.method.estimation.source_weights",
+                )
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class CifFobPredictorsConfig:
+    bilateral: list[str]
+    fuel_and_time: list[str]
+    product: list[str]
+    route: list[str]
+    optional_connectivity: list[str]
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "CifFobPredictorsConfig":
+        return cls(
+            bilateral=_require_str_list(
+                cfg.get("bilateral", []),
+                key="cif_fob.method.predictors.bilateral",
+            ),
+            fuel_and_time=_require_str_list(
+                cfg.get("fuel_and_time", []),
+                key="cif_fob.method.predictors.fuel_and_time",
+            ),
+            product=_require_str_list(
+                cfg.get("product", []),
+                key="cif_fob.method.predictors.product",
+            ),
+            route=_require_str_list(
+                cfg.get("route", []),
+                key="cif_fob.method.predictors.route",
+            ),
+            optional_connectivity=_require_str_list(
+                cfg.get("optional_connectivity", []),
+                key="cif_fob.method.predictors.optional_connectivity",
+            ),
+        )
+
+    def all(self) -> list[str]:
+        return (
+            self.bilateral
+            + self.fuel_and_time
+            + self.product
+            + self.route
+            + self.optional_connectivity
         )
 
 
@@ -301,18 +515,19 @@ class CifFobMethodConfig:
     name: str
     flow_keys: list[str]
     training: CifFobTrainingConfig
-    predictors: list[str]
+    estimation: CifFobEstimationConfig
+    predictors: CifFobPredictorsConfig
     outliers: CifFobOutliersConfig
 
     @classmethod
     def from_dict(cls, cfg: dict[str, Any]) -> "CifFobMethodConfig":
         flow_keys_raw = cfg.get("flow_keys", [])
-        predictors_raw = cfg.get("predictors", [])
+        predictors_raw = cfg.get("predictors", {})
 
         if not isinstance(flow_keys_raw, list):
             raise TypeError("cif_fob.method.flow_keys must be a list")
-        if not isinstance(predictors_raw, list):
-            raise TypeError("cif_fob.method.predictors must be a list")
+        if not isinstance(predictors_raw, dict):
+            raise TypeError("cif_fob.method.predictors must be a dictionary")
 
         return cls(
             name=require_str(cfg.get("name"), key="cif_fob.method.name").strip(),
@@ -320,7 +535,12 @@ class CifFobMethodConfig:
             training=CifFobTrainingConfig.from_dict(
                 require_dict(cfg.get("training", {}), key="cif_fob.method.training")
             ),
-            predictors=[require_str(item, key="cif_fob.method.predictors") for item in predictors_raw],
+            estimation=CifFobEstimationConfig.from_dict(
+                require_dict(cfg.get("estimation", {}), key="cif_fob.method.estimation")
+            ),
+            predictors=CifFobPredictorsConfig.from_dict(
+                require_dict(cfg.get("predictors", {}), key="cif_fob.method.predictors")
+            ),
             outliers=CifFobOutliersConfig.from_dict(
                 require_dict(cfg.get("outliers", {}), key="cif_fob.method.outliers")
             ),
@@ -333,6 +553,7 @@ class CifFobConfig:
     output: CifFobOutputConfig
     source_data: CifFobSourceDataConfig
     products: CifFobProductsConfig
+    features: CifFobFeaturesConfig
     method: CifFobMethodConfig
     scope: PipelineScopeConfig
     engine: PipelineEngineConfig
@@ -383,6 +604,9 @@ class CifFobConfig:
             products=CifFobProductsConfig.from_dict(
                 require_dict(rendered.get("products"), key="cif_fob.products")
             ),
+            features=CifFobFeaturesConfig.from_dict(
+                require_dict(rendered.get("features"), key="cif_fob.features")
+            ),
             method=CifFobMethodConfig.from_dict(
                 require_dict(rendered.get("method"), key="cif_fob.method")
             ),
@@ -401,6 +625,7 @@ class CifFobConfig:
             "prepared_input": self.products.prepared_input,
             "mirror_pairs": self.products.mirror_pairs,
             "training_sample": self.products.training_sample,
+            "training_features": self.products.training_features,
             "estimated_rates": self.products.estimated_rates,
             "corrected_trade": self.products.corrected_trade,
         }
@@ -415,6 +640,7 @@ class CifFobConfig:
             "prepared_input": self.product_path("prepared_input"),
             "mirror_pairs": self.product_path("mirror_pairs"),
             "training_sample": self.product_path("training_sample"),
+            "training_features": self.product_path("training_features"),
             "estimated_rates": self.product_path("estimated_rates"),
             "corrected_trade": self.product_path("corrected_trade"),
         }
@@ -424,6 +650,7 @@ class CifFobConfig:
             "prepared_input": self.products.prepared_input,
             "mirror_pairs": self.products.mirror_pairs,
             "training_sample": self.products.training_sample,
+            "training_features": self.products.training_features,
             "estimated_rates": self.products.estimated_rates,
             "corrected_trade": self.products.corrected_trade,
         }

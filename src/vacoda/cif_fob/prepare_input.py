@@ -3,23 +3,32 @@ vacoda.cif_fob.prepare_input
 
 Prepare HS-synced trade data for CIF/FOB analysis.
 
-This module:
+Policy
+------
+The source Comtrade table contains multiple dimensional representations
+of annual trade flows. For CIF/FOB analysis, this module:
 
-1. restricts the input to the configured year scope;
-2. retains canonical import/export flows;
-3. retains reported, non-aggregate Comtrade rows;
-4. derives a canonical kilogram measure using this hierarchy:
+1. keeps only rows that are:
+   - within the configured year scope;
+   - canonical import/export flows (M/X);
+   - explicitly reported;
+   - non-aggregate;
 
-   1. reported net weight
-   2. reported quantity in kg
-   3. reported alternative quantity in kg
-   4. estimated net weight
-   5. estimated quantity in kg
-   6. estimated alternative quantity in kg
-   7. reported gross weight
-   8. estimated gross weight
+2. derives a canonical kilogram measure for every retained source row;
 
-5. audits both the source filtering and prepared output.
+3. derives paired direct CIF/FOB values only when both values are positive
+   on the same source row;
+
+4. aggregates reported additive components to exactly one row per:
+
+       year
+       reporter
+       partner
+       flow
+       target commodity
+
+5. audits source selection, aggregation, value preservation, and key
+   uniqueness.
 """
 
 from __future__ import annotations
@@ -30,6 +39,12 @@ from typing import Any
 import duckdb
 
 from vacoda.config.cif_fob import CifFobConfig
+from vacoda.utils.display import get_symbols
+
+
+# ======================================================================
+# Small SQL helpers
+# ======================================================================
 
 
 def _sql_literal(value: str | Path) -> str:
@@ -47,13 +62,28 @@ def valid_output(path: Path) -> bool:
     return path.is_file() and path.stat().st_size > 0
 
 
+# ======================================================================
+# Main preparation function
+# ======================================================================
+
+
 def prepare_cif_fob_input(
     *,
     cfg: CifFobConfig,
     force: bool = False,
     logger,
 ) -> dict[str, Any]:
-    """Create the prepared CIF/FOB input parquet."""
+    """
+    Create the canonical prepared CIF/FOB input parquet.
+
+    The output contains exactly one row per:
+
+        year
+        reporter
+        partner
+        flow
+        target commodity
+    """
 
     input_path = cfg.input_path()
     output_path = cfg.product_path("prepared_input")
@@ -74,18 +104,45 @@ def prepare_cif_fob_input(
             "prepared_input_path": output_path,
         }
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
     source = cfg.source_data
     columns = source.columns
     flows = source.supported_flows
 
     # ------------------------------------------------------------------
-    # Configured source columns
+    # Configured column names
     # ------------------------------------------------------------------
 
-    year_col = _quote_identifier(columns.year)
-    flow_col = _quote_identifier(columns.flow)
+    year_col = _quote_identifier(
+        columns.year
+    )
+    reporter_col = _quote_identifier(
+        columns.reporter
+    )
+    partner_col = _quote_identifier(
+        columns.partner
+    )
+    flow_col = _quote_identifier(
+        columns.flow
+    )
+    commodity_col = _quote_identifier(
+        columns.commodity
+    )
+
+    canonical_value_col = _quote_identifier(
+        columns.canonical_value
+    )
+
+    direct_cif_col = _quote_identifier(
+        columns.direct_cif_value
+    )
+    direct_fob_col = _quote_identifier(
+        columns.direct_fob_value
+    )
 
     is_reported_col = _quote_identifier(
         columns.is_reported
@@ -133,6 +190,32 @@ def prepare_cif_fob_input(
     )
 
     # ------------------------------------------------------------------
+    # Known Comtrade / HS-sync audit dimensions
+    # ------------------------------------------------------------------
+
+    partner2_col = _quote_identifier(
+        "partner2_iso"
+    )
+    mot_col = _quote_identifier(
+        "mot_code"
+    )
+    customs_col = _quote_identifier(
+        "customs_code"
+    )
+    mos_col = _quote_identifier(
+        "mos_code"
+    )
+    source_hs_col = _quote_identifier(
+        "source_hs"
+    )
+    source_cmd_col = _quote_identifier(
+        "source_cmd"
+    )
+    source_cmd_original_col = _quote_identifier(
+        "source_cmd_original"
+    )
+
+    # ------------------------------------------------------------------
     # Scope and SQL-safe values
     # ------------------------------------------------------------------
 
@@ -143,11 +226,19 @@ def prepare_cif_fob_input(
         flows.export_code
     )
 
-    input_sql = _sql_literal(input_path)
-    output_sql = _sql_literal(output_path)
+    input_sql = _sql_literal(
+        input_path
+    )
+    output_sql = _sql_literal(
+        output_path
+    )
 
-    min_year = int(cfg.scope.min_year)
-    max_year = int(cfg.scope.max_year)
+    min_year = int(
+        cfg.scope.min_year
+    )
+    max_year = int(
+        cfg.scope.max_year
+    )
 
     if source.allocate_supplementary_measures:
         allocation_factor_sql = (
@@ -163,8 +254,11 @@ def prepare_cif_fob_input(
     # Logging
     # ------------------------------------------------------------------
 
+    info = get_symbols("info")
+    ok = get_symbols("check")
     logger.info(
-        "Preparing CIF/FOB source data."
+        "%s Preparing canonical CIF/FOB source data.",
+        info,
     )
     logger.info(
         "  Input: %s",
@@ -192,6 +286,9 @@ def prepare_cif_fob_input(
         "  Exclude aggregate rows: True"
     )
     logger.info(
+        "  Aggregate reported components to canonical trade grain: True"
+    )
+    logger.info(
         "  Allocate physical measures by HS weight: %s",
         source.allocate_supplementary_measures,
     )
@@ -204,23 +301,80 @@ def prepare_cif_fob_input(
         )
 
         # ==============================================================
-        # INPUT AUDIT
+        # SOURCE INPUT AUDIT
         #
-        # This must read from input_sql, not output_sql.
+        # This reads from the original HS-sync input.
         # ==============================================================
 
         input_audit_row = con.execute(
             f"""
-            SELECT
-                COUNT(*) AS n_input_rows,
+            WITH selected AS (
+                SELECT *
+                FROM read_parquet({input_sql})
 
-                COUNT(*) FILTER (
+                WHERE {year_col}
+                      BETWEEN {min_year}
+                          AND {max_year}
+
+                  AND {flow_col} IN (
+                      {import_flow},
+                      {export_flow}
+                  )
+
+                  AND COALESCE(
+                      CAST(
+                          {is_reported_col}
+                          AS BOOLEAN
+                      ),
+                      FALSE
+                  ) = TRUE
+
+                  AND COALESCE(
+                      CAST(
+                          {is_aggregate_col}
+                          AS BOOLEAN
+                      ),
+                      FALSE
+                  ) = FALSE
+            ),
+
+            selected_groups AS (
+                SELECT
+                    {year_col},
+                    {reporter_col},
+                    {partner_col},
+                    {flow_col},
+                    {commodity_col},
+
+                    COUNT(*) AS n_source_rows
+
+                FROM selected
+
+                GROUP BY
+                    {year_col},
+                    {reporter_col},
+                    {partner_col},
+                    {flow_col},
+                    {commodity_col}
+            )
+
+            SELECT
+                (
+                    SELECT COUNT(*)
+                    FROM read_parquet({input_sql})
+                ) AS n_input_rows,
+
+                (
+                    SELECT COUNT(*)
+                    FROM read_parquet({input_sql})
                     WHERE {year_col}
                           BETWEEN {min_year}
                               AND {max_year}
                 ) AS n_rows_in_scope,
 
-                COUNT(*) FILTER (
+                (
+                    SELECT COUNT(*)
+                    FROM read_parquet({input_sql})
                     WHERE {year_col}
                           BETWEEN {min_year}
                               AND {max_year}
@@ -230,7 +384,9 @@ def prepare_cif_fob_input(
                       )
                 ) AS n_rows_in_scope_and_flows,
 
-                COUNT(*) FILTER (
+                (
+                    SELECT COUNT(*)
+                    FROM read_parquet({input_sql})
                     WHERE {year_col}
                           BETWEEN {min_year}
                               AND {max_year}
@@ -247,31 +403,45 @@ def prepare_cif_fob_input(
                       ) = TRUE
                 ) AS n_rows_in_scope_flows_reported,
 
-                COUNT(*) FILTER (
-                    WHERE {year_col}
-                          BETWEEN {min_year}
-                              AND {max_year}
-                      AND {flow_col} IN (
-                          {import_flow},
-                          {export_flow}
-                      )
-                      AND COALESCE(
-                          CAST(
-                              {is_reported_col}
-                              AS BOOLEAN
-                          ),
-                          FALSE
-                      ) = TRUE
-                      AND COALESCE(
-                          CAST(
-                              {is_aggregate_col}
-                              AS BOOLEAN
-                          ),
-                          FALSE
-                      ) = FALSE
-                ) AS n_rows_selected
+                (
+                    SELECT COUNT(*)
+                    FROM selected
+                ) AS n_selected_source_rows,
 
-            FROM read_parquet({input_sql})
+                (
+                    SELECT COUNT(*)
+                    FROM selected_groups
+                ) AS n_selected_canonical_groups,
+
+                (
+                    SELECT COUNT(*)
+                    FROM selected_groups
+                    WHERE n_source_rows = 1
+                ) AS n_single_source_groups,
+
+                (
+                    SELECT COUNT(*)
+                    FROM selected_groups
+                    WHERE n_source_rows > 1
+                ) AS n_multi_source_groups,
+
+                (
+                    SELECT MAX(n_source_rows)
+                    FROM selected_groups
+                ) AS max_source_rows_per_group,
+
+                (
+                    SELECT COALESCE(
+                        SUM(
+                            CAST(
+                                {canonical_value_col}
+                                AS DOUBLE
+                            )
+                        ),
+                        0.0
+                    )
+                    FROM selected
+                ) AS selected_source_value_sum
             """
         ).fetchone()
 
@@ -280,7 +450,12 @@ def prepare_cif_fob_input(
             "n_rows_in_scope",
             "n_rows_in_scope_and_flows",
             "n_rows_in_scope_flows_reported",
-            "n_rows_selected",
+            "n_selected_source_rows",
+            "n_selected_canonical_groups",
+            "n_single_source_groups",
+            "n_multi_source_groups",
+            "max_source_rows_per_group",
+            "selected_source_value_sum",
         ]
 
         input_metrics = dict(
@@ -292,10 +467,10 @@ def prepare_cif_fob_input(
         )
 
         # ==============================================================
-        # PREPARED OUTPUT QUERY
+        # CANONICAL PREPARATION QUERY
         # ==============================================================
 
-        query = f"""
+        preparation_query = f"""
         WITH filtered AS (
             SELECT *
             FROM read_parquet({input_sql})
@@ -326,9 +501,13 @@ def prepare_cif_fob_input(
               ) = FALSE
         ),
 
-        canonicalized AS (
+        row_canonicalized AS (
             SELECT
                 *,
+
+                -- --------------------------------------------------
+                -- Canonical weight value
+                -- --------------------------------------------------
 
                 CASE
                     -- 1. Reported net weight
@@ -444,7 +623,7 @@ def prepare_cif_fob_input(
                             AS DOUBLE
                         )
 
-                    -- 7. Reported gross weight
+                    -- 7. Reported gross weight proxy
                     WHEN CAST(
                         {gross_weight_col}
                         AS DOUBLE
@@ -461,7 +640,7 @@ def prepare_cif_fob_input(
                             AS DOUBLE
                         )
 
-                    -- 8. Estimated gross weight
+                    -- 8. Estimated gross weight proxy
                     WHEN CAST(
                         {gross_weight_col}
                         AS DOUBLE
@@ -472,7 +651,11 @@ def prepare_cif_fob_input(
                         )
 
                     ELSE NULL
-                END AS canonical_weight_kg,
+                END AS row_canonical_weight_kg,
+
+                -- --------------------------------------------------
+                -- Canonical weight source
+                -- --------------------------------------------------
 
                 CASE
                     WHEN CAST(
@@ -584,24 +767,88 @@ def prepare_cif_fob_input(
                         THEN 'estimated_gross_weight_kg'
 
                     ELSE 'missing'
-                END AS canonical_weight_source
+                END AS row_canonical_weight_source,
+
+                -- --------------------------------------------------
+                -- Paired direct CIF/FOB values
+                --
+                -- Both must be positive on the same source row.
+                -- --------------------------------------------------
+
+                CASE
+                    WHEN {flow_col} = {import_flow}
+                    AND CAST(
+                        {direct_cif_col}
+                        AS DOUBLE
+                    ) > 0
+                     AND CAST(
+                        {direct_fob_col}
+                        AS DOUBLE
+                    ) > 0
+                        THEN (
+                            CAST(
+                                {direct_cif_col}
+                                AS DOUBLE
+                            )
+                            * {allocation_factor_sql}
+                        )
+                    ELSE NULL
+                END AS row_paired_cif_value,
+
+                CASE
+                    WHEN {flow_col} = {import_flow} 
+                    AND CAST(
+                        {direct_cif_col}
+                        AS DOUBLE
+                    ) > 0
+                     AND CAST(
+                        {direct_fob_col}
+                        AS DOUBLE
+                    ) > 0
+                        THEN (
+                            CAST(
+                                {direct_fob_col}
+                                AS DOUBLE
+                            )
+                            * {allocation_factor_sql}
+                        )
+                    ELSE NULL
+                END AS row_paired_fob_value,
+
+                CASE
+                    WHEN {flow_col} = {import_flow}
+                    AND CAST(
+                        {direct_cif_col}
+                        AS DOUBLE
+                    ) > 0
+                     AND CAST(
+                        {direct_fob_col}
+                        AS DOUBLE
+                    ) > 0
+                        THEN CAST(
+                            {canonical_value_col}
+                            AS DOUBLE
+                        )
+                    ELSE NULL
+                END AS row_paired_primary_value
 
             FROM filtered
         ),
 
-        enriched AS (
+        row_enriched AS (
             SELECT
                 *,
 
                 CASE
-                    WHEN canonical_weight_source IN (
+                    WHEN row_canonical_weight_source IN (
                         'reported_net_weight_kg',
                         'reported_quantity_kg',
-                        'reported_alt_quantity_kg'
+                        'reported_alt_quantity_kg',
+                        'reported_gross_weight_kg'
                     )
                         THEN FALSE
 
-                    WHEN canonical_weight_source IN (
+                    WHEN row_canonical_weight_source IN (
                         'estimated_net_weight_kg',
                         'estimated_quantity_kg',
                         'estimated_alt_quantity_kg',
@@ -609,42 +856,199 @@ def prepare_cif_fob_input(
                     )
                         THEN TRUE
 
-                    WHEN canonical_weight_source =
-                         'reported_gross_weight_kg'
-                        THEN FALSE
-
                     ELSE NULL
-                END AS canonical_weight_estimated,
+                END AS row_canonical_weight_estimated,
 
-                canonical_weight_source IN (
+                row_canonical_weight_source IN (
                     'reported_gross_weight_kg',
                     'estimated_gross_weight_kg'
-                ) AS canonical_weight_is_proxy,
+                ) AS row_canonical_weight_is_proxy,
 
                 CASE
-                    WHEN canonical_weight_kg > 0
+                    WHEN row_canonical_weight_kg > 0
                         THEN (
-                            canonical_weight_kg
+                            row_canonical_weight_kg
                             * {allocation_factor_sql}
                         )
                     ELSE NULL
-                END AS canonical_weight_hs_synced
+                END AS row_canonical_weight_hs_synced,
 
-            FROM canonicalized
+                (
+                    row_paired_cif_value > 0
+                    AND row_paired_fob_value > 0
+                ) AS row_has_paired_direct_values
+
+            FROM row_canonicalized
+        ),
+
+        aggregated AS (
+            SELECT
+                -- Canonical trade key
+                {year_col},
+                {reporter_col},
+                {partner_col},
+                {flow_col},
+                {commodity_col},
+
+                -- ----------------------------------------------
+                -- Canonical value and physical measure
+                -- ----------------------------------------------
+
+                SUM(
+                    CAST(
+                        {canonical_value_col}
+                        AS DOUBLE
+                    )
+                ) AS {canonical_value_col},
+
+                SUM(
+                    row_canonical_weight_kg
+                ) AS canonical_weight_kg,
+
+                SUM(
+                    row_canonical_weight_hs_synced
+                ) AS canonical_weight_hs_synced,
+
+                CASE
+                    WHEN COUNT(
+                        DISTINCT
+                        row_canonical_weight_source
+                    ) = 1
+                        THEN MIN(
+                            row_canonical_weight_source
+                        )
+                    ELSE 'mixed'
+                END AS canonical_weight_source,
+
+                BOOL_OR(
+                    COALESCE(
+                        row_canonical_weight_estimated,
+                        FALSE
+                    )
+                ) AS canonical_weight_estimated,
+
+                BOOL_OR(
+                    COALESCE(
+                        row_canonical_weight_is_proxy,
+                        FALSE
+                    )
+                ) AS canonical_weight_is_proxy,
+
+                -- ----------------------------------------------
+                -- Paired direct CIF/FOB values
+                --
+                -- These output columns deliberately contain only
+                -- same-source-row paired values.
+                -- ----------------------------------------------
+
+                SUM(
+                    row_paired_cif_value
+                ) AS {direct_cif_col},
+
+                SUM(
+                    row_paired_fob_value
+                ) AS {direct_fob_col},
+
+                SUM(
+                    row_paired_cif_value
+                )
+                /
+                NULLIF(
+                    SUM(
+                        row_paired_fob_value
+                    ),
+                    0
+                ) AS direct_cif_fob_factor,
+
+                SUM(
+                    row_paired_primary_value
+                ) AS direct_factor_covered_primary_value,
+
+                SUM(
+                    row_paired_primary_value
+                )
+                /
+                NULLIF(
+                    SUM(
+                        CAST(
+                            {canonical_value_col}
+                            AS DOUBLE
+                        )
+                    ),
+                    0
+                ) AS direct_factor_value_coverage,
+
+                -- ----------------------------------------------
+                -- Source-component audit metadata
+                -- ----------------------------------------------
+
+                COUNT(*) AS source_row_count,
+
+                COUNT(*) FILTER (
+                    WHERE row_has_paired_direct_values
+                ) AS direct_pair_source_row_count,
+
+                COUNT(DISTINCT {partner2_col})
+                    AS source_partner2_count,
+
+                COUNT(DISTINCT {mot_col})
+                    AS source_mot_count,
+
+                COUNT(DISTINCT {customs_col})
+                    AS source_customs_count,
+
+                COUNT(DISTINCT {mos_col})
+                    AS source_mos_count,
+
+                COUNT(DISTINCT {source_hs_col})
+                    AS source_hs_count,
+
+                COUNT(DISTINCT {source_cmd_col})
+                    AS source_cmd_count,
+
+                COUNT(
+                    DISTINCT
+                    {source_cmd_original_col}
+                ) AS source_cmd_original_count,
+
+                COUNT(*) FILTER (
+                    WHERE row_canonical_weight_estimated
+                ) AS estimated_weight_source_row_count,
+
+                COUNT(*) FILTER (
+                    WHERE row_canonical_weight_is_proxy
+                ) AS proxy_weight_source_row_count,
+
+                COUNT(*) FILTER (
+                    WHERE row_canonical_weight_kg IS NULL
+                       OR row_canonical_weight_kg <= 0
+                ) AS missing_weight_source_row_count,
+
+                'reported_non_aggregate_components'
+                    AS canonical_source_policy
+
+            FROM row_enriched
+
+            GROUP BY
+                {year_col},
+                {reporter_col},
+                {partner_col},
+                {flow_col},
+                {commodity_col}
         )
 
         SELECT *
-        FROM enriched
+        FROM aggregated
         """
 
         # ==============================================================
-        # WRITE PREPARED OUTPUT
+        # WRITE CANONICAL OUTPUT
         # ==============================================================
 
         con.execute(
             f"""
             COPY (
-                {query}
+                {preparation_query}
             )
             TO {output_sql}
             (
@@ -656,120 +1060,134 @@ def prepare_cif_fob_input(
 
         # ==============================================================
         # OUTPUT AUDIT
-        #
-        # This reads from the prepared output.
         # ==============================================================
 
         output_audit_row = con.execute(
             f"""
-            SELECT
-                COUNT(*) AS n_output_rows,
+            WITH duplicate_keys AS (
+                SELECT
+                    {year_col},
+                    {reporter_col},
+                    {partner_col},
+                    {flow_col},
+                    {commodity_col},
+                    COUNT(*) AS n_rows
 
-                COUNT(*) FILTER (
-                    WHERE canonical_weight_kg > 0
+                FROM read_parquet({output_sql})
+
+                GROUP BY
+                    {year_col},
+                    {reporter_col},
+                    {partner_col},
+                    {flow_col},
+                    {commodity_col}
+
+                HAVING COUNT(*) > 1
+            )
+
+            SELECT
+                (
+                    SELECT COUNT(*)
+                    FROM read_parquet({output_sql})
+                ) AS n_output_rows,
+
+                (
+                    SELECT COALESCE(
+                        SUM(source_row_count),
+                        0
+                    )
+                    FROM read_parquet({output_sql})
+                ) AS n_represented_source_rows,
+
+                (
+                    SELECT COUNT(*)
+                    FROM duplicate_keys
+                ) AS n_duplicate_canonical_keys,
+
+                (
+                    SELECT COALESCE(
+                        SUM(
+                            CAST(
+                                {canonical_value_col}
+                                AS DOUBLE
+                            )
+                        ),
+                        0.0
+                    )
+                    FROM read_parquet({output_sql})
+                ) AS output_value_sum,
+
+                (
+                    SELECT COUNT(*)
+                    FROM read_parquet({output_sql})
+                    WHERE canonical_weight_hs_synced > 0
                 ) AS n_with_canonical_weight,
 
-                COUNT(*) FILTER (
-                    WHERE canonical_weight_source =
-                          'reported_net_weight_kg'
-                ) AS n_reported_net_weight,
+                (
+                    SELECT COUNT(*)
+                    FROM read_parquet({output_sql})
+                    WHERE canonical_weight_hs_synced IS NULL
+                       OR canonical_weight_hs_synced <= 0
+                ) AS n_without_canonical_weight,
 
-                COUNT(*) FILTER (
-                    WHERE canonical_weight_source =
-                          'reported_quantity_kg'
-                ) AS n_reported_quantity_kg,
+                (
+                    SELECT COUNT(*)
+                    FROM read_parquet({output_sql})
+                    WHERE canonical_weight_estimated
+                ) AS n_groups_using_estimated_weight,
 
-                COUNT(*) FILTER (
-                    WHERE canonical_weight_source =
-                          'reported_alt_quantity_kg'
-                ) AS n_reported_alt_quantity_kg,
-
-                COUNT(*) FILTER (
-                    WHERE canonical_weight_source =
-                          'estimated_net_weight_kg'
-                ) AS n_estimated_net_weight,
-
-                COUNT(*) FILTER (
-                    WHERE canonical_weight_source =
-                          'estimated_quantity_kg'
-                ) AS n_estimated_quantity_kg,
-
-                COUNT(*) FILTER (
-                    WHERE canonical_weight_source =
-                          'estimated_alt_quantity_kg'
-                ) AS n_estimated_alt_quantity_kg,
-
-                COUNT(*) FILTER (
-                    WHERE canonical_weight_source =
-                          'reported_gross_weight_kg'
-                ) AS n_reported_gross_weight,
-
-                COUNT(*) FILTER (
-                    WHERE canonical_weight_source =
-                          'estimated_gross_weight_kg'
-                ) AS n_estimated_gross_weight,
-
-                COUNT(*) FILTER (
+                (
+                    SELECT COUNT(*)
+                    FROM read_parquet({output_sql})
                     WHERE canonical_weight_is_proxy
-                ) AS n_gross_weight_proxy,
+                ) AS n_groups_using_proxy_weight,
 
-                COUNT(*) FILTER (
-                    WHERE canonical_weight_source = 'missing'
-                ) AS n_missing_weight,
+                (
+                    SELECT COUNT(*)
+                    FROM read_parquet({output_sql})
+                    WHERE source_row_count = 1
+                ) AS n_single_component_output_groups,
 
-                COUNT(*) FILTER (
-                    WHERE COALESCE(
-                        CAST(
-                            {is_reported_col}
-                            AS BOOLEAN
-                        ),
-                        FALSE
-                    ) = FALSE
-                ) AS n_unreported_rows_in_output,
+                (
+                    SELECT COUNT(*)
+                    FROM read_parquet({output_sql})
+                    WHERE source_row_count > 1
+                ) AS n_multi_component_output_groups,
 
-                COUNT(*) FILTER (
-                    WHERE COALESCE(
-                        CAST(
-                            {is_aggregate_col}
-                            AS BOOLEAN
-                        ),
-                        FALSE
-                    ) = TRUE
-                ) AS n_aggregate_rows_in_output,
+                (
+                    SELECT MAX(source_row_count)
+                    FROM read_parquet({output_sql})
+                ) AS max_components_per_output_group,
 
-                COUNT(*) FILTER (
-                    WHERE {year_col} < {min_year}
-                       OR {year_col} > {max_year}
-                ) AS n_out_of_scope_rows_in_output,
+                (
+                    SELECT COUNT(*)
+                    FROM read_parquet({output_sql})
+                    WHERE direct_pair_source_row_count > 0
+                ) AS n_groups_with_direct_pair,
 
-                COUNT(*) FILTER (
-                    WHERE {flow_col} NOT IN (
-                        {import_flow},
-                        {export_flow}
-                    )
-                ) AS n_unsupported_flow_rows_in_output
+                (
+                    SELECT COUNT(*)
+                    FROM read_parquet({output_sql})
+                    WHERE direct_cif_fob_factor > 0
+                ) AS n_groups_with_direct_factor
 
-            FROM read_parquet({output_sql})
             """
         ).fetchone()
 
         output_metric_names = [
             "n_output_rows",
+            "n_represented_source_rows",
+            "n_duplicate_canonical_keys",
+            "output_value_sum",
             "n_with_canonical_weight",
-            "n_reported_net_weight",
-            "n_reported_quantity_kg",
-            "n_reported_alt_quantity_kg",
-            "n_estimated_net_weight",
-            "n_estimated_quantity_kg",
-            "n_estimated_alt_quantity_kg",
-            "n_reported_gross_weight",
-            "n_estimated_gross_weight",
-            "n_gross_weight_proxy",
-            "n_missing_weight",
-            "n_unreported_rows_in_output",
-            "n_aggregate_rows_in_output",
-            "n_out_of_scope_rows_in_output",
-            "n_unsupported_flow_rows_in_output",
+            "n_without_canonical_weight",
+            "n_groups_using_estimated_weight",
+            "n_groups_using_proxy_weight",
+            "n_single_component_output_groups",
+            "n_multi_component_output_groups",
+            "max_components_per_output_group",
+            "n_groups_with_direct_pair",
+            "n_groups_with_direct_factor",
         ]
 
         output_metrics = dict(
@@ -785,7 +1203,19 @@ def prepare_cif_fob_input(
             **output_metrics,
         }
 
-        coverage_percent = (
+        # ==============================================================
+        # DERIVED AUDIT METRICS
+        # ==============================================================
+
+        selected_share_percent = (
+            100.0
+            * metrics["n_selected_source_rows"]
+            / metrics["n_input_rows"]
+            if metrics["n_input_rows"]
+            else 0.0
+        )
+
+        canonical_weight_coverage_percent = (
             100.0
             * metrics["n_with_canonical_weight"]
             / metrics["n_output_rows"]
@@ -793,76 +1223,242 @@ def prepare_cif_fob_input(
             else 0.0
         )
 
-        selection_share_percent = (
+        aggregation_reduction_percent = (
             100.0
-            * metrics["n_output_rows"]
-            / metrics["n_input_rows"]
-            if metrics["n_input_rows"]
+            * (
+                1.0
+                - (
+                    metrics["n_output_rows"]
+                    / metrics["n_selected_source_rows"]
+                )
+            )
+            if metrics["n_selected_source_rows"]
+            else 0.0
+        )
+
+        source_value_sum = float(
+            metrics["selected_source_value_sum"]
+            or 0.0
+        )
+        output_value_sum = float(
+            metrics["output_value_sum"]
+            or 0.0
+        )
+
+        value_difference = (
+            output_value_sum
+            - source_value_sum
+        )
+
+        value_relative_difference = (
+            value_difference
+            / source_value_sum
+            if source_value_sum != 0
             else 0.0
         )
 
         metrics[
-            "canonical_weight_coverage_percent"
-        ] = coverage_percent
+            "selected_input_share_percent"
+        ] = selected_share_percent
 
         metrics[
-            "selected_input_share_percent"
-        ] = selection_share_percent
+            "canonical_weight_coverage_percent"
+        ] = canonical_weight_coverage_percent
+
+        metrics[
+            "aggregation_reduction_percent"
+        ] = aggregation_reduction_percent
+
+        metrics[
+            "value_difference"
+        ] = value_difference
+
+        metrics[
+            "value_relative_difference"
+        ] = value_relative_difference
 
         # ==============================================================
-        # HARD AUDIT CHECKS
+        # HARD STOP CONDITIONS
         # ==============================================================
 
         if (
             metrics["n_output_rows"]
-            != metrics["n_rows_selected"]
+            != metrics["n_selected_canonical_groups"]
         ):
             raise RuntimeError(
-                "Prepared CIF/FOB output row count does not "
-                "match the number of selected source rows: "
+                "Canonical CIF/FOB output row count does not "
+                "match the number of selected canonical groups: "
                 f"output={metrics['n_output_rows']:,}, "
-                f"selected={metrics['n_rows_selected']:,}."
-            )
-
-        if metrics["n_unreported_rows_in_output"] > 0:
-            raise RuntimeError(
-                "Prepared CIF/FOB output contains "
-                f"{metrics['n_unreported_rows_in_output']:,} "
-                "rows where is_reported is not true."
-            )
-
-        if metrics["n_aggregate_rows_in_output"] > 0:
-            raise RuntimeError(
-                "Prepared CIF/FOB output contains "
-                f"{metrics['n_aggregate_rows_in_output']:,} "
-                "aggregate rows."
-            )
-
-        if metrics["n_out_of_scope_rows_in_output"] > 0:
-            raise RuntimeError(
-                "Prepared CIF/FOB output contains "
-                f"{metrics['n_out_of_scope_rows_in_output']:,} "
-                "rows outside the configured year scope."
+                f"expected={metrics['n_selected_canonical_groups']:,}."
             )
 
         if (
-            metrics[
-                "n_unsupported_flow_rows_in_output"
-            ]
-            > 0
+            metrics["n_represented_source_rows"]
+            != metrics["n_selected_source_rows"]
         ):
             raise RuntimeError(
-                "Prepared CIF/FOB output contains "
-                f"{metrics['n_unsupported_flow_rows_in_output']:,} "
-                "unsupported flow rows."
+                "Canonical CIF/FOB output does not represent every "
+                "selected source row exactly once: "
+                f"represented={metrics['n_represented_source_rows']:,}, "
+                f"selected={metrics['n_selected_source_rows']:,}."
             )
 
+        if metrics["n_duplicate_canonical_keys"] > 0:
+            raise RuntimeError(
+                "Canonical CIF/FOB output contains "
+                f"{metrics['n_duplicate_canonical_keys']:,} "
+                "duplicate canonical trade keys."
+            )
+
+        # Allow only tiny floating-point summation differences.
+        if abs(value_relative_difference) > 1e-10:
+            raise RuntimeError(
+                "Canonical CIF/FOB aggregation did not preserve "
+                "the selected source value total: "
+                f"source={source_value_sum:.6f}, "
+                f"output={output_value_sum:.6f}, "
+                f"relative_difference="
+                f"{value_relative_difference:.12e}."
+            )
+
+        if metrics["n_output_rows"] == 0:
+            raise RuntimeError(
+                "Canonical CIF/FOB preparation produced no rows."
+            )
+
+
+        ## Additional checks on direct CIF/FOB paired values and factors
+        direct_pair_audit = con.execute(
+            f"""
+            SELECT COUNT(*) FILTER (
+                WHERE direct_pair_source_row_count > source_row_count
+            ) AS invalid_pair_row_counts,
+
+            COUNT(*) FILTER (
+                WHERE direct_cif_fob_factor IS NOT NULL
+                    AND (
+                    {direct_cif_col} <= 0
+                    OR {direct_fob_col} <= 0
+                )
+                ) AS invalid_direct_factors,
+            
+            COUNT(*) FILTER (
+                WHERE direct_factor_value_coverage < -1e-12
+                OR direct_factor_value_coverage
+                  > 1.000000001
+                ) AS invalid_direct_coverage,
+
+
+            COUNT(*) FILTER (
+                WHERE direct_cif_fob_factor IS NOT NULL
+                  AND {flow_col} <> {import_flow}
+            ) AS direct_factors_on_non_import_rows,
+
+            COUNT(*) FILTER (
+            WHERE {flow_col} <> {import_flow}
+              AND (
+                    {direct_cif_col} IS NOT NULL
+                    OR {direct_fob_col} IS NOT NULL
+                    OR direct_factor_covered_primary_value IS NOT NULL
+                )
+            ) AS paired_values_on_non_import_rows
+
+        FROM read_parquet({output_sql})
+        """
+        ).fetchone()
+        
+        (
+        invalid_pair_row_counts,
+        invalid_direct_factors,
+        invalid_direct_coverage,
+        direct_factors_on_non_import_rows,
+        paired_values_on_non_import_rows,
+        ) = direct_pair_audit
+        
+        if invalid_pair_row_counts > 0:
+            raise RuntimeError(
+        f"Direct CIF/FOB paired-row count exceeds source-row count, invalid count: {invalid_pair_row_counts}."
+        )
+
+        if invalid_direct_coverage > 0:
+            raise RuntimeError(
+                    "Direct-factor primary-value coverage falls "
+                    "outside [0, 1], "
+                    f"invalid count: {invalid_direct_coverage}."
+        )
+
+        if paired_values_on_non_import_rows > 0:
+            raise RuntimeError(
+                "Paired direct CIF/FOB fields were retained "
+                "for non-import groups, "
+                f"invalid count: {paired_values_on_non_import_rows}."
+            )
+           
+        if invalid_direct_factors > 0:
+            raise RuntimeError(
+        f"Prepared output contains invalid direct CIF/FOB factors, invalid count: {invalid_direct_factors}."
+         )
+
+        if direct_factors_on_non_import_rows > 0:
+            raise RuntimeError(
+        f"Direct CIF/FOB factors found on non-import rows, invalid count: {direct_factors_on_non_import_rows}."
+        )
+
+
+        direct_coverage_summary = con.execute(
+            f"""
+            SELECT
+                COUNT(*) FILTER  (
+            WHERE direct_cif_fob_factor > 0
+            ) AS n_direct_groups,
+
+            MEDIAN(
+                direct_factor_value_coverage
+            ) FILTER (
+                WHERE direct_cif_fob_factor > 0
+            ) AS median_direct_coverage,
+
+            QUANTILE_CONT(
+                direct_factor_value_coverage,
+                0.05
+            ) FILTER (
+                WHERE direct_cif_fob_factor > 0
+            ) AS p05_direct_coverage,
+
+            COUNT(*) FILTER (
+                WHERE direct_cif_fob_factor > 0
+                AND direct_factor_value_coverage >= 0.90
+            ) AS n_direct_groups_coverage_90
+
+        FROM read_parquet({output_sql})
+        """
+        ).fetchone()
+        (
+            n_direct_groups,
+            median_direct_coverage,
+            p05_direct_coverage,
+            n_direct_groups_coverage_90,
+        ) = direct_coverage_summary
+
+        logger.info(
+            f"{info} Direct CIF/FOB factor audit for groups with direct factors: "
+            f"n_direct_groups={n_direct_groups}, "
+            f"median_direct_coverage={median_direct_coverage:.4%}, "
+            f"p05_direct_coverage={p05_direct_coverage:.4%}, "
+            f"n_direct_groups_coverage_90={n_direct_groups_coverage_90}."
+        )
+
+
+        audit_passed = True
+        ready_for_mirror_pairs = audit_passed
+
         # ==============================================================
-        # LOG AUDIT RESULTS
+        # LOG RESULTS
         # ==============================================================
 
         logger.info(
-            "Prepared CIF/FOB input created."
+            "%s Canonical CIF/FOB input created.",
+            ok,
         )
 
         logger.info(
@@ -885,11 +1481,28 @@ def prepare_cif_fob_input(
         )
         logger.info(
             "  Selected reported non-aggregate rows: %s",
-            metrics["n_rows_selected"],
+            metrics["n_selected_source_rows"],
         )
         logger.info(
             "  Selected share of source input: %.4f%%",
-            selection_share_percent,
+            selected_share_percent,
+        )
+
+        logger.info(
+            "  Canonical trade groups: %s",
+            metrics["n_selected_canonical_groups"],
+        )
+        logger.info(
+            "  Single-component source groups: %s",
+            metrics["n_single_source_groups"],
+        )
+        logger.info(
+            "  Multi-component source groups: %s",
+            metrics["n_multi_source_groups"],
+        )
+        logger.info(
+            "  Maximum source rows per group: %s",
+            metrics["max_source_rows_per_group"],
         )
 
         logger.info(
@@ -897,73 +1510,72 @@ def prepare_cif_fob_input(
             metrics["n_output_rows"],
         )
         logger.info(
-            "  Rows with canonical weight: %s",
+            "  Represented source rows: %s",
+            metrics["n_represented_source_rows"],
+        )
+        logger.info(
+            "  Aggregation row reduction: %.4f%%",
+            aggregation_reduction_percent,
+        )
+        logger.info(
+            "  Duplicate canonical keys: %s",
+            metrics["n_duplicate_canonical_keys"],
+        )
+
+        logger.info(
+            "  Source selected value sum: %.6f",
+            source_value_sum,
+        )
+        logger.info(
+            "  Canonical output value sum: %.6f",
+            output_value_sum,
+        )
+        logger.info(
+            "  Value relative difference: %.12e",
+            value_relative_difference,
+        )
+
+        logger.info(
+            "  Groups with canonical weight: %s",
             metrics["n_with_canonical_weight"],
         )
         logger.info(
             "  Canonical weight coverage: %.4f%%",
-            coverage_percent,
+            canonical_weight_coverage_percent,
         )
         logger.info(
-            "  Reported net-weight rows: %s",
-            metrics["n_reported_net_weight"],
+            "  Groups without canonical weight: %s",
+            metrics["n_without_canonical_weight"],
         )
         logger.info(
-            "  Reported quantity-kg rows: %s",
-            metrics["n_reported_quantity_kg"],
+            "  Groups using estimated weight: %s",
+            metrics["n_groups_using_estimated_weight"],
         )
         logger.info(
-            "  Reported alt-quantity-kg rows: %s",
-            metrics["n_reported_alt_quantity_kg"],
-        )
-        logger.info(
-            "  Estimated net-weight rows: %s",
-            metrics["n_estimated_net_weight"],
-        )
-        logger.info(
-            "  Estimated quantity-kg rows: %s",
-            metrics["n_estimated_quantity_kg"],
-        )
-        logger.info(
-            "  Estimated alt-quantity-kg rows: %s",
-            metrics[
-                "n_estimated_alt_quantity_kg"
-            ],
-        )
-        logger.info(
-            "  Reported gross-weight proxy rows: %s",
-            metrics["n_reported_gross_weight"],
-        )
-        logger.info(
-            "  Estimated gross-weight proxy rows: %s",
-            metrics["n_estimated_gross_weight"],
-        )
-        logger.info(
-            "  Total gross-weight proxy rows: %s",
-            metrics["n_gross_weight_proxy"],
-        )
-        logger.info(
-            "  Missing canonical weight: %s",
-            metrics["n_missing_weight"],
+            "  Groups using gross-weight proxy: %s",
+            metrics["n_groups_using_proxy_weight"],
         )
 
         logger.info(
-            "  Audit — unreported rows in output: %s",
-            metrics["n_unreported_rows_in_output"],
+            "  Single-component output groups: %s",
+            metrics["n_single_component_output_groups"],
         )
         logger.info(
-            "  Audit — aggregate rows in output: %s",
-            metrics["n_aggregate_rows_in_output"],
+            "  Multi-component output groups: %s",
+            metrics["n_multi_component_output_groups"],
         )
         logger.info(
-            "  Audit — out-of-scope rows in output: %s",
-            metrics["n_out_of_scope_rows_in_output"],
+            "  Maximum components per output group: %s",
+            metrics["max_components_per_output_group"],
+        )
+
+        logger.info(
+            "  Groups with paired direct CIF/FOB rows: %s",
+            metrics["n_groups_with_direct_pair"],
         )
         logger.info(
-            "  Audit — unsupported-flow rows in output: %s",
-            metrics[
-                "n_unsupported_flow_rows_in_output"
-            ],
+            "  Groups with direct CIF/FOB factor: %s",
+            metrics["n_groups_with_direct_factor"],
         )
 
         logger.info(
@@ -971,13 +1583,19 @@ def prepare_cif_fob_input(
             output_path,
         )
 
+
+        logger.info("  Step 1 audit passed: %s", audit_passed)
+        logger.info("  Ready for mirror-pair construction: %s", ready_for_mirror_pairs)
+
+
         return {
             "status": "completed",
             "output_path": output_path,
+            "audit_passed": audit_passed,
+            "ready_for_mirror_pairs": ready_for_mirror_pairs,
             "prepared_input_path": output_path,
             **metrics,
         }
 
     finally:
         con.close()
-

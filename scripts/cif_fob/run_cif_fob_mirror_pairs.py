@@ -9,7 +9,7 @@ from vacoda.config.cif_fob import CifFobConfig
 from vacoda.config.pipeline import PipelineConfig
 from vacoda.cif_fob.workflow import run_cif_fob_workflow
 from vacoda.utils.logger import get_logger, setup_logging
-
+import argparse as ap
 
 def main() -> None:
     pipeline_cfg = PipelineConfig.from_yaml()
@@ -21,10 +21,18 @@ def main() -> None:
 
     setup_logging(level="INFO")
 
+    aprse = ap.ArgumentParser(description="Run CIF/FOB mirror pairs workflow")
+    aprse.add_argument(
+        "--force",
+        action="store_true",
+        help="Force re-run of all steps, even if outputs already exist",
+    )
+    args = aprse.parse_args()
+
     result = run_cif_fob_workflow(
         cfg=cfg,
         run_id=datetime.now().strftime("%Y%m%d_%H%M%S"),
-        force=True,
+        force=args.force,
         logger=get_logger("CIF_FOB"),
     )
 
