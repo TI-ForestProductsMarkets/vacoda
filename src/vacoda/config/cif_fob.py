@@ -115,6 +115,8 @@ class CifFobSourceColumnsConfig:
     partner: str
     flow: str
     commodity: str
+    is_reported: str
+    is_aggregate: str
     canonical_value: str
     source_value: str
     direct_cif_value: str
@@ -142,6 +144,8 @@ class CifFobSourceColumnsConfig:
             partner=require_str(cfg.get("partner"), key="cif_fob.source_data.columns.partner"),
             flow=require_str(cfg.get("flow"), key="cif_fob.source_data.columns.flow"),
             commodity=require_str(cfg.get("commodity"), key="cif_fob.source_data.columns.commodity"),
+            is_reported=require_str(cfg.get("is_reported"), key="cif_fob.source_data.columns.is_reported"),
+            is_aggregate=require_str(cfg.get("is_aggregate"), key="cif_fob.source_data.columns.is_aggregate"),
             canonical_value=require_str(
                 cfg.get("canonical_value"),
                 key="cif_fob.source_data.columns.canonical_value",
@@ -205,11 +209,13 @@ class CifFobSourceDataConfig:
 
 @dataclass(frozen=True)
 class CifFobProductConfig:
+    enable: bool
     filename: str
 
     @classmethod
     def from_dict(cls, cfg: dict[str, Any], *, key: str) -> "CifFobProductConfig":
         return cls(
+            enable=require_bool(cfg.get("enable", True), key=f"{key}.enable"),
             filename=require_str(cfg.get("filename"), key=f"{key}.filename"),
         )
 
@@ -411,4 +417,19 @@ class CifFobConfig:
             "training_sample": self.product_path("training_sample"),
             "estimated_rates": self.product_path("estimated_rates"),
             "corrected_trade": self.product_path("corrected_trade"),
+        }
+
+    def resolved_enabled_product_paths(self) -> dict[str, Path]:
+        products = {
+            "prepared_input": self.products.prepared_input,
+            "mirror_pairs": self.products.mirror_pairs,
+            "training_sample": self.products.training_sample,
+            "estimated_rates": self.products.estimated_rates,
+            "corrected_trade": self.products.corrected_trade,
+        }
+
+        return {
+            name: self.output_dir() / product.filename
+            for name, product in products.items()
+            if product.enable
         }

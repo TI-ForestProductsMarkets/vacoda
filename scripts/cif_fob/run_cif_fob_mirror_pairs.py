@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pprint import pformat
 
 from vacoda.config.cif_fob import CifFobConfig
 from vacoda.config.pipeline import PipelineConfig
@@ -23,11 +24,11 @@ def main() -> None:
     result = run_cif_fob_workflow(
         cfg=cfg,
         run_id=datetime.now().strftime("%Y%m%d_%H%M%S"),
-        force=False,
+        force=True,
         logger=get_logger("CIF_FOB"),
     )
 
-    print(result)
+    print(pformat(result, sort_dicts=False))
 
 
 if __name__ == "__main__":

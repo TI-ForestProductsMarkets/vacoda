@@ -25,6 +25,9 @@ cif_fob:
       flow: "flow_code"
       commodity: "target_cmd"
 
+      is_reported: "is_reported"
+      is_aggregate: "is_aggregate"
+      
       canonical_value: "primary_value_hs_synced"
       source_value: "primary_value"
 
@@ -45,24 +48,31 @@ cif_fob:
 
       gross_weight: "gross_weight_kg"
       gross_weight_estimated: "is_gross_weight_estimated"
+
+
       
     allocate_supplementary_measures: true
 
   products:
 
     prepared_input:
+      enable: true
       filename: "prepared/comtrade_target_{target_hs_lower}_cif_fob_prepared.parquet"
 
     mirror_pairs:
+      enable: false
       filename: "target_{target_hs_lower}_cif_fob_mirror_pairs.parquet"
 
     training_sample:
+      enable: false
       filename: "target_{target_hs_lower}_cif_fob_training_sample.parquet"
 
     estimated_rates:
+      enable: false
       filename: "target_{target_hs_lower}_cif_fob_estimated_rates.parquet"
 
     corrected_trade:
+      enable: false
       filename: "comtrade_target_{target_hs_lower}_cif_fob_corrected.parquet"
 
   method:
