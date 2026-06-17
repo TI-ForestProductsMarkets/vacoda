@@ -194,7 +194,7 @@ def _inspect_existing_training_sample(
     return {
         "status": "reused",
         "audit_passed": True,
-        "ready_for_rate_estimation": True,
+        "ready_for_training_features": True,
         "output_path": output_path,
         "training_sample_path": output_path,
         **metrics,
@@ -1060,7 +1060,7 @@ def build_training_sample(
             )
 
         audit_passed = True
-        ready_for_rate_estimation = (
+        ready_for_training_features = (
             metrics["n_model_eligible"] > 0
         )
 
@@ -1152,7 +1152,7 @@ def build_training_sample(
         )
         logger.info(
             "  Ready for rate estimation: %s",
-            ready_for_rate_estimation,
+            ready_for_training_features,
         )
         logger.info(
             "  Output: %s",
@@ -1162,8 +1162,8 @@ def build_training_sample(
         return {
             "status": "completed",
             "audit_passed": audit_passed,
-            "ready_for_rate_estimation": (
-                ready_for_rate_estimation
+            "ready_for_training_features": (
+                ready_for_training_features
             ),
             "output_path": output_path,
             "training_sample_path": output_path,

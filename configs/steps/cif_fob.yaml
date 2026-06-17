@@ -69,7 +69,7 @@ cif_fob:
       filename: "target_{target_hs_lower}_cif_fob_training_features.parquet"
 
     estimated_rates:
-      enable: false
+      enable: true
       filename: "target_{target_hs_lower}_cif_fob_estimated_rates.parquet"
 
     corrected_trade:
@@ -80,13 +80,24 @@ cif_fob:
   features:
     geography:
       source: "repo"
-      path: "geography"
+      path: "geography/prepared"
+      filename: "country_geography.parquet"
+
+    pair_geography:
+      source: "repo"
+      path: "geography/prepared"
       filename: "country_pair_geography.parquet"
+
+    geography_crosswalk:
+      source: "repo"
+      path: "geography/prepared"
+      filename: "comtrade_cepii_crosswalk.parquet"
+      allow_proxy_mappings: false
 
     oil_price:
       source: "repo"
-      path: "macroeconomic"
-      filename: "annual_oil_price.parquet"
+      path: "macroeconomic/prepared"
+      filename: "annual_oil_prices.parquet"
 
     product:
       group_digits: 4
@@ -94,34 +105,39 @@ cif_fob:
         method: "lagged_product_median"
         minimum_observations: 20
         fallback:
-          - "product_all_years"
           - "product_group_year"
           - "global_year"
 
   method:
-    name: "gravity_unit_value_ratio"
-
-    flow_keys:
-      - year
-      - exporter_iso
-      - importer_iso
-      - target_cmd
-
-    training:
-      minimum_quantity_concordance: 0.90
-      minimum_direct_value_coverage: 0.90
-
     estimation:
       minimum_evidence_value_usd: 1000.0
       minimum_factor: 1.0
       maximum_factor: 3.0
       exclude_proxy_weights: true
 
+      categorical_predictors:
+        - product_group
+
       source_weights:
-        direct_reported_weight: 1.00
+        direct_reported_weight: 1.0
         direct_estimated_weight: 0.75
         mirror_reported_weight: 0.50
         mirror_estimated_weight: 0.25
+
+      validation:
+        strategy: "latest_year"
+        holdout_year: null
+
+      model:
+        name: "hist_gradient_boosting"
+        loss: "absolute_error"
+        learning_rate: 0.05
+        max_iter: 300
+        max_leaf_nodes: 31
+        min_samples_leaf: 50
+        l2_regularization: 1.0
+        max_bins: 255
+        random_state: 42
 
     predictors:
       bilateral:
@@ -137,14 +153,14 @@ cif_fob:
 
       product:
         - product_median_unit_value
-      #  - product_weight_to_value_ratio
+        - product_weight_to_value_ratio
         - product_group
 
-      route:
+      route: []
       #  - log_lagged_bilateral_trade_value
       #  - route_trade_imbalance
 
-      optional_connectivity:
+      optional_connectivity: []
       #  - exporter_liner_shipping_connectivity
       #  - importer_liner_shipping_connectivity
       #  - exporter_logistics_performance

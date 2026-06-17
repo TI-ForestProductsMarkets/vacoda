@@ -19,7 +19,7 @@ from vacoda.config.base import (
     require_int,
     require_str,
 )
-from vacoda.config.paths import get_data_dir
+from vacoda.config.paths import get_data_dir, get_repo_references_dir
 from vacoda.config.pipeline import PipelineEngineConfig, PipelineScopeConfig
 
 
@@ -284,6 +284,9 @@ class CifFobTrainingConfig:
 
 
 def _require_str_list(value: Any, *, key: str) -> list[str]:
+    if value is None:
+        return []
+
     if not isinstance(value, list):
         raise TypeError(f"{key} must be a list")
     return [require_str(item, key=key) for item in value]
@@ -291,24 +294,89 @@ def _require_str_list(value: Any, *, key: str) -> list[str]:
 
 @dataclass(frozen=True)
 class CifFobFeatureInputConfig:
-    stage: str
+    stage: str | None
     subdir: str
+    source: str | None
+    path: str | None
     filename: str
 
     @classmethod
     def from_dict(cls, cfg: dict[str, Any], *, key: str) -> "CifFobFeatureInputConfig":
-        return cls(
-            stage=require_str(cfg.get("stage"), key=f"{key}.stage").strip().lower(),
-            subdir=require_str(cfg.get("subdir", ""), key=f"{key}.subdir"),
-            filename=require_str(cfg.get("filename"), key=f"{key}.filename"),
+        filename = require_str(cfg.get("filename"), key=f"{key}.filename")
+
+        if cfg.get("stage") is not None:
+            return cls(
+                stage=require_str(cfg.get("stage"), key=f"{key}.stage").strip().lower(),
+                subdir=require_str(cfg.get("subdir", ""), key=f"{key}.subdir"),
+                source=None,
+                path=None,
+                filename=filename,
+            )
+
+        if cfg.get("source") is not None:
+            return cls(
+                stage=None,
+                subdir="",
+                source=require_str(cfg.get("source"), key=f"{key}.source").strip().lower(),
+                path=require_str(cfg.get("path"), key=f"{key}.path"),
+                filename=filename,
+            )
+
+        raise TypeError(
+            f"{key} must define either stage/subdir or source/path."
         )
 
     def resolve_dir(self) -> Path:
-        base = get_data_dir(self.stage)
-        return base / self.subdir if self.subdir else base
+        if self.stage is not None:
+            base = get_data_dir(self.stage)
+            return base / self.subdir if self.subdir else base
+
+        source = (self.source or "").strip().lower()
+        if source == "repo":
+            base = get_repo_references_dir()
+        elif source == "data":
+            base = get_data_dir("references")
+        else:
+            raise ValueError(
+                "cif_fob feature source must be 'repo' or 'data', "
+                f"got {self.source!r}."
+            )
+
+        path = Path(self.path or "")
+        if path.parts and path.parts[0] == "references":
+            path = Path(*path.parts[1:])
+
+        return base / path if path.parts else base
 
     def resolve_path(self) -> Path:
         return self.resolve_dir() / self.filename
+
+
+@dataclass(frozen=True)
+class CifFobGeographyCrosswalkConfig:
+    input: CifFobFeatureInputConfig
+    allow_proxy_mappings: bool
+
+    @classmethod
+    def from_dict(
+        cls,
+        cfg: dict[str, Any],
+        *,
+        key: str,
+    ) -> "CifFobGeographyCrosswalkConfig":
+        return cls(
+            input=CifFobFeatureInputConfig.from_dict(
+                cfg,
+                key=key,
+            ),
+            allow_proxy_mappings=require_bool(
+                cfg.get("allow_proxy_mappings", False),
+                key=f"{key}.allow_proxy_mappings",
+            ),
+        )
+
+    def resolve_path(self) -> Path:
+        return self.input.resolve_path()
 
 
 @dataclass(frozen=True)
@@ -361,6 +429,8 @@ class CifFobProductFeaturesConfig:
 @dataclass(frozen=True)
 class CifFobFeaturesConfig:
     geography: CifFobFeatureInputConfig
+    pair_geography: CifFobFeatureInputConfig
+    geography_crosswalk: CifFobGeographyCrosswalkConfig
     oil_price: CifFobFeatureInputConfig
     product: CifFobProductFeaturesConfig
 
@@ -368,17 +438,41 @@ class CifFobFeaturesConfig:
     def from_dict(cls, cfg: dict[str, Any]) -> "CifFobFeaturesConfig":
         return cls(
             geography=CifFobFeatureInputConfig.from_dict(
-                require_dict(cfg.get("geography"), key="cif_fob.features.geography"),
+                require_dict(
+                    cfg.get("geography"),
+                    key="cif_fob.features.geography",
+                ),
                 key="cif_fob.features.geography",
             ),
+            pair_geography=CifFobFeatureInputConfig.from_dict(
+                require_dict(
+                    cfg.get("pair_geography"),
+                    key="cif_fob.features.pair_geography",
+                ),
+                key="cif_fob.features.pair_geography",
+            ),
+            geography_crosswalk=CifFobGeographyCrosswalkConfig.from_dict(
+                require_dict(
+                    cfg.get("geography_crosswalk"),
+                    key="cif_fob.features.geography_crosswalk",
+                ),
+                key="cif_fob.features.geography_crosswalk",
+            ),
             oil_price=CifFobFeatureInputConfig.from_dict(
-                require_dict(cfg.get("oil_price"), key="cif_fob.features.oil_price"),
+                require_dict(
+                    cfg.get("oil_price"),
+                    key="cif_fob.features.oil_price",
+                ),
                 key="cif_fob.features.oil_price",
             ),
             product=CifFobProductFeaturesConfig.from_dict(
-                require_dict(cfg.get("product"), key="cif_fob.features.product")
+                require_dict(
+                    cfg.get("product"),
+                    key="cif_fob.features.product",
+                )
             ),
         )
+
 
 
 @dataclass(frozen=True)
@@ -389,27 +483,153 @@ class CifFobEstimationSourceWeightsConfig:
     mirror_estimated_weight: float
 
     @classmethod
-    def from_dict(cls, cfg: dict[str, Any]) -> "CifFobEstimationSourceWeightsConfig":
+    def from_dict(
+        cls,
+        cfg: dict[str, Any],
+    ) -> "CifFobEstimationSourceWeightsConfig":
         return cls(
             direct_reported_weight=require_float(
                 cfg.get("direct_reported_weight", 1.0),
-                key="cif_fob.method.estimation.source_weights.direct_reported_weight",
+                key=(
+                    "cif_fob.method.estimation.source_weights."
+                    "direct_reported_weight"
+                ),
                 min_value=0.0,
             ),
             direct_estimated_weight=require_float(
                 cfg.get("direct_estimated_weight", 0.75),
-                key="cif_fob.method.estimation.source_weights.direct_estimated_weight",
+                key=(
+                    "cif_fob.method.estimation.source_weights."
+                    "direct_estimated_weight"
+                ),
                 min_value=0.0,
             ),
             mirror_reported_weight=require_float(
                 cfg.get("mirror_reported_weight", 0.5),
-                key="cif_fob.method.estimation.source_weights.mirror_reported_weight",
+                key=(
+                    "cif_fob.method.estimation.source_weights."
+                    "mirror_reported_weight"
+                ),
                 min_value=0.0,
             ),
             mirror_estimated_weight=require_float(
                 cfg.get("mirror_estimated_weight", 0.25),
-                key="cif_fob.method.estimation.source_weights.mirror_estimated_weight",
+                key=(
+                    "cif_fob.method.estimation.source_weights."
+                    "mirror_estimated_weight"
+                ),
                 min_value=0.0,
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class CifFobEstimationValidationConfig:
+    strategy: str
+    holdout_year: int | None
+
+    @classmethod
+    def from_dict(
+        cls,
+        cfg: dict[str, Any],
+    ) -> "CifFobEstimationValidationConfig":
+        strategy = require_str(
+            cfg.get("strategy", "latest_year"),
+            key="cif_fob.method.estimation.validation.strategy",
+        ).strip().lower()
+
+        holdout_year_raw = cfg.get("holdout_year")
+
+        return cls(
+            strategy=strategy,
+            holdout_year=(
+                require_int(
+                    holdout_year_raw,
+                    key=(
+                        "cif_fob.method.estimation.validation."
+                        "holdout_year"
+                    ),
+                )
+                if holdout_year_raw is not None
+                else None
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class CifFobEstimationModelConfig:
+    name: str
+    loss: str
+    learning_rate: float
+    max_iter: int
+    max_leaf_nodes: int
+    min_samples_leaf: int
+    l2_regularization: float
+    max_bins: int
+    random_state: int
+
+    @classmethod
+    def from_dict(
+        cls,
+        cfg: dict[str, Any],
+    ) -> "CifFobEstimationModelConfig":
+        max_bins = require_int(
+            cfg.get("max_bins", 255),
+            key="cif_fob.method.estimation.model.max_bins",
+            min_value=2,
+        )
+        if max_bins > 255:
+            raise ValueError(
+                "'cif_fob.method.estimation.model.max_bins' must be <= 255, "
+                f"got {max_bins}."
+            )
+        return cls(
+            name=require_str(
+                cfg.get("name", "hist_gradient_boosting"),
+                key="cif_fob.method.estimation.model.name",
+            ).strip().lower(),
+            loss=require_str(
+                cfg.get("loss", "absolute_error"),
+                key="cif_fob.method.estimation.model.loss",
+            ).strip().lower(),
+            learning_rate=require_float(
+                cfg.get("learning_rate", 0.05),
+                key="cif_fob.method.estimation.model.learning_rate",
+                min_value=0.0,
+            ),
+            max_iter=require_int(
+                cfg.get("max_iter", 300),
+                key="cif_fob.method.estimation.model.max_iter",
+                min_value=1,
+            ),
+            max_leaf_nodes=require_int(
+                cfg.get("max_leaf_nodes", 31),
+                key=(
+                    "cif_fob.method.estimation.model."
+                    "max_leaf_nodes"
+                ),
+                min_value=2,
+            ),
+            min_samples_leaf=require_int(
+                cfg.get("min_samples_leaf", 50),
+                key=(
+                    "cif_fob.method.estimation.model."
+                    "min_samples_leaf"
+                ),
+                min_value=1,
+            ),
+            l2_regularization=require_float(
+                cfg.get("l2_regularization", 1.0),
+                key=(
+                    "cif_fob.method.estimation.model."
+                    "l2_regularization"
+                ),
+                min_value=0.0,
+            ),
+            max_bins=max_bins,
+            random_state=require_int(
+                cfg.get("random_state", 42),
+                key="cif_fob.method.estimation.model.random_state",
             ),
         )
 
@@ -420,15 +640,22 @@ class CifFobEstimationConfig:
     minimum_factor: float
     maximum_factor: float
     exclude_proxy_weights: bool
+    categorical_predictors: list[str]
     source_weights: CifFobEstimationSourceWeightsConfig
+    validation: CifFobEstimationValidationConfig
+    model: CifFobEstimationModelConfig
 
     @classmethod
-    def from_dict(cls, cfg: dict[str, Any]) -> "CifFobEstimationConfig":
+    def from_dict(
+        cls,
+        cfg: dict[str, Any],
+    ) -> "CifFobEstimationConfig":
         minimum_factor = require_float(
             cfg.get("minimum_factor", 1.0),
             key="cif_fob.method.estimation.minimum_factor",
             min_value=0.0,
         )
+
         maximum_factor = require_float(
             cfg.get("maximum_factor", 3.0),
             key="cif_fob.method.estimation.maximum_factor",
@@ -438,19 +665,54 @@ class CifFobEstimationConfig:
         return cls(
             minimum_evidence_value_usd=require_float(
                 cfg.get("minimum_evidence_value_usd", 1000.0),
-                key="cif_fob.method.estimation.minimum_evidence_value_usd",
+                key=(
+                    "cif_fob.method.estimation."
+                    "minimum_evidence_value_usd"
+                ),
                 min_value=0.0,
             ),
             minimum_factor=minimum_factor,
             maximum_factor=maximum_factor,
             exclude_proxy_weights=require_bool(
                 cfg.get("exclude_proxy_weights", True),
-                key="cif_fob.method.estimation.exclude_proxy_weights",
+                key=(
+                    "cif_fob.method.estimation."
+                    "exclude_proxy_weights"
+                ),
             ),
-            source_weights=CifFobEstimationSourceWeightsConfig.from_dict(
+            categorical_predictors=_require_str_list(
+                cfg.get("categorical_predictors", []),
+                key=(
+                    "cif_fob.method.estimation."
+                    "categorical_predictors"
+                ),
+            ),
+            source_weights=(
+                CifFobEstimationSourceWeightsConfig.from_dict(
+                    require_dict(
+                        cfg.get("source_weights", {}),
+                        key=(
+                            "cif_fob.method.estimation."
+                            "source_weights"
+                        ),
+                    )
+                )
+            ),
+            validation=(
+                CifFobEstimationValidationConfig.from_dict(
+                    require_dict(
+                        cfg.get("validation", {}),
+                        key=(
+                            "cif_fob.method.estimation."
+                            "validation"
+                        ),
+                    )
+                )
+            ),
+            model=CifFobEstimationModelConfig.from_dict(
                 require_dict(
-                    cfg.get("source_weights", {}),
-                    key="cif_fob.method.estimation.source_weights",
+                    cfg.get("model", {}),
+                    key="cif_fob.method.estimation.model",
                 )
             ),
         )
@@ -512,7 +774,6 @@ class CifFobOutliersConfig:
 
 @dataclass(frozen=True)
 class CifFobMethodConfig:
-    name: str
     flow_keys: list[str]
     training: CifFobTrainingConfig
     estimation: CifFobEstimationConfig
@@ -530,7 +791,6 @@ class CifFobMethodConfig:
             raise TypeError("cif_fob.method.predictors must be a dictionary")
 
         return cls(
-            name=require_str(cfg.get("name"), key="cif_fob.method.name").strip(),
             flow_keys=[require_str(item, key="cif_fob.method.flow_keys") for item in flow_keys_raw],
             training=CifFobTrainingConfig.from_dict(
                 require_dict(cfg.get("training", {}), key="cif_fob.method.training")
