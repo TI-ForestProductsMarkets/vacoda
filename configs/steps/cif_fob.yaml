@@ -13,6 +13,12 @@ cif_fob:
     subdir: "cif_fob/target_{target_hs_lower}"
     format: "parquet"
 
+  logging:
+    level: "DEBUG"
+    subdir: "logs/cif_fob"
+    file: "LOG_CIF_FOB_TARGET_{target_hs_lower}.log"
+    timestamp: true
+
   source_data:
     supported_flows:
       import: "M"

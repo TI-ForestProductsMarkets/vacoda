@@ -19,7 +19,7 @@ from vacoda.config.base import (
     require_int,
     require_str,
 )
-from vacoda.config.paths import get_data_dir, get_repo_references_dir
+from vacoda.config.paths import get_data_dir, get_output_dir, get_repo_references_dir
 from vacoda.config.pipeline import PipelineEngineConfig, PipelineScopeConfig
 
 
@@ -88,6 +88,53 @@ class CifFobOutputConfig:
     def resolve_dir(self) -> Path:
         base = get_data_dir(self.stage)
         return base / self.subdir if self.subdir else base
+
+
+@dataclass(frozen=True)
+class CifFobLoggingConfig:
+    level: str
+    subdir: str
+    file: str
+    timestamp: bool
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "CifFobLoggingConfig":
+        return cls(
+            level=require_str(
+                cfg.get("level", "INFO"),
+                key="cif_fob.logging.level",
+            ).strip().upper(),
+            subdir=require_str(
+                cfg.get("subdir", "cif_fob"),
+                key="cif_fob.logging.subdir",
+                allow_empty=True,
+            ),
+            file=require_str(
+                cfg.get("file", "LOG_CIF_FOB.log"),
+                key="cif_fob.logging.file",
+            ),
+            timestamp=require_bool(
+                cfg.get("timestamp", True),
+                key="cif_fob.logging.timestamp",
+            ),
+        )
+
+    def resolve_log_dir(self) -> Path:
+        base = get_output_dir("logs")
+        if not self.subdir:
+            return base
+
+        subdir_path = Path(self.subdir)
+        parts = list(subdir_path.parts)
+
+        # Treat "logs/..." as already anchored at output.logs root.
+        if parts and parts[0].lower() == "logs":
+            parts = parts[1:]
+
+        return base / Path(*parts) if parts else base
+
+    def resolve_log_file(self) -> Path:
+        return self.resolve_log_dir() / self.file
 
 
 @dataclass(frozen=True)
@@ -813,6 +860,7 @@ class CifFobConfig:
     output: CifFobOutputConfig
     source_data: CifFobSourceDataConfig
     products: CifFobProductsConfig
+    logging: CifFobLoggingConfig
     features: CifFobFeaturesConfig
     method: CifFobMethodConfig
     scope: PipelineScopeConfig
@@ -863,6 +911,9 @@ class CifFobConfig:
             ),
             products=CifFobProductsConfig.from_dict(
                 require_dict(rendered.get("products"), key="cif_fob.products")
+            ),
+            logging=CifFobLoggingConfig.from_dict(
+                require_dict(rendered.get("logging", {}), key="cif_fob.logging")
             ),
             features=CifFobFeaturesConfig.from_dict(
                 require_dict(rendered.get("features"), key="cif_fob.features")

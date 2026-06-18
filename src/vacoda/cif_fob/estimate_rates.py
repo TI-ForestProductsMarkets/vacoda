@@ -24,6 +24,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from altair.datasets import data
 import duckdb
 import numpy as np
 import pandas as pd
@@ -737,6 +738,37 @@ def estimate_cif_fob_rates(
         ].to_numpy(),
         predicted_log=holdout_prediction_log,
     )
+
+    # --------------------------------------------------------------
+    # Preserve genuine out-of-sample holdout predictions.
+    #  --------------------------------------------------------------
+    
+    holdout_prediction_factor = np.exp(
+    holdout_prediction_log)
+
+    data["is_temporal_holdout"] = False
+    data["holdout_predicted_log_factor"] = np.nan
+    data["holdout_predicted_factor"] = np.nan
+
+    holdout_indices = clean.loc[
+        holdout_mask
+    ].index
+
+    data.loc[
+        holdout_indices,
+        "is_temporal_holdout",
+    ] = True
+
+    data.loc[
+        holdout_indices,
+        "holdout_predicted_log_factor",
+    ] = holdout_prediction_log
+
+    data.loc[
+        holdout_indices,
+        "holdout_predicted_factor",
+    ] = holdout_prediction_factor
+
 
     logger.info("  Temporal holdout year: %s", holdout_year)
     logger.info("  Training observations: %s", n_train)
