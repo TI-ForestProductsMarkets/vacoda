@@ -397,6 +397,175 @@ def main() -> None:
         )
 
         # --------------------------------------------------------------
+        # Performance by availability of lagged pair history
+        # --------------------------------------------------------------
+
+        print("\n" + "=" * 72)
+        print("PERFORMANCE BY LAGGED PAIR HISTORY")
+        print("=" * 72)
+
+        by_pair_history = con.execute(
+            """
+            SELECT
+                CASE
+                    WHEN lagged_pair_median_factor IS NOT NULL
+                        THEN 'history_available'
+                    ELSE 'history_missing'
+                END AS pair_history_status,
+
+                COUNT(*) AS n_rows,
+
+                MEDIAN(observed_cif_fob_factor)
+                    AS observed_median,
+
+                MEDIAN(holdout_predicted_factor)
+                    AS predicted_median,
+
+                MEDIAN(
+                    ABS(
+                        holdout_predicted_factor
+                        - observed_cif_fob_factor
+                    )
+                    / NULLIF(
+                        observed_cif_fob_factor,
+                        0
+                    )
+                ) AS model_median_ape,
+
+                QUANTILE_CONT(
+                    ABS(
+                        holdout_predicted_factor
+                        - observed_cif_fob_factor
+                    )
+                    / NULLIF(
+                        observed_cif_fob_factor,
+                        0
+                    ),
+                    0.90
+                ) AS model_p90_ape,
+
+                MEDIAN(
+                    ABS(
+                        product_group_baseline_factor
+                        - observed_cif_fob_factor
+                    )
+                    / NULLIF(
+                        observed_cif_fob_factor,
+                        0
+                    )
+                ) AS product_baseline_median_ape,
+
+                AVG(
+                    CAST(
+                        ABS(
+                            holdout_predicted_factor
+                            - observed_cif_fob_factor
+                        )
+                        <
+                        ABS(
+                            product_group_baseline_factor
+                            - observed_cif_fob_factor
+                        )
+                        AS DOUBLE
+                    )
+                ) AS model_win_rate_vs_product
+
+            FROM holdout
+
+            GROUP BY pair_history_status
+
+            ORDER BY pair_history_status
+            """
+        ).df()
+
+        print(by_pair_history.to_string(index=False))
+
+        # --------------------------------------------------------------
+        # Model versus raw lagged-pair baseline
+        # --------------------------------------------------------------
+
+        print("\n" + "=" * 72)
+        print("MODEL VERSUS LAGGED PAIR BASELINE")
+        print("=" * 72)
+
+        pair_baseline = con.execute(
+            """
+            SELECT
+                COUNT(*) AS n_rows,
+
+                MEDIAN(
+                    ABS(
+                        holdout_predicted_factor
+                        - observed_cif_fob_factor
+                    )
+                    / NULLIF(
+                        observed_cif_fob_factor,
+                        0
+                    )
+                ) AS model_median_ape,
+
+                QUANTILE_CONT(
+                    ABS(
+                        holdout_predicted_factor
+                        - observed_cif_fob_factor
+                    )
+                    / NULLIF(
+                        observed_cif_fob_factor,
+                        0
+                    ),
+                    0.90
+                ) AS model_p90_ape,
+
+                MEDIAN(
+                    ABS(
+                        lagged_pair_median_factor
+                        - observed_cif_fob_factor
+                    )
+                    / NULLIF(
+                        observed_cif_fob_factor,
+                        0
+                    )
+                ) AS pair_baseline_median_ape,
+
+                QUANTILE_CONT(
+                    ABS(
+                        lagged_pair_median_factor
+                        - observed_cif_fob_factor
+                    )
+                    / NULLIF(
+                        observed_cif_fob_factor,
+                        0
+                    ),
+                    0.90
+                ) AS pair_baseline_p90_ape,
+
+                AVG(
+                    CAST(
+                        ABS(
+                            holdout_predicted_factor
+                            - observed_cif_fob_factor
+                        )
+                        <
+                        ABS(
+                            lagged_pair_median_factor
+                            - observed_cif_fob_factor
+                        )
+                        AS DOUBLE
+                    )
+                ) AS model_win_rate_vs_pair_baseline
+
+            FROM holdout
+
+            WHERE lagged_pair_median_factor IS NOT NULL
+            """
+        ).df()
+
+        print(pair_baseline.to_string(index=False))
+
+
+
+
+        # --------------------------------------------------------------
         # 4. Calibration by predicted-factor decile
         #
         # If observed medians remain almost flat across deciles, the

@@ -789,6 +789,19 @@ def _inspect_existing_training_features(
                       AND initial_predictors_complete
                 ) AS n_model_candidates_predictors_complete,
 
+                COUNT(*) FILTER (
+                    WHERE model_eligible
+                ) AS n_model_candidates,
+
+                COUNT(*) FILTER (
+                    WHERE lagged_pair_median_factor IS NOT NULL
+                ) AS n_lagged_pair_factor_found,
+
+                COUNT(*) FILTER (
+                    WHERE model_eligible
+                        AND lagged_pair_median_factor IS NOT NULL
+                ) AS n_model_candidates_lagged_pair_factor_found,
+                
                 COUNT(DISTINCT year) AS n_years
 
             FROM read_parquet(?)
@@ -814,15 +827,37 @@ def _inspect_existing_training_features(
         "n_product_feature_found",
         "n_initial_predictors_complete",
         "n_model_candidates_predictors_complete",
+        "n_model_candidates",
+        "n_lagged_pair_factor_found",
+        "n_model_candidates_lagged_pair_factor_found",
         "n_years",
     ]
-
+    
     metrics = dict(
         zip(
             metric_names,
             row,
             strict=True,
         )
+    )
+    model_candidates = int(
+        metrics["n_model_candidates"]
+        or 0
+    )
+
+    metrics[
+    "model_candidate_lagged_pair_factor_coverage_percent"
+    ] = (
+        100.0
+        * int(
+            metrics[
+                "n_model_candidates_lagged_pair_factor_found"
+            ]
+            or 0
+        )
+        / model_candidates
+        if model_candidates
+        else 0.0
     )
 
     return {
@@ -1026,6 +1061,8 @@ def build_training_features(
                 "importer_iso",
                 "target_cmd",
                 "export_unit_value_usd_per_kg",
+                "observed_cif_fob_factor",
+                "factor_source",
                 "model_eligible",
             },
         )
@@ -1257,6 +1294,74 @@ def build_training_features(
               AND export_unit_value_usd_per_kg > 0
         ),
 
+        direct_pair_year_factors AS (
+            SELECT
+                year,
+                exporter_iso,
+                importer_iso,
+                MEDIAN(
+                    observed_cif_fob_factor
+                ) AS pair_year_median_factor,
+
+                COUNT(*) AS pair_year_factor_observations
+
+            FROM base
+            WHERE model_eligible
+                AND factor_source = 'direct'
+                AND observed_cif_fob_factor IS NOT NULL
+                AND observed_cif_fob_factor >= 1.0
+                AND observed_cif_fob_factor <= 3.0
+            GROUP BY
+                year,
+                exporter_iso,
+                importer_iso
+        ),
+
+        candidate_pair_years AS (
+            SELECT DISTINCT
+                year,
+                exporter_iso,
+                importer_iso
+
+            FROM base
+
+            WHERE exporter_iso IS NOT NULL
+              AND importer_iso IS NOT NULL
+        ),
+
+        direct_pair_lagged_history AS (
+            SELECT
+                c.year,
+                c.exporter_iso,
+                c.importer_iso,
+
+                MEDIAN(
+                    h.pair_year_median_factor
+                ) AS lagged_pair_median_factor,
+
+                SUM(
+                    h.pair_year_factor_observations
+                ) AS lagged_pair_factor_observations,
+
+                COUNT(
+                    h.year
+                ) AS lagged_pair_factor_years
+
+            FROM candidate_pair_years AS c
+
+            LEFT JOIN direct_pair_year_factors AS h
+              ON c.exporter_iso = h.exporter_iso
+             AND c.importer_iso = h.importer_iso
+             AND h.year < c.year
+
+            GROUP BY
+                c.year,
+                c.exporter_iso,
+                c.importer_iso
+        ),
+
+
+
         product_year_medians AS (
             SELECT
                 year,
@@ -1441,6 +1546,15 @@ def build_training_features(
                 -- ----------------------------------------------
 
                 py.lagged_product_median_unit_value,
+
+                ph.lagged_pair_median_factor,
+                ph.lagged_pair_factor_observations,
+                ph.lagged_pair_factor_years,
+
+                (
+                ph.lagged_pair_median_factor IS NOT NULL    
+                ) AS lagged_pair_factor_found,
+
                 py.lagged_product_observations,
 
                 pgy.product_group_year_median_unit_value,
@@ -1475,6 +1589,11 @@ def build_training_features(
                 {oil_price_sql}
             ) AS op
               ON b.year = op.year
+
+            LEFT JOIN direct_pair_lagged_history  AS ph
+              ON b.year = ph.year
+             AND b.exporter_iso = ph.exporter_iso
+             AND b.importer_iso = ph.importer_iso
 
             LEFT JOIN product_year_with_lag AS py
               ON b.year = py.year
@@ -1717,6 +1836,19 @@ def build_training_features(
                 (
                     SELECT COUNT(*)
                     FROM read_parquet({output_sql})
+                    WHERE lagged_pair_median_factor IS NOT NULL
+                ) AS n_lagged_pair_factor_found,
+
+                (
+                    SELECT COUNT(*)
+                    FROM read_parquet({output_sql})
+                    WHERE model_eligible
+                        AND lagged_pair_median_factor IS NOT NULL
+                ) AS n_model_candidates_lagged_pair_factor_found,
+                
+                (
+                    SELECT COUNT(*)
+                    FROM read_parquet({output_sql})
                     WHERE exporter_country_mapping_applied
                        OR importer_country_mapping_applied
                        OR exporter_pair_mapping_applied
@@ -1797,6 +1929,8 @@ def build_training_features(
         "n_product_feature_lagged",
         "n_product_feature_group_fallback",
         "n_product_feature_global_fallback",
+        "n_lagged_pair_factor_found",
+        "n_model_candidates_lagged_pair_factor_found",
         "n_rows_with_geography_mapping",
         "n_rows_with_proxy_mapping",
         "n_weighted_distance_used",
@@ -1948,6 +2082,21 @@ def build_training_features(
         if model_candidates
         else 0.0
     )
+    metrics[
+        "model_candidate_lagged_pair_factor_coverage_percent"
+    ] = (
+        100.0
+        * int(
+            metrics[
+                "n_model_candidates_lagged_pair_factor_found"
+            ]
+            or 0
+        )
+        / model_candidates
+        if model_candidates
+        else 0.0
+    )
+    
 
     audit_passed = True
 
@@ -2065,6 +2214,24 @@ def build_training_features(
         "  Overall predictor coverage: %.4f%%",
         metrics[
             "initial_predictor_coverage_percent"
+        ],
+    )
+    
+    logger.info(
+        "  Rows with lagged pair-factor history: %s",
+        metrics["n_lagged_pair_factor_found"],
+    )
+    
+    logger.info(
+        "  Model candidates with lagged pair-factor history: %s",
+        metrics[
+            "n_model_candidates_lagged_pair_factor_found"
+        ],
+    )
+    logger.info(
+        "  Model-candidate lagged pair-factor coverage: %.4f%%",
+        metrics[
+            "model_candidate_lagged_pair_factor_coverage_percent"
         ],
     )
     logger.info(

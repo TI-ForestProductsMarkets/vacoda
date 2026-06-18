@@ -154,6 +154,7 @@ cif_fob:
         - contiguity
         - exporter_landlocked
         - importer_landlocked
+        - lagged_pair_median_factor
 
       fuel_and_time:
       #  - log_oil_price
