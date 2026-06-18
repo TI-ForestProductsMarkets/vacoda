@@ -121,6 +121,9 @@ cif_fob:
       maximum_factor: 3.0
       exclude_proxy_weights: true
 
+      training_factor_sources:
+        - direct
+
       categorical_predictors:
         - product_group
 
@@ -139,9 +142,9 @@ cif_fob:
         loss: "absolute_error"
         learning_rate: 0.05
         max_iter: 300
-        max_leaf_nodes: 31
-        min_samples_leaf: 50
-        l2_regularization: 1.0
+        max_leaf_nodes: 63
+        min_samples_leaf: 20
+        l2_regularization: 0
         max_bins: 255
         random_state: 42
 
@@ -158,8 +161,7 @@ cif_fob:
         - year
 
       product:
-        - product_median_unit_value
-        - product_weight_to_value_ratio
+        - log_product_median_unit_value
         - product_group
 
       route: []

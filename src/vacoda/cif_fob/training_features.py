@@ -1521,11 +1521,8 @@ def build_training_features(
 
                 CASE
                     WHEN product_median_unit_value > 0
-                        THEN (
-                            1.0
-                            / product_median_unit_value
-                        )
-                END AS product_weight_to_value_ratio
+                        THEN LN(product_median_unit_value)
+                END AS log_product_median_unit_value
 
             FROM product_resolved
         )
@@ -1543,8 +1540,7 @@ def build_training_features(
                 AND exporter_landlocked IS NOT NULL
                 AND importer_landlocked IS NOT NULL
                 AND log_oil_price_x_log_distance IS NOT NULL
-                AND product_median_unit_value IS NOT NULL
-                AND product_weight_to_value_ratio IS NOT NULL
+                AND log_product_median_unit_value IS NOT NULL
                 AND product_group IS NOT NULL
                 AND year IS NOT NULL
             ) AS initial_predictors_complete,

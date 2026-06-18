@@ -687,6 +687,7 @@ class CifFobEstimationConfig:
     minimum_factor: float
     maximum_factor: float
     exclude_proxy_weights: bool
+    training_factor_sources: list[str]
     categorical_predictors: list[str]
     source_weights: CifFobEstimationSourceWeightsConfig
     validation: CifFobEstimationValidationConfig
@@ -709,6 +710,32 @@ class CifFobEstimationConfig:
             min_value=minimum_factor,
         )
 
+        training_factor_sources = _require_str_list(
+                                    cfg.get(
+                                        "training_factor_sources", 
+                                        ['direct','mirror']
+                                        ), 
+                                    key=("cif_fob.method.estimation."
+                                         "training_factor_sources"
+                                         ),
+                )
+        supported_factor_sources = {"direct", "mirror"} 
+        unsupported_factor_sources = sorted( 
+                                set(training_factor_sources) - 
+                                supported_factor_sources ) 
+        if unsupported_factor_sources: 
+            raise ValueError( "Unsupported CIF/FOB training factor sources: " + ", ".join(unsupported_factor_sources) ) 
+        if not training_factor_sources: 
+            raise ValueError( "cif_fob.method.estimation.training_factor_sources " "must contain at least one source." )
+
+        categorical_predictors = _require_str_list(
+            cfg.get("categorical_predictors", []),
+            key=(
+                "cif_fob.method.estimation."
+                "categorical_predictors"
+            ),
+        )
+
         return cls(
             minimum_evidence_value_usd=require_float(
                 cfg.get("minimum_evidence_value_usd", 1000.0),
@@ -727,13 +754,8 @@ class CifFobEstimationConfig:
                     "exclude_proxy_weights"
                 ),
             ),
-            categorical_predictors=_require_str_list(
-                cfg.get("categorical_predictors", []),
-                key=(
-                    "cif_fob.method.estimation."
-                    "categorical_predictors"
-                ),
-            ),
+            training_factor_sources=training_factor_sources,
+            categorical_predictors=categorical_predictors,
             source_weights=(
                 CifFobEstimationSourceWeightsConfig.from_dict(
                     require_dict(

@@ -515,9 +515,32 @@ def estimate_cif_fob_rates(
         exclude_proxy_weights,
     )
     logger.info(
+        "  Training factor sources: %s",
+        ", ".join(
+            estimation_cfg.training_factor_sources
+        ),
+    )
+    logger.info(
         "  Model: %s",
         estimation_cfg.model.name,
     )
+    logger.debug(
+    "  Model Loss: %s",
+    estimation_cfg.model.loss,
+    )
+    logger.debug(
+        "  Model Lead node: %.4f",
+        estimation_cfg.model.max_leaf_nodes,
+    )
+    logger.debug(
+        "  Model sample leaf: %d",
+        estimation_cfg.model.min_samples_leaf,
+    )
+    logger.debug(
+        "  Model L2 regularization: %.4f",
+        estimation_cfg.model.l2_regularization,
+    )
+
     logger.info(
         "  Validation strategy: %s",
         estimation_cfg.validation.strategy,
@@ -635,9 +658,18 @@ def estimate_cif_fob_rates(
         .astype(bool)
     )
 
+    training_factor_sources = [source.strip().lower() for source in estimation_cfg.training_factor_sources]
+    data["passes_factor_source_rule"] = (
+        data["factor_source"]
+        .astype("string")
+        .str.lower()
+        .isin(training_factor_sources)
+    )
+
     data["clean_estimation_eligible"] = (
         data["model_eligible"].fillna(False).astype(bool)
         & data["prediction_eligible"]
+        & data["passes_factor_source_rule"]
         & data["passes_minimum_value"]
         & data["passes_factor_lower_bound"]
         & data["passes_factor_upper_bound"]

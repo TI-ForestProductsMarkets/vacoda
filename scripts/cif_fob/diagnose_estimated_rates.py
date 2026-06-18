@@ -13,6 +13,38 @@ INPUT_PATH = Path(
 HOLDOUT_YEAR = 2025
 
 
+def print_diagnostics_table(
+    dataframe,
+    *,
+    percentage_columns: tuple[str, ...] = (),
+    factor_columns: tuple[str, ...] = (),
+) -> None:
+    """Print a diagnostic DataFrame with human-readable formatting."""
+    display = dataframe.copy()
+
+    for column in percentage_columns:
+        if column in display.columns:
+            display[column] = display[column].map(
+                lambda value: (
+                    f"{value * 100:.2f}%"
+                    if value is not None
+                    else ""
+                )
+            )
+
+    for column in factor_columns:
+        if column in display.columns:
+            display[column] = display[column].map(
+                lambda value: (
+                    f"{value:.4f}"
+                    if value is not None
+                    else ""
+                )
+            )
+
+    print(display.to_string(index=False))
+
+
 def main() -> None:
     if not INPUT_PATH.exists():
         raise FileNotFoundError(
@@ -33,7 +65,7 @@ def main() -> None:
         con.read_parquet(str(INPUT_PATH)).create_view(
             "rates",
             replace=True,
-                                       )
+        )
         con.execute(
             f"""
             CREATE OR REPLACE TEMP VIEW training_medians AS
@@ -84,7 +116,7 @@ def main() -> None:
                 pg.product_group_training_observations,
 
                 ABS(
-                    r.estimated_cif_fob_factor
+                    r.holdout_predicted_factor
                     - r.observed_cif_fob_factor
                 ) AS model_absolute_error,
 
@@ -102,7 +134,7 @@ def main() -> None:
                 ) AS product_baseline_absolute_error,
 
                 ABS(
-                    r.estimated_cif_fob_factor
+                    r.holdout_predicted_factor
                     - r.observed_cif_fob_factor
                 )
                 / r.observed_cif_fob_factor
@@ -134,7 +166,7 @@ def main() -> None:
 
             WHERE r.clean_estimation_eligible
               AND r.year = {HOLDOUT_YEAR}
-              AND r.estimated_cif_fob_factor IS NOT NULL
+              AND r.holdout_predicted_factor IS NOT NULL
             """
         )
 
@@ -164,30 +196,42 @@ def main() -> None:
                     0.95
                 ) AS observed_p95,
 
-                MEDIAN(estimated_cif_fob_factor)
+                MEDIAN(holdout_predicted_factor)
                     AS predicted_median,
 
                 QUANTILE_CONT(
-                    estimated_cif_fob_factor,
+                    holdout_predicted_factor,
                     0.05
                 ) AS predicted_p05,
 
                 QUANTILE_CONT(
-                    estimated_cif_fob_factor,
+                    holdout_predicted_factor,
                     0.95
                 ) AS predicted_p95,
 
                 STDDEV_SAMP(observed_cif_fob_factor)
                     AS observed_stddev,
 
-                STDDEV_SAMP(estimated_cif_fob_factor)
+                STDDEV_SAMP(holdout_predicted_factor)
                     AS predicted_stddev
 
             FROM holdout
             """
         ).df()
 
-        print(distribution.to_string(index=False))
+        print_diagnostics_table(
+            distribution,
+            factor_columns=(
+                "observed_median",
+                "observed_p05",
+                "observed_p95",
+                "predicted_median",
+                "predicted_p05",
+                "predicted_p95",
+                "observed_stddev",
+                "predicted_stddev",
+            ),
+        )
 
         # --------------------------------------------------------------
         # 2. Model versus simple baselines
@@ -247,7 +291,19 @@ def main() -> None:
             """
         ).df()
 
-        print(comparison.to_string(index=False))
+        print_diagnostics_table(
+            comparison,
+            percentage_columns=(
+                "model_median_ape",
+                "model_p90_ape",
+                "overall_baseline_median_ape",
+                "overall_baseline_p90_ape",
+                "product_baseline_median_ape",
+                "product_baseline_p90_ape",
+                "model_win_rate_vs_overall",
+                "model_win_rate_vs_product",
+            ),
+        )
 
         # --------------------------------------------------------------
         # 3. Performance by evidence source
@@ -266,36 +322,55 @@ def main() -> None:
                 MEDIAN(observed_cif_fob_factor)
                     AS observed_median,
 
-                MEDIAN(estimated_cif_fob_factor)
+                MEDIAN(holdout_predicted_factor)
                     AS predicted_median,
 
                 MEDIAN(
-                    CAST(
-                        model_absolute_percentage_error
-                        AS INTEGER
+                    ABS(
+                        holdout_predicted_factor
+                        - observed_cif_fob_factor
+                    )
+                    / NULLIF(
+                        observed_cif_fob_factor,
+                        0
                     )
                 ) AS model_median_ape,
 
                 QUANTILE_CONT(
-                    CAST(
-                        model_absolute_percentage_error
-                        AS INTEGER
+                    ABS(
+                        holdout_predicted_factor
+                        - observed_cif_fob_factor
+                    )
+                    / NULLIF(
+                        observed_cif_fob_factor,
+                        0
                     ),
                     0.90
                 ) AS model_p90_ape,
 
                 MEDIAN(
-                    CAST(
-                        product_baseline_absolute_percentage_error
-                        AS INTEGER
+                    ABS(
+                        product_group_baseline_factor
+                        - observed_cif_fob_factor
+                    )
+                    / NULLIF(
+                        observed_cif_fob_factor,
+                        0
                     )
                 ) AS product_baseline_median_ape,
 
                 AVG(
                     CAST(
-                        model_absolute_percentage_error
-                        < product_baseline_absolute_percentage_error
-                        AS INTEGER
+                        ABS(
+                            holdout_predicted_factor
+                            - observed_cif_fob_factor
+                        )
+                        <
+                        ABS(
+                            product_group_baseline_factor
+                            - observed_cif_fob_factor
+                        )
+                        AS DOUBLE
                     )
                 ) AS model_win_rate_vs_product
 
@@ -307,7 +382,19 @@ def main() -> None:
             """
         ).df()
 
-        print(by_source.to_string(index=False))
+        print_diagnostics_table(
+            by_source,
+            percentage_columns=(
+                "model_median_ape",
+                "model_p90_ape",
+                "product_baseline_median_ape",
+                "model_win_rate_vs_product",
+            ),
+            factor_columns=(
+                "observed_median",
+                "predicted_median",
+            ),
+        )
 
         # --------------------------------------------------------------
         # 4. Calibration by predicted-factor decile
@@ -327,7 +414,7 @@ def main() -> None:
                     *,
 
                     NTILE(10) OVER (
-                        ORDER BY estimated_cif_fob_factor
+                        ORDER BY holdout_predicted_factor
                     ) AS prediction_decile
 
                 FROM holdout
@@ -337,13 +424,13 @@ def main() -> None:
                 prediction_decile,
                 COUNT(*) AS n_rows,
 
-                MIN(estimated_cif_fob_factor)
+                MIN(holdout_predicted_factor)
                     AS predicted_min,
 
-                MEDIAN(estimated_cif_fob_factor)
+                MEDIAN(holdout_predicted_factor)
                     AS predicted_median,
 
-                MAX(estimated_cif_fob_factor)
+                MAX(holdout_predicted_factor)
                     AS predicted_max,
 
                 MEDIAN(observed_cif_fob_factor)
@@ -361,7 +448,16 @@ def main() -> None:
             """
         ).df()
 
-        print(calibration.to_string(index=False))
+        print_diagnostics_table(
+            calibration,
+            percentage_columns=("median_ape",),
+            factor_columns=(
+                "predicted_min",
+                "predicted_median",
+                "predicted_max",
+                "observed_median",
+            ),
+        )
 
         # --------------------------------------------------------------
         # 5. Worst product groups
@@ -380,7 +476,7 @@ def main() -> None:
                 MEDIAN(observed_cif_fob_factor)
                     AS observed_median,
 
-                MEDIAN(estimated_cif_fob_factor)
+                MEDIAN(holdout_predicted_factor)
                     AS predicted_median,
 
                 MEDIAN(
@@ -411,7 +507,18 @@ def main() -> None:
             """
         ).df()
 
-        print(worst_products.to_string(index=False))
+        print_diagnostics_table(
+            worst_products,
+            percentage_columns=(
+                "model_median_ape",
+                "product_baseline_median_ape",
+                "model_win_rate_vs_product",
+            ),
+            factor_columns=(
+                "observed_median",
+                "predicted_median",
+            ),
+        )
 
     finally:
         con.close()

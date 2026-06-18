@@ -317,7 +317,7 @@ def run_cif_fob_workflow(
             consumer_step="Rate-estimation step",
             producer_product="training-features Parquet",
         )
-
+        
         estimated_rates_result = estimate_cif_fob_rates(
             cfg=cfg,
             input_path=training_features_path,
