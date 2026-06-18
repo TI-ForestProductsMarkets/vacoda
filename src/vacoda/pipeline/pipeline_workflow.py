@@ -14,15 +14,18 @@ from typing import Any, Callable
 
 import pandas as pd
 
+from vacoda.config.cif_fob import CifFobConfig
 from vacoda.config.dataset import DatasetConfig
 from vacoda.config.hs_sync import HsSyncConfig
 from vacoda.config.paths import resolve_log_path
 from vacoda.config.pipeline import PipelineConfig
+from vacoda.cif_fob.workflow import run_cif_fob_workflow
 from vacoda.dataset.staging import build_comtrade_staging_dataset
 from vacoda.hs_sync.workflow import run_hs_sync_workflow
 from vacoda.pipeline.checkpoint import (
     checkpoint_path,
     config_fingerprint,
+    file_fingerprint,
     file_list_fingerprint,
     file_manifest_fingerprint,
     load_checkpoint,
@@ -161,6 +164,8 @@ def _confirm_pipeline_run(
     print(f"Pipeline:            {cfg.pipeline.name}")
     print(f"Enabled:             {cfg.pipeline.enabled}")
     print(f"Enabled steps:       {', '.join(cfg.pipeline.enabled_steps)}")
+    print(f"Engine name:         {cfg.engine.name}")
+    print(f"Engine threads:      {cfg.engine.threads}")
     print(f"Fail fast:           {cfg.pipeline.fail_fast}")
     print(f"Force run all:       {cfg.pipeline.force_run_all}")
     print(f"Checkpoint enabled:  {cfg.checkpoint.enabled}")
@@ -214,6 +219,25 @@ def _run_hs_sync_step(
     )
 
 
+def _run_cif_fob_step(
+    *,
+    config_path: Path,
+    pipeline_cfg: PipelineConfig,
+    run_id: str,
+) -> dict[str, Any]:
+    cfg = CifFobConfig.from_yaml(
+        config_path,
+        scope=pipeline_cfg.scope,
+        engine=pipeline_cfg.engine,
+    )
+
+    return run_cif_fob_workflow(
+        cfg=cfg,
+        run_id=run_id,
+        logger=get_logger("PIPELINE.CIF_FOB"),
+    )
+
+
 def _build_staging_plan(
     *,
     step_name: str,
@@ -237,8 +261,7 @@ def _build_staging_plan(
         config_path=config_path,
         config_fingerprint=_step_config_fingerprint(config_path=config_path, 
                                                     pipeline_cfg=pipeline_cfg, 
-                                                    include_scope=False, 
-                                                    include_engine_name=False),
+                                                    include_scope=False),
         input_fingerprint=file_manifest_fingerprint(
             root=input_dir,
             pattern=input_pattern,
@@ -307,12 +330,60 @@ def _build_hs_sync_plan(
         config_path=config_path,
         config_fingerprint=_step_config_fingerprint(config_path=config_path, 
                                                     pipeline_cfg=pipeline_cfg, 
-                                                    include_scope=True, 
-                                                    include_engine_name=False),
+                                                    include_scope=True),
         input_fingerprint=input_fp,
         output_path=cfg.apply_output_path(),
         audit_path=cfg.apply_integrity_audit_path(),
         runner=lambda run_id: _run_hs_sync_step(
+            config_path=config_path,
+            pipeline_cfg=pipeline_cfg,
+            run_id=run_id,
+        ),
+    )
+
+
+def _build_cif_fob_plan(
+    *,
+    step_name: str,
+    config_path: Path,
+    pipeline_cfg: PipelineConfig,
+) -> StepPlan:
+    cfg = CifFobConfig.from_yaml(
+        config_path,
+        scope=pipeline_cfg.scope,
+        engine=pipeline_cfg.engine,
+    )
+
+    input_paths = [
+        cfg.input_path(),
+        cfg.features.geography.resolve_path(),
+        cfg.features.pair_geography.resolve_path(),
+        cfg.features.geography_crosswalk.resolve_path(),
+        cfg.features.oil_price.resolve_path(),
+    ]
+
+    input_fp = {
+        "cif_fob_inputs": file_list_fingerprint(
+            paths=input_paths,
+            label="cif_fob_required_inputs",
+        )
+    }
+
+    output_path = cfg.product_path("estimated_rates")
+    audit_path = output_path.with_suffix(".audit.csv")
+
+    return StepPlan(
+        step_name=step_name,
+        config_path=config_path,
+        config_fingerprint=_step_config_fingerprint(
+            config_path=config_path,
+            pipeline_cfg=pipeline_cfg,
+            include_scope=True,
+        ),
+        input_fingerprint=input_fp,
+        output_path=output_path,
+        audit_path=audit_path,
+        runner=lambda run_id: _run_cif_fob_step(
             config_path=config_path,
             pipeline_cfg=pipeline_cfg,
             run_id=run_id,
@@ -324,7 +395,6 @@ def _step_config_fingerprint(
     config_path: Path,
     pipeline_cfg: PipelineConfig,
     include_scope: bool,
-    include_engine_name: bool = True,
 ) -> dict[str, Any]:
     out: dict[str, Any] = {
         "step_config": config_fingerprint(config_path),
@@ -335,11 +405,6 @@ def _step_config_fingerprint(
             "target_hs": pipeline_cfg.scope.target_hs,
             "min_year": pipeline_cfg.scope.min_year,
             "max_year": pipeline_cfg.scope.max_year,
-        }
-
-    if include_engine_name:
-        out["pipeline_engine"] = {
-            "name": pipeline_cfg.engine.name,
         }
 
     return out
@@ -360,6 +425,13 @@ def _build_step_plan(
 
     if step_name == "hs_sync":
         return _build_hs_sync_plan(
+            step_name=step_name,
+            config_path=config_path,
+            pipeline_cfg=pipeline_cfg,
+        )
+
+    if step_name == "cif_fob":
+        return _build_cif_fob_plan(
             step_name=step_name,
             config_path=config_path,
             pipeline_cfg=pipeline_cfg,
@@ -527,6 +599,8 @@ def run_pipeline(
     logger.info("=" * 72)
     logger.info("Run ID: %s", run_id)
     logger.info("Pipeline: %s", cfg.pipeline.name)
+    logger.info("Engine name: %s", cfg.engine.name)
+    logger.info("Engine threads: %s", cfg.engine.threads)
     logger.info("Enabled steps: %s", ", ".join(cfg.pipeline.enabled_steps))
     logger.info("Checkpoint reuse: %s", cfg.checkpoint.reuse_successful_steps)
     logger.info("Force run all: %s", cfg.pipeline.force_run_all)
