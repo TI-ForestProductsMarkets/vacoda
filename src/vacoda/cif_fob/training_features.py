@@ -1339,9 +1339,32 @@ def build_training_features(
                     h.pair_year_median_factor
                 ) AS lagged_pair_median_factor,
 
+                FIRST(
+                    h.pair_year_median_factor
+                    ORDER BY h.year DESC
+                ) AS latest_pair_median_factor,
+
+                MAX(
+                    h.year
+                ) AS latest_pair_factor_year,
+
                 SUM(
                     h.pair_year_factor_observations
                 ) AS lagged_pair_factor_observations,
+
+                STDDEV_SAMP(
+                    h.pair_year_median_factor
+                ) AS lagged_pair_factor_stddev,
+
+                QUANTILE_CONT(
+                    h.pair_year_median_factor,
+                    0.75
+                ) AS lagged_pair_factor_p75,
+
+                QUANTILE_CONT(
+                    h.pair_year_median_factor,
+                    0.90
+                ) AS lagged_pair_factor_p90,
 
                 COUNT(
                     h.year
@@ -1548,8 +1571,20 @@ def build_training_features(
                 py.lagged_product_median_unit_value,
 
                 ph.lagged_pair_median_factor,
+                ph.latest_pair_median_factor,
                 ph.lagged_pair_factor_observations,
+                ph.lagged_pair_factor_stddev,
+                ph.lagged_pair_factor_p75,
+                ph.lagged_pair_factor_p90,
                 ph.lagged_pair_factor_years,
+
+                CASE
+                    WHEN ph.latest_pair_factor_year IS NOT NULL
+                        THEN (
+                            b.year
+                            - ph.latest_pair_factor_year
+                        )
+                END AS years_since_latest_pair_factor,
 
                 (
                 ph.lagged_pair_median_factor IS NOT NULL    
@@ -1642,6 +1677,11 @@ def build_training_features(
                     WHEN product_median_unit_value > 0
                         THEN LN(product_median_unit_value)
                 END AS log_product_median_unit_value,
+
+                CASE
+                    WHEN lagged_pair_factor_observations > 0
+                        THEN LN(lagged_pair_factor_observations)
+                END AS log_lagged_pair_factor_observations,
 
             FROM product_resolved
         )

@@ -155,7 +155,9 @@ cif_fob:
         - exporter_landlocked
         - importer_landlocked
         - lagged_pair_median_factor
-
+        - latest_pair_median_factor
+        - years_since_latest_pair_factor
+      
       fuel_and_time:
       #  - log_oil_price
         - log_oil_price_x_log_distance
