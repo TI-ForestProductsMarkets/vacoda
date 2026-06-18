@@ -1641,7 +1641,7 @@ def build_training_features(
                 CASE
                     WHEN product_median_unit_value > 0
                         THEN LN(product_median_unit_value)
-                END AS log_product_median_unit_value
+                END AS log_product_median_unit_value,
 
             FROM product_resolved
         )

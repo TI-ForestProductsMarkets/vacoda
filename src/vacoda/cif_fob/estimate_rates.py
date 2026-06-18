@@ -118,6 +118,9 @@ def _validate_input_columns(
         "pair_uses_weight_proxy",
         "pair_uses_estimated_weight",
         "import_weight_estimated",
+        "lagged_pair_factor_observations",
+        "lagged_pair_factor_years",
+        "lagged_pair_factor_found",
         *predictors,
     }
 
@@ -561,6 +564,13 @@ def estimate_cif_fob_rates(
 
         input_sql = _sql_literal(input_path)
 
+
+        ESTIMATION_DIAGNOSTIC_COLUMNS = [
+            "lagged_pair_factor_observations",
+            "lagged_pair_factor_years",
+            "lagged_pair_factor_found",
+        ]
+        
         select_columns = [
             "year",
             "exporter_iso",
@@ -576,12 +586,11 @@ def estimate_cif_fob_rates(
             "pair_uses_weight_proxy",
             "pair_uses_estimated_weight",
             "import_weight_estimated",
+            *ESTIMATION_DIAGNOSTIC_COLUMNS,
             *[
-                predictor
-                for predictor in predictors
-                if predictor not in {
-                    "year",
-                }
+            predictor
+            for predictor in predictors
+            if predictor != "year"
             ],
         ]
 
