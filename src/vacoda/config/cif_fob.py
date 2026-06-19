@@ -275,6 +275,11 @@ class CifFobProductsConfig:
     training_sample: CifFobProductConfig
     training_features: CifFobProductConfig
     estimated_rates: CifFobProductConfig
+    temporal_validation_summary: CifFobProductConfig
+    temporal_validation_folds: CifFobProductConfig
+    upper_tail_audit_summary: CifFobProductConfig
+    upper_tail_route_history: CifFobProductConfig
+    upper_tail_observations: CifFobProductConfig
     corrected_trade: CifFobProductConfig
 
     @classmethod
@@ -303,6 +308,26 @@ class CifFobProductsConfig:
             corrected_trade=CifFobProductConfig.from_dict(
                 require_dict(cfg.get("corrected_trade"), key="cif_fob.products.corrected_trade"),
                 key="cif_fob.products.corrected_trade",
+            ),
+            temporal_validation_summary=CifFobProductConfig.from_dict(
+                require_dict(cfg.get("temporal_validation_summary"), key="cif_fob.products.temporal_validation_summary"),
+                key="cif_fob.products.temporal_validation_summary",
+            ),
+            temporal_validation_folds=CifFobProductConfig.from_dict(
+                require_dict(cfg.get("temporal_validation_folds"), key="cif_fob.products.temporal_validation_folds"),
+                key="cif_fob.products.temporal_validation_folds",
+            ),
+            upper_tail_audit_summary=CifFobProductConfig.from_dict(
+                require_dict(cfg.get("upper_tail_audit_summary"), key="cif_fob.products.upper_tail_audit_summary"),
+                key="cif_fob.products.upper_tail_audit_summary",
+            ),
+            upper_tail_route_history=CifFobProductConfig.from_dict(
+                require_dict(cfg.get("upper_tail_route_history"), key="cif_fob.products.upper_tail_route_history"),
+                key="cif_fob.products.upper_tail_route_history",
+            ),
+            upper_tail_observations=CifFobProductConfig.from_dict(
+                require_dict(cfg.get("upper_tail_observations"), key="cif_fob.products.upper_tail_observations"),
+                key="cif_fob.products.upper_tail_observations",
             ),
         )
 
@@ -570,10 +595,335 @@ class CifFobEstimationSourceWeightsConfig:
         )
 
 
+from dataclasses import dataclass
+from typing import Any
+
+
+@dataclass(frozen=True)
+class CifFobTemporalBacktestOutputConfig:
+    summary_product: str
+    fold_product: str
+
+    @classmethod
+    def from_dict(
+        cls,
+        cfg: dict[str, Any],
+    ) -> "CifFobTemporalBacktestOutputConfig":
+        return cls(
+            summary_product=require_str(
+                cfg.get(
+                    "summary_product",
+                    "temporal_validation_summary",
+                ),
+                key=(
+                    "method.estimation.validation."
+                    "temporal_backtest.output.summary_product"
+                ),
+            ).strip(),
+            fold_product=require_str(
+                cfg.get(
+                    "fold_product",
+                    "temporal_validation_folds",
+                ),
+                key=(
+                    "method.estimation.validation."
+                    "temporal_backtest.output.fold_product"
+                ),
+            ).strip(),
+        )
+    
+@dataclass(frozen=True)
+class CifFobTemporalBacktestConfig:
+    enabled: bool
+    strategy: str
+    validation_years: tuple[int, ...]
+    minimum_training_years: int
+    upper_tail_threshold: float
+    metrics: tuple[str, ...]
+    output: CifFobTemporalBacktestOutputConfig
+
+    @classmethod
+    def from_dict(
+        cls,
+        cfg: dict[str, Any] | None,
+    ) -> "CifFobTemporalBacktestConfig":
+        cfg = cfg or {}
+
+        strategy = require_str(
+            cfg.get("strategy", "expanding_window"),
+            key=(
+                "method.estimation.validation."
+                "temporal_backtest.strategy"
+            ),
+        ).strip().lower()
+
+        if strategy != "expanding_window":
+            raise ValueError(
+                "Only 'expanding_window' is currently supported for "
+                "method.estimation.validation.temporal_backtest.strategy."
+            )
+
+        validation_years_raw = cfg.get(
+            "validation_years",
+            [],
+        )
+
+        if not isinstance(validation_years_raw, list):
+            raise TypeError(
+                "method.estimation.validation.temporal_backtest."
+                "validation_years must be a list."
+            )
+
+        validation_years = tuple(
+            int(year)
+            for year in validation_years_raw
+        )
+
+        if len(set(validation_years)) != len(validation_years):
+            raise ValueError(
+                "Temporal backtest validation_years contains duplicates."
+            )
+
+        minimum_training_years = int(
+            cfg.get("minimum_training_years", 4)
+        )
+
+        if minimum_training_years < 1:
+            raise ValueError(
+                "minimum_training_years must be at least 1."
+            )
+
+        upper_tail_threshold = float(
+            cfg.get("upper_tail_threshold", 1.25)
+        )
+
+        if upper_tail_threshold <= 0:
+            raise ValueError(
+                "upper_tail_threshold must be positive."
+            )
+
+        metrics_raw = cfg.get(
+            "metrics",
+            [
+                "median_ape",
+                "mean_ape",
+                "p90_ape",
+                "p95_ape",
+                "spearman_correlation",
+                "observed_p95",
+                "predicted_p95",
+                "upper_tail_median_ape",
+                "upper_tail_p90_ape",
+            ],
+        )
+
+        if not isinstance(metrics_raw, list):
+            raise TypeError(
+                "method.estimation.validation.temporal_backtest."
+                "metrics must be a list."
+            )
+
+        return cls(
+            enabled=bool(cfg.get("enabled", False)),
+            strategy=strategy,
+            validation_years=validation_years,
+            minimum_training_years=minimum_training_years,
+            upper_tail_threshold=upper_tail_threshold,
+            metrics=tuple(
+                require_str(
+                    metric,
+                    key=(
+                        "method.estimation.validation."
+                        "temporal_backtest.metrics"
+                    ),
+                ).strip()
+                for metric in metrics_raw
+            ),
+            output=CifFobTemporalBacktestOutputConfig.from_dict(
+                cfg.get("output", {})
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class CifFobUpperTailAuditProductsConfig:
+    summary: str
+    route_history: str
+    observations: str
+
+    @classmethod
+    def from_dict(
+        cls,
+        cfg: dict[str, Any],
+    ) -> "CifFobUpperTailAuditProductsConfig":
+        return cls(
+            summary=require_str(
+                cfg.get("summary", "upper_tail_audit_summary"),
+                key="cif_fob.method.estimation.diagnostics.upper_tail_audit.products.summary",
+            ).strip(),
+            route_history=require_str(
+                cfg.get("route_history", "upper_tail_route_history"),
+                key="cif_fob.method.estimation.diagnostics.upper_tail_audit.products.route_history",
+            ).strip(),
+            observations=require_str(
+                cfg.get("observations", "upper_tail_observations"),
+                key="cif_fob.method.estimation.diagnostics.upper_tail_audit.products.observations",
+            ).strip(),
+        )
+
+
+@dataclass(frozen=True)
+class CifFobUpperTailAuditPersistenceConfig:
+    minimum_prior_years: int
+    historical_high_share_threshold: float
+
+    @classmethod
+    def from_dict(
+        cls,
+        cfg: dict[str, Any] | None,
+    ) -> "CifFobUpperTailAuditPersistenceConfig":
+        cfg = cfg or {}
+
+        return cls(
+            minimum_prior_years=require_int(
+                cfg.get("minimum_prior_years", 2),
+                key="cif_fob.method.estimation.diagnostics.upper_tail_audit.persistence.minimum_prior_years",
+                min_value=1,
+            ),
+            historical_high_share_threshold=require_float(
+                cfg.get("historical_high_share_threshold", 0.5),
+                key="cif_fob.method.estimation.diagnostics.upper_tail_audit.persistence.historical_high_share_threshold",
+                min_value=0.0,
+                max_value=1.0,
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class CifFobUpperTailAuditConfig:
+    enabled: bool
+    threshold: float
+    extreme_threshold: float
+    persistence: CifFobUpperTailAuditPersistenceConfig
+    value_bands_usd: tuple[int, ...]
+    quantity_agreement_bands: tuple[float, ...]
+    products: CifFobUpperTailAuditProductsConfig
+
+    @classmethod
+    def from_dict(
+        cls,
+        cfg: dict[str, Any] | None,
+    ) -> "CifFobUpperTailAuditConfig":
+        cfg = cfg or {}
+
+        value_bands_raw = cfg.get("value_bands_usd", [])
+        quantity_bands_raw = cfg.get("quantity_agreement_bands", [])
+
+        if not isinstance(value_bands_raw, list):
+            raise TypeError(
+                "cif_fob.method.estimation.diagnostics.upper_tail_audit.value_bands_usd must be a list."
+            )
+        if not isinstance(quantity_bands_raw, list):
+            raise TypeError(
+                "cif_fob.method.estimation.diagnostics.upper_tail_audit.quantity_agreement_bands must be a list."
+            )
+
+        return cls(
+            enabled=bool(cfg.get("enabled", False)),
+            threshold=require_float(
+                cfg.get("threshold", 1.25),
+                key="cif_fob.method.estimation.diagnostics.upper_tail_audit.threshold",
+                min_value=0.0,
+            ),
+            extreme_threshold=require_float(
+                cfg.get("extreme_threshold", 1.5),
+                key="cif_fob.method.estimation.diagnostics.upper_tail_audit.extreme_threshold",
+                min_value=0.0,
+            ),
+            persistence=CifFobUpperTailAuditPersistenceConfig.from_dict(
+                cfg.get("persistence")
+            ),
+            value_bands_usd=tuple(
+                require_int(
+                    value,
+                    key="cif_fob.method.estimation.diagnostics.upper_tail_audit.value_bands_usd",
+                    min_value=0,
+                )
+                for value in value_bands_raw
+            ),
+            quantity_agreement_bands=tuple(
+                require_float(
+                    value,
+                    key="cif_fob.method.estimation.diagnostics.upper_tail_audit.quantity_agreement_bands",
+                    min_value=0.0,
+                    max_value=1.0,
+                )
+                for value in quantity_bands_raw
+            ),
+            products=CifFobUpperTailAuditProductsConfig.from_dict(
+                require_dict(cfg.get("products", {}), key="cif_fob.method.estimation.diagnostics.upper_tail_audit.products")
+            ),
+        )
+
+    @property
+    def minimum_prior_years(self) -> int:
+        return self.persistence.minimum_prior_years
+
+    @property
+    def historical_high_share_threshold(self) -> float:
+        return self.persistence.historical_high_share_threshold
+
+
+@dataclass(frozen=True)
+class CifFobEstimationDiagnosticsConfig:
+    upper_tail_audit: CifFobUpperTailAuditConfig
+
+    @classmethod
+    def from_dict(
+        cls,
+        cfg: dict[str, Any] | None,
+    ) -> "CifFobEstimationDiagnosticsConfig":
+        cfg = cfg or {}
+
+        # Accept both shapes:
+        # 1) diagnostics.upper_tail_audit.<fields>
+        # 2) diagnostics.upper_tail_audit: {} plus sibling fields directly
+        #    under diagnostics (the current YAML layout).
+        upper_tail_audit_cfg = cfg.get("upper_tail_audit")
+
+        if not isinstance(upper_tail_audit_cfg, dict):
+            upper_tail_audit_cfg = {}
+
+        sibling_keys = {
+            "enabled",
+            "threshold",
+            "extreme_threshold",
+            "persistence",
+            "value_bands_usd",
+            "quantity_agreement_bands",
+            "products",
+        }
+
+        merged_upper_tail_audit_cfg = {
+            **upper_tail_audit_cfg,
+            **{
+                key: value
+                for key, value in cfg.items()
+                if key in sibling_keys and key not in upper_tail_audit_cfg
+            },
+        }
+
+        return cls(
+            upper_tail_audit=CifFobUpperTailAuditConfig.from_dict(
+                merged_upper_tail_audit_cfg
+            ),
+        )
+
 @dataclass(frozen=True)
 class CifFobEstimationValidationConfig:
     strategy: str
     holdout_year: int | None
+    temporal_backtest: CifFobTemporalBacktestConfig
 
     @classmethod
     def from_dict(
@@ -599,6 +949,9 @@ class CifFobEstimationValidationConfig:
                 )
                 if holdout_year_raw is not None
                 else None
+            ),
+            temporal_backtest=CifFobTemporalBacktestConfig.from_dict(
+                cfg.get("temporal_backtest", {})
             ),
         )
 
@@ -692,6 +1045,7 @@ class CifFobEstimationConfig:
     source_weights: CifFobEstimationSourceWeightsConfig
     validation: CifFobEstimationValidationConfig
     model: CifFobEstimationModelConfig
+    diagnostics: CifFobEstimationDiagnosticsConfig
 
     @classmethod
     def from_dict(
@@ -766,6 +1120,9 @@ class CifFobEstimationConfig:
                         ),
                     )
                 )
+            ),
+            diagnostics=CifFobEstimationDiagnosticsConfig.from_dict(
+                cfg.get("diagnostics", {})
             ),
             validation=(
                 CifFobEstimationValidationConfig.from_dict(
@@ -960,6 +1317,11 @@ class CifFobConfig:
             "training_sample": self.products.training_sample,
             "training_features": self.products.training_features,
             "estimated_rates": self.products.estimated_rates,
+            "temporal_validation_summary": self.products.temporal_validation_summary,
+            "temporal_validation_folds": self.products.temporal_validation_folds,
+            "upper_tail_audit_summary": self.products.upper_tail_audit_summary,
+            "upper_tail_route_history": self.products.upper_tail_route_history,
+            "upper_tail_observations": self.products.upper_tail_observations,
             "corrected_trade": self.products.corrected_trade,
         }
 
@@ -975,6 +1337,11 @@ class CifFobConfig:
             "training_sample": self.product_path("training_sample"),
             "training_features": self.product_path("training_features"),
             "estimated_rates": self.product_path("estimated_rates"),
+            "temporal_validation_summary": self.product_path("temporal_validation_summary"),
+            "temporal_validation_folds": self.product_path("temporal_validation_folds"),
+            "upper_tail_audit_summary": self.product_path("upper_tail_audit_summary"),
+            "upper_tail_route_history": self.product_path("upper_tail_route_history"),
+            "upper_tail_observations": self.product_path("upper_tail_observations"),
             "corrected_trade": self.product_path("corrected_trade"),
         }
 
@@ -985,6 +1352,11 @@ class CifFobConfig:
             "training_sample": self.products.training_sample,
             "training_features": self.products.training_features,
             "estimated_rates": self.products.estimated_rates,
+            "temporal_validation_summary": self.products.temporal_validation_summary,
+            "temporal_validation_folds": self.products.temporal_validation_folds,
+            "upper_tail_audit_summary": self.products.upper_tail_audit_summary,
+            "upper_tail_route_history": self.products.upper_tail_route_history,
+            "upper_tail_observations": self.products.upper_tail_observations,
             "corrected_trade": self.products.corrected_trade,
         }
 

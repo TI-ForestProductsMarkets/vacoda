@@ -77,6 +77,26 @@ cif_fob:
     estimated_rates:
       enable: true
       filename: "target_{target_hs_lower}_cif_fob_estimated_rates.parquet"
+    
+    temporal_validation_summary:
+      enable: true
+      filename: "target_{target_hs_lower}_cif_fob_temporal_validation_summary.csv"
+
+    temporal_validation_folds:
+      enable: true
+      filename: "target_{target_hs_lower}_cif_fob_temporal_validation_folds.csv"
+
+    upper_tail_audit_summary:
+      enable: true
+      filename: "target_{target_hs_lower}_cif_fob_upper_tail_audit_summary.csv"
+
+    upper_tail_route_history:
+      enable: true
+      filename: "target_{target_hs_lower}_cif_fob_upper_tail_route_history.csv"
+
+    upper_tail_observations:
+      enable: true
+      filename: "target_{target_hs_lower}_cif_fob_upper_tail_observations.parquet"
 
     corrected_trade:
       enable: false
@@ -121,6 +141,35 @@ cif_fob:
       maximum_factor: 3.0
       exclude_proxy_weights: true
 
+      diagnostics:
+        upper_tail_audit:
+          enabled: true
+
+          threshold: 1.25
+          extreme_threshold: 1.50
+
+          persistence:
+            minimum_prior_years: 2
+            historical_high_share_threshold: 0.50
+
+          value_bands_usd:
+            - 10000
+            - 100000
+            - 1000000
+            - 10000000
+
+          quantity_agreement_bands:
+            - 0.50
+            - 0.75
+            - 0.90
+            - 0.98
+
+          products:
+            summary: "upper_tail_audit_summary"
+            route_history: "upper_tail_route_history"
+            observations: "upper_tail_observations"
+
+
       training_factor_sources:
         - direct
 
@@ -136,6 +185,36 @@ cif_fob:
       validation:
         strategy: "latest_year"
         holdout_year: null
+
+        temporal_backtest:
+          enabled: true
+          strategy: "expanding_window"
+
+          # Empty means:
+          # derive every valid validation year from the available data.
+          validation_years: []
+
+          # A validation fold is created only after this many earlier
+          # calendar years are available for training.
+          minimum_training_years: 4
+
+          # Tail group used in model-evaluation metrics.
+          upper_tail_threshold: 1.25
+
+          metrics:
+            - median_ape
+            - mean_ape
+            - p90_ape
+            - p95_ape
+            - spearman_correlation
+            - observed_p95
+            - predicted_p95
+            - upper_tail_median_ape
+            - upper_tail_p90_ape
+
+          output:
+            summary_product: "temporal_validation_summary"
+            fold_product: "temporal_validation_folds"
 
       model:
         name: "hist_gradient_boosting"
