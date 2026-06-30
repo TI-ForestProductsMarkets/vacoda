@@ -349,9 +349,10 @@ cif_fob:
         - log_product_median_unit_value
         - product_group
 
-      route: []
-      #  - log_lagged_bilateral_trade_value
-      #  - route_trade_imbalance
+      route:
+        - log_lagged_bilateral_trade_value
+        - log_lagged_pair_product_trade_value
+        - lagged_pair_product_median_factor
 
       optional_connectivity: []
       #  - exporter_liner_shipping_connectivity

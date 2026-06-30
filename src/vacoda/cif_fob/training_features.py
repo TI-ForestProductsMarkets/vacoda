@@ -27,6 +27,12 @@ Bilateral:
     contiguity
     exporter_landlocked
     importer_landlocked
+    lagged_pair_median_factor
+    lagged_pair_product_median_factor
+
+Route scale:
+    log_lagged_bilateral_trade_value
+    log_lagged_pair_product_trade_value
 
 Fuel and time:
     crude_oil_average_usd_per_bbl
@@ -81,6 +87,12 @@ SUPPORTED_PRODUCT_MEDIAN_METHODS = {
 SUPPORTED_PRODUCT_FALLBACKS = {
     "product_group_year",
     "global_year",
+}
+
+REQUIRED_ROUTE_HISTORY_FEATURES = {
+    "lagged_pair_product_median_factor",
+    "log_lagged_bilateral_trade_value",
+    "log_lagged_pair_product_trade_value",
 }
 
 
@@ -799,8 +811,20 @@ def _inspect_existing_training_features(
 
                 COUNT(*) FILTER (
                     WHERE model_eligible
-                        AND lagged_pair_median_factor IS NOT NULL
+                      AND lagged_pair_median_factor IS NOT NULL
                 ) AS n_model_candidates_lagged_pair_factor_found,
+
+                COUNT(*) FILTER (
+                    WHERE lagged_pair_product_median_factor IS NOT NULL
+                ) AS n_lagged_pair_product_factor_found,
+
+                COUNT(*) FILTER (
+                    WHERE log_lagged_bilateral_trade_value IS NOT NULL
+                ) AS n_lagged_bilateral_trade_value_found,
+
+                COUNT(*) FILTER (
+                    WHERE log_lagged_pair_product_trade_value IS NOT NULL
+                ) AS n_lagged_pair_product_trade_value_found,
                 
                 COUNT(DISTINCT year) AS n_years
 
@@ -830,6 +854,9 @@ def _inspect_existing_training_features(
         "n_model_candidates",
         "n_lagged_pair_factor_found",
         "n_model_candidates_lagged_pair_factor_found",
+        "n_lagged_pair_product_factor_found",
+        "n_lagged_bilateral_trade_value_found",
+        "n_lagged_pair_product_trade_value_found",
         "n_years",
     ]
     
@@ -915,15 +942,37 @@ def build_training_features(
         not force
         and valid_output(output_path)
     ):
-        logger.info(
-            "REUSE — CIF/FOB training features already exist: %s",
-            output_path,
+        reuse_con = duckdb.connect()
+
+        try:
+            existing_columns = _read_parquet_columns(
+                con=reuse_con,
+                path=output_path,
+            )
+        finally:
+            reuse_con.close()
+
+        missing_route_features = sorted(
+            REQUIRED_ROUTE_HISTORY_FEATURES
+            - existing_columns
         )
 
-        return _inspect_existing_training_features(
-            output_path=output_path,
-            threads=cfg.engine.threads,
-        )
+        if missing_route_features:
+            logger.info(
+                "REBUILD — Existing CIF/FOB training features are "
+                "missing newly configured route-history fields: %s",
+                ", ".join(missing_route_features),
+            )
+        else:
+            logger.info(
+                "REUSE — CIF/FOB training features already exist: %s",
+                output_path,
+            )
+
+            return _inspect_existing_training_features(
+                output_path=output_path,
+                threads=cfg.engine.threads,
+            )
 
     pair_geography_path = cfg.features.pair_geography.resolve_path()
     country_geography_path = cfg.features.geography.resolve_path()
@@ -1061,6 +1110,8 @@ def build_training_features(
                 "importer_iso",
                 "target_cmd",
                 "export_unit_value_usd_per_kg",
+                "export_value_fob",
+                "import_value_cif",
                 "observed_cif_fob_factor",
                 "factor_source",
                 "model_eligible",
@@ -1179,7 +1230,19 @@ def build_training_features(
                     ),
                     1,
                     {group_digits}
-                ) AS product_group
+                ) AS product_group,
+
+                CASE
+                    WHEN export_value_fob IS NOT NULL
+                     AND export_value_fob > 0
+                        THEN CAST(export_value_fob AS DOUBLE)
+
+                    WHEN import_value_cif IS NOT NULL
+                     AND import_value_cif > 0
+                        THEN CAST(import_value_cif AS DOUBLE)
+
+                    ELSE NULL
+                END AS route_trade_value_usd
 
             FROM read_parquet({input_sql}) AS t
         ),
@@ -1299,6 +1362,7 @@ def build_training_features(
                 year,
                 exporter_iso,
                 importer_iso,
+
                 MEDIAN(
                     observed_cif_fob_factor
                 ) AS pair_year_median_factor,
@@ -1306,15 +1370,45 @@ def build_training_features(
                 COUNT(*) AS pair_year_factor_observations
 
             FROM base
+
             WHERE model_eligible
-                AND factor_source = 'direct'
-                AND observed_cif_fob_factor IS NOT NULL
-                AND observed_cif_fob_factor >= 1.0
-                AND observed_cif_fob_factor <= 3.0
+              AND factor_source = 'direct'
+              AND observed_cif_fob_factor IS NOT NULL
+              AND observed_cif_fob_factor >= 1.0
+              AND observed_cif_fob_factor <= 3.0
+
             GROUP BY
                 year,
                 exporter_iso,
                 importer_iso
+        ),
+
+        direct_pair_product_year_factors AS (
+            SELECT
+                year,
+                exporter_iso,
+                importer_iso,
+                target_cmd_text,
+
+                MEDIAN(
+                    observed_cif_fob_factor
+                ) AS pair_product_year_median_factor,
+
+                COUNT(*) AS pair_product_year_factor_observations
+
+            FROM base
+
+            WHERE model_eligible
+              AND factor_source = 'direct'
+              AND observed_cif_fob_factor IS NOT NULL
+              AND observed_cif_fob_factor >= 1.0
+              AND observed_cif_fob_factor <= 3.0
+
+            GROUP BY
+                year,
+                exporter_iso,
+                importer_iso,
+                target_cmd_text
         ),
 
         candidate_pair_years AS (
@@ -1327,6 +1421,141 @@ def build_training_features(
 
             WHERE exporter_iso IS NOT NULL
               AND importer_iso IS NOT NULL
+        ),
+
+        candidate_pair_product_years AS (
+            SELECT DISTINCT
+                year,
+                exporter_iso,
+                importer_iso,
+                target_cmd_text
+
+            FROM base
+
+            WHERE exporter_iso IS NOT NULL
+              AND importer_iso IS NOT NULL
+              AND target_cmd_text IS NOT NULL
+        ),
+
+        pair_year_trade_values AS (
+            SELECT
+                year,
+                exporter_iso,
+                importer_iso,
+
+                SUM(
+                    route_trade_value_usd
+                ) AS bilateral_trade_value_usd,
+
+                COUNT(*) FILTER (
+                    WHERE route_trade_value_usd IS NOT NULL
+                ) AS bilateral_trade_value_observations
+
+            FROM base
+
+            WHERE route_trade_value_usd IS NOT NULL
+              AND route_trade_value_usd > 0
+
+            GROUP BY
+                year,
+                exporter_iso,
+                importer_iso
+        ),
+
+        lagged_bilateral_trade_history AS (
+            SELECT
+                c.year,
+                c.exporter_iso,
+                c.importer_iso,
+
+                FIRST(
+                    h.bilateral_trade_value_usd
+                    ORDER BY h.year DESC
+                ) AS lagged_bilateral_trade_value_usd,
+
+                FIRST(
+                    h.bilateral_trade_value_observations
+                    ORDER BY h.year DESC
+                ) AS lagged_bilateral_trade_value_observations,
+
+                MAX(
+                    h.year
+                ) AS latest_bilateral_trade_value_year
+
+            FROM candidate_pair_years AS c
+
+            LEFT JOIN pair_year_trade_values AS h
+              ON c.exporter_iso = h.exporter_iso
+             AND c.importer_iso = h.importer_iso
+             AND h.year < c.year
+
+            GROUP BY
+                c.year,
+                c.exporter_iso,
+                c.importer_iso
+        ),
+
+        pair_product_year_trade_values AS (
+            SELECT
+                year,
+                exporter_iso,
+                importer_iso,
+                target_cmd_text,
+
+                SUM(
+                    route_trade_value_usd
+                ) AS pair_product_trade_value_usd,
+
+                COUNT(*) FILTER (
+                    WHERE route_trade_value_usd IS NOT NULL
+                ) AS pair_product_trade_value_observations
+
+            FROM base
+
+            WHERE route_trade_value_usd IS NOT NULL
+              AND route_trade_value_usd > 0
+
+            GROUP BY
+                year,
+                exporter_iso,
+                importer_iso,
+                target_cmd_text
+        ),
+
+        lagged_pair_product_trade_history AS (
+            SELECT
+                c.year,
+                c.exporter_iso,
+                c.importer_iso,
+                c.target_cmd_text,
+
+                FIRST(
+                    h.pair_product_trade_value_usd
+                    ORDER BY h.year DESC
+                ) AS lagged_pair_product_trade_value_usd,
+
+                FIRST(
+                    h.pair_product_trade_value_observations
+                    ORDER BY h.year DESC
+                ) AS lagged_pair_product_trade_value_observations,
+
+                MAX(
+                    h.year
+                ) AS latest_pair_product_trade_value_year
+
+            FROM candidate_pair_product_years AS c
+
+            LEFT JOIN pair_product_year_trade_values AS h
+              ON c.exporter_iso = h.exporter_iso
+             AND c.importer_iso = h.importer_iso
+             AND c.target_cmd_text = h.target_cmd_text
+             AND h.year < c.year
+
+            GROUP BY
+                c.year,
+                c.exporter_iso,
+                c.importer_iso,
+                c.target_cmd_text
         ),
 
         direct_pair_lagged_history AS (
@@ -1381,6 +1610,49 @@ def build_training_features(
                 c.year,
                 c.exporter_iso,
                 c.importer_iso
+        ),
+
+        direct_pair_product_lagged_history AS (
+            SELECT
+                c.year,
+                c.exporter_iso,
+                c.importer_iso,
+                c.target_cmd_text,
+
+                MEDIAN(
+                    h.pair_product_year_median_factor
+                ) AS lagged_pair_product_median_factor,
+
+                FIRST(
+                    h.pair_product_year_median_factor
+                    ORDER BY h.year DESC
+                ) AS latest_pair_product_median_factor,
+
+                MAX(
+                    h.year
+                ) AS latest_pair_product_factor_year,
+
+                SUM(
+                    h.pair_product_year_factor_observations
+                ) AS lagged_pair_product_factor_observations,
+
+                COUNT(
+                    h.year
+                ) AS lagged_pair_product_factor_years
+
+            FROM candidate_pair_product_years AS c
+
+            LEFT JOIN direct_pair_product_year_factors AS h
+              ON c.exporter_iso = h.exporter_iso
+             AND c.importer_iso = h.importer_iso
+             AND c.target_cmd_text = h.target_cmd_text
+             AND h.year < c.year
+
+            GROUP BY
+                c.year,
+                c.exporter_iso,
+                c.importer_iso,
+                c.target_cmd_text
         ),
 
 
@@ -1587,8 +1859,47 @@ def build_training_features(
                 END AS years_since_latest_pair_factor,
 
                 (
-                ph.lagged_pair_median_factor IS NOT NULL    
+                    ph.lagged_pair_median_factor IS NOT NULL
                 ) AS lagged_pair_factor_found,
+
+                pph.lagged_pair_product_median_factor,
+                pph.latest_pair_product_median_factor,
+                pph.lagged_pair_product_factor_observations,
+                pph.lagged_pair_product_factor_years,
+
+                CASE
+                    WHEN pph.latest_pair_product_factor_year IS NOT NULL
+                        THEN (
+                            b.year
+                            - pph.latest_pair_product_factor_year
+                        )
+                END AS years_since_latest_pair_product_factor,
+
+                (
+                    pph.lagged_pair_product_median_factor IS NOT NULL
+                ) AS lagged_pair_product_factor_found,
+
+                bth.lagged_bilateral_trade_value_usd,
+                bth.lagged_bilateral_trade_value_observations,
+
+                CASE
+                    WHEN bth.latest_bilateral_trade_value_year IS NOT NULL
+                        THEN (
+                            b.year
+                            - bth.latest_bilateral_trade_value_year
+                        )
+                END AS years_since_latest_bilateral_trade_value,
+
+                ppth.lagged_pair_product_trade_value_usd,
+                ppth.lagged_pair_product_trade_value_observations,
+
+                CASE
+                    WHEN ppth.latest_pair_product_trade_value_year IS NOT NULL
+                        THEN (
+                            b.year
+                            - ppth.latest_pair_product_trade_value_year
+                        )
+                END AS years_since_latest_pair_product_trade_value,
 
                 py.lagged_product_observations,
 
@@ -1625,10 +1936,27 @@ def build_training_features(
             ) AS op
               ON b.year = op.year
 
-            LEFT JOIN direct_pair_lagged_history  AS ph
+            LEFT JOIN direct_pair_lagged_history AS ph
               ON b.year = ph.year
              AND b.exporter_iso = ph.exporter_iso
              AND b.importer_iso = ph.importer_iso
+
+            LEFT JOIN direct_pair_product_lagged_history AS pph
+              ON b.year = pph.year
+             AND b.exporter_iso = pph.exporter_iso
+             AND b.importer_iso = pph.importer_iso
+             AND b.target_cmd_text = pph.target_cmd_text
+
+            LEFT JOIN lagged_bilateral_trade_history AS bth
+              ON b.year = bth.year
+             AND b.exporter_iso = bth.exporter_iso
+             AND b.importer_iso = bth.importer_iso
+
+            LEFT JOIN lagged_pair_product_trade_history AS ppth
+              ON b.year = ppth.year
+             AND b.exporter_iso = ppth.exporter_iso
+             AND b.importer_iso = ppth.importer_iso
+             AND b.target_cmd_text = ppth.target_cmd_text
 
             LEFT JOIN product_year_with_lag AS py
               ON b.year = py.year
@@ -1687,6 +2015,22 @@ def build_training_features(
                     WHEN lagged_pair_factor_observations > 0
                         THEN LN(lagged_pair_factor_observations)
                 END AS log_lagged_pair_factor_observations,
+
+                CASE
+                    WHEN lagged_bilateral_trade_value_usd > 0
+                        THEN LN(
+                            1.0
+                            + lagged_bilateral_trade_value_usd
+                        )
+                END AS log_lagged_bilateral_trade_value,
+
+                CASE
+                    WHEN lagged_pair_product_trade_value_usd > 0
+                        THEN LN(
+                            1.0
+                            + lagged_pair_product_trade_value_usd
+                        )
+                END AS log_lagged_pair_product_trade_value
 
             FROM product_resolved
         )
@@ -1892,8 +2236,26 @@ def build_training_features(
                     SELECT COUNT(*)
                     FROM read_parquet({output_sql})
                     WHERE model_eligible
-                        AND lagged_pair_median_factor IS NOT NULL
+                      AND lagged_pair_median_factor IS NOT NULL
                 ) AS n_model_candidates_lagged_pair_factor_found,
+
+                (
+                    SELECT COUNT(*)
+                    FROM read_parquet({output_sql})
+                    WHERE lagged_pair_product_median_factor IS NOT NULL
+                ) AS n_lagged_pair_product_factor_found,
+
+                (
+                    SELECT COUNT(*)
+                    FROM read_parquet({output_sql})
+                    WHERE log_lagged_bilateral_trade_value IS NOT NULL
+                ) AS n_lagged_bilateral_trade_value_found,
+
+                (
+                    SELECT COUNT(*)
+                    FROM read_parquet({output_sql})
+                    WHERE log_lagged_pair_product_trade_value IS NOT NULL
+                ) AS n_lagged_pair_product_trade_value_found,
                 
                 (
                     SELECT COUNT(*)
@@ -1980,6 +2342,9 @@ def build_training_features(
         "n_product_feature_global_fallback",
         "n_lagged_pair_factor_found",
         "n_model_candidates_lagged_pair_factor_found",
+        "n_lagged_pair_product_factor_found",
+        "n_lagged_bilateral_trade_value_found",
+        "n_lagged_pair_product_trade_value_found",
         "n_rows_with_geography_mapping",
         "n_rows_with_proxy_mapping",
         "n_weighted_distance_used",
@@ -2281,6 +2646,24 @@ def build_training_features(
         "  Model-candidate lagged pair-factor coverage: %.4f%%",
         metrics[
             "model_candidate_lagged_pair_factor_coverage_percent"
+        ],
+    )
+    logger.info(
+        "  Rows with lagged pair-product factor history: %s",
+        metrics[
+            "n_lagged_pair_product_factor_found"
+        ],
+    )
+    logger.info(
+        "  Rows with lagged bilateral trade value: %s",
+        metrics[
+            "n_lagged_bilateral_trade_value_found"
+        ],
+    )
+    logger.info(
+        "  Rows with lagged pair-product trade value: %s",
+        metrics[
+            "n_lagged_pair_product_trade_value_found"
         ],
     )
     logger.info(
