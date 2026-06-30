@@ -2,41 +2,70 @@
 vacoda.cif_fob.estimate_rates
 
 Estimate CIF/FOB conversion factors from the Step 4 training-features
-artifact.
+artifact using multiple candidate estimators on one shared evidence sample.
 
-Design
-------
-1. Read predictors, thresholds, source weights, validation policy, and
-   model hyperparameters from the parsed CIF/FOB configuration.
-2. Build the clean estimation sample from model-eligible rows with a
-   complete predictor set.
-3. Fit the configured histogram gradient-boosting model to the log of
-   the observed CIF/FOB factor.
-4. Evaluate on a temporal holdout.
-5. Refit on all clean observations.
-6. Predict only rows with complete predictors. Rows without complete
-   predictors remain in the output with a null estimate and an explicit
-   availability flag; they can be handled by a later fallback stage.
+Supported estimators
+--------------------
+1. hist_gradient_boosting
+2. hist_gradient_boosting_squared
+3. log_linear_regression
+4. log_linear_regression_smearing
+
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from altair.datasets import data
 import duckdb
 import numpy as np
 import pandas as pd
+from scipy.stats import spearmanr
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.metrics import mean_absolute_error
+
+try:
+    import statsmodels.api as sm
+except ImportError as exc:  # pragma: no cover - environment guard
+    sm = None
+    _STATSMODELS_IMPORT_ERROR = exc
+else:
+    _STATSMODELS_IMPORT_ERROR = None
 
 from vacoda.config.cif_fob import CifFobConfig
 from vacoda.cif_fob.prepare_input import valid_output
 
 
 # ======================================================================
-# Helpers
+# Small containers
+# ======================================================================
+
+
+@dataclass
+class FittedHGBModel:
+    estimator: HistGradientBoostingRegressor
+    predictors: list[str]
+    categorical_predictors: list[str]
+    category_maps: dict[str, dict[str, int]]
+    target_transformation: str
+
+
+@dataclass
+class FittedLogLinearModel:
+    result: Any
+    predictors: list[str]
+    categorical_predictors: list[str]
+    design_columns: list[str]
+    fit_intercept: bool
+    numeric_fill_values: dict[str, float]
+    inverse_transform: str
+    smearing_factor: float
+
+
+# ======================================================================
+# Generic helpers
 # ======================================================================
 
 
@@ -48,6 +77,26 @@ def _sql_literal(value: str | Path) -> str:
 def _quoted_identifier(value: str) -> str:
     """Return a safely quoted SQL identifier."""
     return '"' + value.replace('"', '""') + '"'
+
+
+def _safe_model_prefix(model_name: str) -> str:
+    """Return a stable column prefix for a configured model name."""
+    aliases = {
+        "hist_gradient_boosting": "hgb",
+        "hist_gradient_boosting_squared": "hgb_sq",
+        "hist_gradient_boosting_squared_level": "hgb_sq_lvl",
+        "hist_gradient_boosting_squared_regularized": "hgb_sq_reg",
+        "log_linear_regression": "ols",
+        "log_linear_regression_smearing": "ols_sm"
+
+    }
+    return aliases.get(
+        model_name,
+        "".join(
+            character if character.isalnum() else "_"
+            for character in model_name.lower()
+        ).strip("_"),
+    )
 
 
 def _configured_predictors(cfg: CifFobConfig) -> list[str]:
@@ -74,6 +123,59 @@ def _configured_predictors(cfg: CifFobConfig) -> list[str]:
     return predictors
 
 
+def _enabled_model_configs(
+    cfg: CifFobConfig,
+) -> tuple[str, dict[str, Any]]:
+    """
+    Return the configured primary model and enabled model candidates.
+
+    Only the multi-model ``estimation.models`` configuration is accepted.
+    """
+    estimation_cfg = cfg.method.estimation
+    models_cfg = getattr(estimation_cfg, "models", None)
+
+    if models_cfg is None:
+        raise ValueError(
+            "CIF/FOB estimation configuration must define "
+            "'cif_fob.method.estimation.models'. "
+            "The legacy single 'model' block is not supported."
+        )
+
+    primary = str(models_cfg.primary).strip().lower()
+    enabled = dict(models_cfg.enabled())
+
+    if not enabled:
+        raise ValueError(
+            "No enabled CIF/FOB estimation models are configured."
+        )
+
+    if primary not in enabled:
+        raise ValueError(
+            f"Primary CIF/FOB model {primary!r} is not enabled."
+        )
+
+    return primary, enabled
+
+
+def _model_categorical_predictors(
+    *,
+    cfg: CifFobConfig,
+    model_cfg: Any,
+) -> list[str]:
+    """Return model-specific categorical predictors."""
+    configured = getattr(model_cfg, "categorical_predictors", None)
+
+    if configured is not None:
+        return [str(value) for value in configured]
+
+    legacy = getattr(
+        cfg.method.estimation,
+        "categorical_predictors",
+        [],
+    )
+    return [str(value) for value in legacy]
+
+
 def _read_parquet_columns(
     *,
     con: duckdb.DuckDBPyConnection,
@@ -97,7 +199,7 @@ def _validate_input_columns(
     input_path: Path,
     predictors: list[str],
 ) -> None:
-    """Validate estimation, audit, and configured predictor columns."""
+    """Validate estimation, diagnostics, and configured predictor columns."""
     available = _read_parquet_columns(
         con=con,
         path=input_path,
@@ -203,110 +305,12 @@ def _evidence_value(frame: pd.DataFrame) -> pd.Series:
     )
 
 
-def _learn_category_maps(
-    *,
-    frame: pd.DataFrame,
-    categorical_predictors: list[str],
-) -> dict[str, dict[str, int]]:
-    """Learn deterministic category-to-integer maps."""
-    category_maps: dict[str, dict[str, int]] = {}
-
-    for column in categorical_predictors:
-        values = frame[column].astype("string")
-        unique_values = sorted(
-            str(value)
-            for value in values.dropna().unique().tolist()
-        )
-
-        category_maps[column] = {
-            value: index
-            for index, value in enumerate(unique_values)
-        }
-
-    return category_maps
-
-
-def _encode_predictors(
-    *,
-    frame: pd.DataFrame,
-    predictors: list[str],
-    categorical_predictors: list[str],
-    category_maps: dict[str, dict[str, int]],
-) -> pd.DataFrame:
-    """Encode configured predictors for scikit-learn."""
-    encoded = frame[predictors].copy()
-    categorical_set = set(categorical_predictors)
-
-    for column in predictors:
-        if column in categorical_set:
-            values = encoded[column].astype("string")
-            encoded[column] = (
-                values
-                .map(category_maps[column])
-                .astype("float64")
-            )
-        else:
-            encoded[column] = pd.to_numeric(
-                encoded[column],
-                errors="coerce",
-            )
-
-    return encoded
-
-
-def _validate_categories(
-    *,
-    category_maps: dict[str, dict[str, int]],
-    max_bins: int,
-) -> None:
-    """
-    HistGradientBoosting reserves one bin for missing values, so the
-    number of non-missing categories must be below max_bins.
-    """
-    maximum_categories = max_bins - 1
-
-    for predictor, mapping in category_maps.items():
-        n_categories = len(mapping)
-
-        if n_categories > maximum_categories:
-            raise RuntimeError(
-                f"Categorical predictor {predictor!r} has "
-                f"{n_categories:,} levels, but max_bins={max_bins} "
-                f"supports at most {maximum_categories:,} non-missing "
-                "categories. Use a broader grouping or increase max_bins "
-                "within scikit-learn's supported limit."
-            )
-
-
-def _build_model(cfg: CifFobConfig, *, categorical_mask: list[bool]):
-    """Construct the configured estimator."""
-    model_cfg = cfg.method.estimation.model
-
-    if model_cfg.name != "hist_gradient_boosting":
-        raise ValueError(
-            "Unsupported CIF/FOB estimation model "
-            f"{model_cfg.name!r}. Supported: hist_gradient_boosting."
-        )
-
-    return HistGradientBoostingRegressor(
-        loss=model_cfg.loss,
-        learning_rate=model_cfg.learning_rate,
-        max_iter=model_cfg.max_iter,
-        max_leaf_nodes=model_cfg.max_leaf_nodes,
-        min_samples_leaf=model_cfg.min_samples_leaf,
-        l2_regularization=model_cfg.l2_regularization,
-        max_bins=model_cfg.max_bins,
-        categorical_features=categorical_mask,
-        random_state=model_cfg.random_state,
-    )
-
-
-def _resolve_holdout_year(
+def _resolve_latest_holdout_year(
     *,
     clean: pd.DataFrame,
     cfg: CifFobConfig,
 ) -> int:
-    """Resolve the configured temporal holdout year."""
+    """Resolve the latest-year holdout used for preserved OOS columns."""
     validation_cfg = cfg.method.estimation.validation
 
     if validation_cfg.strategy != "latest_year":
@@ -336,31 +340,804 @@ def _resolve_holdout_year(
     return holdout_year
 
 
-def _prediction_error_metrics(
+def _resolve_temporal_validation_years(
     *,
-    observed_log: np.ndarray,
-    predicted_log: np.ndarray,
-) -> dict[str, float]:
-    """Return temporal-holdout error metrics."""
-    observed_factor = np.exp(observed_log)
-    predicted_factor = np.exp(predicted_log)
+    clean: pd.DataFrame,
+    cfg: CifFobConfig,
+) -> list[int]:
+    """Return valid expanding-window validation years."""
+    backtest_cfg = cfg.method.estimation.validation.temporal_backtest
 
-    absolute_percentage_error = (
+    if not backtest_cfg.enabled:
+        return []
+
+    available_years = sorted(
+        pd.to_numeric(clean["year"], errors="coerce")
+        .dropna()
+        .astype(int)
+        .unique()
+        .tolist()
+    )
+
+    requested_years = list(backtest_cfg.validation_years)
+
+    if requested_years:
+        missing = sorted(set(requested_years) - set(available_years))
+        if missing:
+            raise RuntimeError(
+                "Temporal validation years are absent from the clean "
+                "estimation sample: "
+                + ", ".join(str(year) for year in missing)
+            )
+        candidate_years = sorted(requested_years)
+    else:
+        candidate_years = available_years
+
+    minimum_training_years = int(
+        backtest_cfg.minimum_training_years
+    )
+
+    valid_years: list[int] = []
+
+    for year in candidate_years:
+        earlier_years = [
+            observed_year
+            for observed_year in available_years
+            if observed_year < year
+        ]
+        if len(earlier_years) >= minimum_training_years:
+            valid_years.append(year)
+
+    return valid_years
+
+
+# ======================================================================
+# HistGradientBoosting helpers
+# ======================================================================
+
+
+def _learn_category_maps(
+    *,
+    frame: pd.DataFrame,
+    categorical_predictors: list[str],
+) -> dict[str, dict[str, int]]:
+    """Learn deterministic category-to-integer maps."""
+    category_maps: dict[str, dict[str, int]] = {}
+
+    for column in categorical_predictors:
+        values = frame[column].astype("string")
+        unique_values = sorted(
+            str(value)
+            for value in values.dropna().unique().tolist()
+        )
+
+        category_maps[column] = {
+            value: index
+            for index, value in enumerate(unique_values)
+        }
+
+    return category_maps
+
+
+def _encode_hgb_predictors(
+    *,
+    frame: pd.DataFrame,
+    predictors: list[str],
+    categorical_predictors: list[str],
+    category_maps: dict[str, dict[str, int]],
+) -> pd.DataFrame:
+    """Encode predictors for HistGradientBoostingRegressor."""
+    encoded = frame[predictors].copy()
+    categorical_set = set(categorical_predictors)
+
+    for column in predictors:
+        if column in categorical_set:
+            values = encoded[column].astype("string")
+            encoded[column] = (
+                values
+                .map(category_maps[column])
+                .astype("float64")
+            )
+        else:
+            encoded[column] = pd.to_numeric(
+                encoded[column],
+                errors="coerce",
+            )
+
+    return encoded
+
+
+def _validate_hgb_categories(
+    *,
+    category_maps: dict[str, dict[str, int]],
+    max_bins: int,
+) -> None:
+    """Validate category cardinality against HGB bin limits."""
+    maximum_categories = max_bins - 1
+
+    for predictor, mapping in category_maps.items():
+        n_categories = len(mapping)
+
+        if n_categories > maximum_categories:
+            raise RuntimeError(
+                f"Categorical predictor {predictor!r} has "
+                f"{n_categories:,} levels, but max_bins={max_bins} "
+                f"supports at most {maximum_categories:,} non-missing "
+                "categories."
+            )
+
+
+def _fit_hgb(
+    *,
+    train_frame: pd.DataFrame,
+    predictors: list[str],
+    categorical_predictors: list[str],
+    sample_weight: pd.Series,
+    model_cfg: Any,
+) -> FittedHGBModel:
+    category_maps = _learn_category_maps(
+        frame=train_frame,
+        categorical_predictors=categorical_predictors,
+    )
+
+    _validate_hgb_categories(
+        category_maps=category_maps,
+        max_bins=int(model_cfg.max_bins),
+    )
+
+    encoded = _encode_hgb_predictors(
+        frame=train_frame,
+        predictors=predictors,
+        categorical_predictors=categorical_predictors,
+        category_maps=category_maps,
+    )
+
+    categorical_mask = [
+        predictor in set(categorical_predictors)
+        for predictor in predictors
+    ]
+
+    target_transformation = str(
+        getattr(model_cfg, "target_transformation", "log")).strip().lower()
+
+    if target_transformation == "log":
+        training_target = train_frame[
+        "log_observed_factor"
+    ].to_numpy(dtype=float)
+
+    elif target_transformation == "none":
+        training_target = train_frame[
+        "observed_cif_fob_factor"
+    ].to_numpy(dtype=float)
+
+    else:
+        raise ValueError(
+            "HGB target_transformation must be 'log' or 'none', "
+            f"got {target_transformation!r}."
+    )
+
+    estimator = HistGradientBoostingRegressor(
+        loss=model_cfg.loss,
+        learning_rate=float(model_cfg.learning_rate),
+        max_iter=int(model_cfg.max_iter),
+        max_leaf_nodes=int(model_cfg.max_leaf_nodes),
+        min_samples_leaf=int(model_cfg.min_samples_leaf),
+        l2_regularization=float(model_cfg.l2_regularization),
+        max_bins=int(model_cfg.max_bins),
+        categorical_features=categorical_mask,
+        random_state=int(model_cfg.random_state),
+    )
+
+    estimator.fit(
+        encoded[predictors],
+        training_target,
+        sample_weight=sample_weight,
+    )
+
+    print(
+        model_cfg.name,
+        "target_transformation:", target_transformation,
+    )
+
+    return FittedHGBModel(
+        estimator=estimator,
+        predictors=predictors,
+        categorical_predictors=categorical_predictors,
+        category_maps=category_maps,
+        target_transformation=target_transformation
+    )
+
+
+def _predict_hgb(
+    fitted: FittedHGBModel,
+    frame: pd.DataFrame,
+) -> np.ndarray:
+    encoded = _encode_hgb_predictors(
+        frame=frame,
+        predictors=fitted.predictors,
+        categorical_predictors=fitted.categorical_predictors,
+        category_maps=fitted.category_maps,
+    )
+
+    raw_prediction = np.asarray(
+        fitted.estimator.predict(
+            encoded[fitted.predictors]
+        ),
+        dtype=float,
+    )
+
+    if fitted.target_transformation == "log":
+        return raw_prediction
+
+    if fitted.target_transformation == "none":
+        # The remaining estimation pipeline expects log-factor
+        # predictions and later converts them using np.exp().
+        positive_prediction = np.maximum(
+            raw_prediction,
+            1e-12,
+        )
+        return np.log(positive_prediction)
+
+    raise ValueError(
+        "Unsupported fitted HGB target transformation: "
+        f"{fitted.target_transformation!r}."
+    )
+
+# ======================================================================
+# Log-linear statistical model helpers
+# ======================================================================
+
+
+def _build_log_linear_design(
+    *,
+    frame: pd.DataFrame,
+    predictors: list[str],
+    categorical_predictors: list[str],
+    fit_intercept: bool,
+    numeric_fill_values: dict[str, float] | None = None,
+    expected_columns: list[str] | None = None,
+) -> tuple[pd.DataFrame, dict[str, float]]:
+    """
+    Build a leakage-safe one-hot encoded statistical design matrix.
+
+    Numeric missing values are imputed with medians learned from the
+    training fold only. A missing-value indicator is added for every
+    numeric predictor that is missing in the training fold.
+
+    During prediction:
+      - the training medians are reused;
+      - the design is aligned to the training columns;
+      - unseen categorical levels map to the training reference pattern.
+    """
+    design = frame[predictors].copy()
+    categorical_set = set(categorical_predictors)
+
+    numeric_predictors = [
+        predictor
+        for predictor in predictors
+        if predictor not in categorical_set
+    ]
+
+    learned_fill_values: dict[str, float] = (
+        {}
+        if numeric_fill_values is None
+        else dict(numeric_fill_values)
+    )
+
+    for column in numeric_predictors:
+        numeric = pd.to_numeric(
+            design[column],
+            errors="coerce",
+        )
+
+        missing_indicator = numeric.isna().astype(float)
+        indicator_column = f"{column}__missing"
+
+        if numeric_fill_values is None:
+            median_value = numeric.median(skipna=True)
+
+            if pd.isna(median_value):
+                raise RuntimeError(
+                    "Log-linear regression cannot estimate a training "
+                    f"median for numeric predictor {column!r}; the "
+                    "training fold contains no finite values."
+                )
+
+            learned_fill_values[column] = float(median_value)
+
+            if missing_indicator.any():
+                design[indicator_column] = missing_indicator
+        else:
+            if column not in learned_fill_values:
+                raise RuntimeError(
+                    "Missing stored imputation value for statistical "
+                    f"predictor {column!r}."
+                )
+
+            if (
+                expected_columns is not None
+                and indicator_column in expected_columns
+            ):
+                design[indicator_column] = missing_indicator
+
+        design[column] = numeric.fillna(
+            learned_fill_values[column]
+        )
+
+    if categorical_predictors:
+        design = pd.get_dummies(
+            design,
+            columns=categorical_predictors,
+            drop_first=True,
+            dtype=float,
+        )
+
+    design = design.astype(float)
+
+    if expected_columns is not None:
+        expected_without_const = [
+            column
+            for column in expected_columns
+            if column != "const"
+        ]
+        design = design.reindex(
+            columns=expected_without_const,
+            fill_value=0.0,
+        )
+
+    if fit_intercept:
+        if sm is None:  # pragma: no cover
+            raise RuntimeError(
+                "statsmodels is required for log_linear_regression."
+            ) from _STATSMODELS_IMPORT_ERROR
+
+        design = sm.add_constant(
+            design,
+            has_constant="add",
+        )
+
+    if expected_columns is not None:
+        design = design.reindex(
+            columns=expected_columns,
+            fill_value=0.0,
+        )
+
+    if not np.isfinite(design.to_numpy(dtype=float)).all():
+        invalid_columns = [
+            column
+            for column in design.columns
+            if not np.isfinite(
+                pd.to_numeric(
+                    design[column],
+                    errors="coerce",
+                ).to_numpy(dtype=float)
+            ).all()
+        ]
+        raise RuntimeError(
+            "The statistical design matrix still contains non-finite "
+            "values after imputation. Columns: "
+            + ", ".join(invalid_columns)
+        )
+
+    return design, learned_fill_values
+
+
+def _fit_log_linear(
+    *,
+    train_frame: pd.DataFrame,
+    predictors: list[str],
+    categorical_predictors: list[str],
+    sample_weight: pd.Series,
+    model_cfg: Any,
+) -> FittedLogLinearModel:
+    if sm is None:  # pragma: no cover
+        raise RuntimeError(
+            "statsmodels is required for log_linear_regression."
+        ) from _STATSMODELS_IMPORT_ERROR
+
+    estimator_method = str(
+        getattr(model_cfg, "estimator_method", "ols")
+    ).strip().lower()
+
+    if estimator_method not in {"ols", "wls"}:
+        raise ValueError(
+            "log_linear_regression estimator_method must be 'ols' or "
+            f"'wls', got {estimator_method!r}."
+        )
+
+    fit_intercept = bool(
+        getattr(model_cfg, "fit_intercept", True)
+    )
+
+    design, numeric_fill_values = _build_log_linear_design(
+        frame=train_frame,
+        predictors=predictors,
+        categorical_predictors=categorical_predictors,
+        fit_intercept=fit_intercept,
+    )
+
+    target = train_frame["log_observed_factor"].astype(float)
+
+    if not np.isfinite(target.to_numpy(dtype=float)).all():
+        raise RuntimeError(
+            "The log-linear regression target contains non-finite values."
+        )
+
+    if estimator_method == "wls":
+        model = sm.WLS(
+            endog=target,
+            exog=design,
+            weights=sample_weight.astype(float),
+            missing="raise",
+        )
+    else:
+        model = sm.OLS(
+            endog=target,
+            exog=design,
+            missing="raise",
+        )
+
+    covariance_method = str(
+        getattr(model_cfg, "covariance_method", "hc3")
+    ).strip().lower()
+
+    if covariance_method == "nonrobust":
+        result = model.fit()
+    else:
+        result = model.fit(
+            cov_type=covariance_method.upper()
+        )
+
+    fitted_log = np.asarray(result.predict(design), dtype=float)
+    residuals = target.to_numpy(dtype=float) - fitted_log
+
+    inverse_transform = str(
+        getattr(model_cfg, "inverse_transform", "exp")).strip().lower()
+    
+    if inverse_transform not in {"exp", "exp_smearing"}:
+        raise ValueError(
+            "log_linear_regression inverse_transform must be 'exp' or "
+            f"'exp_smearing', got {inverse_transform!r}."
+        )
+
+    if inverse_transform == "exp_smearing":
+        smearing_factor = float(
+            np.mean(np.exp(residuals))
+        )
+    else:
+        smearing_factor = 1.0
+
+    return FittedLogLinearModel(
+        result=result,
+        predictors=predictors,
+        categorical_predictors=categorical_predictors,
+        design_columns=list(design.columns),
+        fit_intercept=fit_intercept,
+        numeric_fill_values=numeric_fill_values,
+        inverse_transform=inverse_transform,
+        smearing_factor = smearing_factor
+    )
+
+
+def _predict_log_linear(
+    fitted: FittedLogLinearModel,
+    frame: pd.DataFrame,
+) -> np.ndarray:
+    design, _ = _build_log_linear_design(
+        frame=frame,
+        predictors=fitted.predictors,
+        categorical_predictors=fitted.categorical_predictors,
+        fit_intercept=fitted.fit_intercept,
+        numeric_fill_values=fitted.numeric_fill_values,
+        expected_columns=fitted.design_columns,
+    )
+
+    predicted_log = np.asarray(
+        fitted.result.predict(design),
+        dtype=float,
+    )
+
+    if fitted.inverse_transform == "exp_smearing":
+        return (
+            predicted_log
+            + np.log(fitted.smearing_factor)
+        )
+
+    return predicted_log
+
+
+# ======================================================================
+# Model dispatch
+# ======================================================================
+
+
+def _fit_model(
+    *,
+    model_name: str,
+    model_cfg: Any,
+    train_frame: pd.DataFrame,
+    predictors: list[str],
+    categorical_predictors: list[str],
+    sample_weight: pd.Series,
+) -> FittedHGBModel | FittedLogLinearModel:
+
+    if model_name in {
+        "hist_gradient_boosting",
+        "hist_gradient_boosting_squared",
+        "hist_gradient_boosting_squared_level",
+        "hist_gradient_boosting_squared_regularized",
+    }:
+        return _fit_hgb(
+            train_frame=train_frame,
+            predictors=predictors,
+            categorical_predictors=categorical_predictors,
+            sample_weight=sample_weight,
+            model_cfg=model_cfg,
+        )
+
+    if model_name in {
+        "log_linear_regression",
+        "log_linear_regression_smearing",
+    }:
+        return _fit_log_linear(
+            train_frame=train_frame,
+            predictors=predictors,
+            categorical_predictors=categorical_predictors,
+            sample_weight=sample_weight,
+            model_cfg=model_cfg,
+        )
+
+    raise ValueError(
+        f"Unsupported CIF/FOB estimation model: {model_name!r}."
+    )
+
+def _predict_model(
+    fitted: FittedHGBModel | FittedLogLinearModel,
+    frame: pd.DataFrame,
+) -> np.ndarray:
+    if isinstance(fitted, FittedHGBModel):
+        return _predict_hgb(fitted, frame)
+
+    if isinstance(fitted, FittedLogLinearModel):
+        return _predict_log_linear(fitted, frame)
+
+    raise TypeError(
+        f"Unsupported fitted CIF/FOB model: {type(fitted).__name__}"
+    )
+
+
+# ======================================================================
+# Validation metrics
+# ======================================================================
+
+
+def _metric_values(
+    *,
+    observed_factor: np.ndarray,
+    predicted_factor: np.ndarray,
+    upper_tail_threshold: float,
+) -> dict[str, float]:
+    """Return the full configured metric family."""
+    observed_factor = np.asarray(observed_factor, dtype=float)
+    predicted_factor = np.asarray(predicted_factor, dtype=float)
+
+    ape = (
         np.abs(predicted_factor - observed_factor)
         / np.maximum(observed_factor, 1e-12)
     )
 
-    return {
-        "holdout_mae_log_factor": float(
-            mean_absolute_error(observed_log, predicted_log)
+    upper_mask = observed_factor >= upper_tail_threshold
+
+    if len(observed_factor) >= 2:
+        correlation_result = spearmanr(
+            observed_factor,
+            predicted_factor,
+            nan_policy="omit",
+        )
+        spearman_correlation = float(
+            correlation_result.statistic
+            if hasattr(correlation_result, "statistic")
+            else correlation_result[0]
+        )
+    else:
+        spearman_correlation = np.nan
+
+    metrics = {
+        "mae_log_factor": float(
+            mean_absolute_error(
+                np.log(observed_factor),
+                np.log(np.maximum(predicted_factor, 1e-12)),
+            )
         ),
-        "holdout_median_absolute_percentage_error": float(
-            np.median(absolute_percentage_error)
+        "median_ape": float(np.median(ape)),
+        "mean_ape": float(np.mean(ape)),
+        "p90_ape": float(np.quantile(ape, 0.90)),
+        "p95_ape": float(np.quantile(ape, 0.95)),
+        "spearman_correlation": spearman_correlation,
+        "observed_p95": float(
+            np.quantile(observed_factor, 0.95)
         ),
-        "holdout_p90_absolute_percentage_error": float(
-            np.quantile(absolute_percentage_error, 0.90)
+        "predicted_p95": float(
+            np.quantile(predicted_factor, 0.95)
         ),
+        "upper_tail_median_ape": (
+            float(np.median(ape[upper_mask]))
+            if upper_mask.any()
+            else np.nan
+        ),
+        "upper_tail_p90_ape": (
+            float(np.quantile(ape[upper_mask], 0.90))
+            if upper_mask.any()
+            else np.nan
+        ),
+        "n_upper_tail": int(upper_mask.sum()),
     }
+
+    return metrics
+
+
+def _run_temporal_backtest(
+    *,
+    clean: pd.DataFrame,
+    cfg: CifFobConfig,
+    predictors: list[str],
+    model_name: str,
+    model_cfg: Any,
+    minimum_factor: float,
+    maximum_factor: float,
+    validation_years: list[int],
+) -> tuple[pd.DataFrame, dict[int, tuple[pd.Index, np.ndarray, np.ndarray]]]:
+    """
+    Run expanding-window folds for one model.
+
+    Returns
+    -------
+    fold_results
+        One row per model/year fold.
+    predictions_by_year
+        Mapping from validation year to
+        (original row index, predicted log factor, predicted factor).
+    """
+    categorical_predictors = _model_categorical_predictors(
+        cfg=cfg,
+        model_cfg=model_cfg,
+    )
+
+    unknown_categorical = sorted(
+        set(categorical_predictors) - set(predictors)
+    )
+
+    if unknown_categorical:
+        raise ValueError(
+            f"Model {model_name!r} declares categorical predictors that "
+            "are not configured predictors: "
+            + ", ".join(unknown_categorical)
+        )
+
+    upper_tail_threshold = float(
+        cfg.method.estimation.validation
+        .temporal_backtest.upper_tail_threshold
+    )
+
+    fold_rows: list[dict[str, Any]] = []
+    predictions_by_year: dict[
+        int,
+        tuple[pd.Index, np.ndarray, np.ndarray],
+    ] = {}
+
+    for validation_year in validation_years:
+        train_mask = clean["year"].lt(validation_year)
+        validation_mask = clean["year"].eq(validation_year)
+
+        train_frame = clean.loc[train_mask]
+        validation_frame = clean.loc[validation_mask]
+
+        if train_frame.empty or validation_frame.empty:
+            continue
+
+        fitted = _fit_model(
+            model_name=model_name,
+            model_cfg=model_cfg,
+            train_frame=train_frame,
+            predictors=predictors,
+            categorical_predictors=categorical_predictors,
+            sample_weight=train_frame["estimation_source_weight"],
+        )
+
+        predicted_log = _predict_model(
+            fitted,
+            validation_frame,
+        )
+        predicted_factor = np.clip(
+            np.exp(predicted_log),
+            minimum_factor,
+            maximum_factor,
+        )
+
+        observed_factor = validation_frame[
+            "observed_cif_fob_factor"
+        ].to_numpy(dtype=float)
+
+        metrics = _metric_values(
+            observed_factor=observed_factor,
+            predicted_factor=predicted_factor,
+            upper_tail_threshold=upper_tail_threshold,
+        )
+
+        fold_rows.append(
+            {
+                "model_name": model_name,
+                "validation_year": int(validation_year),
+                "n_train": int(len(train_frame)),
+                "n_holdout": int(len(validation_frame)),
+                **metrics,
+            }
+        )
+
+        predictions_by_year[int(validation_year)] = (
+            validation_frame.index,
+            predicted_log,
+            predicted_factor,
+        )
+
+    return pd.DataFrame(fold_rows), predictions_by_year
+
+
+def _summarise_backtests(
+    fold_results: pd.DataFrame,
+) -> pd.DataFrame:
+    """Create one compact summary row per model."""
+    if fold_results.empty:
+        return pd.DataFrame()
+
+    metric_columns = [
+        column
+        for column in fold_results.columns
+        if column not in {
+            "model_name",
+            "validation_year",
+            "n_train",
+            "n_holdout",
+        }
+    ]
+
+    rows: list[dict[str, Any]] = []
+
+    for model_name, group in fold_results.groupby(
+        "model_name",
+        sort=False,
+    ):
+        row: dict[str, Any] = {
+            "model_name": model_name,
+            "n_folds": int(len(group)),
+            "first_validation_year": int(
+                group["validation_year"].min()
+            ),
+            "last_validation_year": int(
+                group["validation_year"].max()
+            ),
+            "total_holdout_rows": int(
+                group["n_holdout"].sum()
+            ),
+        }
+
+        for metric in metric_columns:
+            values = pd.to_numeric(
+                group[metric],
+                errors="coerce",
+            )
+            row[f"mean_{metric}"] = float(values.mean())
+            row[f"median_{metric}"] = float(values.median())
+            row[f"worst_{metric}"] = float(values.max())
+
+        rows.append(row)
+
+    return pd.DataFrame(rows)
+
+
+# ======================================================================
+# Existing output inspection
+# ======================================================================
 
 
 def _inspect_existing_estimated_rates(
@@ -436,6 +1213,80 @@ def _inspect_existing_estimated_rates(
 
 
 # ======================================================================
+# Output helpers
+# ======================================================================
+
+
+def _write_dataframe(
+    *,
+    frame: pd.DataFrame,
+    output_path: Path,
+    threads: int,
+) -> None:
+    """Write a DataFrame through DuckDB using ZSTD Parquet."""
+    output_path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    con = duckdb.connect()
+
+    try:
+        con.execute(f"SET threads = {int(threads)}")
+        con.register("output_df", frame)
+
+        con.execute(
+            f"""
+            COPY (
+                SELECT *
+                FROM output_df
+            )
+            TO {_sql_literal(output_path)}
+            (
+                FORMAT PARQUET,
+                COMPRESSION ZSTD
+            )
+            """
+        )
+    finally:
+        con.close()
+
+
+def _write_validation_outputs(
+    *,
+    cfg: CifFobConfig,
+    fold_results: pd.DataFrame,
+    summary: pd.DataFrame,
+) -> None:
+    """Write configured temporal-validation CSV products."""
+    if cfg.products.temporal_validation_folds.enable:
+        fold_path = cfg.product_path(
+            "temporal_validation_folds"
+        )
+        fold_path.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+        fold_results.to_csv(
+            fold_path,
+            index=False,
+        )
+
+    if cfg.products.temporal_validation_summary.enable:
+        summary_path = cfg.product_path(
+            "temporal_validation_summary"
+        )
+        summary_path.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+        summary.to_csv(
+            summary_path,
+            index=False,
+        )
+
+
+# ======================================================================
 # Main estimator
 # ======================================================================
 
@@ -447,7 +1298,11 @@ def estimate_cif_fob_rates(
     force: bool = False,
     logger,
 ) -> dict[str, Any]:
-    """Estimate CIF/FOB factors from the Step 4 feature artifact."""
+    """
+    Estimate CIF/FOB factors from the Step 4 feature artifact.
+
+    The workflow signature remains unchanged.
+    """
     output_path = cfg.product_path("estimated_rates")
 
     if not input_path.exists():
@@ -465,27 +1320,9 @@ def estimate_cif_fob_rates(
             threads=cfg.engine.threads,
         )
 
-    output_path.parent.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
     predictors = _configured_predictors(cfg)
     estimation_cfg = cfg.method.estimation
-    categorical_predictors = list(
-        estimation_cfg.categorical_predictors
-    )
-
-    unknown_categorical = sorted(
-        set(categorical_predictors) - set(predictors)
-    )
-
-    if unknown_categorical:
-        raise ValueError(
-            "Configured categorical predictors are not present in the "
-            "predictor list: "
-            + ", ".join(unknown_categorical)
-        )
+    primary_model_name, model_configs = _enabled_model_configs(cfg)
 
     minimum_evidence_value = float(
         estimation_cfg.minimum_evidence_value_usd
@@ -496,14 +1333,15 @@ def estimate_cif_fob_rates(
         estimation_cfg.exclude_proxy_weights
     )
 
-    logger.info("Estimating CIF/FOB rates.")
+    logger.info("Estimating and comparing CIF/FOB rates.")
     logger.info("  Input: %s", input_path)
     logger.info("  Output: %s", output_path)
     logger.info("  Predictors: %s", ", ".join(predictors))
     logger.info(
-        "  Categorical predictors: %s",
-        ", ".join(categorical_predictors) or "none",
+        "  Enabled models: %s",
+        ", ".join(model_configs),
     )
+    logger.info("  Primary model: %s", primary_model_name)
     logger.info(
         "  Minimum evidence value: %.2f USD",
         minimum_evidence_value,
@@ -519,34 +1357,7 @@ def estimate_cif_fob_rates(
     )
     logger.info(
         "  Training factor sources: %s",
-        ", ".join(
-            estimation_cfg.training_factor_sources
-        ),
-    )
-    logger.info(
-        "  Model: %s",
-        estimation_cfg.model.name,
-    )
-    logger.debug(
-    "  Model Loss: %s",
-    estimation_cfg.model.loss,
-    )
-    logger.debug(
-        "  Model Lead node: %.4f",
-        estimation_cfg.model.max_leaf_nodes,
-    )
-    logger.debug(
-        "  Model sample leaf: %d",
-        estimation_cfg.model.min_samples_leaf,
-    )
-    logger.debug(
-        "  Model L2 regularization: %.4f",
-        estimation_cfg.model.l2_regularization,
-    )
-
-    logger.info(
-        "  Validation strategy: %s",
-        estimation_cfg.validation.strategy,
+        ", ".join(estimation_cfg.training_factor_sources),
     )
 
     con = duckdb.connect()
@@ -562,15 +1373,6 @@ def estimate_cif_fob_rates(
             predictors=predictors,
         )
 
-        input_sql = _sql_literal(input_path)
-
-
-        ESTIMATION_DIAGNOSTIC_COLUMNS = [
-            "lagged_pair_factor_observations",
-            "lagged_pair_factor_years",
-            "lagged_pair_factor_found",
-        ]
-        
         select_columns = [
             "year",
             "exporter_iso",
@@ -586,15 +1388,16 @@ def estimate_cif_fob_rates(
             "pair_uses_weight_proxy",
             "pair_uses_estimated_weight",
             "import_weight_estimated",
-            *ESTIMATION_DIAGNOSTIC_COLUMNS,
+            "lagged_pair_factor_observations",
+            "lagged_pair_factor_years",
+            "lagged_pair_factor_found",
             *[
-            predictor
-            for predictor in predictors
-            if predictor != "year"
+                predictor
+                for predictor in predictors
+                if predictor != "year"
             ],
         ]
 
-        # Preserve deterministic order and avoid duplicate selected fields.
         select_columns = list(dict.fromkeys(select_columns))
 
         quoted_select = ",\n".join(
@@ -606,7 +1409,7 @@ def estimate_cif_fob_rates(
             f"""
             SELECT
                 {quoted_select}
-            FROM read_parquet({input_sql})
+            FROM read_parquet({_sql_literal(input_path)})
             """
         ).df()
 
@@ -619,7 +1422,7 @@ def estimate_cif_fob_rates(
         )
 
     # ==================================================================
-    # Clean estimation sample
+    # Shared clean estimation sample
     # ==================================================================
 
     data["estimation_evidence_value"] = _evidence_value(data)
@@ -628,35 +1431,47 @@ def estimate_cif_fob_rates(
         cfg=cfg,
     )
 
+    # With minimum_evidence_value_usd: 0.0 this deliberately requires
+    # positive evidence instead of allowing zero-valued observations.
     data["passes_minimum_value"] = (
         data["estimation_evidence_value"]
-        .ge(minimum_evidence_value)
+        .gt(minimum_evidence_value)
         .fillna(False)
+    )
+
+    observed_factor = pd.to_numeric(
+        data["observed_cif_fob_factor"],
+        errors="coerce",
     )
 
     data["passes_factor_lower_bound"] = (
-        pd.to_numeric(
-            data["observed_cif_fob_factor"],
-            errors="coerce",
-        )
+        observed_factor
         .ge(minimum_factor)
         .fillna(False)
     )
-
     data["passes_factor_upper_bound"] = (
-        pd.to_numeric(
-            data["observed_cif_fob_factor"],
-            errors="coerce",
-        )
+        observed_factor
         .le(maximum_factor)
         .fillna(False)
     )
 
     if exclude_proxy_weights:
+        # The proxy rule is relevant to mirror evidence. Direct evidence
+        # is not rejected merely because a mirror-oriented proxy flag is
+        # present in the shared table.
+        is_direct = (
+            data["factor_source"]
+            .astype("string")
+            .str.lower()
+            .eq("direct")
+        )
         data["passes_proxy_rule"] = (
-            ~data["pair_uses_weight_proxy"]
-            .fillna(False)
-            .astype(bool)
+            is_direct
+            | (
+                ~data["pair_uses_weight_proxy"]
+                .fillna(False)
+                .astype(bool)
+            )
         )
     else:
         data["passes_proxy_rule"] = True
@@ -667,7 +1482,11 @@ def estimate_cif_fob_rates(
         .astype(bool)
     )
 
-    training_factor_sources = [source.strip().lower() for source in estimation_cfg.training_factor_sources]
+    training_factor_sources = [
+        source.strip().lower()
+        for source in estimation_cfg.training_factor_sources
+    ]
+
     data["passes_factor_source_rule"] = (
         data["factor_source"]
         .astype("string")
@@ -684,7 +1503,7 @@ def estimate_cif_fob_rates(
         & data["passes_factor_upper_bound"]
         & data["passes_proxy_rule"]
         & data["estimation_source_weight"].gt(0)
-        & data["observed_cif_fob_factor"].notna()
+        & observed_factor.notna()
     )
 
     clean = data.loc[
@@ -696,227 +1515,237 @@ def estimate_cif_fob_rates(
             "No observations passed the configured clean-estimation rules."
         )
 
+    clean["observed_cif_fob_factor"] = pd.to_numeric(
+        clean["observed_cif_fob_factor"],
+        errors="raise",
+    )
     clean["log_observed_factor"] = np.log(
-        pd.to_numeric(
-            clean["observed_cif_fob_factor"],
-            errors="raise",
-        )
+        clean["observed_cif_fob_factor"]
     )
 
-    # ==================================================================
-    # Temporal holdout
-    # ==================================================================
-
-    holdout_year = _resolve_holdout_year(
+    latest_holdout_year = _resolve_latest_holdout_year(
+        clean=clean,
+        cfg=cfg,
+    )
+    validation_years = _resolve_temporal_validation_years(
         clean=clean,
         cfg=cfg,
     )
 
-    train_mask = clean["year"].lt(holdout_year)
-    holdout_mask = clean["year"].eq(holdout_year)
-
-    n_train = int(train_mask.sum())
-    n_holdout = int(holdout_mask.sum())
-
-    if n_train == 0 or n_holdout == 0:
-        raise RuntimeError(
-            "Temporal validation requires observations before and during "
-            f"holdout year {holdout_year}. "
-            f"Training rows={n_train:,}, holdout rows={n_holdout:,}."
+    if latest_holdout_year not in validation_years:
+        validation_years = sorted(
+            set(validation_years + [latest_holdout_year])
         )
 
-    holdout_category_maps = _learn_category_maps(
-        frame=clean.loc[train_mask],
-        categorical_predictors=categorical_predictors,
-    )
-
-    _validate_categories(
-        category_maps=holdout_category_maps,
-        max_bins=estimation_cfg.model.max_bins,
-    )
-
-    encoded_train = _encode_predictors(
-        frame=clean.loc[train_mask],
-        predictors=predictors,
-        categorical_predictors=categorical_predictors,
-        category_maps=holdout_category_maps,
-    )
-
-    encoded_holdout = _encode_predictors(
-        frame=clean.loc[holdout_mask],
-        predictors=predictors,
-        categorical_predictors=categorical_predictors,
-        category_maps=holdout_category_maps,
-    )
-
-    categorical_mask = [
-        predictor in set(categorical_predictors)
-        for predictor in predictors
-    ]
-
-    holdout_model = _build_model(
-        cfg,
-        categorical_mask=categorical_mask,
-    )
-
-    holdout_model.fit(
-        encoded_train[predictors],
-        clean.loc[train_mask, "log_observed_factor"],
-        sample_weight=clean.loc[
-            train_mask,
-            "estimation_source_weight",
-        ],
-    )
-
-    holdout_prediction_log = holdout_model.predict(
-        encoded_holdout[predictors]
-    )
-
-    holdout_metrics = _prediction_error_metrics(
-        observed_log=clean.loc[
-            holdout_mask,
-            "log_observed_factor",
-        ].to_numpy(),
-        predicted_log=holdout_prediction_log,
-    )
-
-    # --------------------------------------------------------------
-    # Preserve genuine out-of-sample holdout predictions.
-    #  --------------------------------------------------------------
-    
-    holdout_prediction_factor = np.exp(
-    holdout_prediction_log)
-
-    data["is_temporal_holdout"] = False
-    data["holdout_predicted_log_factor"] = np.nan
-    data["holdout_predicted_factor"] = np.nan
-
-    holdout_indices = clean.loc[
-        holdout_mask
-    ].index
-
-    data.loc[
-        holdout_indices,
-        "is_temporal_holdout",
-    ] = True
-
-    data.loc[
-        holdout_indices,
-        "holdout_predicted_log_factor",
-    ] = holdout_prediction_log
-
-    data.loc[
-        holdout_indices,
-        "holdout_predicted_factor",
-    ] = holdout_prediction_factor
-
-
-    logger.info("  Temporal holdout year: %s", holdout_year)
-    logger.info("  Training observations: %s", n_train)
-    logger.info("  Holdout observations: %s", n_holdout)
     logger.info(
-        "  Holdout MAE, log factor: %.6f",
-        holdout_metrics["holdout_mae_log_factor"],
-    )
-    logger.info(
-        "  Holdout median absolute percentage error: %.4f%%",
-        100.0
-        * holdout_metrics[
-            "holdout_median_absolute_percentage_error"
-        ],
-    )
-    logger.info(
-        "  Holdout p90 absolute percentage error: %.4f%%",
-        100.0
-        * holdout_metrics[
-            "holdout_p90_absolute_percentage_error"
-        ],
+        "  Temporal validation years: %s",
+        ", ".join(str(year) for year in validation_years),
     )
 
     # ==================================================================
-    # Final fit and prediction
+    # Run identical temporal folds for every model
     # ==================================================================
 
-    final_category_maps = _learn_category_maps(
-        frame=clean,
-        categorical_predictors=categorical_predictors,
+    all_fold_results: list[pd.DataFrame] = []
+    latest_predictions_by_model: dict[
+        str,
+        tuple[pd.Index, np.ndarray, np.ndarray],
+    ] = {}
+
+    for model_name, model_cfg in model_configs.items():
+        logger.info("  Backtesting model: %s", model_name)
+
+        fold_results, predictions_by_year = _run_temporal_backtest(
+            clean=clean,
+            cfg=cfg,
+            predictors=predictors,
+            model_name=model_name,
+            model_cfg=model_cfg,
+            minimum_factor=minimum_factor,
+            maximum_factor=maximum_factor,
+            validation_years=validation_years,
+        )
+
+        if fold_results.empty:
+            raise RuntimeError(
+                f"Model {model_name!r} produced no temporal folds."
+            )
+
+        all_fold_results.append(fold_results)
+
+        if latest_holdout_year in predictions_by_year:
+            latest_predictions_by_model[model_name] = (
+                predictions_by_year[latest_holdout_year]
+            )
+
+        latest_row = fold_results.loc[
+            fold_results["validation_year"].eq(
+                latest_holdout_year
+            )
+        ]
+
+        if not latest_row.empty:
+            row = latest_row.iloc[0]
+            logger.info(
+                "    Latest holdout %s — median APE %.4f%%, "
+                "p90 APE %.4f%%, p95 APE %.4f%%",
+                latest_holdout_year,
+                100.0 * float(row["median_ape"]),
+                100.0 * float(row["p90_ape"]),
+                100.0 * float(row["p95_ape"]),
+            )
+
+    fold_results = pd.concat(
+        all_fold_results,
+        ignore_index=True,
+    )
+    validation_summary = _summarise_backtests(
+        fold_results
     )
 
-    _validate_categories(
-        category_maps=final_category_maps,
-        max_bins=estimation_cfg.model.max_bins,
+    _write_validation_outputs(
+        cfg=cfg,
+        fold_results=fold_results,
+        summary=validation_summary,
     )
 
-    encoded_clean = _encode_predictors(
-        frame=clean,
-        predictors=predictors,
-        categorical_predictors=categorical_predictors,
-        category_maps=final_category_maps,
+    # Preserve latest genuine OOS predictions for every model.
+    data["is_temporal_holdout"] = (
+        data["year"].eq(latest_holdout_year)
+        & data["clean_estimation_eligible"]
     )
+
+    for model_name, prediction_tuple in (
+        latest_predictions_by_model.items()
+    ):
+        row_index, predicted_log, predicted_factor = prediction_tuple
+        prefix = _safe_model_prefix(model_name)
+
+        data[f"{prefix}_holdout_predicted_log_factor"] = np.nan
+        data[f"{prefix}_holdout_predicted_factor"] = np.nan
+
+        data.loc[
+            row_index,
+            f"{prefix}_holdout_predicted_log_factor",
+        ] = predicted_log
+
+        data.loc[
+            row_index,
+            f"{prefix}_holdout_predicted_factor",
+        ] = predicted_factor
+
+    # ==================================================================
+    # Full-sample fit and prediction for every enabled model
+    # ==================================================================
 
     prediction_rows = data.loc[
         data["prediction_eligible"]
     ].copy()
 
-    encoded_prediction = _encode_predictors(
-        frame=prediction_rows,
-        predictors=predictors,
-        categorical_predictors=categorical_predictors,
-        category_maps=final_category_maps,
-    )
+    if prediction_rows.empty:
+        raise RuntimeError(
+            "No rows have complete predictors for final estimation."
+        )
 
-    final_model = _build_model(
-        cfg,
-        categorical_mask=categorical_mask,
-    )
+    primary_factor_column: str | None = None
+    primary_log_column: str | None = None
 
-    final_model.fit(
-        encoded_clean[predictors],
-        clean["log_observed_factor"],
-        sample_weight=clean["estimation_source_weight"],
-    )
+    for model_name, model_cfg in model_configs.items():
+        categorical_predictors = _model_categorical_predictors(
+            cfg=cfg,
+            model_cfg=model_cfg,
+        )
 
-    predicted_log_factor = final_model.predict(
-        encoded_prediction[predictors]
-    )
+        unknown_categorical = sorted(
+            set(categorical_predictors) - set(predictors)
+        )
 
-    predicted_factor = np.clip(
-        np.exp(predicted_log_factor),
-        minimum_factor,
-        maximum_factor,
-    )
+        if unknown_categorical:
+            raise ValueError(
+                f"Model {model_name!r} declares unknown categorical "
+                "predictors: "
+                + ", ".join(unknown_categorical)
+            )
 
-    data["predicted_log_cif_fob_factor"] = np.nan
-    data["estimated_cif_fob_factor"] = np.nan
+        logger.info("  Final full-sample fit: %s", model_name)
 
-    data.loc[
-        prediction_rows.index,
-        "predicted_log_cif_fob_factor",
-    ] = predicted_log_factor
+        fitted = _fit_model(
+            model_name=model_name,
+            model_cfg=model_cfg,
+            train_frame=clean,
+            predictors=predictors,
+            categorical_predictors=categorical_predictors,
+            sample_weight=clean["estimation_source_weight"],
+        )
 
-    data.loc[
-        prediction_rows.index,
-        "estimated_cif_fob_factor",
-    ] = predicted_factor
+        predicted_log = _predict_model(
+            fitted,
+            prediction_rows,
+        )
+        predicted_factor = np.clip(
+            np.exp(predicted_log),
+            minimum_factor,
+            maximum_factor,
+        )
 
+        prefix = _safe_model_prefix(model_name)
+        log_column = (
+            f"{prefix}_predicted_log_cif_fob_factor"
+        )
+        factor_column = (
+            f"{prefix}_estimated_cif_fob_factor"
+        )
+
+        data[log_column] = np.nan
+        data[factor_column] = np.nan
+
+        data.loc[
+            prediction_rows.index,
+            log_column,
+        ] = predicted_log
+
+        data.loc[
+            prediction_rows.index,
+            factor_column,
+        ] = predicted_factor
+
+        if model_name == primary_model_name:
+            primary_log_column = log_column
+            primary_factor_column = factor_column
+
+    if primary_factor_column is None or primary_log_column is None:
+        raise RuntimeError(
+            "Primary model predictions were not produced."
+        )
+
+    # Stable downstream aliases.
+    data["predicted_log_cif_fob_factor"] = data[
+        primary_log_column
+    ]
+    data["estimated_cif_fob_factor"] = data[
+        primary_factor_column
+    ]
     data["estimated_factor_method"] = np.where(
         data["prediction_eligible"],
-        estimation_cfg.model.name,
+        primary_model_name,
         None,
     )
-
-    data["estimation_holdout_year"] = holdout_year
+    data["primary_model_name"] = primary_model_name
+    data["estimation_holdout_year"] = latest_holdout_year
     data["estimation_training_observations"] = len(clean)
-
-    # A later correction/fallback stage can decide how to handle rows
-    # without complete model predictors.
     data["factor_for_application"] = data[
         "estimated_cif_fob_factor"
     ]
 
     # ==================================================================
-    # Write and audit output
+    # Write and audit main output
     # ==================================================================
+
+    _write_dataframe(
+        frame=data,
+        output_path=output_path,
+        threads=cfg.engine.threads,
+    )
 
     con = duckdb.connect()
 
@@ -925,26 +1754,7 @@ def estimate_cif_fob_rates(
             f"SET threads = {int(cfg.engine.threads)}"
         )
 
-        con.register(
-            "estimated_rates_df",
-            data,
-        )
-
         output_sql = _sql_literal(output_path)
-
-        con.execute(
-            f"""
-            COPY (
-                SELECT *
-                FROM estimated_rates_df
-            )
-            TO {output_sql}
-            (
-                FORMAT PARQUET,
-                COMPRESSION ZSTD
-            )
-            """
-        )
 
         audit_row = con.execute(
             f"""
@@ -955,18 +1765,14 @@ def estimate_cif_fob_rates(
                     importer_iso,
                     target_cmd,
                     COUNT(*) AS n_rows
-
                 FROM read_parquet({output_sql})
-
                 GROUP BY
                     year,
                     exporter_iso,
                     importer_iso,
                     target_cmd
-
                 HAVING COUNT(*) > 1
             )
-
             SELECT
                 (
                     SELECT COUNT(*)
@@ -1043,7 +1849,6 @@ def estimate_cif_fob_rates(
                     FROM read_parquet({output_sql})
                     WHERE estimated_cif_fob_factor IS NOT NULL
                 ) AS estimated_factor_p95
-
             """
         ).fetchone()
 
@@ -1083,14 +1888,14 @@ def estimate_cif_fob_rates(
 
     if n_missing_prediction_when_eligible > 0:
         raise RuntimeError(
-            "Prediction-eligible rows are missing estimated factors: "
-            f"{n_missing_prediction_when_eligible:,}."
+            "Prediction-eligible rows are missing primary-model "
+            f"estimates: {n_missing_prediction_when_eligible:,}."
         )
 
     if n_prediction_when_ineligible > 0:
         raise RuntimeError(
-            "Prediction-ineligible rows unexpectedly received model "
-            f"estimates: {n_prediction_when_ineligible:,}."
+            "Prediction-ineligible rows unexpectedly received primary "
+            f"model estimates: {n_prediction_when_ineligible:,}."
         )
 
     if n_prediction_bound_failures > 0:
@@ -1099,9 +1904,8 @@ def estimate_cif_fob_rates(
             f"{n_prediction_bound_failures:,}."
         )
 
-    audit_passed = True
     ready_for_trade_correction = (
-        n_with_estimated_factor > 0
+        int(n_with_estimated_factor or 0) > 0
     )
 
     prediction_coverage_percent = (
@@ -1110,7 +1914,8 @@ def estimate_cif_fob_rates(
         else 0.0
     )
 
-    logger.info("CIF/FOB rates estimated.")
+    logger.info("CIF/FOB rates estimated and compared.")
+    logger.info("  Primary model: %s", primary_model_name)
     logger.info("  Output rows: %s", n_output_rows)
     logger.info(
         "  Clean estimation observations: %s",
@@ -1121,7 +1926,7 @@ def estimate_cif_fob_rates(
         n_prediction_eligible,
     )
     logger.info(
-        "  Rows with estimated factor: %s",
+        "  Rows with primary estimated factor: %s",
         n_with_estimated_factor,
     )
     logger.info(
@@ -1129,44 +1934,76 @@ def estimate_cif_fob_rates(
         prediction_coverage_percent,
     )
     logger.info(
-        "  Duplicate bilateral keys: %s",
-        n_duplicate_keys,
-    )
-    logger.info(
-        "  Median estimated factor: %s",
+        "  Median primary estimated factor: %s",
         median_estimated_factor,
     )
     logger.info(
-        "  Estimated factor p05/p95: %s / %s",
+        "  Primary estimated factor p05/p95: %s / %s",
         estimated_factor_p05,
         estimated_factor_p95,
     )
-    logger.info("  Step 5 audit passed: %s", audit_passed)
     logger.info(
-        "  Ready for trade correction: %s",
-        ready_for_trade_correction,
+        "  Temporal validation folds: %s",
+        cfg.product_path("temporal_validation_folds"),
+    )
+    logger.info(
+        "  Temporal validation summary: %s",
+        cfg.product_path("temporal_validation_summary"),
     )
     logger.info("  Output: %s", output_path)
 
+    latest_primary_row = fold_results.loc[
+        (fold_results["model_name"] == primary_model_name)
+        & (
+            fold_results["validation_year"]
+            == latest_holdout_year
+        )
+    ]
+
+    latest_primary_metrics: dict[str, Any] = {}
+
+    if not latest_primary_row.empty:
+        latest_primary_metrics = latest_primary_row.iloc[0].to_dict()
+
     return {
         "status": "completed",
-        "audit_passed": audit_passed,
-        "ready_for_trade_correction": ready_for_trade_correction,
+        "audit_passed": True,
+        "ready_for_trade_correction": (
+            ready_for_trade_correction
+        ),
         "output_path": output_path,
         "estimated_rates_path": output_path,
+        "primary_model_name": primary_model_name,
+        "enabled_models": list(model_configs),
         "n_output_rows": n_output_rows,
         "n_clean_estimation_observations": (
             n_clean_estimation_observations
         ),
         "n_prediction_eligible": n_prediction_eligible,
         "n_with_estimated_factor": n_with_estimated_factor,
-        "prediction_coverage_percent": prediction_coverage_percent,
+        "prediction_coverage_percent": (
+            prediction_coverage_percent
+        ),
         "n_duplicate_keys": n_duplicate_keys,
         "median_estimated_factor": median_estimated_factor,
         "estimated_factor_p05": estimated_factor_p05,
         "estimated_factor_p95": estimated_factor_p95,
-        "holdout_year": holdout_year,
-        "n_holdout_training_observations": n_train,
-        "n_holdout_observations": n_holdout,
-        **holdout_metrics,
+        "holdout_year": latest_holdout_year,
+        "temporal_validation_years": validation_years,
+        "temporal_validation_fold_count": int(
+            len(fold_results)
+        ),
+        "temporal_validation_summary_path": (
+            cfg.product_path(
+                "temporal_validation_summary"
+            )
+        ),
+        "temporal_validation_folds_path": (
+            cfg.product_path(
+                "temporal_validation_folds"
+            )
+        ),
+        "latest_primary_holdout_metrics": (
+            latest_primary_metrics
+        ),
     }

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 from pathlib import Path
 
 import duckdb
@@ -20,13 +21,15 @@ else:
 
 HOLDOUT_YEAR = 2025
 
+## Save diagnostics to a text file while also printing to stdout.
+OUTPUT_DIR = Path("/storage/vacoda/output/reports/cif_fob/diagnose/")
+OUTPUT_FILENAME = "diagnose_estimated_rates.md"
 
 def print_diagnostics_table(
     dataframe,
     *,
     percentage_columns: tuple[str, ...] = (),
-    factor_columns: tuple[str, ...] = (),
-) -> None:
+    factor_columns: tuple[str, ...] = ()) -> None:
     """Print a diagnostic DataFrame with human-readable formatting."""
     display = dataframe.copy()
 
@@ -58,6 +61,22 @@ def main() -> None:
         raise FileNotFoundError(
             f"Estimated-rates parquet not found: {INPUT_PATH}"
         )
+
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    output_path = OUTPUT_DIR / OUTPUT_FILENAME
+
+    report_file = output_path.open("w", encoding="utf-8")
+    original_print = builtins.print
+
+    def dual_print(*args, **kwargs) -> None:
+        """Print to terminal and report file with matching formatting."""
+        original_print(*args, **kwargs)
+        file_kwargs = dict(kwargs)
+        file_kwargs["file"] = report_file
+        original_print(*args, **file_kwargs)
+
+    builtins.print = dual_print
+    print(f"Saving diagnostics report to: {output_path}")
 
     con = duckdb.connect()
 
@@ -1216,6 +1235,8 @@ def main() -> None:
 
     finally:
         con.close()
+        builtins.print = original_print
+        report_file.close()
 
 
 if __name__ == "__main__":

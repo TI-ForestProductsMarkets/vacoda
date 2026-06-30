@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from vacoda.config.base import (
     get_step_config_path,
@@ -58,9 +58,9 @@ class CifFobInputConfig:
     def from_dict(cls, cfg: dict[str, Any]) -> "CifFobInputConfig":
         return cls(
             stage=require_str(cfg.get("stage"), key="cif_fob.input.stage").strip().lower(),
-            subdir=require_str(cfg.get("subdir", ""), key="cif_fob.input.subdir"),
+            subdir=require_str(cfg.get("subdir"), key="cif_fob.input.subdir"),
             filename=require_str(cfg.get("filename"), key="cif_fob.input.filename"),
-            format=require_str(cfg.get("format", "parquet"), key="cif_fob.input.format").strip().lower(),
+            format=require_str(cfg.get("format"), key="cif_fob.input.format").strip().lower(),
         )
 
     def resolve_dir(self) -> Path:
@@ -81,8 +81,8 @@ class CifFobOutputConfig:
     def from_dict(cls, cfg: dict[str, Any]) -> "CifFobOutputConfig":
         return cls(
             stage=require_str(cfg.get("stage"), key="cif_fob.output.stage").strip().lower(),
-            subdir=require_str(cfg.get("subdir", ""), key="cif_fob.output.subdir"),
-            format=require_str(cfg.get("format", "parquet"), key="cif_fob.output.format").strip().lower(),
+            subdir=require_str(cfg.get("subdir"), key="cif_fob.output.subdir"),
+            format=require_str(cfg.get("format"), key="cif_fob.output.format").strip().lower(),
         )
 
     def resolve_dir(self) -> Path:
@@ -101,20 +101,20 @@ class CifFobLoggingConfig:
     def from_dict(cls, cfg: dict[str, Any]) -> "CifFobLoggingConfig":
         return cls(
             level=require_str(
-                cfg.get("level", "INFO"),
+                cfg.get("level"),
                 key="cif_fob.logging.level",
             ).strip().upper(),
             subdir=require_str(
-                cfg.get("subdir", "cif_fob"),
+                cfg.get("subdir"),
                 key="cif_fob.logging.subdir",
                 allow_empty=True,
             ),
             file=require_str(
-                cfg.get("file", "LOG_CIF_FOB.log"),
+                cfg.get("file"),
                 key="cif_fob.logging.file",
             ),
             timestamp=require_bool(
-                cfg.get("timestamp", True),
+                cfg.get("timestamp"),
                 key="cif_fob.logging.timestamp",
             ),
         )
@@ -249,7 +249,7 @@ class CifFobSourceDataConfig:
                 require_dict(cfg.get("columns"), key="cif_fob.source_data.columns")
             ),
             allocate_supplementary_measures=require_bool(
-                cfg.get("allocate_supplementary_measures", True),
+                cfg.get("allocate_supplementary_measures"),
                 key="cif_fob.source_data.allocate_supplementary_measures",
             ),
         )
@@ -263,7 +263,7 @@ class CifFobProductConfig:
     @classmethod
     def from_dict(cls, cfg: dict[str, Any], *, key: str) -> "CifFobProductConfig":
         return cls(
-            enable=require_bool(cfg.get("enable", True), key=f"{key}.enable"),
+            enable=require_bool(cfg.get("enable"), key=f"{key}.enable"),
             filename=require_str(cfg.get("filename"), key=f"{key}.filename"),
         )
 
@@ -341,13 +341,13 @@ class CifFobTrainingConfig:
     def from_dict(cls, cfg: dict[str, Any]) -> "CifFobTrainingConfig":
         return cls(
             minimum_quantity_concordance=require_float(
-                cfg.get("minimum_quantity_concordance", 0.9),
+                cfg.get("minimum_quantity_concordance"),
                 key="cif_fob.method.training.minimum_quantity_concordance",
                 min_value=0.0,
                 max_value=1.0,
             ),
             minimum_direct_value_coverage=require_float(
-                cfg.get("minimum_direct_value_coverage", 0.9),
+                cfg.get("minimum_direct_value_coverage"),
                 key="cif_fob.method.training.minimum_direct_value_coverage",
                 min_value=0.0,
                 max_value=1.0,
@@ -357,7 +357,7 @@ class CifFobTrainingConfig:
 
 def _require_str_list(value: Any, *, key: str) -> list[str]:
     if value is None:
-        return []
+        raise TypeError(f"{key} must be a list")
 
     if not isinstance(value, list):
         raise TypeError(f"{key} must be a list")
@@ -379,7 +379,7 @@ class CifFobFeatureInputConfig:
         if cfg.get("stage") is not None:
             return cls(
                 stage=require_str(cfg.get("stage"), key=f"{key}.stage").strip().lower(),
-                subdir=require_str(cfg.get("subdir", ""), key=f"{key}.subdir"),
+                subdir=require_str(cfg.get("subdir"), key=f"{key}.subdir"),
                 source=None,
                 path=None,
                 filename=filename,
@@ -442,7 +442,7 @@ class CifFobGeographyCrosswalkConfig:
                 key=key,
             ),
             allow_proxy_mappings=require_bool(
-                cfg.get("allow_proxy_mappings", False),
+                cfg.get("allow_proxy_mappings"),
                 key=f"{key}.allow_proxy_mappings",
             ),
         )
@@ -465,12 +465,12 @@ class CifFobProductMedianUnitValueConfig:
                 key="cif_fob.features.product.median_unit_value.method",
             ),
             minimum_observations=require_int(
-                cfg.get("minimum_observations", 20),
+                cfg.get("minimum_observations"),
                 key="cif_fob.features.product.median_unit_value.minimum_observations",
                 min_value=1,
             ),
             fallback=_require_str_list(
-                cfg.get("fallback", []),
+                cfg.get("fallback"),
                 key="cif_fob.features.product.median_unit_value.fallback",
             ),
         )
@@ -485,13 +485,13 @@ class CifFobProductFeaturesConfig:
     def from_dict(cls, cfg: dict[str, Any]) -> "CifFobProductFeaturesConfig":
         return cls(
             group_digits=require_int(
-                cfg.get("group_digits", 4),
+                cfg.get("group_digits"),
                 key="cif_fob.features.product.group_digits",
                 min_value=1,
             ),
             median_unit_value=CifFobProductMedianUnitValueConfig.from_dict(
                 require_dict(
-                    cfg.get("median_unit_value", {}),
+                    cfg.get("median_unit_value"),
                     key="cif_fob.features.product.median_unit_value",
                 )
             ),
@@ -561,7 +561,7 @@ class CifFobEstimationSourceWeightsConfig:
     ) -> "CifFobEstimationSourceWeightsConfig":
         return cls(
             direct_reported_weight=require_float(
-                cfg.get("direct_reported_weight", 1.0),
+                cfg.get("direct_reported_weight"),
                 key=(
                     "cif_fob.method.estimation.source_weights."
                     "direct_reported_weight"
@@ -569,7 +569,7 @@ class CifFobEstimationSourceWeightsConfig:
                 min_value=0.0,
             ),
             direct_estimated_weight=require_float(
-                cfg.get("direct_estimated_weight", 0.75),
+                cfg.get("direct_estimated_weight"),
                 key=(
                     "cif_fob.method.estimation.source_weights."
                     "direct_estimated_weight"
@@ -577,7 +577,7 @@ class CifFobEstimationSourceWeightsConfig:
                 min_value=0.0,
             ),
             mirror_reported_weight=require_float(
-                cfg.get("mirror_reported_weight", 0.5),
+                cfg.get("mirror_reported_weight"),
                 key=(
                     "cif_fob.method.estimation.source_weights."
                     "mirror_reported_weight"
@@ -585,7 +585,7 @@ class CifFobEstimationSourceWeightsConfig:
                 min_value=0.0,
             ),
             mirror_estimated_weight=require_float(
-                cfg.get("mirror_estimated_weight", 0.25),
+                cfg.get("mirror_estimated_weight"),
                 key=(
                     "cif_fob.method.estimation.source_weights."
                     "mirror_estimated_weight"
@@ -593,10 +593,6 @@ class CifFobEstimationSourceWeightsConfig:
                 min_value=0.0,
             ),
         )
-
-
-from dataclasses import dataclass
-from typing import Any
 
 
 @dataclass(frozen=True)
@@ -611,20 +607,14 @@ class CifFobTemporalBacktestOutputConfig:
     ) -> "CifFobTemporalBacktestOutputConfig":
         return cls(
             summary_product=require_str(
-                cfg.get(
-                    "summary_product",
-                    "temporal_validation_summary",
-                ),
+                cfg.get("summary_product"),
                 key=(
                     "method.estimation.validation."
                     "temporal_backtest.output.summary_product"
                 ),
             ).strip(),
             fold_product=require_str(
-                cfg.get(
-                    "fold_product",
-                    "temporal_validation_folds",
-                ),
+                cfg.get("fold_product"),
                 key=(
                     "method.estimation.validation."
                     "temporal_backtest.output.fold_product"
@@ -645,12 +635,10 @@ class CifFobTemporalBacktestConfig:
     @classmethod
     def from_dict(
         cls,
-        cfg: dict[str, Any] | None,
+        cfg: dict[str, Any],
     ) -> "CifFobTemporalBacktestConfig":
-        cfg = cfg or {}
-
         strategy = require_str(
-            cfg.get("strategy", "expanding_window"),
+            cfg.get("strategy"),
             key=(
                 "method.estimation.validation."
                 "temporal_backtest.strategy"
@@ -665,7 +653,6 @@ class CifFobTemporalBacktestConfig:
 
         validation_years_raw = cfg.get(
             "validation_years",
-            [],
         )
 
         if not isinstance(validation_years_raw, list):
@@ -684,37 +671,25 @@ class CifFobTemporalBacktestConfig:
                 "Temporal backtest validation_years contains duplicates."
             )
 
-        minimum_training_years = int(
-            cfg.get("minimum_training_years", 4)
+        minimum_training_years = require_int(
+            cfg.get("minimum_training_years"),
+            key="cif_fob.method.estimation.validation.temporal_backtest.minimum_training_years",
+            min_value=1,
         )
 
-        if minimum_training_years < 1:
-            raise ValueError(
-                "minimum_training_years must be at least 1."
-            )
-
-        upper_tail_threshold = float(
-            cfg.get("upper_tail_threshold", 1.25)
+        upper_tail_threshold = require_float(
+            cfg.get("upper_tail_threshold"),
+            key="cif_fob.method.estimation.validation.temporal_backtest.upper_tail_threshold",
+            min_value=0.0,
         )
 
-        if upper_tail_threshold <= 0:
+        if upper_tail_threshold == 0:
             raise ValueError(
                 "upper_tail_threshold must be positive."
             )
 
         metrics_raw = cfg.get(
             "metrics",
-            [
-                "median_ape",
-                "mean_ape",
-                "p90_ape",
-                "p95_ape",
-                "spearman_correlation",
-                "observed_p95",
-                "predicted_p95",
-                "upper_tail_median_ape",
-                "upper_tail_p90_ape",
-            ],
         )
 
         if not isinstance(metrics_raw, list):
@@ -724,7 +699,10 @@ class CifFobTemporalBacktestConfig:
             )
 
         return cls(
-            enabled=bool(cfg.get("enabled", False)),
+            enabled=require_bool(
+                cfg.get("enabled"),
+                key="cif_fob.method.estimation.validation.temporal_backtest.enabled",
+            ),
             strategy=strategy,
             validation_years=validation_years,
             minimum_training_years=minimum_training_years,
@@ -740,7 +718,10 @@ class CifFobTemporalBacktestConfig:
                 for metric in metrics_raw
             ),
             output=CifFobTemporalBacktestOutputConfig.from_dict(
-                cfg.get("output", {})
+                require_dict(
+                    cfg.get("output"),
+                    key="cif_fob.method.estimation.validation.temporal_backtest.output",
+                )
             ),
         )
 
@@ -758,15 +739,15 @@ class CifFobUpperTailAuditProductsConfig:
     ) -> "CifFobUpperTailAuditProductsConfig":
         return cls(
             summary=require_str(
-                cfg.get("summary", "upper_tail_audit_summary"),
+                cfg.get("summary"),
                 key="cif_fob.method.estimation.diagnostics.upper_tail_audit.products.summary",
             ).strip(),
             route_history=require_str(
-                cfg.get("route_history", "upper_tail_route_history"),
+                cfg.get("route_history"),
                 key="cif_fob.method.estimation.diagnostics.upper_tail_audit.products.route_history",
             ).strip(),
             observations=require_str(
-                cfg.get("observations", "upper_tail_observations"),
+                cfg.get("observations"),
                 key="cif_fob.method.estimation.diagnostics.upper_tail_audit.products.observations",
             ).strip(),
         )
@@ -780,18 +761,16 @@ class CifFobUpperTailAuditPersistenceConfig:
     @classmethod
     def from_dict(
         cls,
-        cfg: dict[str, Any] | None,
+        cfg: dict[str, Any],
     ) -> "CifFobUpperTailAuditPersistenceConfig":
-        cfg = cfg or {}
-
         return cls(
             minimum_prior_years=require_int(
-                cfg.get("minimum_prior_years", 2),
+                cfg.get("minimum_prior_years"),
                 key="cif_fob.method.estimation.diagnostics.upper_tail_audit.persistence.minimum_prior_years",
                 min_value=1,
             ),
             historical_high_share_threshold=require_float(
-                cfg.get("historical_high_share_threshold", 0.5),
+                cfg.get("historical_high_share_threshold"),
                 key="cif_fob.method.estimation.diagnostics.upper_tail_audit.persistence.historical_high_share_threshold",
                 min_value=0.0,
                 max_value=1.0,
@@ -812,12 +791,10 @@ class CifFobUpperTailAuditConfig:
     @classmethod
     def from_dict(
         cls,
-        cfg: dict[str, Any] | None,
+        cfg: dict[str, Any],
     ) -> "CifFobUpperTailAuditConfig":
-        cfg = cfg or {}
-
-        value_bands_raw = cfg.get("value_bands_usd", [])
-        quantity_bands_raw = cfg.get("quantity_agreement_bands", [])
+        value_bands_raw = cfg.get("value_bands_usd")
+        quantity_bands_raw = cfg.get("quantity_agreement_bands")
 
         if not isinstance(value_bands_raw, list):
             raise TypeError(
@@ -829,19 +806,25 @@ class CifFobUpperTailAuditConfig:
             )
 
         return cls(
-            enabled=bool(cfg.get("enabled", False)),
+            enabled=require_bool(
+                cfg.get("enabled"),
+                key="cif_fob.method.estimation.diagnostics.upper_tail_audit.enabled",
+            ),
             threshold=require_float(
-                cfg.get("threshold", 1.25),
+                cfg.get("threshold"),
                 key="cif_fob.method.estimation.diagnostics.upper_tail_audit.threshold",
                 min_value=0.0,
             ),
             extreme_threshold=require_float(
-                cfg.get("extreme_threshold", 1.5),
+                cfg.get("extreme_threshold"),
                 key="cif_fob.method.estimation.diagnostics.upper_tail_audit.extreme_threshold",
                 min_value=0.0,
             ),
             persistence=CifFobUpperTailAuditPersistenceConfig.from_dict(
-                cfg.get("persistence")
+                require_dict(
+                    cfg.get("persistence"),
+                    key="cif_fob.method.estimation.diagnostics.upper_tail_audit.persistence",
+                )
             ),
             value_bands_usd=tuple(
                 require_int(
@@ -861,7 +844,7 @@ class CifFobUpperTailAuditConfig:
                 for value in quantity_bands_raw
             ),
             products=CifFobUpperTailAuditProductsConfig.from_dict(
-                require_dict(cfg.get("products", {}), key="cif_fob.method.estimation.diagnostics.upper_tail_audit.products")
+                require_dict(cfg.get("products"), key="cif_fob.method.estimation.diagnostics.upper_tail_audit.products")
             ),
         )
 
@@ -881,41 +864,14 @@ class CifFobEstimationDiagnosticsConfig:
     @classmethod
     def from_dict(
         cls,
-        cfg: dict[str, Any] | None,
+        cfg: dict[str, Any],
     ) -> "CifFobEstimationDiagnosticsConfig":
-        cfg = cfg or {}
-
-        # Accept both shapes:
-        # 1) diagnostics.upper_tail_audit.<fields>
-        # 2) diagnostics.upper_tail_audit: {} plus sibling fields directly
-        #    under diagnostics (the current YAML layout).
-        upper_tail_audit_cfg = cfg.get("upper_tail_audit")
-
-        if not isinstance(upper_tail_audit_cfg, dict):
-            upper_tail_audit_cfg = {}
-
-        sibling_keys = {
-            "enabled",
-            "threshold",
-            "extreme_threshold",
-            "persistence",
-            "value_bands_usd",
-            "quantity_agreement_bands",
-            "products",
-        }
-
-        merged_upper_tail_audit_cfg = {
-            **upper_tail_audit_cfg,
-            **{
-                key: value
-                for key, value in cfg.items()
-                if key in sibling_keys and key not in upper_tail_audit_cfg
-            },
-        }
-
         return cls(
             upper_tail_audit=CifFobUpperTailAuditConfig.from_dict(
-                merged_upper_tail_audit_cfg
+                require_dict(
+                    cfg.get("upper_tail_audit"),
+                    key="cif_fob.method.estimation.diagnostics.upper_tail_audit",
+                )
             ),
         )
 
@@ -931,7 +887,7 @@ class CifFobEstimationValidationConfig:
         cfg: dict[str, Any],
     ) -> "CifFobEstimationValidationConfig":
         strategy = require_str(
-            cfg.get("strategy", "latest_year"),
+            cfg.get("strategy"),
             key="cif_fob.method.estimation.validation.strategy",
         ).strip().lower()
 
@@ -951,9 +907,378 @@ class CifFobEstimationValidationConfig:
                 else None
             ),
             temporal_backtest=CifFobTemporalBacktestConfig.from_dict(
-                cfg.get("temporal_backtest", {})
+                require_dict(
+                    cfg.get("temporal_backtest"),
+                    key="cif_fob.method.estimation.validation.temporal_backtest",
+                )
             ),
         )
+
+
+@dataclass(frozen=True)
+class CifFobModelBaseConfig:
+    name: str
+    enabled: bool
+    type: str
+    categorical_predictors: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class CifFobHistGradientBoostingConfig:
+    name: str
+    enabled: bool
+    type: Literal["machine_learning"]
+    categorical_predictors: tuple[str, ...]
+
+    loss: str
+    learning_rate: float
+    max_iter: int
+    max_leaf_nodes: int
+    min_samples_leaf: int
+    l2_regularization: float
+    max_bins: int
+    random_state: int
+    target_transformation: str
+
+    @classmethod
+    def from_dict(
+        cls,
+        name: str,
+        cfg: dict[str, Any],
+    ) -> "CifFobHistGradientBoostingConfig":
+        max_bins = require_int(
+            cfg.get("max_bins"),
+            key=f"cif_fob.method.estimation.models.candidates.{name}.max_bins",
+            min_value=2,
+        )
+
+        if max_bins > 255:
+            raise ValueError(
+                f"{name}.max_bins must be <= 255, got {max_bins}."
+            )
+
+        target_transformation = require_str(
+            cfg.get("target_transformation"),
+            key=(
+                "cif_fob.method.estimation.models."
+                f"candidates.{name}.target_transformation"
+            ),
+        ).strip().lower()
+        
+        if target_transformation not in {"log", "none"}:
+            raise ValueError(
+        f"{name}.target_transformation must be 'log' or 'none', "
+        f"got {target_transformation!r}."
+    )
+
+        return cls(
+            name=name,
+            enabled=require_bool(
+                cfg.get("enabled"),
+                key=f"cif_fob.method.estimation.models.candidates.{name}.enabled",
+            ),
+            type="machine_learning",
+            categorical_predictors=tuple(
+                _require_str_list(
+                    cfg.get("categorical_predictors"),
+                    key=(
+                        "cif_fob.method.estimation.models."
+                        f"candidates.{name}.categorical_predictors"
+                    ),
+                )
+            ),
+            loss=require_str(
+                cfg.get("loss"),
+                key=f"cif_fob.method.estimation.models.candidates.{name}.loss",
+            ).strip().lower(),
+            learning_rate=require_float(
+                cfg.get("learning_rate"),
+                key=(
+                    "cif_fob.method.estimation.models."
+                    f"candidates.{name}.learning_rate"
+                ),
+                min_value=0.0,
+            ),
+            max_iter=require_int(
+                cfg.get("max_iter"),
+                key=f"cif_fob.method.estimation.models.candidates.{name}.max_iter",
+                min_value=1,
+            ),
+            max_leaf_nodes=require_int(
+                cfg.get("max_leaf_nodes"),
+                key=(
+                    "cif_fob.method.estimation.models."
+                    f"candidates.{name}.max_leaf_nodes"
+                ),
+                min_value=2,
+            ),
+            min_samples_leaf=require_int(
+                cfg.get("min_samples_leaf"),
+                key=(
+                    "cif_fob.method.estimation.models."
+                    f"candidates.{name}.min_samples_leaf"
+                ),
+                min_value=1,
+            ),
+            l2_regularization=require_float(
+                cfg.get("l2_regularization"),
+                key=(
+                    "cif_fob.method.estimation.models."
+                    f"candidates.{name}.l2_regularization"
+                ),
+                min_value=0.0,
+            ),
+            max_bins=max_bins,
+            random_state=require_int(
+                cfg.get("random_state"),
+                key=(
+                    "cif_fob.method.estimation.models."
+                    f"candidates.{name}.random_state"
+                ),
+            ),
+            target_transformation=target_transformation,
+
+        )
+    
+@dataclass(frozen=True)
+class CifFobLogLinearRegressionConfig:
+    name: str
+    enabled: bool
+    type: Literal["statistical"]
+    categorical_predictors: tuple[str, ...]
+
+    target_transformation: str
+    estimator_method: str
+    fit_intercept: bool
+    covariance_method: str
+    inverse_transform: str
+
+    @classmethod
+    def from_dict(
+        cls,
+        name: str,
+        cfg: dict[str, Any],
+    ) -> "CifFobLogLinearRegressionConfig":
+        target_cfg = require_dict(
+            cfg.get("target"),
+            key=(
+                "cif_fob.method.estimation.models."
+                f"candidates.{name}.target"
+            ),
+        )
+        estimator_cfg = require_dict(
+            cfg.get("estimator"),
+            key=(
+                "cif_fob.method.estimation.models."
+                f"candidates.{name}.estimator"
+            ),
+        )
+        covariance_cfg = require_dict(
+            cfg.get("covariance"),
+            key=(
+                "cif_fob.method.estimation.models."
+                f"candidates.{name}.covariance"
+            ),
+        )
+        prediction_cfg = require_dict(
+            cfg.get("prediction"),
+            key=(
+                "cif_fob.method.estimation.models."
+                f"candidates.{name}.prediction"
+            ),
+        )
+
+        target_transformation = require_str(
+            target_cfg.get("transformation"),
+            key=(
+                "cif_fob.method.estimation.models."
+                f"candidates.{name}.target.transformation"
+            ),
+        ).strip().lower()
+
+        if target_transformation not in {"none", "log"}:
+            raise ValueError(
+                "Statistical target transformation must be 'none' or 'log'."
+            )
+
+        covariance_method = require_str(
+            covariance_cfg.get("method"),
+            key=(
+                "cif_fob.method.estimation.models."
+                f"candidates.{name}.covariance.method"
+            ),
+        ).strip().lower()
+
+        if covariance_method not in {"nonrobust", "hc0", "hc1", "hc2", "hc3"}:
+            raise ValueError(
+                "Unsupported statistical covariance method: "
+                f"{covariance_method!r}"
+            )
+
+        return cls(
+            name=name,
+            enabled=require_bool(
+                cfg.get("enabled"),
+                key=f"cif_fob.method.estimation.models.candidates.{name}.enabled",
+            ),
+            type="statistical",
+            categorical_predictors=tuple(
+                _require_str_list(
+                    cfg.get("categorical_predictors"),
+                    key=(
+                        "cif_fob.method.estimation.models."
+                        f"candidates.{name}.categorical_predictors"
+                    ),
+                )
+            ),
+            target_transformation=target_transformation,
+            estimator_method=require_str(
+                estimator_cfg.get("method"),
+                key=(
+                    "cif_fob.method.estimation.models."
+                    f"candidates.{name}.estimator.method"
+                ),
+            ).strip().lower(),
+            fit_intercept=require_bool(
+                estimator_cfg.get("fit_intercept"),
+                key=(
+                    "cif_fob.method.estimation.models."
+                    f"candidates.{name}.estimator.fit_intercept"
+                ),
+            ),
+            covariance_method=covariance_method,
+            inverse_transform=require_str(
+                prediction_cfg.get("inverse_transform"),
+                key=(
+                    "cif_fob.method.estimation.models."
+                    f"candidates.{name}.prediction.inverse_transform"
+                ),
+            ).strip().lower(),
+        )
+
+
+CifFobCandidateModelConfig = (
+    CifFobHistGradientBoostingConfig
+    | CifFobLogLinearRegressionConfig
+)
+
+
+@dataclass(frozen=True)
+class CifFobModelsConfig:
+    primary: str
+    candidates: dict[str, CifFobCandidateModelConfig]
+
+    @classmethod
+    def from_dict(
+        cls,
+        cfg: dict[str, Any],
+    ) -> "CifFobModelsConfig":
+        primary = require_str(
+            cfg.get("primary"),
+            key="cif_fob.method.estimation.models.primary",
+        ).strip().lower()
+
+        candidates_raw = require_dict(
+            cfg.get("candidates"),
+            key="cif_fob.method.estimation.models.candidates",
+        )
+
+        candidates: dict[str, CifFobCandidateModelConfig] = {}
+
+        for raw_name, raw_model_cfg in candidates_raw.items():
+            name = require_str(
+                raw_name,
+                key="cif_fob.method.estimation.models.candidates.name",
+            ).strip().lower()
+
+            model_cfg = require_dict(
+                raw_model_cfg,
+                key=f"cif_fob.method.estimation.models.candidates.{name}",
+            )
+
+            model_type = require_str(
+                model_cfg.get("type"),
+                key=(
+                    "cif_fob.method.estimation.models."
+                    f"candidates.{name}.type"
+                ),
+            ).strip().lower()
+
+            if name == "hist_gradient_boosting":
+                candidates[name] = (
+                    CifFobHistGradientBoostingConfig.from_dict(
+                        name,
+                        model_cfg,
+                    )
+                )
+            elif name == "log_linear_regression":
+                candidates[name] = (
+                    CifFobLogLinearRegressionConfig.from_dict(
+                        name,
+                        model_cfg,
+                    )
+                )
+            elif name == "hist_gradient_boosting_squared":
+                candidates[name] = (
+                    CifFobHistGradientBoostingConfig.from_dict(
+                        name,
+                        model_cfg,
+                    )
+                )
+            elif name == "log_linear_regression_smearing":
+                candidates[name] = (
+                    CifFobLogLinearRegressionConfig.from_dict(
+                        name,
+                        model_cfg,
+                    )
+                )
+            elif name == "hist_gradient_boosting_squared_level":
+                candidates[name] = (
+                    CifFobHistGradientBoostingConfig.from_dict(
+                        name,
+                        model_cfg,
+                    )
+                )
+
+            elif name == "hist_gradient_boosting_squared_regularized":
+                candidates[name] = (
+                    CifFobHistGradientBoostingConfig.from_dict(
+                        name,
+                        model_cfg,
+                    )
+                )
+            else:
+                raise ValueError(
+                    f"Unsupported CIF/FOB candidate model: {name!r}"
+                )
+
+            if candidates[name].type != model_type:
+                raise ValueError(
+                    f"Model {name!r} type mismatch: "
+                    f"{model_type!r}."
+                )
+
+        if primary not in candidates:
+            raise ValueError(
+                f"Primary model {primary!r} is not defined in candidates."
+            )
+
+        if not candidates[primary].enabled:
+            raise ValueError(
+                f"Primary model {primary!r} is disabled."
+            )
+
+        return cls(
+            primary=primary,
+            candidates=candidates,
+        )
+
+    def enabled(self) -> dict[str, CifFobCandidateModelConfig]:
+        return {
+            name: model
+            for name, model in self.candidates.items()
+            if model.enabled
+        }
 
 
 @dataclass(frozen=True)
@@ -974,7 +1299,7 @@ class CifFobEstimationModelConfig:
         cfg: dict[str, Any],
     ) -> "CifFobEstimationModelConfig":
         max_bins = require_int(
-            cfg.get("max_bins", 255),
+            cfg.get("max_bins"),
             key="cif_fob.method.estimation.model.max_bins",
             min_value=2,
         )
@@ -985,25 +1310,25 @@ class CifFobEstimationModelConfig:
             )
         return cls(
             name=require_str(
-                cfg.get("name", "hist_gradient_boosting"),
+                cfg.get("name"),
                 key="cif_fob.method.estimation.model.name",
             ).strip().lower(),
             loss=require_str(
-                cfg.get("loss", "absolute_error"),
+                cfg.get("loss"),
                 key="cif_fob.method.estimation.model.loss",
             ).strip().lower(),
             learning_rate=require_float(
-                cfg.get("learning_rate", 0.05),
+                cfg.get("learning_rate"),
                 key="cif_fob.method.estimation.model.learning_rate",
                 min_value=0.0,
             ),
             max_iter=require_int(
-                cfg.get("max_iter", 300),
+                cfg.get("max_iter"),
                 key="cif_fob.method.estimation.model.max_iter",
                 min_value=1,
             ),
             max_leaf_nodes=require_int(
-                cfg.get("max_leaf_nodes", 31),
+                cfg.get("max_leaf_nodes"),
                 key=(
                     "cif_fob.method.estimation.model."
                     "max_leaf_nodes"
@@ -1011,7 +1336,7 @@ class CifFobEstimationModelConfig:
                 min_value=2,
             ),
             min_samples_leaf=require_int(
-                cfg.get("min_samples_leaf", 50),
+                cfg.get("min_samples_leaf"),
                 key=(
                     "cif_fob.method.estimation.model."
                     "min_samples_leaf"
@@ -1019,7 +1344,7 @@ class CifFobEstimationModelConfig:
                 min_value=1,
             ),
             l2_regularization=require_float(
-                cfg.get("l2_regularization", 1.0),
+                cfg.get("l2_regularization"),
                 key=(
                     "cif_fob.method.estimation.model."
                     "l2_regularization"
@@ -1028,7 +1353,7 @@ class CifFobEstimationModelConfig:
             ),
             max_bins=max_bins,
             random_state=require_int(
-                cfg.get("random_state", 42),
+                cfg.get("random_state"),
                 key="cif_fob.method.estimation.model.random_state",
             ),
         )
@@ -1041,10 +1366,9 @@ class CifFobEstimationConfig:
     maximum_factor: float
     exclude_proxy_weights: bool
     training_factor_sources: list[str]
-    categorical_predictors: list[str]
     source_weights: CifFobEstimationSourceWeightsConfig
     validation: CifFobEstimationValidationConfig
-    model: CifFobEstimationModelConfig
+    models: CifFobModelsConfig
     diagnostics: CifFobEstimationDiagnosticsConfig
 
     @classmethod
@@ -1053,21 +1377,20 @@ class CifFobEstimationConfig:
         cfg: dict[str, Any],
     ) -> "CifFobEstimationConfig":
         minimum_factor = require_float(
-            cfg.get("minimum_factor", 1.0),
+            cfg.get("minimum_factor"),
             key="cif_fob.method.estimation.minimum_factor",
             min_value=0.0,
         )
 
         maximum_factor = require_float(
-            cfg.get("maximum_factor", 3.0),
+            cfg.get("maximum_factor"),
             key="cif_fob.method.estimation.maximum_factor",
             min_value=minimum_factor,
         )
 
         training_factor_sources = _require_str_list(
                                     cfg.get(
-                                        "training_factor_sources", 
-                                        ['direct','mirror']
+                                        "training_factor_sources"
                                         ), 
                                     key=("cif_fob.method.estimation."
                                          "training_factor_sources"
@@ -1082,17 +1405,9 @@ class CifFobEstimationConfig:
         if not training_factor_sources: 
             raise ValueError( "cif_fob.method.estimation.training_factor_sources " "must contain at least one source." )
 
-        categorical_predictors = _require_str_list(
-            cfg.get("categorical_predictors", []),
-            key=(
-                "cif_fob.method.estimation."
-                "categorical_predictors"
-            ),
-        )
-
         return cls(
             minimum_evidence_value_usd=require_float(
-                cfg.get("minimum_evidence_value_usd", 1000.0),
+                cfg.get("minimum_evidence_value_usd"),
                 key=(
                     "cif_fob.method.estimation."
                     "minimum_evidence_value_usd"
@@ -1102,18 +1417,17 @@ class CifFobEstimationConfig:
             minimum_factor=minimum_factor,
             maximum_factor=maximum_factor,
             exclude_proxy_weights=require_bool(
-                cfg.get("exclude_proxy_weights", True),
+                cfg.get("exclude_proxy_weights"),
                 key=(
                     "cif_fob.method.estimation."
                     "exclude_proxy_weights"
                 ),
             ),
             training_factor_sources=training_factor_sources,
-            categorical_predictors=categorical_predictors,
             source_weights=(
                 CifFobEstimationSourceWeightsConfig.from_dict(
                     require_dict(
-                        cfg.get("source_weights", {}),
+                        cfg.get("source_weights"),
                         key=(
                             "cif_fob.method.estimation."
                             "source_weights"
@@ -1122,12 +1436,15 @@ class CifFobEstimationConfig:
                 )
             ),
             diagnostics=CifFobEstimationDiagnosticsConfig.from_dict(
-                cfg.get("diagnostics", {})
+                require_dict(
+                    cfg.get("diagnostics"),
+                    key="cif_fob.method.estimation.diagnostics",
+                )
             ),
             validation=(
                 CifFobEstimationValidationConfig.from_dict(
                     require_dict(
-                        cfg.get("validation", {}),
+                        cfg.get("validation"),
                         key=(
                             "cif_fob.method.estimation."
                             "validation"
@@ -1135,10 +1452,10 @@ class CifFobEstimationConfig:
                     )
                 )
             ),
-            model=CifFobEstimationModelConfig.from_dict(
+            models=CifFobModelsConfig.from_dict(
                 require_dict(
-                    cfg.get("model", {}),
-                    key="cif_fob.method.estimation.model",
+                    cfg.get("models"),
+                    key="cif_fob.method.estimation.models",
                 )
             ),
         )
@@ -1156,23 +1473,23 @@ class CifFobPredictorsConfig:
     def from_dict(cls, cfg: dict[str, Any]) -> "CifFobPredictorsConfig":
         return cls(
             bilateral=_require_str_list(
-                cfg.get("bilateral", []),
+                cfg.get("bilateral"),
                 key="cif_fob.method.predictors.bilateral",
             ),
             fuel_and_time=_require_str_list(
-                cfg.get("fuel_and_time", []),
+                cfg.get("fuel_and_time"),
                 key="cif_fob.method.predictors.fuel_and_time",
             ),
             product=_require_str_list(
-                cfg.get("product", []),
+                cfg.get("product"),
                 key="cif_fob.method.predictors.product",
             ),
             route=_require_str_list(
-                cfg.get("route", []),
+                cfg.get("route"),
                 key="cif_fob.method.predictors.route",
             ),
             optional_connectivity=_require_str_list(
-                cfg.get("optional_connectivity", []),
+                cfg.get("optional_connectivity"),
                 key="cif_fob.method.predictors.optional_connectivity",
             ),
         )
@@ -1208,8 +1525,8 @@ class CifFobMethodConfig:
 
     @classmethod
     def from_dict(cls, cfg: dict[str, Any]) -> "CifFobMethodConfig":
-        flow_keys_raw = cfg.get("flow_keys", [])
-        predictors_raw = cfg.get("predictors", {})
+        flow_keys_raw = cfg.get("flow_keys")
+        predictors_raw = cfg.get("predictors")
 
         if not isinstance(flow_keys_raw, list):
             raise TypeError("cif_fob.method.flow_keys must be a list")
@@ -1219,16 +1536,16 @@ class CifFobMethodConfig:
         return cls(
             flow_keys=[require_str(item, key="cif_fob.method.flow_keys") for item in flow_keys_raw],
             training=CifFobTrainingConfig.from_dict(
-                require_dict(cfg.get("training", {}), key="cif_fob.method.training")
+                require_dict(cfg.get("training"), key="cif_fob.method.training")
             ),
             estimation=CifFobEstimationConfig.from_dict(
-                require_dict(cfg.get("estimation", {}), key="cif_fob.method.estimation")
+                require_dict(cfg.get("estimation"), key="cif_fob.method.estimation")
             ),
             predictors=CifFobPredictorsConfig.from_dict(
-                require_dict(cfg.get("predictors", {}), key="cif_fob.method.predictors")
+                require_dict(cfg.get("predictors"), key="cif_fob.method.predictors")
             ),
             outliers=CifFobOutliersConfig.from_dict(
-                require_dict(cfg.get("outliers", {}), key="cif_fob.method.outliers")
+                require_dict(cfg.get("outliers"), key="cif_fob.method.outliers")
             ),
         )
 
@@ -1292,7 +1609,7 @@ class CifFobConfig:
                 require_dict(rendered.get("products"), key="cif_fob.products")
             ),
             logging=CifFobLoggingConfig.from_dict(
-                require_dict(rendered.get("logging", {}), key="cif_fob.logging")
+                require_dict(rendered.get("logging"), key="cif_fob.logging")
             ),
             features=CifFobFeaturesConfig.from_dict(
                 require_dict(rendered.get("features"), key="cif_fob.features")

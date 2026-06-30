@@ -1664,6 +1664,11 @@ def build_training_features(
             SELECT
                 *,
 
+                CASE 
+                    WHEN log_distance IS NOT NULL
+                        THEN log_distance * log_distance
+                END AS log_distance_squared,
+
                 CASE
                     WHEN log_oil_price IS NOT NULL
                      AND log_distance IS NOT NULL
@@ -1695,6 +1700,7 @@ def build_training_features(
                 AND importer_geography_found
                 AND oil_price_found
                 AND log_distance IS NOT NULL
+                AND log_distance_squared IS NOT NULL
                 AND contiguity IS NOT NULL
                 AND exporter_landlocked IS NOT NULL
                 AND importer_landlocked IS NOT NULL
@@ -1722,6 +1728,9 @@ def build_training_features(
 
                 WHEN log_distance IS NULL
                     THEN 'missing_log_distance'
+                
+                WHEN log_distance_squared IS NULL
+                    THEN 'missing_log_distance_squared'
 
                 WHEN contiguity IS NULL
                     THEN 'missing_contiguity'

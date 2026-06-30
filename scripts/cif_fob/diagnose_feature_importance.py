@@ -4,10 +4,11 @@ scripts.diagnose_feature_importance
 from __future__ import annotations
 
 from pathlib import Path
-
+import builtins
 import duckdb
 import numpy as np
 import pandas as pd
+from diagnose_estimated_rates import OUTPUT_DIR
 
 from vacoda.config.cif_fob import CifFobConfig
 from vacoda.config.pipeline import (
@@ -25,6 +26,8 @@ from vacoda.cif_fob.estimate_rates import (
     _validate_categories,
 )
 
+
+OUTPUT_FILENAME =  "diagnose_feature_importance.txt"
 
 # ======================================================================
 # Runtime configuration
@@ -113,8 +116,7 @@ def load_candidate_data(
     *,
     cfg: CifFobConfig,
     input_path: Path,
-    predictors: list[str],
-) -> pd.DataFrame:
+    predictors: list[str]) -> pd.DataFrame:
     """
     Load only potential estimation observations from the Step 4 Parquet.
 
@@ -185,8 +187,7 @@ def load_candidate_data(
 def build_clean_estimation_sample(
     *,
     data: pd.DataFrame,
-    cfg: CifFobConfig,
-) -> pd.DataFrame:
+    cfg: CifFobConfig) -> pd.DataFrame:
     """Apply the same clean-estimation rules as estimate_rates.py."""
     estimation_cfg = cfg.method.estimation
 
@@ -294,8 +295,7 @@ def calculate_permutation_importance(
     evaluation_mask: np.ndarray,
     n_repeats: int,
     random_state: int,
-    evaluation_name: str,
-) -> pd.DataFrame:
+    evaluation_name: str,) -> pd.DataFrame:
     """
     Calculate permutation importance in factor space.
 
@@ -499,266 +499,289 @@ def print_importance_table(
 
 
 def main() -> None:
-    scope = PipelineScopeConfig(
-        target_hs=TARGET_HS,
-        min_year=MIN_YEAR,
-        max_year=MAX_YEAR,
-    )
+    # Set up output capture to a diagnostics report text file.
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    report_path = OUTPUT_DIR / OUTPUT_FILENAME
 
-    engine = PipelineEngineConfig(
-        name="duckdb",
-        threads=THREADS,
-    )
+    original_print = builtins.print
 
-    cfg = CifFobConfig.from_yaml(
-        CONFIG_PATH,
-        scope=scope,
-        engine=engine,
-    )
+    with report_path.open("w", encoding="utf-8") as report_handle:
 
-    predictors = _configured_predictors(cfg)
-    categorical_predictors = list(
-        cfg.method.estimation.categorical_predictors
-    )
+        def report_print(*args, **kwargs):
+            original_print(*args, **kwargs)
+            kwargs_for_file = dict(kwargs)
+            kwargs_for_file["file"] = report_handle
+            original_print(*args, **kwargs_for_file)
 
-    unknown_categorical = sorted(
-        set(categorical_predictors)
-        - set(predictors)
-    )
+        builtins.print = report_print
 
-    if unknown_categorical:
-        raise ValueError(
-            "Categorical predictors are absent from the configured "
-            "predictor list: "
-            + ", ".join(unknown_categorical)
-        )
+        try:
+            print(f"Saving diagnostics report to: {report_path}")
 
-    input_path = cfg.product_path(
-        "training_features"
-    )
 
-    print(f"Using config: {CONFIG_PATH}")
-    print(f"Using input:  {input_path}")
-    print(f"Predictors:   {', '.join(predictors)}")
-    print(
-        "Categorical:  "
-        + (
-            ", ".join(categorical_predictors)
-            if categorical_predictors
-            else "none"
-        )
-    )
-    print(f"Repeats:      {N_REPEATS}")
-    print(
-        "Tail cutoff:  "
-        f"observed factor >= {UPPER_TAIL_THRESHOLD:.2f}"
-    )
+            scope = PipelineScopeConfig(
+                target_hs=TARGET_HS,
+                min_year=MIN_YEAR,
+                max_year=MAX_YEAR,
+            )
 
-    data = load_candidate_data(
-        cfg=cfg,
-        input_path=input_path,
-        predictors=predictors,
-    )
+            engine = PipelineEngineConfig(
+                name="duckdb",
+                threads=THREADS,
+            )
 
-    clean = build_clean_estimation_sample(
-        data=data,
-        cfg=cfg,
-    )
+            cfg = CifFobConfig.from_yaml(
+                CONFIG_PATH,
+                scope=scope,
+                engine=engine,
+            )
 
-    holdout_year = _resolve_holdout_year(
-        clean=clean,
-        cfg=cfg,
-    )
+            predictors = _configured_predictors(cfg)
+            categorical_predictors = list(
+                cfg.method.estimation.categorical_predictors
+            )
 
-    train_mask = clean["year"].lt(
-        holdout_year
-    )
-    holdout_mask = clean["year"].eq(
-        holdout_year
-    )
+            unknown_categorical = sorted(
+                set(categorical_predictors)
+                - set(predictors)
+            )
 
-    n_train = int(train_mask.sum())
-    n_holdout = int(holdout_mask.sum())
+            if unknown_categorical:
+                raise ValueError(
+                    "Categorical predictors are absent from the configured "
+                    "predictor list: "
+                    + ", ".join(unknown_categorical)
+                )
 
-    if n_train == 0 or n_holdout == 0:
-        raise RuntimeError(
-            "Temporal validation requires both training and holdout "
-            f"observations. Training={n_train:,}, "
-            f"holdout={n_holdout:,}."
-        )
+            input_path = cfg.product_path(
+                "training_features"
+            )
 
-    train = clean.loc[train_mask].copy()
-    holdout = clean.loc[holdout_mask].copy()
+            print(f"Using config: {CONFIG_PATH}")
+            print(f"Using input:  {input_path}")
+            print(f"Predictors:   {', '.join(predictors)}")
+            print(
+                "Categorical:  "
+                + (
+                    ", ".join(categorical_predictors)
+                    if categorical_predictors
+                    else "none"
+                )
+            )
+            print(f"Repeats:      {N_REPEATS}")
+            print(
+                "Tail cutoff:  "
+                f"observed factor >= {UPPER_TAIL_THRESHOLD:.2f}"
+            )
 
-    category_maps = _learn_category_maps(
-        frame=train,
-        categorical_predictors=categorical_predictors,
-    )
+            data = load_candidate_data(
+                cfg=cfg,
+                input_path=input_path,
+                predictors=predictors,
+            )
 
-    _validate_categories(
-        category_maps=category_maps,
-        max_bins=cfg.method.estimation.model.max_bins,
-    )
+            clean = build_clean_estimation_sample(
+                data=data,
+                cfg=cfg,
+            )
 
-    encoded_train = _encode_predictors(
-        frame=train,
-        predictors=predictors,
-        categorical_predictors=categorical_predictors,
-        category_maps=category_maps,
-    )
+            holdout_year = _resolve_holdout_year(
+                clean=clean,
+                cfg=cfg,
+            )
 
-    encoded_holdout = _encode_predictors(
-        frame=holdout,
-        predictors=predictors,
-        categorical_predictors=categorical_predictors,
-        category_maps=category_maps,
-    )
+            train_mask = clean["year"].lt(
+                holdout_year
+            )
+            holdout_mask = clean["year"].eq(
+                holdout_year
+            )
 
-    categorical_set = set(
-        categorical_predictors
-    )
+            n_train = int(train_mask.sum())
+            n_holdout = int(holdout_mask.sum())
 
-    categorical_mask = [
-        predictor in categorical_set
-        for predictor in predictors
-    ]
+            if n_train == 0 or n_holdout == 0:
+                raise RuntimeError(
+                    "Temporal validation requires both training and holdout "
+                    f"observations. Training={n_train:,}, "
+                    f"holdout={n_holdout:,}."
+                )
 
-    model = _build_model(
-        cfg,
-        categorical_mask=categorical_mask,
-    )
+            train = clean.loc[train_mask].copy()
+            holdout = clean.loc[holdout_mask].copy()
 
-    print("\nFitting temporal holdout model...")
-    print(f"Training year(s): < {holdout_year}")
-    print(f"Holdout year:     {holdout_year}")
-    print(f"Training rows:    {n_train:,}")
-    print(f"Holdout rows:     {n_holdout:,}")
+            category_maps = _learn_category_maps(
+                frame=train,
+                categorical_predictors=categorical_predictors,
+            )
 
-    model.fit(
-        encoded_train[predictors],
-        train["log_observed_factor"],
-        sample_weight=train[
-            "estimation_source_weight"
-        ],
-    )
+            _validate_categories(
+                category_maps=category_maps,
+                max_bins=cfg.method.estimation.model.max_bins,
+            )
 
-    observed_holdout_factor = (
-        holdout["observed_cif_fob_factor"]
-        .to_numpy(dtype="float64")
-    )
+            encoded_train = _encode_predictors(
+                frame=train,
+                predictors=predictors,
+                categorical_predictors=categorical_predictors,
+                category_maps=category_maps,
+            )
 
-    baseline_prediction_factor = np.exp(
-        model.predict(
-            encoded_holdout[predictors]
-        )
-    )
+            encoded_holdout = _encode_predictors(
+                frame=holdout,
+                predictors=predictors,
+                categorical_predictors=categorical_predictors,
+                category_maps=category_maps,
+            )
 
-    all_rows_mask = np.ones(
-        len(holdout),
-        dtype=bool,
-    )
+            categorical_set = set(
+                categorical_predictors
+            )
 
-    upper_tail_mask = (
-        observed_holdout_factor
-        >= UPPER_TAIL_THRESHOLD
-    )
+            categorical_mask = [
+                predictor in categorical_set
+                for predictor in predictors
+            ]
 
-    baseline_all_metrics = calculate_metrics(
-        observed_factor=observed_holdout_factor,
-        predicted_factor=baseline_prediction_factor,
-    )
+            model = _build_model(
+                cfg,
+                categorical_mask=categorical_mask,
+            )
 
-    baseline_tail_metrics = calculate_metrics(
-        observed_factor=observed_holdout_factor[
-            upper_tail_mask
-        ],
-        predicted_factor=baseline_prediction_factor[
-            upper_tail_mask
-        ],
-    )
+            print("\nFitting temporal holdout model...")
+            print(f"Training year(s): < {holdout_year}")
+            print(f"Holdout year:     {holdout_year}")
+            print(f"Training rows:    {n_train:,}")
+            print(f"Holdout rows:     {n_holdout:,}")
 
-    print_metrics(
-        title="BASELINE HOLDOUT METRICS — ALL OBSERVATIONS",
-        metrics=baseline_all_metrics,
-        n_rows=len(holdout),
-    )
+            model.fit(
+                encoded_train[predictors],
+                train["log_observed_factor"],
+                sample_weight=train[
+                    "estimation_source_weight"
+                ],
+            )
 
-    print_metrics(
-        title=(
-            "BASELINE HOLDOUT METRICS — "
-            f"OBSERVED FACTOR >= {UPPER_TAIL_THRESHOLD:.2f}"
-        ),
-        metrics=baseline_tail_metrics,
-        n_rows=int(upper_tail_mask.sum()),
-    )
+            observed_holdout_factor = (
+                holdout["observed_cif_fob_factor"]
+                .to_numpy(dtype="float64")
+            )
 
-    overall_importance = (
-        calculate_permutation_importance(
-            model=model,
-            X_holdout=encoded_holdout,
-            observed_factor=observed_holdout_factor,
-            predictors=predictors,
-            evaluation_mask=all_rows_mask,
-            n_repeats=N_REPEATS,
-            random_state=RANDOM_STATE,
-            evaluation_name="all_holdout",
-        )
-    )
+            baseline_prediction_factor = np.exp(
+                model.predict(
+                    encoded_holdout[predictors]
+                )
+            )
 
-    tail_importance = (
-        calculate_permutation_importance(
-            model=model,
-            X_holdout=encoded_holdout,
-            observed_factor=observed_holdout_factor,
-            predictors=predictors,
-            evaluation_mask=upper_tail_mask,
-            n_repeats=N_REPEATS,
-            random_state=RANDOM_STATE + 1,
-            evaluation_name=(
-                f"observed_factor_ge_"
-                f"{UPPER_TAIL_THRESHOLD:.2f}"
-            ),
-        )
-    )
+            all_rows_mask = np.ones(
+                len(holdout),
+                dtype=bool,
+            )
 
-    print_importance_table(
-        title=(
-            "PERMUTATION IMPORTANCE — "
-            "ALL HOLDOUT OBSERVATIONS"
-        ),
-        importance=overall_importance,
-    )
+            upper_tail_mask = (
+                observed_holdout_factor
+                >= UPPER_TAIL_THRESHOLD
+            )
 
-    print_importance_table(
-        title=(
-            "PERMUTATION IMPORTANCE — "
-            f"OBSERVED FACTOR >= {UPPER_TAIL_THRESHOLD:.2f}"
-        ),
-        importance=tail_importance,
-    )
+            baseline_all_metrics = calculate_metrics(
+                observed_factor=observed_holdout_factor,
+                predicted_factor=baseline_prediction_factor,
+            )
 
-    combined = pd.concat(
-        [
-            overall_importance,
-            tail_importance,
-        ],
-        ignore_index=True,
-    )
+            baseline_tail_metrics = calculate_metrics(
+                observed_factor=observed_holdout_factor[
+                    upper_tail_mask
+                ],
+                predicted_factor=baseline_prediction_factor[
+                    upper_tail_mask
+                ],
+            )
 
-    output_path = (
-        input_path.parent
-        / "target_h5_cif_fob_permutation_importance.csv"
-    )
+            print_metrics(
+                title="BASELINE HOLDOUT METRICS — ALL OBSERVATIONS",
+                metrics=baseline_all_metrics,
+                n_rows=len(holdout),
+            )
 
-    combined.to_csv(
-        output_path,
-        index=False,
-    )
+            print_metrics(
+                title=(
+                    "BASELINE HOLDOUT METRICS — "
+                    f"OBSERVED FACTOR >= {UPPER_TAIL_THRESHOLD:.2f}"
+                ),
+                metrics=baseline_tail_metrics,
+                n_rows=int(upper_tail_mask.sum()),
+            )
 
-    print("\n" + "=" * 88)
-    print("FEATURE-IMPORTANCE DIAGNOSTIC COMPLETE")
-    print("=" * 88)
-    print(f"Output: {output_path}")
+            overall_importance = (
+                calculate_permutation_importance(
+                    model=model,
+                    X_holdout=encoded_holdout,
+                    observed_factor=observed_holdout_factor,
+                    predictors=predictors,
+                    evaluation_mask=all_rows_mask,
+                    n_repeats=N_REPEATS,
+                    random_state=RANDOM_STATE,
+                    evaluation_name="all_holdout",
+                )
+            )
+
+            tail_importance = (
+                calculate_permutation_importance(
+                    model=model,
+                    X_holdout=encoded_holdout,
+                    observed_factor=observed_holdout_factor,
+                    predictors=predictors,
+                    evaluation_mask=upper_tail_mask,
+                    n_repeats=N_REPEATS,
+                    random_state=RANDOM_STATE + 1,
+                    evaluation_name=(
+                        f"observed_factor_ge_"
+                        f"{UPPER_TAIL_THRESHOLD:.2f}"
+                    ),
+                )
+            )
+
+            print_importance_table(
+                title=(
+                    "PERMUTATION IMPORTANCE — "
+                    "ALL HOLDOUT OBSERVATIONS"
+                ),
+                importance=overall_importance,
+            )
+
+            print_importance_table(
+                title=(
+                    "PERMUTATION IMPORTANCE — "
+                    f"OBSERVED FACTOR >= {UPPER_TAIL_THRESHOLD:.2f}"
+                ),
+                importance=tail_importance,
+            )
+
+            combined = pd.concat(
+                [
+                    overall_importance,
+                    tail_importance,
+                ],
+                ignore_index=True,
+            )
+
+            csv_output_path = (
+                input_path.parent
+                / "target_h5_cif_fob_permutation_importance.csv"
+            )
+
+            combined.to_csv(
+                csv_output_path,
+                index=False,
+            )
+
+            print("\n" + "=" * 88)
+            print("FEATURE-IMPORTANCE DIAGNOSTIC COMPLETE")
+            print("=" * 88)
+            print(f"Output: {csv_output_path}")
+
+        finally:
+            builtins.print = original_print
 
 
 if __name__ == "__main__":

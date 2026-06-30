@@ -135,8 +135,14 @@ cif_fob:
           - "global_year"
 
   method:
+    flow_keys: []
+
+    training:
+      minimum_quantity_concordance: 0.90
+      minimum_direct_value_coverage: 0.90
+
     estimation:
-      minimum_evidence_value_usd: 1000.0
+      minimum_evidence_value_usd: 0.0
       minimum_factor: 1.0
       maximum_factor: 3.0
       exclude_proxy_weights: true
@@ -173,8 +179,6 @@ cif_fob:
       training_factor_sources:
         - direct
 
-      categorical_predictors:
-        - product_group
 
       source_weights:
         direct_reported_weight: 1.0
@@ -216,25 +220,124 @@ cif_fob:
             summary_product: "temporal_validation_summary"
             fold_product: "temporal_validation_folds"
 
-      model:
-        name: "hist_gradient_boosting"
-        loss: "absolute_error"
-        learning_rate: 0.05
-        max_iter: 300
-        max_leaf_nodes: 63
-        min_samples_leaf: 20
-        l2_regularization: 0
-        max_bins: 255
-        random_state: 42
+      models:
+        primary: "hist_gradient_boosting"
+
+        candidates:
+          hist_gradient_boosting_squared:
+            enabled: true
+            type: "machine_learning"
+            target_transformation: "log"
+
+            categorical_predictors:
+              - product_group
+
+            loss: "squared_error"
+            learning_rate: 0.05
+            max_iter: 300
+            max_leaf_nodes: 63
+            min_samples_leaf: 20
+            l2_regularization: 0.0
+            max_bins: 255
+            random_state: 42
+
+          hist_gradient_boosting:
+            enabled: true
+            target_transformation: "log"
+            type: "machine_learning"
+            loss: "absolute_error"
+            learning_rate: 0.05
+            max_iter: 300
+            max_leaf_nodes: 63
+            min_samples_leaf: 20
+            l2_regularization: 0.0
+            max_bins: 255
+            random_state: 42
+            categorical_predictors:
+              - product_group
+
+          hist_gradient_boosting_squared_level:
+            enabled: true
+            type: "machine_learning"
+            target_transformation: "none"
+            categorical_predictors:
+              - product_group
+
+            loss: "squared_error"
+            learning_rate: 0.05
+            max_iter: 300
+            max_leaf_nodes: 63
+            min_samples_leaf: 20
+            l2_regularization: 0.0
+            max_bins: 255
+            random_state: 42
+
+          hist_gradient_boosting_squared_regularized:
+            enabled: true
+            type: "machine_learning"
+            target_transformation: "log"
+            categorical_predictors:
+              - product_group
+
+            loss: "squared_error"
+            learning_rate: 0.05
+            max_iter: 300
+            max_leaf_nodes: 31
+            min_samples_leaf: 50
+            l2_regularization: 0.1
+            max_bins: 255
+            random_state: 42
+
+
+          log_linear_regression:
+            enabled: true
+            type: "statistical"
+
+            target:
+              transformation: "log"
+
+            estimator:
+              method: "ols"
+              fit_intercept: true
+
+            covariance:
+              method: "hc3"
+
+            prediction:
+              inverse_transform: "exp"
+              
+            categorical_predictors:
+              - product_group
+
+          log_linear_regression_smearing:
+            enabled: true
+            type: "statistical"
+
+            target:
+              transformation: "log"
+
+            estimator:
+              method: "ols"
+              fit_intercept: true
+
+            covariance:
+              method: "hc3"
+
+            prediction:
+              inverse_transform: "exp_smearing"
+
+            categorical_predictors:
+              - product_group
+            
 
     predictors:
       bilateral:
         - log_distance
+        - log_distance_squared
         - contiguity
         - exporter_landlocked
         - importer_landlocked
         - lagged_pair_median_factor
-        - latest_pair_median_factor
         - years_since_latest_pair_factor
       
       fuel_and_time:
