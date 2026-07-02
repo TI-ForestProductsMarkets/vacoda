@@ -124,19 +124,21 @@ cif_fob:
       path: "geography/prepared"
       filename:  "country_pair_geography_gravity_2021.parquet"
 
-    # 
+    # Country geography crosswalk
     geography_crosswalk:
       source: "repo"
       path: "geography/prepared"
       filename: "comtrade_cepii_crosswalk.parquet"
       allow_proxy_mappings: false
 
+    # Pair geography crosswalk
     pair_geography_crosswalk:
       source: "repo"
       path: "geography/prepared"
       filename: "comtrade_cepii_crosswalk_gravity_2021.parquet"
       allow_proxy_mappings: false
 
+    # Annual Oil prices (USD per barrel) for the years 1960–2022, from the World Bank Commodity Price Data
     oil_price:
       source: "repo"
       path: "macroeconomic/prepared"

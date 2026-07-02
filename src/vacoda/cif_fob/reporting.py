@@ -384,7 +384,7 @@ def _build_population_journey_table(
             ),
         },
         {
-            "Workflow stage": "Rows within configured year scope",
+            "Workflow stage": "Scope filter",
             "Rows/groups": metrics[
                 "n_rows_in_year_scope"
             ],
@@ -395,7 +395,7 @@ def _build_population_journey_table(
             ),
         },
         {
-            "Workflow stage": "Rows in supported import/export flows",
+            "Workflow stage": "Flow filter",
             "Rows/groups": metrics[
                 "n_rows_in_supported_flows"
             ],
@@ -405,7 +405,7 @@ def _build_population_journey_table(
             ),
         },
         {
-            "Workflow stage": "Reported rows in supported scope",
+            "Workflow stage": "Reporting status filter",
             "Rows/groups": metrics[
                 "n_reported_rows_in_supported_scope"
             ],
@@ -415,7 +415,7 @@ def _build_population_journey_table(
             ),
         },
         {
-            "Workflow stage": "Reported non-aggregate source rows",
+            "Workflow stage": "Aggregate row filter",
             "Rows/groups": metrics[
                 "n_selected_reported_nonaggregate_rows"
             ],
@@ -426,25 +426,25 @@ def _build_population_journey_table(
             ),
         },
         {
-            "Workflow stage": "Canonical trade groups",
+            "Workflow stage": "Aggregation/grain change",
             "Rows/groups": metrics[
                 "n_canonical_trade_groups"
             ],
             "Transition type": "Aggregation / grain change",
             "Interpretation": (
                 "Source components are consolidated to one "
-                "year–reporter–partner–product–flow record."
+                "`year–reporter–partner–product–flow` record."
             ),
         },
         {
-            "Workflow stage": "Bilateral mirror groups",
+            "Workflow stage": "Pairing/grain change",
             "Rows/groups": metrics[
                 "n_bilateral_mirror_groups"
             ],
             "Transition type": "Pairing / grain change",
             "Interpretation": (
                 "Import and export perspectives are aligned to one "
-                "exporter–importer–product–year group."
+                "`exporter–importer–product–year` group."
             ),
         },
     ]
@@ -1831,10 +1831,11 @@ def write_cif_fob_decision_report(
             f"{cfg.scope.min_year}–{cfg.scope.max_year}"
         ),
         f"- **Primary model:** `{primary_model}`",
-        (
-            f"- **Enabled candidate models:** "
-            + ", ".join(f"`{name}`" for name in enabled_models)
-        ),
+        "- **Enabled candidate models:**",
+        *[
+            f"  - `{name}`"
+            for name in enabled_models
+        ],
         f"- **Training-feature artifact:** `{training_features_path}`",
         f"- **Estimated-rate artifact:** `{estimated_rates_path}`",
         f"- **Temporal-validation summary:** `{summary_path}`",
@@ -1890,7 +1891,6 @@ def write_cif_fob_decision_report(
                 "Rows/groups",
                 "Rows reduction",
                 "% Reduction",
-                "Type",
                 "Interpretation",
             ],
             formatters={
@@ -1944,7 +1944,7 @@ def write_cif_fob_decision_report(
             f"{_fmt_float(cfg.method.estimation.minimum_evidence_value_usd, 2)} USD"
         ),
         (
-            f"- **Permitted observed-factor range:** "
+            f"- **Permitted observed CIF/FOB factor range:** "
             f"{_fmt_float(cfg.method.estimation.minimum_factor, 3)}–"
             f"{_fmt_float(cfg.method.estimation.maximum_factor, 3)}"
         ),
@@ -1957,7 +1957,7 @@ def write_cif_fob_decision_report(
         "",
         (
             "The internal `model_eligible` flag means that a row has a "
-            "selected observed-factor candidate. It does **not** mean that "
+            "selected observed-factor candidate. It does not mean that "
             "the row is used to train the model. Direct evidence has "
             "priority; a mirror factor is selected only where an eligible "
             "direct factor was not selected."
@@ -2156,7 +2156,7 @@ def write_cif_fob_decision_report(
         "### Overall predictive performance",
         "",
         _markdown_table(
-            overall_table,
+            combined_table,
             columns=[
                 "Rank",
                 "Model",
@@ -2166,6 +2166,10 @@ def write_cif_fob_decision_report(
                 "P90 APE",
                 "P95 APE",
                 "Spearman",
+                "Observed P95",
+                "Predicted P95",
+                "Tail median APE",
+                "Tail P90 APE",
             ],
             formatters={
                 "Rank": _fmt_int,
@@ -2175,23 +2179,6 @@ def write_cif_fob_decision_report(
                 "P90 APE": _fmt_fraction_percent,
                 "P95 APE": _fmt_fraction_percent,
                 "Spearman": _fmt_float,
-            },
-        ),
-        "",
-        "### Upper-tail and P95 calibration performance",
-        "",
-        _markdown_table(
-            tail_table,
-            columns=[
-                "Rank",
-                "Model",
-                "Observed P95",
-                "Predicted P95",
-                "Tail median APE",
-                "Tail P90 APE",
-            ],
-            formatters={
-                "Rank": _fmt_int,
                 "Observed P95": _fmt_float,
                 "Predicted P95": _fmt_float,
                 "Tail median APE": _fmt_fraction_percent,
