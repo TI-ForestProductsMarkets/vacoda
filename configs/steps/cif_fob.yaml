@@ -102,22 +102,39 @@ cif_fob:
       enable: false
       filename: "comtrade_target_{target_hs_lower}_cif_fob_corrected.parquet"
 
+  artifacts:
+    enable: true
+    kind: "reports"
+    subdir: "cif_fob/target_{target_hs_lower}"
+    filename: "target_{target_hs_lower}_cif_fob_decision_report"
+    timestamp: true
+    write_latest: true
+    
 
   features:
+    # Country-level characteristics
     geography:
       source: "repo"
       path: "geography/prepared"
       filename: "country_geography.parquet"
 
+    # Bilateral route geography
     pair_geography:
       source: "repo"
       path: "geography/prepared"
-      filename: "country_pair_geography.parquet"
+      filename:  "country_pair_geography_gravity_2021.parquet"
 
+    # 
     geography_crosswalk:
       source: "repo"
       path: "geography/prepared"
       filename: "comtrade_cepii_crosswalk.parquet"
+      allow_proxy_mappings: false
+
+    pair_geography_crosswalk:
+      source: "repo"
+      path: "geography/prepared"
+      filename: "comtrade_cepii_crosswalk_gravity_2021.parquet"
       allow_proxy_mappings: false
 
     oil_price:
@@ -194,12 +211,10 @@ cif_fob:
           enabled: true
           strategy: "expanding_window"
 
-          # Empty means:
-          # derive every valid validation year from the available data.
+          # Empty means derive every valid validation year from the available data.
           validation_years: []
 
-          # A validation fold is created only after this many earlier
-          # calendar years are available for training.
+          # A validation fold is created only after this many earlier calendar years are available for training.
           minimum_training_years: 4
 
           # Tail group used in model-evaluation metrics.
@@ -287,6 +302,35 @@ cif_fob:
             l2_regularization: 0.1
             max_bins: 255
             random_state: 42
+        
+          xgboost_log_squared:
+            enabled: true
+            type: "machine_learning"
+            target_transformation: "log"
+            categorical_predictors:
+              - product_group
+            objective: "reg:squarederror"
+            eval_metric: "mae"
+
+            n_estimators: 2000
+            learning_rate: 0.03
+            max_depth: 4
+            min_child_weight: 20
+            subsample: 0.8
+            colsample_bytree: 0.8
+            reg_alpha: 0.1
+            reg_lambda: 5.0
+
+            gamma: 0.0
+            random_state: 42
+            max_bins: 256
+            tree_method: "hist"
+
+            enable_categorical: true
+            max_cat_to_onehot: 16
+
+            early_stopping_rounds: 75
+            n_jobs: 16
 
 
           log_linear_regression:
@@ -341,7 +385,6 @@ cif_fob:
         - years_since_latest_pair_factor
       
       fuel_and_time:
-      #  - log_oil_price
         - log_oil_price_x_log_distance
         - year
 

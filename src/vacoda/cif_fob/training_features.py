@@ -12,8 +12,11 @@ Bilateral geography:
 Country geography:
     country_geography.parquet
 
-Comtrade-to-CEPII crosswalk:
+Country Comtrade-to-CEPII crosswalk:
     comtrade_cepii_crosswalk.parquet
+
+Pair Comtrade-to-CEPII crosswalk:
+    configured pair-geography crosswalk
 
 Annual oil prices:
     annual_oil_prices.parquet
@@ -213,60 +216,70 @@ def _validate_reference_files(
     con: duckdb.DuckDBPyConnection,
     pair_geography_path: Path,
     country_geography_path: Path,
-    geography_crosswalk_path: Path,
+    country_geography_crosswalk_path: Path,
+    pair_geography_crosswalk_path: Path,
     oil_price_path: Path,
     minimum_year: int,
     maximum_year: int,
+    allow_country_proxy_mappings: bool,
+    allow_pair_proxy_mappings: bool,
 ) -> dict[str, int]:
-    """Validate schemas, uniqueness, crosswalk integrity, and oil coverage."""
+    """Validate reference schemas, keys, crosswalks, and oil coverage."""
+
+    pair_required = {
+        "origin_iso3",
+        "destination_iso3",
+        "distance_simple_km",
+        "distance_capital_km",
+        "distance_weighted_km",
+        "distance_weighted_ces_km",
+        "contiguous",
+        "distance_model_km",
+        "distance_model_source",
+        "log_distance_model_km",
+    }
+    country_required = {
+        "country_iso3",
+        "area_km2",
+        "internal_distance_km",
+        "landlocked",
+        "continent",
+        "log_area_km2",
+        "log_internal_distance_km",
+    }
+    crosswalk_required = {
+        "trade_iso3",
+        "cepii_iso3",
+        "mapping_type",
+        "usable_country",
+        "usable_pair",
+        "is_proxy",
+    }
 
     _require_parquet_columns(
         con=con,
         path=pair_geography_path,
         label="Bilateral geography reference",
-        required={
-            "origin_iso3",
-            "destination_iso3",
-            "distance_simple_km",
-            "distance_capital_km",
-            "distance_weighted_km",
-            "distance_weighted_ces_km",
-            "contiguous",
-            "distance_model_km",
-            "distance_model_source",
-            "log_distance_model_km",
-        },
+        required=pair_required,
     )
-
     _require_parquet_columns(
         con=con,
         path=country_geography_path,
         label="Country geography reference",
-        required={
-            "country_iso3",
-            "area_km2",
-            "internal_distance_km",
-            "landlocked",
-            "continent",
-            "log_area_km2",
-            "log_internal_distance_km",
-        },
+        required=country_required,
     )
-
     _require_parquet_columns(
         con=con,
-        path=geography_crosswalk_path,
-        label="Comtrade-to-CEPII geography crosswalk",
-        required={
-            "trade_iso3",
-            "cepii_iso3",
-            "mapping_type",
-            "usable_country",
-            "usable_pair",
-            "is_proxy",
-        },
+        path=country_geography_crosswalk_path,
+        label="Country-geography crosswalk",
+        required=crosswalk_required,
     )
-
+    _require_parquet_columns(
+        con=con,
+        path=pair_geography_crosswalk_path,
+        label="Pair-geography crosswalk",
+        required=crosswalk_required,
+    )
     _require_parquet_columns(
         con=con,
         path=oil_price_path,
@@ -292,9 +305,15 @@ def _validate_reference_files(
     )
     _validate_unique_reference_key(
         con=con,
-        path=geography_crosswalk_path,
+        path=country_geography_crosswalk_path,
         key_columns=["trade_iso3"],
-        label="Comtrade-to-CEPII geography crosswalk",
+        label="Country-geography crosswalk",
+    )
+    _validate_unique_reference_key(
+        con=con,
+        path=pair_geography_crosswalk_path,
+        key_columns=["trade_iso3"],
+        label="Pair-geography crosswalk",
     )
     _validate_unique_reference_key(
         con=con,
@@ -324,7 +343,10 @@ def _validate_reference_files(
             ) AS n_weighted_distance,
             COUNT(*) FILTER (
                 WHERE distance_model_source = 'capital'
-            ) AS n_capital_fallback
+            ) AS n_capital_fallback,
+            COUNT(*) FILTER (
+                WHERE distance_model_source = 'gravity_2021_distw_harmonic'
+            ) AS n_gravity_harmonic_distance
         FROM read_parquet(?)
         """,
         [str(pair_geography_path)],
@@ -341,6 +363,7 @@ def _validate_reference_files(
         n_invalid_contiguous,
         n_weighted_distance,
         n_capital_fallback,
+        n_gravity_harmonic_distance,
     ) = pair_audit
 
     if n_pair_null_keys > 0:
@@ -393,7 +416,81 @@ def _validate_reference_files(
             f"values: {n_invalid_landlocked:,}."
         )
 
-    crosswalk_audit = con.execute(
+    country_crosswalk_audit = con.execute(
+        """
+        SELECT
+            COUNT(*) AS n_rows,
+            COUNT(*) FILTER (
+                WHERE trade_iso3 IS NULL OR mapping_type IS NULL
+            ) AS n_null_required,
+            COUNT(*) FILTER (
+                WHERE usable_country IS NULL
+                   OR usable_pair IS NULL
+                   OR is_proxy IS NULL
+            ) AS n_null_flags,
+            COUNT(*) FILTER (
+                WHERE usable_country
+                  AND (NOT is_proxy OR ?)
+                  AND cepii_iso3 IS NULL
+            ) AS n_usable_without_target,
+            COUNT(*) FILTER (
+                WHERE usable_country
+                  AND (NOT is_proxy OR ?)
+                  AND cg.country_iso3 IS NULL
+            ) AS n_missing_country_targets,
+            COUNT(*) FILTER (WHERE is_proxy) AS n_proxy_rows,
+            COUNT(*) FILTER (
+                WHERE NOT is_proxy AND usable_country
+            ) AS n_nonproxy_usable_rows
+        FROM read_parquet(?) AS x
+        LEFT JOIN read_parquet(?) AS cg
+          ON x.cepii_iso3 = cg.country_iso3
+        """,
+        [
+            bool(allow_country_proxy_mappings),
+            bool(allow_country_proxy_mappings),
+            str(country_geography_crosswalk_path),
+            str(country_geography_path),
+        ],
+    ).fetchone()
+
+    if country_crosswalk_audit is None:
+        raise RuntimeError("Could not audit country-geography crosswalk.")
+
+    (
+        n_country_crosswalk_rows,
+        n_country_crosswalk_null_required,
+        n_country_crosswalk_null_flags,
+        n_country_usable_without_target,
+        n_missing_country_targets,
+        n_country_proxy_rows,
+        n_country_nonproxy_usable_rows,
+    ) = country_crosswalk_audit
+
+    invalid_country_crosswalk = {
+        key: int(value)
+        for key, value in {
+            "null required values": n_country_crosswalk_null_required,
+            "null boolean flags": n_country_crosswalk_null_flags,
+            "active usable rows without CEPII target": (
+                n_country_usable_without_target
+            ),
+            "active country targets absent from country geography": (
+                n_missing_country_targets
+            ),
+        }.items()
+        if int(value or 0) > 0
+    }
+    if invalid_country_crosswalk:
+        details = ", ".join(
+            f"{key}={value:,}"
+            for key, value in invalid_country_crosswalk.items()
+        )
+        raise RuntimeError(
+            f"Invalid country-geography crosswalk: {details}."
+        )
+
+    pair_crosswalk_audit = con.execute(
         """
         WITH pair_universe AS (
             SELECT origin_iso3 AS country_iso3
@@ -413,72 +510,67 @@ def _validate_reference_files(
                    OR is_proxy IS NULL
             ) AS n_null_flags,
             COUNT(*) FILTER (
-                WHERE (usable_country OR usable_pair) AND cepii_iso3 IS NULL
+                WHERE usable_pair
+                  AND (NOT is_proxy OR ?)
+                  AND cepii_iso3 IS NULL
             ) AS n_usable_without_target,
             COUNT(*) FILTER (
-                WHERE NOT usable_country
-                  AND NOT usable_pair
-                  AND cepii_iso3 IS NOT NULL
-            ) AS n_unusable_with_target,
-            COUNT(*) FILTER (
-                WHERE usable_country
-                  AND cg.country_iso3 IS NULL
-            ) AS n_missing_country_targets,
-            COUNT(*) FILTER (
                 WHERE usable_pair
+                  AND (NOT is_proxy OR ?)
                   AND pu.country_iso3 IS NULL
             ) AS n_missing_pair_targets,
             COUNT(*) FILTER (WHERE is_proxy) AS n_proxy_rows,
             COUNT(*) FILTER (
-                WHERE NOT is_proxy AND (usable_country OR usable_pair)
+                WHERE NOT is_proxy AND usable_pair
             ) AS n_nonproxy_usable_rows
         FROM read_parquet(?) AS x
-        LEFT JOIN read_parquet(?) AS cg
-          ON x.cepii_iso3 = cg.country_iso3
         LEFT JOIN pair_universe AS pu
           ON x.cepii_iso3 = pu.country_iso3
         """,
         [
             str(pair_geography_path),
             str(pair_geography_path),
-            str(geography_crosswalk_path),
-            str(country_geography_path),
+            bool(allow_pair_proxy_mappings),
+            bool(allow_pair_proxy_mappings),
+            str(pair_geography_crosswalk_path),
         ],
     ).fetchone()
 
-    if crosswalk_audit is None:
-        raise RuntimeError("Could not audit geography crosswalk.")
+    if pair_crosswalk_audit is None:
+        raise RuntimeError("Could not audit pair-geography crosswalk.")
 
     (
-        n_crosswalk_rows,
-        n_crosswalk_null_required,
-        n_crosswalk_null_flags,
-        n_usable_without_target,
-        n_unusable_with_target,
-        n_missing_country_targets,
+        n_pair_crosswalk_rows,
+        n_pair_crosswalk_null_required,
+        n_pair_crosswalk_null_flags,
+        n_pair_usable_without_target,
         n_missing_pair_targets,
-        n_proxy_crosswalk_rows,
-        n_nonproxy_usable_crosswalk_rows,
-    ) = crosswalk_audit
+        n_pair_proxy_rows,
+        n_pair_nonproxy_usable_rows,
+    ) = pair_crosswalk_audit
 
-    crosswalk_errors = {
-        "null required values": n_crosswalk_null_required,
-        "null boolean flags": n_crosswalk_null_flags,
-        "usable rows without CEPII target": n_usable_without_target,
-        "unusable rows with CEPII target": n_unusable_with_target,
-        "country targets absent from country geography": n_missing_country_targets,
-        "pair targets absent from pair geography": n_missing_pair_targets,
-    }
-    invalid_crosswalk = {
+    invalid_pair_crosswalk = {
         key: int(value)
-        for key, value in crosswalk_errors.items()
+        for key, value in {
+            "null required values": n_pair_crosswalk_null_required,
+            "null boolean flags": n_pair_crosswalk_null_flags,
+            "active usable rows without CEPII target": (
+                n_pair_usable_without_target
+            ),
+            "active pair targets absent from pair geography": (
+                n_missing_pair_targets
+            ),
+        }.items()
         if int(value or 0) > 0
     }
-    if invalid_crosswalk:
+    if invalid_pair_crosswalk:
         details = ", ".join(
-            f"{key}={value:,}" for key, value in invalid_crosswalk.items()
+            f"{key}={value:,}"
+            for key, value in invalid_pair_crosswalk.items()
         )
-        raise RuntimeError(f"Invalid geography crosswalk: {details}.")
+        raise RuntimeError(
+            f"Invalid pair-geography crosswalk: {details}."
+        )
 
     oil_audit = con.execute(
         """
@@ -538,11 +630,19 @@ def _validate_reference_files(
         "n_pair_reference_rows": int(n_pair_rows),
         "n_pair_weighted_distance": int(n_weighted_distance),
         "n_pair_capital_fallback": int(n_capital_fallback),
+        "n_pair_gravity_harmonic_distance": int(
+            n_gravity_harmonic_distance
+        ),
         "n_country_reference_rows": int(n_country_rows),
-        "n_crosswalk_rows": int(n_crosswalk_rows),
-        "n_proxy_crosswalk_rows": int(n_proxy_crosswalk_rows),
-        "n_nonproxy_usable_crosswalk_rows": int(
-            n_nonproxy_usable_crosswalk_rows
+        "n_country_crosswalk_rows": int(n_country_crosswalk_rows),
+        "n_country_proxy_crosswalk_rows": int(n_country_proxy_rows),
+        "n_country_nonproxy_usable_crosswalk_rows": int(
+            n_country_nonproxy_usable_rows
+        ),
+        "n_pair_crosswalk_rows": int(n_pair_crosswalk_rows),
+        "n_pair_proxy_crosswalk_rows": int(n_pair_proxy_rows),
+        "n_pair_nonproxy_usable_crosswalk_rows": int(
+            n_pair_nonproxy_usable_rows
         ),
         "n_oil_reference_rows": int(n_oil_rows),
         "oil_reference_minimum_year": int(oil_minimum_year),
@@ -976,18 +1076,33 @@ def build_training_features(
 
     pair_geography_path = cfg.features.pair_geography.resolve_path()
     country_geography_path = cfg.features.geography.resolve_path()
-    geography_crosswalk_path = (
+    country_geography_crosswalk_path = (
         cfg.features.geography_crosswalk.resolve_path()
     )
-    allow_proxy_mappings = (
+    pair_geography_crosswalk_path = (
+        cfg.features.pair_geography_crosswalk.resolve_path()
+    )
+
+    country_crosswalk_sql = _sql_literal(
+        country_geography_crosswalk_path
+    )
+    pair_crosswalk_sql = _sql_literal(
+        pair_geography_crosswalk_path
+    )
+
+    allow_country_proxy_mappings = (
         cfg.features.geography_crosswalk.allow_proxy_mappings
+    )
+    allow_pair_proxy_mappings = (
+        cfg.features.pair_geography_crosswalk.allow_proxy_mappings
     )
     oil_price_path = cfg.features.oil_price.resolve_path()
 
     for label, path in [
         ("Bilateral geography reference", pair_geography_path),
         ("Country geography reference", country_geography_path),
-        ("Geography crosswalk", geography_crosswalk_path),
+        ("Country geography crosswalk", country_geography_crosswalk_path),
+        ("Pair geography crosswalk", pair_geography_crosswalk_path),
         ("Annual oil-price reference", oil_price_path),
     ]:
         if not path.exists():
@@ -1012,9 +1127,6 @@ def build_training_features(
     )
     country_geography_sql = _sql_literal(
         country_geography_path
-    )
-    geography_crosswalk_sql = _sql_literal(
-        geography_crosswalk_path
     )
     oil_price_sql = _sql_literal(
         oil_price_path
@@ -1053,12 +1165,20 @@ def build_training_features(
         country_geography_path,
     )
     logger.info(
-        "  Geography crosswalk: %s",
-        geography_crosswalk_path,
+        "  Country geography crosswalk: %s",
+        country_geography_crosswalk_path,
     )
     logger.info(
-        "  Allow proxy geography mappings: %s",
-        allow_proxy_mappings,
+        "  Pair geography crosswalk: %s",
+        pair_geography_crosswalk_path,
+    )
+    logger.info(
+        "  Allow country proxy mappings: %s",
+        allow_country_proxy_mappings,
+    )
+    logger.info(
+        "  Allow pair proxy mappings: %s",
+        allow_pair_proxy_mappings,
     )
     logger.info(
         "  Annual oil prices: %s",
@@ -1122,10 +1242,21 @@ def build_training_features(
             con=con,
             pair_geography_path=pair_geography_path,
             country_geography_path=country_geography_path,
-            geography_crosswalk_path=geography_crosswalk_path,
+            country_geography_crosswalk_path=(
+                country_geography_crosswalk_path
+            ),
+            pair_geography_crosswalk_path=(
+                pair_geography_crosswalk_path
+            ),
             oil_price_path=oil_price_path,
             minimum_year=cfg.scope.min_year,
             maximum_year=cfg.scope.max_year,
+            allow_country_proxy_mappings=(
+                allow_country_proxy_mappings
+            ),
+            allow_pair_proxy_mappings=(
+                allow_pair_proxy_mappings
+            ),
         )
 
         input_audit = con.execute(
@@ -1251,79 +1382,95 @@ def build_training_features(
             SELECT
                 b.*,
 
-                COALESCE(ex.mapping_type, 'identity')
+                COALESCE(exc.mapping_type, 'identity')
                     AS exporter_geography_mapping_type,
-                COALESCE(im.mapping_type, 'identity')
+                COALESCE(imc.mapping_type, 'identity')
                     AS importer_geography_mapping_type,
 
-                COALESCE(ex.is_proxy, FALSE)
+                COALESCE(exp.mapping_type, 'identity')
+                    AS exporter_pair_geography_mapping_type,
+                COALESCE(imp.mapping_type, 'identity')
+                    AS importer_pair_geography_mapping_type,
+
+                COALESCE(exc.is_proxy, FALSE)
                     AS exporter_geography_mapping_is_proxy,
-                COALESCE(im.is_proxy, FALSE)
+                COALESCE(imc.is_proxy, FALSE)
                     AS importer_geography_mapping_is_proxy,
 
+                COALESCE(exp.is_proxy, FALSE)
+                    AS exporter_pair_geography_mapping_is_proxy,
+                COALESCE(imp.is_proxy, FALSE)
+                    AS importer_pair_geography_mapping_is_proxy,
+
                 (
-                    ex.trade_iso3 IS NOT NULL
-                    AND ex.usable_country
-                    AND (NOT ex.is_proxy OR {str(allow_proxy_mappings).upper()})
+                    exc.trade_iso3 IS NOT NULL
+                    AND exc.usable_country
+                    AND (NOT exc.is_proxy OR {str(allow_country_proxy_mappings).upper()})
                 ) AS exporter_country_mapping_applied,
 
                 (
-                    im.trade_iso3 IS NOT NULL
-                    AND im.usable_country
-                    AND (NOT im.is_proxy OR {str(allow_proxy_mappings).upper()})
+                    imc.trade_iso3 IS NOT NULL
+                    AND imc.usable_country
+                    AND (NOT imc.is_proxy OR {str(allow_country_proxy_mappings).upper()})
                 ) AS importer_country_mapping_applied,
 
                 (
-                    ex.trade_iso3 IS NOT NULL
-                    AND ex.usable_pair
-                    AND (NOT ex.is_proxy OR {str(allow_proxy_mappings).upper()})
+                    exp.trade_iso3 IS NOT NULL
+                    AND exp.usable_pair
+                    AND (NOT exp.is_proxy OR {str(allow_pair_proxy_mappings).upper()})
                 ) AS exporter_pair_mapping_applied,
 
                 (
-                    im.trade_iso3 IS NOT NULL
-                    AND im.usable_pair
-                    AND (NOT im.is_proxy OR {str(allow_proxy_mappings).upper()})
+                    imp.trade_iso3 IS NOT NULL
+                    AND imp.usable_pair
+                    AND (NOT imp.is_proxy OR {str(allow_pair_proxy_mappings).upper()})
                 ) AS importer_pair_mapping_applied,
 
                 CASE
-                    WHEN ex.trade_iso3 IS NOT NULL
-                     AND ex.usable_country
-                     AND (NOT ex.is_proxy OR {str(allow_proxy_mappings).upper()})
-                        THEN ex.cepii_iso3
+                    WHEN exc.trade_iso3 IS NOT NULL
+                     AND exc.usable_country
+                     AND (NOT exc.is_proxy OR {str(allow_country_proxy_mappings).upper()})
+                        THEN exc.cepii_iso3
                     ELSE b.exporter_iso
                 END AS exporter_country_geography_iso3,
 
                 CASE
-                    WHEN im.trade_iso3 IS NOT NULL
-                     AND im.usable_country
-                     AND (NOT im.is_proxy OR {str(allow_proxy_mappings).upper()})
-                        THEN im.cepii_iso3
+                    WHEN imc.trade_iso3 IS NOT NULL
+                     AND imc.usable_country
+                     AND (NOT imc.is_proxy OR {str(allow_country_proxy_mappings).upper()})
+                        THEN imc.cepii_iso3
                     ELSE b.importer_iso
                 END AS importer_country_geography_iso3,
 
                 CASE
-                    WHEN ex.trade_iso3 IS NOT NULL
-                     AND ex.usable_pair
-                     AND (NOT ex.is_proxy OR {str(allow_proxy_mappings).upper()})
-                        THEN ex.cepii_iso3
+                    WHEN exp.trade_iso3 IS NOT NULL
+                     AND exp.usable_pair
+                     AND (NOT exp.is_proxy OR {str(allow_pair_proxy_mappings).upper()})
+                        THEN exp.cepii_iso3
                     ELSE b.exporter_iso
                 END AS exporter_pair_geography_iso3,
 
                 CASE
-                    WHEN im.trade_iso3 IS NOT NULL
-                     AND im.usable_pair
-                     AND (NOT im.is_proxy OR {str(allow_proxy_mappings).upper()})
-                        THEN im.cepii_iso3
+                    WHEN imp.trade_iso3 IS NOT NULL
+                     AND imp.usable_pair
+                     AND (NOT imp.is_proxy OR {str(allow_pair_proxy_mappings).upper()})
+                        THEN imp.cepii_iso3
                     ELSE b.importer_iso
                 END AS importer_pair_geography_iso3
 
             FROM base AS b
 
-            LEFT JOIN read_parquet({geography_crosswalk_sql}) AS ex
-              ON b.exporter_iso = ex.trade_iso3
+            LEFT JOIN read_parquet({country_crosswalk_sql}) AS exc
+            ON b.exporter_iso = exc.trade_iso3
 
-            LEFT JOIN read_parquet({geography_crosswalk_sql}) AS im
-              ON b.importer_iso = im.trade_iso3
+            LEFT JOIN read_parquet({country_crosswalk_sql}) AS imc
+            ON b.importer_iso = imc.trade_iso3
+
+            LEFT JOIN read_parquet({pair_crosswalk_sql}) AS exp
+            ON b.exporter_iso = exp.trade_iso3
+
+            LEFT JOIN read_parquet({pair_crosswalk_sql}) AS imp
+            ON b.importer_iso = imp.trade_iso3
         ),
 
         valid_export_unit_values AS (
@@ -2274,9 +2421,9 @@ def build_training_features(
                        OR (importer_country_mapping_applied
                            AND importer_geography_mapping_is_proxy)
                        OR (exporter_pair_mapping_applied
-                           AND exporter_geography_mapping_is_proxy)
+                           AND exporter_pair_geography_mapping_is_proxy)
                        OR (importer_pair_mapping_applied
-                           AND importer_geography_mapping_is_proxy)
+                           AND importer_pair_geography_mapping_is_proxy)
                 ) AS n_rows_with_proxy_mapping,
 
                 (
@@ -2292,6 +2439,13 @@ def build_training_features(
                     WHERE distance_model_source
                           = 'capital'
                 ) AS n_capital_distance_fallback_used,
+
+                (
+                    SELECT COUNT(*)
+                    FROM read_parquet({output_sql})
+                    WHERE distance_model_source
+                          = 'gravity_2021_distw_harmonic'
+                ) AS n_gravity_harmonic_distance_used,
 
                 (
                     SELECT COUNT(*)
@@ -2349,6 +2503,7 @@ def build_training_features(
         "n_rows_with_proxy_mapping",
         "n_weighted_distance_used",
         "n_capital_distance_fallback_used",
+        "n_gravity_harmonic_distance_used",
         "n_initial_predictors_complete",
         "n_model_candidates_predictors_complete",
         "n_model_candidates_predictors_incomplete",
@@ -2617,6 +2772,12 @@ def build_training_features(
         "  Capital-distance fallbacks used: %s",
         metrics[
             "n_capital_distance_fallback_used"
+        ],
+    )
+    logger.info(
+        "  Gravity harmonic distances used: %s",
+        metrics[
+            "n_gravity_harmonic_distance_used"
         ],
     )
 

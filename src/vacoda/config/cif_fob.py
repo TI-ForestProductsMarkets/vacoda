@@ -503,6 +503,7 @@ class CifFobFeaturesConfig:
     geography: CifFobFeatureInputConfig
     pair_geography: CifFobFeatureInputConfig
     geography_crosswalk: CifFobGeographyCrosswalkConfig
+    pair_geography_crosswalk: CifFobGeographyCrosswalkConfig
     oil_price: CifFobFeatureInputConfig
     product: CifFobProductFeaturesConfig
 
@@ -529,6 +530,13 @@ class CifFobFeaturesConfig:
                     key="cif_fob.features.geography_crosswalk",
                 ),
                 key="cif_fob.features.geography_crosswalk",
+            ),
+            pair_geography_crosswalk=CifFobGeographyCrosswalkConfig.from_dict(
+                require_dict(
+                    cfg.get("pair_geography_crosswalk"),
+                    key="cif_fob.features.pair_geography_crosswalk",
+                ),
+                key="cif_fob.features.pair_geography_crosswalk",
             ),
             oil_price=CifFobFeatureInputConfig.from_dict(
                 require_dict(
@@ -1157,8 +1165,187 @@ class CifFobLogLinearRegressionConfig:
         )
 
 
+@dataclass(frozen=True)
+class CifFobXGBoostConfig:
+    name: str
+    enabled: bool
+    type: Literal["machine_learning"]
+    categorical_predictors: tuple[str, ...]
+
+    target_transformation: str
+    objective: str
+    eval_metric: str
+    n_estimators: int
+    learning_rate: float
+    max_depth: int
+    min_child_weight: float
+    subsample: float
+    colsample_bytree: float
+    reg_alpha: float
+    reg_lambda: float
+    gamma: float
+    random_state: int
+    max_bins: int
+    tree_method: str
+    enable_categorical: bool
+    max_cat_to_onehot: int
+    early_stopping_rounds: int
+    n_jobs: int
+
+    @classmethod
+    def from_dict(
+        cls,
+        name: str,
+        cfg: dict[str, Any],
+    ) -> "CifFobXGBoostConfig":
+        target_transformation = require_str(
+            cfg.get("target_transformation"),
+            key=(
+                "cif_fob.method.estimation.models."
+                f"candidates.{name}.target_transformation"
+            ),
+        ).strip().lower()
+
+        if target_transformation not in {"log", "none"}:
+            raise ValueError(
+                f"{name}.target_transformation must be 'log' or 'none', "
+                f"got {target_transformation!r}."
+            )
+
+        return cls(
+            name=name,
+            enabled=require_bool(
+                cfg.get("enabled"),
+                key=f"cif_fob.method.estimation.models.candidates.{name}.enabled",
+            ),
+            type="machine_learning",
+            categorical_predictors=tuple(
+                _require_str_list(
+                    cfg.get("categorical_predictors"),
+                    key=(
+                        "cif_fob.method.estimation.models."
+                        f"candidates.{name}.categorical_predictors"
+                    ),
+                )
+            ),
+            target_transformation=target_transformation,
+            objective=require_str(
+                cfg.get("objective"),
+                key=f"cif_fob.method.estimation.models.candidates.{name}.objective",
+            ).strip(),
+            eval_metric=require_str(
+                cfg.get("eval_metric"),
+                key=f"cif_fob.method.estimation.models.candidates.{name}.eval_metric",
+            ).strip(),
+            n_estimators=require_int(
+                cfg.get("n_estimators"),
+                key=(
+                    "cif_fob.method.estimation.models."
+                    f"candidates.{name}.n_estimators"
+                ),
+                min_value=1,
+            ),
+            learning_rate=require_float(
+                cfg.get("learning_rate"),
+                key=(
+                    "cif_fob.method.estimation.models."
+                    f"candidates.{name}.learning_rate"
+                ),
+                min_value=0.0,
+            ),
+            max_depth=require_int(
+                cfg.get("max_depth"),
+                key=f"cif_fob.method.estimation.models.candidates.{name}.max_depth",
+                min_value=1,
+            ),
+            min_child_weight=require_float(
+                cfg.get("min_child_weight"),
+                key=(
+                    "cif_fob.method.estimation.models."
+                    f"candidates.{name}.min_child_weight"
+                ),
+                min_value=0.0,
+            ),
+            subsample=require_float(
+                cfg.get("subsample"),
+                key=f"cif_fob.method.estimation.models.candidates.{name}.subsample",
+                min_value=0.0,
+                max_value=1.0,
+            ),
+            colsample_bytree=require_float(
+                cfg.get("colsample_bytree"),
+                key=(
+                    "cif_fob.method.estimation.models."
+                    f"candidates.{name}.colsample_bytree"
+                ),
+                min_value=0.0,
+                max_value=1.0,
+            ),
+            reg_alpha=require_float(
+                cfg.get("reg_alpha"),
+                key=f"cif_fob.method.estimation.models.candidates.{name}.reg_alpha",
+                min_value=0.0,
+            ),
+            reg_lambda=require_float(
+                cfg.get("reg_lambda"),
+                key=f"cif_fob.method.estimation.models.candidates.{name}.reg_lambda",
+                min_value=0.0,
+            ),
+            gamma=require_float(
+                cfg.get("gamma"),
+                key=f"cif_fob.method.estimation.models.candidates.{name}.gamma",
+                min_value=0.0,
+            ),
+            random_state=require_int(
+                cfg.get("random_state"),
+                key=(
+                    "cif_fob.method.estimation.models."
+                    f"candidates.{name}.random_state"
+                ),
+            ),
+            max_bins=require_int(
+                cfg.get("max_bins"),
+                key=f"cif_fob.method.estimation.models.candidates.{name}.max_bins",
+                min_value=2,
+            ),
+            tree_method=require_str(
+                cfg.get("tree_method"),
+                key=f"cif_fob.method.estimation.models.candidates.{name}.tree_method",
+            ).strip().lower(),
+            enable_categorical=require_bool(
+                cfg.get("enable_categorical"),
+                key=(
+                    "cif_fob.method.estimation.models."
+                    f"candidates.{name}.enable_categorical"
+                ),
+            ),
+            max_cat_to_onehot=require_int(
+                cfg.get("max_cat_to_onehot"),
+                key=(
+                    "cif_fob.method.estimation.models."
+                    f"candidates.{name}.max_cat_to_onehot"
+                ),
+                min_value=1,
+            ),
+            early_stopping_rounds=require_int(
+                cfg.get("early_stopping_rounds"),
+                key=(
+                    "cif_fob.method.estimation.models."
+                    f"candidates.{name}.early_stopping_rounds"
+                ),
+                min_value=1,
+            ),
+            n_jobs=require_int(
+                cfg.get("n_jobs"),
+                key=f"cif_fob.method.estimation.models.candidates.{name}.n_jobs",
+                min_value=1,
+            ),
+        )
+
+
 CifFobCandidateModelConfig = (
     CifFobHistGradientBoostingConfig
+    | CifFobXGBoostConfig
     | CifFobLogLinearRegressionConfig
 )
 
@@ -1243,6 +1430,13 @@ class CifFobModelsConfig:
             elif name == "hist_gradient_boosting_squared_regularized":
                 candidates[name] = (
                     CifFobHistGradientBoostingConfig.from_dict(
+                        name,
+                        model_cfg,
+                    )
+                )
+            elif name == "xgboost_log_squared":
+                candidates[name] = (
+                    CifFobXGBoostConfig.from_dict(
                         name,
                         model_cfg,
                     )
@@ -1550,6 +1744,99 @@ class CifFobMethodConfig:
         )
 
 
+
+@dataclass(frozen=True)
+class CifFobArtifactsConfig:
+    enable: bool
+    kind: str
+    subdir: str
+    filename: str
+    timestamp: bool
+    write_latest: bool
+
+    @classmethod
+    def from_dict(
+        cls,
+        cfg: dict[str, Any],
+    ) -> "CifFobArtifactsConfig":
+        kind = require_str(
+            cfg.get("kind"),
+            key="cif_fob.artifacts.kind",
+        ).strip().lower()
+
+        if not kind:
+            raise ValueError(
+                "cif_fob.artifacts.kind must not be empty."
+            )
+
+        filename = require_str(
+            cfg.get("filename"),
+            key="cif_fob.artifacts.filename",
+        ).strip()
+
+        if not filename:
+            raise ValueError(
+                "cif_fob.artifacts.filename must not be empty."
+            )
+
+        return cls(
+            enable=require_bool(
+                cfg.get("enable"),
+                key="cif_fob.artifacts.enable",
+            ),
+            kind=kind,
+            subdir=require_str(
+                cfg.get("subdir"),
+                key="cif_fob.artifacts.subdir",
+                allow_empty=True,
+            ).strip(),
+            filename=filename,
+            timestamp=require_bool(
+                cfg.get("timestamp"),
+                key="cif_fob.artifacts.timestamp",
+            ),
+            write_latest=require_bool(
+                cfg.get("write_latest"),
+                key="cif_fob.artifacts.write_latest",
+            ),
+        )
+
+    def resolve_dir(self) -> Path:
+        base = get_output_dir(self.kind)
+        subdir_path = Path(self.subdir)
+
+        parts = list(subdir_path.parts)
+
+        # Allow subdir values such as "reports/cif_fob/..." without
+        # duplicating the artifact kind in the resolved path.
+        if parts and parts[0].lower() == self.kind:
+            parts = parts[1:]
+
+        return (
+            base / Path(*parts)
+            if parts
+            else base
+        )
+
+    def timestamped_path(self, run_id: str) -> Path:
+        filename = self.filename
+
+        if filename.lower().endswith(".md"):
+            filename = filename[:-3]
+
+        if self.timestamp:
+            filename = f"{filename}_{run_id}"
+
+        return self.resolve_dir() / f"{filename}.md"
+
+    def latest_path(self) -> Path:
+        filename = self.filename
+
+        if filename.lower().endswith(".md"):
+            filename = filename[:-3]
+
+        return self.resolve_dir() / f"{filename}_latest.md"
+
 @dataclass(frozen=True)
 class CifFobConfig:
     input: CifFobInputConfig
@@ -1557,6 +1844,7 @@ class CifFobConfig:
     source_data: CifFobSourceDataConfig
     products: CifFobProductsConfig
     logging: CifFobLoggingConfig
+    artifacts: CifFobArtifactsConfig
     features: CifFobFeaturesConfig
     method: CifFobMethodConfig
     scope: PipelineScopeConfig
@@ -1611,6 +1899,12 @@ class CifFobConfig:
             logging=CifFobLoggingConfig.from_dict(
                 require_dict(rendered.get("logging"), key="cif_fob.logging")
             ),
+            artifacts=CifFobArtifactsConfig.from_dict(
+                require_dict(
+                    rendered.get("artifacts"),
+                    key="cif_fob.artifacts",
+                )
+            ),
             features=CifFobFeaturesConfig.from_dict(
                 require_dict(rendered.get("features"), key="cif_fob.features")
             ),
@@ -1626,6 +1920,15 @@ class CifFobConfig:
 
     def output_dir(self) -> Path:
         return self.output.resolve_dir()
+
+    def artifact_dir(self) -> Path:
+        return self.artifacts.resolve_dir()
+
+    def artifact_path(self, run_id: str) -> Path:
+        return self.artifacts.timestamped_path(run_id)
+
+    def artifact_latest_path(self) -> Path:
+        return self.artifacts.latest_path()
 
     def product_path(self, product_name: str) -> Path:
         products = {

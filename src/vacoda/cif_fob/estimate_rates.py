@@ -10,6 +10,7 @@ Supported estimators
 2. hist_gradient_boosting_squared
 3. log_linear_regression
 4. log_linear_regression_smearing
+5. xgboost_log_squared
 
 """
 
@@ -34,6 +35,14 @@ except ImportError as exc:  # pragma: no cover - environment guard
 else:
     _STATSMODELS_IMPORT_ERROR = None
 
+try:
+    from xgboost import XGBRegressor
+except ImportError as exc:  # pragma: no cover - environment guard
+    XGBRegressor = None
+    _XGBOOST_IMPORT_ERROR = exc
+else:
+    _XGBOOST_IMPORT_ERROR = None
+
 from vacoda.config.cif_fob import CifFobConfig
 from vacoda.cif_fob.prepare_input import valid_output
 
@@ -50,6 +59,16 @@ class FittedHGBModel:
     categorical_predictors: list[str]
     category_maps: dict[str, dict[str, int]]
     target_transformation: str
+
+
+@dataclass
+class FittedXGBoostModel:
+    estimator: Any
+    predictors: list[str]
+    categorical_predictors: list[str]
+    category_levels: dict[str, list[str]]
+    target_transformation: str
+    n_estimators_used: int
 
 
 @dataclass
@@ -87,8 +106,8 @@ def _safe_model_prefix(model_name: str) -> str:
         "hist_gradient_boosting_squared_level": "hgb_sq_lvl",
         "hist_gradient_boosting_squared_regularized": "hgb_sq_reg",
         "log_linear_regression": "ols",
-        "log_linear_regression_smearing": "ols_sm"
-
+        "log_linear_regression_smearing": "ols_sm",
+        "xgboost_log_squared": "xgb_log_sq",
     }
     return aliases.get(
         model_name,
@@ -534,11 +553,6 @@ def _fit_hgb(
         sample_weight=sample_weight,
     )
 
-    print(
-        model_cfg.name,
-        "target_transformation:", target_transformation,
-    )
-
     return FittedHGBModel(
         estimator=estimator,
         predictors=predictors,
@@ -582,6 +596,280 @@ def _predict_hgb(
         "Unsupported fitted HGB target transformation: "
         f"{fitted.target_transformation!r}."
     )
+
+# ======================================================================
+# XGBoost helpers
+# ======================================================================
+
+
+def _learn_xgb_category_levels(
+    *,
+    frame: pd.DataFrame,
+    categorical_predictors: list[str],
+) -> dict[str, list[str]]:
+    """Learn deterministic category levels from the current training sample."""
+    return {
+        column: sorted(
+            str(value)
+            for value in frame[column]
+            .astype("string")
+            .dropna()
+            .unique()
+            .tolist()
+        )
+        for column in categorical_predictors
+    }
+
+
+def _encode_xgb_predictors(
+    *,
+    frame: pd.DataFrame,
+    predictors: list[str],
+    categorical_predictors: list[str],
+    category_levels: dict[str, list[str]],
+    enable_categorical: bool,
+) -> pd.DataFrame:
+    """Encode predictors consistently for XGBRegressor."""
+    encoded = frame[predictors].copy()
+    categorical_set = set(categorical_predictors)
+
+    for column in predictors:
+        if column not in categorical_set:
+            encoded[column] = pd.to_numeric(
+                encoded[column],
+                errors="coerce",
+            ).astype("float64")
+            continue
+
+        levels = category_levels[column]
+        values = encoded[column].astype("string")
+
+        if enable_categorical:
+            encoded[column] = pd.Categorical(
+                values,
+                categories=levels,
+            )
+        else:
+            mapping = {
+                value: index
+                for index, value in enumerate(levels)
+            }
+            encoded[column] = (
+                values.map(mapping).astype("float64")
+            )
+
+    return encoded
+
+
+def _xgb_target(
+    *,
+    frame: pd.DataFrame,
+    target_transformation: str,
+) -> np.ndarray:
+    if target_transformation == "log":
+        return frame["log_observed_factor"].to_numpy(dtype=float)
+
+    if target_transformation == "none":
+        return frame["observed_cif_fob_factor"].to_numpy(dtype=float)
+
+    raise ValueError(
+        "XGBoost target_transformation must be 'log' or 'none', "
+        f"got {target_transformation!r}."
+    )
+
+
+def _make_xgb_estimator(
+    *,
+    model_cfg: Any,
+    n_estimators: int,
+    use_early_stopping: bool,
+) -> Any:
+    if XGBRegressor is None:  # pragma: no cover
+        raise RuntimeError(
+            "xgboost is required for xgboost_log_squared."
+        ) from _XGBOOST_IMPORT_ERROR
+
+    kwargs: dict[str, Any] = {
+        "objective": str(model_cfg.objective),
+        "eval_metric": str(model_cfg.eval_metric),
+        "n_estimators": int(n_estimators),
+        "learning_rate": float(model_cfg.learning_rate),
+        "max_depth": int(model_cfg.max_depth),
+        "min_child_weight": float(model_cfg.min_child_weight),
+        "subsample": float(model_cfg.subsample),
+        "colsample_bytree": float(model_cfg.colsample_bytree),
+        "reg_alpha": float(model_cfg.reg_alpha),
+        "reg_lambda": float(model_cfg.reg_lambda),
+        "gamma": float(model_cfg.gamma),
+        "tree_method": str(model_cfg.tree_method),
+        "max_bin": int(model_cfg.max_bins),
+        "enable_categorical": bool(model_cfg.enable_categorical),
+        "random_state": int(model_cfg.random_state),
+        "n_jobs": int(model_cfg.n_jobs),
+    }
+
+    if bool(model_cfg.enable_categorical):
+        kwargs["max_cat_to_onehot"] = int(
+            model_cfg.max_cat_to_onehot
+        )
+
+    if use_early_stopping:
+        kwargs["early_stopping_rounds"] = int(
+            model_cfg.early_stopping_rounds
+        )
+
+    return XGBRegressor(**kwargs)
+
+
+def _fit_xgboost(
+    *,
+    train_frame: pd.DataFrame,
+    predictors: list[str],
+    categorical_predictors: list[str],
+    sample_weight: pd.Series,
+    model_cfg: Any,
+) -> FittedXGBoostModel:
+    """
+    Fit XGBoost with leakage-safe internal early stopping.
+
+    The latest year inside the supplied training sample is used only to
+    choose the boosting-round count. The estimator is then refit on the
+    complete supplied training sample using that selected count.
+    """
+    if XGBRegressor is None:  # pragma: no cover
+        raise RuntimeError(
+            "xgboost is required for xgboost_log_squared."
+        ) from _XGBOOST_IMPORT_ERROR
+
+    target_transformation = str(
+        model_cfg.target_transformation
+    ).strip().lower()
+
+    category_levels = _learn_xgb_category_levels(
+        frame=train_frame,
+        categorical_predictors=categorical_predictors,
+    )
+
+    encoded_full = _encode_xgb_predictors(
+        frame=train_frame,
+        predictors=predictors,
+        categorical_predictors=categorical_predictors,
+        category_levels=category_levels,
+        enable_categorical=bool(model_cfg.enable_categorical),
+    )
+    target_full = _xgb_target(
+        frame=train_frame,
+        target_transformation=target_transformation,
+    )
+    full_weights = sample_weight.reindex(
+        train_frame.index
+    ).to_numpy(dtype=float)
+
+    training_years = sorted(
+        pd.to_numeric(
+            train_frame["year"],
+            errors="coerce",
+        ).dropna().astype(int).unique().tolist()
+    )
+
+    selected_estimators = int(model_cfg.n_estimators)
+
+    if len(training_years) >= 2:
+        internal_validation_year = training_years[-1]
+        fit_mask = train_frame["year"].lt(
+            internal_validation_year
+        )
+        eval_mask = train_frame["year"].eq(
+            internal_validation_year
+        )
+
+        if fit_mask.any() and eval_mask.any():
+            tuning_estimator = _make_xgb_estimator(
+                model_cfg=model_cfg,
+                n_estimators=int(model_cfg.n_estimators),
+                use_early_stopping=True,
+            )
+            tuning_estimator.fit(
+                encoded_full.loc[fit_mask, predictors],
+                target_full[fit_mask.to_numpy()],
+                sample_weight=full_weights[fit_mask.to_numpy()],
+                eval_set=[(
+                    encoded_full.loc[eval_mask, predictors],
+                    target_full[eval_mask.to_numpy()],
+                )],
+                sample_weight_eval_set=[
+                    full_weights[eval_mask.to_numpy()]
+                ],
+                verbose=False,
+            )
+
+            best_iteration = getattr(
+                tuning_estimator,
+                "best_iteration",
+                None,
+            )
+            if best_iteration is not None:
+                selected_estimators = max(
+                    1,
+                    int(best_iteration) + 1,
+                )
+
+    final_estimator = _make_xgb_estimator(
+        model_cfg=model_cfg,
+        n_estimators=selected_estimators,
+        use_early_stopping=False,
+    )
+    final_estimator.fit(
+        encoded_full[predictors],
+        target_full,
+        sample_weight=full_weights,
+        verbose=False,
+    )
+
+    return FittedXGBoostModel(
+        estimator=final_estimator,
+        predictors=predictors,
+        categorical_predictors=categorical_predictors,
+        category_levels=category_levels,
+        target_transformation=target_transformation,
+        n_estimators_used=selected_estimators,
+    )
+
+
+def _predict_xgboost(
+    fitted: FittedXGBoostModel,
+    frame: pd.DataFrame,
+) -> np.ndarray:
+    encoded = _encode_xgb_predictors(
+        frame=frame,
+        predictors=fitted.predictors,
+        categorical_predictors=fitted.categorical_predictors,
+        category_levels=fitted.category_levels,
+        enable_categorical=bool(
+            getattr(fitted.estimator, "enable_categorical", False)
+        ),
+    )
+
+    raw_prediction = np.asarray(
+        fitted.estimator.predict(
+            encoded[fitted.predictors]
+        ),
+        dtype=float,
+    )
+
+    if fitted.target_transformation == "log":
+        return raw_prediction
+
+    if fitted.target_transformation == "none":
+        return np.log(
+            np.maximum(raw_prediction, 1e-12)
+        )
+
+    raise ValueError(
+        "Unsupported fitted XGBoost target transformation: "
+        f"{fitted.target_transformation!r}."
+    )
+
 
 # ======================================================================
 # Log-linear statistical model helpers
@@ -859,7 +1147,7 @@ def _fit_model(
     predictors: list[str],
     categorical_predictors: list[str],
     sample_weight: pd.Series,
-) -> FittedHGBModel | FittedLogLinearModel:
+) -> FittedHGBModel | FittedXGBoostModel | FittedLogLinearModel:
 
     if model_name in {
         "hist_gradient_boosting",
@@ -868,6 +1156,15 @@ def _fit_model(
         "hist_gradient_boosting_squared_regularized",
     }:
         return _fit_hgb(
+            train_frame=train_frame,
+            predictors=predictors,
+            categorical_predictors=categorical_predictors,
+            sample_weight=sample_weight,
+            model_cfg=model_cfg,
+        )
+
+    if model_name == "xgboost_log_squared":
+        return _fit_xgboost(
             train_frame=train_frame,
             predictors=predictors,
             categorical_predictors=categorical_predictors,
@@ -891,12 +1188,16 @@ def _fit_model(
         f"Unsupported CIF/FOB estimation model: {model_name!r}."
     )
 
+
 def _predict_model(
-    fitted: FittedHGBModel | FittedLogLinearModel,
+    fitted: FittedHGBModel | FittedXGBoostModel | FittedLogLinearModel,
     frame: pd.DataFrame,
 ) -> np.ndarray:
     if isinstance(fitted, FittedHGBModel):
         return _predict_hgb(fitted, frame)
+
+    if isinstance(fitted, FittedXGBoostModel):
+        return _predict_xgboost(fitted, frame)
 
     if isinstance(fitted, FittedLogLinearModel):
         return _predict_log_linear(fitted, frame)

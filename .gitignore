@@ -63,3 +63,5 @@ coverage.xml
 Thumbs.db
 # Generated outputs
 output/
+references/cepii/gravity/audit_source/Gravity_V202211.csv
+references/cepii/gravity/audit_source/Gravity_V202211.csv

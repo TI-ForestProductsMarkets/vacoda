@@ -20,6 +20,7 @@ from typing import Any
 from vacoda.cif_fob.estimate_rates import estimate_cif_fob_rates
 from vacoda.cif_fob.mirror_pairs import build_mirror_pairs
 from vacoda.cif_fob.prepare_input import prepare_cif_fob_input
+from vacoda.cif_fob.reporting import write_cif_fob_decision_report
 from vacoda.cif_fob.training_features import build_training_features
 from vacoda.cif_fob.training_sample import build_training_sample
 from vacoda.config.cif_fob import CifFobConfig
@@ -33,6 +34,7 @@ WORKFLOW_STEPS = [
     "STEP 3 — Build CIF/FOB training sample",
     "STEP 4 — Build CIF/FOB training features",
     "STEP 5 — Estimate CIF/FOB correction rates",
+    "STEP 6 — Write CIF/FOB decision report",
 ]
 
 
@@ -140,6 +142,16 @@ def run_cif_fob_workflow(
         cfg.products.estimated_rates.enable,
         cfg.products.corrected_trade.enable,
     )
+    logger.info(
+        "Decision report: enabled=%s kind=%s subdir=%s "
+        "filename=%s timestamp=%s write_latest=%s",
+        cfg.artifacts.enable,
+        cfg.artifacts.kind,
+        cfg.artifacts.subdir,
+        cfg.artifacts.filename,
+        cfg.artifacts.timestamp,
+        cfg.artifacts.write_latest,
+    )
     logger.info("=" * 72)
 
     # ------------------------------------------------------------------
@@ -171,6 +183,12 @@ def run_cif_fob_workflow(
         path_key="estimated_rates_path",
         path=cfg.product_path("estimated_rates"),
     )
+
+    report_result: dict[str, Any] = {
+        "status": "disabled" if not cfg.artifacts.enable else "skipped",
+        "report_path": None,
+        "latest_report_path": None,
+    }
 
     # ==================================================================
     # STEP 1 — Prepare canonical CIF/FOB input
@@ -317,7 +335,7 @@ def run_cif_fob_workflow(
             consumer_step="Rate-estimation step",
             producer_product="training-features Parquet",
         )
-        
+
         estimated_rates_result = estimate_cif_fob_rates(
             cfg=cfg,
             input_path=training_features_path,
@@ -329,6 +347,45 @@ def run_cif_fob_workflow(
             "%s SKIP — %s (disabled in config)",
             warn,
             WORKFLOW_STEPS[4],
+        )
+
+    # ==================================================================
+    # STEP 6 — Write human-readable decision report
+    # ==================================================================
+
+    if cfg.artifacts.enable:
+        _log_step_header(
+            logger=logger,
+            symbol=build,
+            title=WORKFLOW_STEPS[5],
+        )
+
+        _require_artifact(
+            result=training_features_result,
+            path_key="training_features_path",
+            consumer_step="CIF/FOB reporting step",
+            producer_product="training-features Parquet",
+        )
+
+        _require_artifact(
+            result=estimated_rates_result,
+            path_key="estimated_rates_path",
+            consumer_step="CIF/FOB reporting step",
+            producer_product="estimated-rates Parquet",
+        )
+
+        report_result = write_cif_fob_decision_report(
+            cfg=cfg,
+            run_id=run_id,
+            training_features_result=training_features_result,
+            estimated_rates_result=estimated_rates_result,
+            logger=logger,
+        )
+    else:
+        logger.info(
+            "%s SKIP — %s (disabled in config)",
+            warn,
+            WORKFLOW_STEPS[5],
         )
 
     # Trade correction is not wired into this workflow yet.
@@ -361,7 +418,11 @@ def run_cif_fob_workflow(
 
     logger.info("=" * 72)
     logger.info("%s CIF/FOB workflow finished.", info)
-    logger.info("Latest output: %s", latest_output_path)
+    logger.info("Latest data output: %s", latest_output_path)
+    logger.info(
+        "Decision report: %s",
+        report_result.get("report_path"),
+    )
     logger.info("=" * 72)
 
     return {
@@ -383,6 +444,12 @@ def run_cif_fob_workflow(
         "estimated_rates_path": estimated_rates_result.get(
             "estimated_rates_path"
         ),
+        "decision_report_path": report_result.get(
+            "report_path"
+        ),
+        "latest_decision_report_path": report_result.get(
+            "latest_report_path"
+        ),
         "products_enabled": {
             "prepared_input": cfg.products.prepared_input.enable,
             "mirror_pairs": cfg.products.mirror_pairs.enable,
@@ -390,6 +457,7 @@ def run_cif_fob_workflow(
             "training_features": cfg.products.training_features.enable,
             "estimated_rates": cfg.products.estimated_rates.enable,
             "corrected_trade": cfg.products.corrected_trade.enable,
+            "decision_report": cfg.artifacts.enable,
         },
         "steps": {
             "prepared_input": prepared_result,
@@ -397,5 +465,6 @@ def run_cif_fob_workflow(
             "training_sample": training_sample_result,
             "training_features": training_features_result,
             "estimated_rates": estimated_rates_result,
+            "decision_report": report_result,
         },
     }
