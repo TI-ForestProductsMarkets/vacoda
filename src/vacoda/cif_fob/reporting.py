@@ -150,6 +150,329 @@ def _metric(
     return result.get(key)
 
 
+
+def _quote_identifier(value: str) -> str:
+    """Return a safely quoted DuckDB identifier."""
+    return '"' + value.replace('"', '""') + '"'
+
+
+def _inspect_population_journey(
+    *,
+    cfg: CifFobConfig,
+) -> dict[str, Any]:
+    """
+    Inspect the end-to-end source population before factor selection.
+
+    The early stages contain two different kinds of reduction:
+
+    1. filtering, where source rows are excluded by scope or policy;
+    2. grain changes, where multiple source records are consolidated into
+       one canonical trade group or one bilateral mirror group.
+
+    The report distinguishes these transitions so aggregation is not
+    described as lost trade information.
+    """
+    input_path = cfg.input_path()
+    prepared_path = cfg.product_path("prepared_input")
+    mirror_path = cfg.product_path("mirror_pairs")
+
+    for label, path in [
+        ("HS-synced CIF/FOB input", input_path),
+        ("prepared CIF/FOB input", prepared_path),
+        ("mirror-pair artifact", mirror_path),
+    ]:
+        if not path.exists():
+            raise FileNotFoundError(
+                f"{label} not found: {path}"
+            )
+
+    columns = cfg.source_data.columns
+    flows = cfg.source_data.supported_flows
+
+    year_col = _quote_identifier(columns.year)
+    flow_col = _quote_identifier(columns.flow)
+    is_reported_col = _quote_identifier(
+        columns.is_reported
+    )
+    is_aggregate_col = _quote_identifier(
+        columns.is_aggregate
+    )
+
+    min_year = int(cfg.scope.min_year)
+    max_year = int(cfg.scope.max_year)
+
+    con = duckdb.connect()
+
+    try:
+        con.execute(
+            f"SET threads = {int(cfg.engine.threads)}"
+        )
+
+        source_row = con.execute(
+            f"""
+            SELECT
+                COUNT(*) AS n_source_input_rows,
+
+                COUNT(*) FILTER (
+                    WHERE {year_col}
+                          BETWEEN {min_year}
+                              AND {max_year}
+                ) AS n_rows_in_year_scope,
+
+                COUNT(*) FILTER (
+                    WHERE {year_col}
+                          BETWEEN {min_year}
+                              AND {max_year}
+                      AND {flow_col} IN (?, ?)
+                ) AS n_rows_in_supported_flows,
+
+                COUNT(*) FILTER (
+                    WHERE {year_col}
+                          BETWEEN {min_year}
+                              AND {max_year}
+                      AND {flow_col} IN (?, ?)
+                      AND COALESCE(
+                          CAST(
+                              {is_reported_col}
+                              AS BOOLEAN
+                          ),
+                          FALSE
+                      )
+                ) AS n_reported_rows_in_supported_scope,
+
+                COUNT(*) FILTER (
+                    WHERE {year_col}
+                          BETWEEN {min_year}
+                              AND {max_year}
+                      AND {flow_col} IN (?, ?)
+                      AND COALESCE(
+                          CAST(
+                              {is_reported_col}
+                              AS BOOLEAN
+                          ),
+                          FALSE
+                      )
+                      AND NOT COALESCE(
+                          CAST(
+                              {is_aggregate_col}
+                              AS BOOLEAN
+                          ),
+                          FALSE
+                      )
+                ) AS n_selected_reported_nonaggregate_rows
+
+            FROM read_parquet(?)
+            """,
+            [
+                flows.import_code,
+                flows.export_code,
+                flows.import_code,
+                flows.export_code,
+                flows.import_code,
+                flows.export_code,
+                str(input_path),
+            ],
+        ).fetchone()
+
+        prepared_row = con.execute(
+            """
+            SELECT
+                COUNT(*) AS n_canonical_trade_groups,
+                COALESCE(
+                    SUM(source_row_count),
+                    0
+                ) AS n_represented_source_rows,
+                COUNT(*) FILTER (
+                    WHERE source_row_count = 1
+                ) AS n_single_component_groups,
+                COUNT(*) FILTER (
+                    WHERE source_row_count > 1
+                ) AS n_multi_component_groups
+
+            FROM read_parquet(?)
+            """,
+            [str(prepared_path)],
+        ).fetchone()
+
+        mirror_row = con.execute(
+            """
+            SELECT
+                COUNT(*) AS n_bilateral_mirror_groups,
+
+                COUNT(*) FILTER (
+                    WHERE has_export_report
+                      AND has_import_report
+                ) AS n_groups_with_both_reports,
+
+                COUNT(*) FILTER (
+                    WHERE has_export_report
+                      AND NOT has_import_report
+                ) AS n_export_only_groups,
+
+                COUNT(*) FILTER (
+                    WHERE has_import_report
+                      AND NOT has_export_report
+                ) AS n_import_only_groups
+
+            FROM read_parquet(?)
+            """,
+            [str(mirror_path)],
+        ).fetchone()
+
+    finally:
+        con.close()
+
+    if source_row is None:
+        raise RuntimeError(
+            "Could not inspect the HS-synced CIF/FOB input."
+        )
+
+    if prepared_row is None:
+        raise RuntimeError(
+            "Could not inspect the prepared CIF/FOB artifact."
+        )
+
+    if mirror_row is None:
+        raise RuntimeError(
+            "Could not inspect the mirror-pair artifact."
+        )
+
+    names = [
+        "n_source_input_rows",
+        "n_rows_in_year_scope",
+        "n_rows_in_supported_flows",
+        "n_reported_rows_in_supported_scope",
+        "n_selected_reported_nonaggregate_rows",
+        "n_canonical_trade_groups",
+        "n_represented_source_rows",
+        "n_single_component_groups",
+        "n_multi_component_groups",
+        "n_bilateral_mirror_groups",
+        "n_groups_with_both_reports",
+        "n_export_only_groups",
+        "n_import_only_groups",
+    ]
+
+    values = [
+        *source_row,
+        *prepared_row,
+        *mirror_row,
+    ]
+
+    return dict(zip(names, values, strict=True))
+
+
+def _build_population_journey_table(
+    metrics: dict[str, Any],
+) -> pd.DataFrame:
+    """
+    Build the source-to-bilateral workflow population table.
+
+    Percentage reduction is calculated against the immediately preceding
+    stage. For aggregation stages it describes row-count consolidation,
+    not loss of represented trade information.
+    """
+    rows = [
+        {
+            "Workflow stage": "HS-synced input",
+            "Rows/groups": metrics[
+                "n_source_input_rows"
+            ],
+            "Transition type": "Starting population",
+            "Interpretation": (
+                "All HS-synced source rows entering the CIF/FOB stage."
+            ),
+        },
+        {
+            "Workflow stage": "Rows within configured year scope",
+            "Rows/groups": metrics[
+                "n_rows_in_year_scope"
+            ],
+            "Transition type": "Scope filter",
+            "Interpretation": (
+                "Rows retained within the configured minimum and "
+                "maximum years."
+            ),
+        },
+        {
+            "Workflow stage": "Rows in supported import/export flows",
+            "Rows/groups": metrics[
+                "n_rows_in_supported_flows"
+            ],
+            "Transition type": "Flow filter",
+            "Interpretation": (
+                "Only canonical import and export flows are retained."
+            ),
+        },
+        {
+            "Workflow stage": "Reported rows in supported scope",
+            "Rows/groups": metrics[
+                "n_reported_rows_in_supported_scope"
+            ],
+            "Transition type": "Reporting-status filter",
+            "Interpretation": (
+                "Only explicitly reported observations are retained."
+            ),
+        },
+        {
+            "Workflow stage": "Reported non-aggregate source rows",
+            "Rows/groups": metrics[
+                "n_selected_reported_nonaggregate_rows"
+            ],
+            "Transition type": "Aggregate-row filter",
+            "Interpretation": (
+                "Aggregate observations are excluded before canonical "
+                "group construction."
+            ),
+        },
+        {
+            "Workflow stage": "Canonical trade groups",
+            "Rows/groups": metrics[
+                "n_canonical_trade_groups"
+            ],
+            "Transition type": "Aggregation / grain change",
+            "Interpretation": (
+                "Source components are consolidated to one "
+                "year–reporter–partner–product–flow record."
+            ),
+        },
+        {
+            "Workflow stage": "Bilateral mirror groups",
+            "Rows/groups": metrics[
+                "n_bilateral_mirror_groups"
+            ],
+            "Transition type": "Pairing / grain change",
+            "Interpretation": (
+                "Import and export perspectives are aligned to one "
+                "exporter–importer–product–year group."
+            ),
+        },
+    ]
+
+    table = pd.DataFrame(rows)
+    table["Rows/groups"] = pd.to_numeric(
+        table["Rows/groups"],
+        errors="coerce",
+    ).fillna(0).astype(int)
+
+    previous = table["Rows/groups"].shift(1)
+
+    table["Rows/groups reduced"] = (
+        previous - table["Rows/groups"]
+    )
+    table.loc[
+        table.index[0],
+        "Rows/groups reduced",
+    ] = 0
+
+    table["Reduction from previous stage"] = np.where(
+        previous.gt(0),
+        table["Rows/groups reduced"] / previous,
+        0.0,
+    )
+
+    return table
+
 # ======================================================================
 # Artifact inspection
 # ======================================================================
@@ -1019,6 +1342,20 @@ def write_cif_fob_decision_report(
         "temporal_validation_folds"
     )
 
+    population_metrics = _inspect_population_journey(
+        cfg=cfg,
+    )
+    population_journey_table = _build_population_journey_table(
+        population_metrics
+    )
+    population_journey_table = population_journey_table.rename(
+        columns={
+            "Rows/groups reduced": "Rows reduction",
+            "Reduction from previous stage": "% Reduction",
+            "Transition type": "Type",
+        }
+    )
+
     feature_metrics = _inspect_training_features(
         path=training_features_path,
         threads=cfg.engine.threads,
@@ -1534,14 +1871,63 @@ def write_cif_fob_decision_report(
             for predictor in predictors
         ),
         "",
-        "## 5. Evidence selection and model-training population",
+        "## 5. CIF/FOB data-population journey",
         "",
         (
-            f"- **Bilateral year-product rows carried by the feature "
-            f"artifact:** {_fmt_int(feature_metrics['n_rows'])}"
+            "The CIF/FOB workflow changes data grain at several stages. "
+            "A reduction caused by filtering represents excluded source "
+            "rows. A reduction caused by aggregation or bilateral pairing "
+            "represents consolidation to a new analytical grain and should "
+            "not be interpreted as lost trade information."
         ),
+        "",
+        "### 5.1 Source input to bilateral mirror groups",
+        "",
+        _markdown_table(
+            population_journey_table,
+            columns=[
+                "Workflow stage",
+                "Rows/groups",
+                "Rows reduction",
+                "% Reduction",
+                "Type",
+                "Interpretation",
+            ],
+            formatters={
+                "Rows/groups": _fmt_int,
+                "Rows reduction": _fmt_int,
+                "% Reduction": (
+                    _fmt_fraction_percent
+                ),
+            },
+        ),
+        "",
         (
-            f"- **Observed years:** "
+            f"The canonical prepared artifact represents "
+            f"{_fmt_int(population_metrics['n_represented_source_rows'])} "
+            f"selected source rows in "
+            f"{_fmt_int(population_metrics['n_canonical_trade_groups'])} "
+            f"canonical groups. It contains "
+            f"{_fmt_int(population_metrics['n_single_component_groups'])} "
+            f"single-component groups and "
+            f"{_fmt_int(population_metrics['n_multi_component_groups'])} "
+            f"multi-component groups."
+        ),
+        "",
+        (
+            f"The bilateral mirror artifact contains "
+            f"{_fmt_int(population_metrics['n_bilateral_mirror_groups'])} "
+            f"groups: "
+            f"{_fmt_int(population_metrics['n_groups_with_both_reports'])} "
+            f"with both exporter and importer reports, "
+            f"{_fmt_int(population_metrics['n_export_only_groups'])} "
+            f"export-only groups, and "
+            f"{_fmt_int(population_metrics['n_import_only_groups'])} "
+            f"import-only groups."
+        ),
+        "",
+        (
+            f"- **Observed years in the bilateral feature artifact:** "
             f"{int(feature_metrics['minimum_year'])}–"
             f"{int(feature_metrics['maximum_year'])} "
             f"({_fmt_int(feature_metrics['n_years'])} years)"
@@ -1567,7 +1953,7 @@ def write_cif_fob_decision_report(
             f"{cfg.method.estimation.exclude_proxy_weights}"
         ),
         "",
-        "### 5.1 Selected observed-factor candidates",
+        "### 5.2 Selected observed-factor candidates",
         "",
         (
             "The internal `model_eligible` flag means that a row has a "
@@ -1613,7 +1999,7 @@ def write_cif_fob_decision_report(
             "the current training population."
         ),
         "",
-        "### 5.2 Cumulative reduction to the clean training sample",
+        "### 5.3 Cumulative reduction to the clean training sample",
         "",
         _markdown_table(
             estimation_funnel_rows,
@@ -1679,7 +2065,7 @@ def write_cif_fob_decision_report(
             f"{_fmt_int(rate_metrics['n_clean_mirror_observations'])} mirror."
         ),
         "",
-        "### 5.3 Predictor coverage for downstream prediction",
+        "### 5.4 Predictor coverage for downstream prediction",
         "",
         _markdown_table(
             coverage_rows,
@@ -1699,7 +2085,16 @@ def write_cif_fob_decision_report(
             f"({_fmt_int(rate_metrics['n_clean_estimation_observations'])})."
         ),
         "",
-        "### 5.4 Bilateral-distance source usage",
+        (
+            f"The downstream prediction population is a separate branch "
+            f"from the training funnel: "
+            f"{_fmt_int(rate_metrics['n_prediction_eligible'])} bilateral "
+            f"groups have complete predictors and can receive estimated "
+            f"CIF/FOB factors, including groups without an observed "
+            f"training factor."
+        ),
+        "",
+        "### 5.5 Bilateral-distance source usage",
         "",
         (
             f"- Gravity 2021 harmonic-distance rows: "
@@ -1714,7 +2109,7 @@ def write_cif_fob_decision_report(
             f"{_fmt_int(feature_metrics['n_legacy_capital_fallback'])}"
         ),
         "",
-        "### 5.5 Historical feature availability",
+        "### 5.6 Historical feature availability",
         "",
         (
             f"- Rows with lagged pair factor: "
