@@ -9,6 +9,7 @@ script remains separate and is not invoked or read here.
 The report summarizes all normal workflow evidence available before the
 CIF/FOB correction is applied:
 - scope and configured references;
+- explicit direct/mirror factor selection and training-sample funnel;
 - predictor configuration and feature coverage;
 - candidate model configuration;
 - expanding-window temporal validation;
@@ -159,6 +160,14 @@ def _inspect_training_features(
     path: Path,
     threads: int,
 ) -> dict[str, Any]:
+    """
+    Inspect predictor coverage and the selected observed-factor pool.
+
+    ``model_eligible`` is an internal pipeline flag. In the report it is
+    described as "rows with a selected observed-factor candidate", because
+    it includes both selected direct factors and selected mirror factors.
+    It does not mean that every such row is used to fit the model.
+    """
     if not path.exists():
         raise FileNotFoundError(
             f"Training-feature artifact not found: {path}"
@@ -179,22 +188,17 @@ def _inspect_training_features(
 
                 COUNT(*) FILTER (
                     WHERE model_eligible
-                ) AS n_model_eligible,
+                ) AS n_factor_candidates,
 
-                COUNT (*) FILTER (
+                COUNT(*) FILTER (
                     WHERE model_eligible
-                      AND factor_source = 'direct')
-                      ) AS n_selected_direct_factors,
+                      AND LOWER(CAST(factor_source AS VARCHAR)) = 'direct'
+                ) AS n_selected_direct_factors,
 
-                COUNT (*) FILTER (
+                COUNT(*) FILTER (
                     WHERE model_eligible
-                        AND factor_source = 'mirror')
-                        ) AS n_selected_mirror_factors,
-                
-                COUNT (*) FILTER (
-                    WHERE model_eligible
-                        AND NOT initial_predictors_complete)
-                        ) AS n_model_eligible_predcitors_incomplete,
+                      AND LOWER(CAST(factor_source AS VARCHAR)) = 'mirror'
+                ) AS n_selected_mirror_factors,
 
                 COUNT(*) FILTER (
                     WHERE pair_geography_found
@@ -223,11 +227,21 @@ def _inspect_training_features(
                 COUNT(*) FILTER (
                     WHERE model_eligible
                       AND initial_predictors_complete
-                ) AS n_model_eligible_predictors_complete,
+                ) AS n_factor_candidates_predictors_complete,
+
+                COUNT(*) FILTER (
+                    WHERE model_eligible
+                      AND NOT initial_predictors_complete
+                ) AS n_factor_candidates_predictors_incomplete,
 
                 COUNT(*) FILTER (
                     WHERE lagged_pair_median_factor IS NOT NULL
                 ) AS n_lagged_pair_factor_found,
+
+                COUNT(*) FILTER (
+                    WHERE model_eligible
+                      AND lagged_pair_median_factor IS NOT NULL
+                ) AS n_factor_candidates_lagged_pair_factor_found,
 
                 COUNT(*) FILTER (
                     WHERE lagged_pair_product_median_factor IS NOT NULL
@@ -272,15 +286,19 @@ def _inspect_training_features(
         "n_years",
         "minimum_year",
         "maximum_year",
-        "n_model_eligible",
+        "n_factor_candidates",
+        "n_selected_direct_factors",
+        "n_selected_mirror_factors",
         "n_pair_geography_found",
         "n_exporter_geography_found",
         "n_importer_geography_found",
         "n_oil_price_found",
         "n_product_feature_found",
         "n_initial_predictors_complete",
-        "n_model_eligible_predictors_complete",
+        "n_factor_candidates_predictors_complete",
+        "n_factor_candidates_predictors_incomplete",
         "n_lagged_pair_factor_found",
+        "n_factor_candidates_lagged_pair_factor_found",
         "n_lagged_pair_product_factor_found",
         "n_lagged_bilateral_trade_value_found",
         "n_lagged_pair_product_trade_value_found",
@@ -291,7 +309,9 @@ def _inspect_training_features(
 
     result = dict(zip(names, row, strict=True))
     n_rows = int(result["n_rows"] or 0)
-    n_model_eligible = int(result["n_model_eligible"] or 0)
+    n_factor_candidates = int(
+        result["n_factor_candidates"] or 0
+    )
 
     def coverage(
         count_name: str,
@@ -308,6 +328,18 @@ def _inspect_training_features(
 
     result.update(
         {
+            "factor_candidate_share_percent": coverage(
+                "n_factor_candidates",
+                n_rows,
+            ),
+            "selected_direct_share_percent": coverage(
+                "n_selected_direct_factors",
+                n_factor_candidates,
+            ),
+            "selected_mirror_share_percent": coverage(
+                "n_selected_mirror_factors",
+                n_factor_candidates,
+            ),
             "pair_geography_coverage_percent": coverage(
                 "n_pair_geography_found",
                 n_rows,
@@ -332,13 +364,17 @@ def _inspect_training_features(
                 "n_initial_predictors_complete",
                 n_rows,
             ),
-            "model_eligible_predictor_coverage_percent": coverage(
-                "n_model_eligible_predictors_complete",
-                n_model_eligible,
+            "factor_candidate_predictor_coverage_percent": coverage(
+                "n_factor_candidates_predictors_complete",
+                n_factor_candidates,
             ),
             "lagged_pair_factor_coverage_percent": coverage(
                 "n_lagged_pair_factor_found",
                 n_rows,
+            ),
+            "factor_candidate_lagged_pair_factor_coverage_percent": coverage(
+                "n_factor_candidates_lagged_pair_factor_found",
+                n_factor_candidates,
             ),
             "lagged_pair_product_factor_coverage_percent": coverage(
                 "n_lagged_pair_product_factor_found",
@@ -347,14 +383,162 @@ def _inspect_training_features(
         }
     )
 
+    selected_total = (
+        int(result["n_selected_direct_factors"] or 0)
+        + int(result["n_selected_mirror_factors"] or 0)
+    )
+
+    if selected_total != n_factor_candidates:
+        raise RuntimeError(
+            "Selected direct and mirror factor counts do not sum to "
+            "the factor-candidate count."
+        )
+
     return result
 
+
+
+def _inspect_direct_predictor_failures(
+    *,
+    path: Path,
+    threads: int,
+) -> pd.DataFrame:
+    """
+    Summarize why selected direct-factor rows fail predictor completeness.
+
+    ``predictor_completeness_reason`` is created by the training-feature
+    step as an ordered, mutually exclusive diagnostic. It reports the first
+    failed requirement in the feature builder's completeness hierarchy.
+    """
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Training-feature artifact not found: {path}"
+        )
+
+    con = duckdb.connect()
+
+    try:
+        con.execute(f"SET threads = {int(threads)}")
+
+        available_columns = {
+            str(row[0])
+            for row in con.execute(
+                """
+                DESCRIBE
+                SELECT *
+                FROM read_parquet(?)
+                """,
+                [str(path)],
+            ).fetchall()
+        }
+
+        if "predictor_completeness_reason" not in available_columns:
+            raise RuntimeError(
+                "Training-feature artifact does not contain "
+                "'predictor_completeness_reason'. Rebuild the training "
+                "features with the current feature builder before writing "
+                "the decision report."
+            )
+
+        failures = con.execute(
+            """
+            SELECT
+                CAST(
+                    predictor_completeness_reason AS VARCHAR
+                ) AS predictor_failure_reason,
+                COUNT(*) AS n_rows
+
+            FROM read_parquet(?)
+
+            WHERE model_eligible
+              AND LOWER(CAST(factor_source AS VARCHAR)) = 'direct'
+              AND NOT initial_predictors_complete
+
+            GROUP BY 1
+            ORDER BY n_rows DESC, predictor_failure_reason
+            """,
+            [str(path)],
+        ).df()
+
+    finally:
+        con.close()
+
+    if failures.empty:
+        return pd.DataFrame(
+            columns=[
+                "Predictor requirement not met",
+                "Direct rows excluded",
+                "Share of excluded direct rows",
+            ]
+        )
+
+    reason_labels = {
+        "missing_pair_geography": "Pair geography unavailable",
+        "missing_exporter_geography": (
+            "Exporter country geography unavailable"
+        ),
+        "missing_importer_geography": (
+            "Importer country geography unavailable"
+        ),
+        "missing_oil_price": "Annual oil price unavailable",
+        "missing_product_feature": (
+            "Product median unit-value feature unavailable"
+        ),
+        "missing_log_distance": "Log distance unavailable",
+        "missing_log_distance_squared": (
+            "Squared log-distance term unavailable"
+        ),
+        "missing_contiguity": "Contiguity indicator unavailable",
+        "missing_exporter_landlocked": (
+            "Exporter landlocked indicator unavailable"
+        ),
+        "missing_importer_landlocked": (
+            "Importer landlocked indicator unavailable"
+        ),
+        "missing_oil_distance_interaction": (
+            "Oil-price × distance interaction unavailable"
+        ),
+        "complete": "Complete",
+    }
+
+    failures["n_rows"] = pd.to_numeric(
+        failures["n_rows"],
+        errors="coerce",
+    ).fillna(0).astype(int)
+
+    total_failures = int(failures["n_rows"].sum())
+
+    failures["Predictor requirement not met"] = (
+        failures["predictor_failure_reason"]
+        .map(reason_labels)
+        .fillna(failures["predictor_failure_reason"])
+    )
+    failures["Direct rows excluded"] = failures["n_rows"]
+    failures["Share of excluded direct rows"] = (
+        failures["n_rows"] / total_failures
+        if total_failures
+        else 0.0
+    )
+
+    return failures[
+        [
+            "Predictor requirement not met",
+            "Direct rows excluded",
+            "Share of excluded direct rows",
+        ]
+    ]
 
 def _inspect_estimated_rates(
     *,
     path: Path,
     threads: int,
 ) -> dict[str, Any]:
+    """
+    Inspect the final prediction artifact and every cumulative estimation gate.
+
+    The cumulative counts make the reduction from the selected factor pool
+    to the final clean training sample fully explicit.
+    """
     if not path.exists():
         raise FileNotFoundError(
             f"Estimated-rate artifact not found: {path}"
@@ -371,8 +555,95 @@ def _inspect_estimated_rates(
                 COUNT(*) AS n_rows,
 
                 COUNT(*) FILTER (
+                    WHERE model_eligible
+                ) AS n_factor_candidates,
+
+                COUNT(*) FILTER (
+                    WHERE model_eligible
+                      AND LOWER(CAST(factor_source AS VARCHAR)) = 'direct'
+                ) AS n_selected_direct_factors,
+
+                COUNT(*) FILTER (
+                    WHERE model_eligible
+                      AND LOWER(CAST(factor_source AS VARCHAR)) = 'mirror'
+                ) AS n_selected_mirror_factors,
+
+                COUNT(*) FILTER (
+                    WHERE model_eligible
+                      AND prediction_eligible
+                ) AS n_all_sources_after_predictor_completeness,
+
+                COUNT(*) FILTER (
+                    WHERE model_eligible
+                      AND LOWER(CAST(factor_source AS VARCHAR)) = 'direct'
+                      AND prediction_eligible
+                ) AS n_direct_after_predictor_completeness,
+
+                COUNT(*) FILTER (
+                    WHERE model_eligible
+                      AND prediction_eligible
+                      AND passes_factor_source_rule
+                ) AS n_after_factor_source_rule,
+
+                COUNT(*) FILTER (
+                    WHERE model_eligible
+                      AND prediction_eligible
+                      AND passes_factor_source_rule
+                      AND passes_minimum_value
+                ) AS n_after_minimum_value_rule,
+
+                COUNT(*) FILTER (
+                    WHERE model_eligible
+                      AND prediction_eligible
+                      AND passes_factor_source_rule
+                      AND passes_minimum_value
+                      AND passes_factor_lower_bound
+                ) AS n_after_lower_factor_bound,
+
+                COUNT(*) FILTER (
+                    WHERE model_eligible
+                      AND prediction_eligible
+                      AND passes_factor_source_rule
+                      AND passes_minimum_value
+                      AND passes_factor_lower_bound
+                      AND passes_factor_upper_bound
+                ) AS n_after_upper_factor_bound,
+
+                COUNT(*) FILTER (
+                    WHERE model_eligible
+                      AND prediction_eligible
+                      AND passes_factor_source_rule
+                      AND passes_minimum_value
+                      AND passes_factor_lower_bound
+                      AND passes_factor_upper_bound
+                      AND passes_proxy_rule
+                ) AS n_after_proxy_rule,
+
+                COUNT(*) FILTER (
+                    WHERE model_eligible
+                      AND prediction_eligible
+                      AND passes_factor_source_rule
+                      AND passes_minimum_value
+                      AND passes_factor_lower_bound
+                      AND passes_factor_upper_bound
+                      AND passes_proxy_rule
+                      AND estimation_source_weight > 0
+                      AND observed_cif_fob_factor IS NOT NULL
+                ) AS n_after_positive_weight_and_observed_factor,
+
+                COUNT(*) FILTER (
                     WHERE clean_estimation_eligible
                 ) AS n_clean_estimation_observations,
+
+                COUNT(*) FILTER (
+                    WHERE clean_estimation_eligible
+                      AND LOWER(CAST(factor_source AS VARCHAR)) = 'direct'
+                ) AS n_clean_direct_observations,
+
+                COUNT(*) FILTER (
+                    WHERE clean_estimation_eligible
+                      AND LOWER(CAST(factor_source AS VARCHAR)) = 'mirror'
+                ) AS n_clean_mirror_observations,
 
                 COUNT(*) FILTER (
                     WHERE prediction_eligible
@@ -426,7 +697,20 @@ def _inspect_estimated_rates(
 
     names = [
         "n_rows",
+        "n_factor_candidates",
+        "n_selected_direct_factors",
+        "n_selected_mirror_factors",
+        "n_all_sources_after_predictor_completeness",
+        "n_direct_after_predictor_completeness",
+        "n_after_factor_source_rule",
+        "n_after_minimum_value_rule",
+        "n_after_lower_factor_bound",
+        "n_after_upper_factor_bound",
+        "n_after_proxy_rule",
+        "n_after_positive_weight_and_observed_factor",
         "n_clean_estimation_observations",
+        "n_clean_direct_observations",
+        "n_clean_mirror_observations",
         "n_prediction_eligible",
         "n_with_estimated_factor",
         "median_estimated_factor",
@@ -438,13 +722,44 @@ def _inspect_estimated_rates(
 
     result = dict(zip(names, row, strict=True))
     n_rows = int(result["n_rows"] or 0)
+    n_factor_candidates = int(
+        result["n_factor_candidates"] or 0
+    )
 
-    result["estimated_factor_coverage_percent"] = (
-        100.0
-        * int(result["n_with_estimated_factor"] or 0)
-        / n_rows
-        if n_rows
-        else 0.0
+    if (
+        int(result["n_direct_after_predictor_completeness"] or 0)
+        != int(result["n_after_factor_source_rule"] or 0)
+    ):
+        raise RuntimeError(
+            "Direct predictor-complete count does not match the "
+            "configured factor-source-rule count. Check whether "
+            "training_factor_sources is still configured as direct-only."
+        )
+
+    result.update(
+        {
+            "factor_candidate_share_percent": (
+                100.0 * n_factor_candidates / n_rows
+                if n_rows
+                else 0.0
+            ),
+            "clean_estimation_share_of_candidates_percent": (
+                100.0
+                * int(
+                    result["n_clean_estimation_observations"] or 0
+                )
+                / n_factor_candidates
+                if n_factor_candidates
+                else 0.0
+            ),
+            "estimated_factor_coverage_percent": (
+                100.0
+                * int(result["n_with_estimated_factor"] or 0)
+                / n_rows
+                if n_rows
+                else 0.0
+            ),
+        }
     )
 
     return result
@@ -708,6 +1023,10 @@ def write_cif_fob_decision_report(
         path=training_features_path,
         threads=cfg.engine.threads,
     )
+    direct_predictor_failures = _inspect_direct_predictor_failures(
+        path=training_features_path,
+        threads=cfg.engine.threads,
+    )
     rate_metrics = _inspect_estimated_rates(
         path=estimated_rates_path,
         threads=cfg.engine.threads,
@@ -881,16 +1200,164 @@ def write_cif_fob_decision_report(
             },
             {
                 "Feature area": (
-                    "Complete predictors among model-eligible rows"
+                    "Complete predictors among selected-factor candidates"
                 ),
                 "Rows found": feature_metrics[
-                    "n_model_eligible_predictors_complete"
+                    "n_factor_candidates_predictors_complete"
                 ],
                 "Coverage": feature_metrics[
-                    "model_eligible_predictor_coverage_percent"
+                    "factor_candidate_predictor_coverage_percent"
                 ],
             },
         ]
+    )
+
+    training_factor_sources = [
+        str(source).strip().lower()
+        for source in cfg.method.estimation.training_factor_sources
+    ]
+
+    source_selection_rows = pd.DataFrame(
+        [
+            {
+                "Evidence population": "Selected direct factors",
+                "Rows": feature_metrics["n_selected_direct_factors"],
+                "Meaning": (
+                    "Direct importer CIF/FOB factor selected as the "
+                    "observed target."
+                ),
+            },
+            {
+                "Evidence population": "Selected mirror factors",
+                "Rows": feature_metrics["n_selected_mirror_factors"],
+                "Meaning": (
+                    "Mirror factor retained where an eligible direct "
+                    "factor was not selected."
+                ),
+            },
+            {
+                "Evidence population": (
+                    "All rows with a selected observed-factor candidate"
+                ),
+                "Rows": feature_metrics["n_factor_candidates"],
+                "Meaning": (
+                    "Internal `model_eligible` pool; not yet the model "
+                    "training sample."
+                ),
+            },
+        ]
+    )
+
+    estimation_funnel_rows = pd.DataFrame(
+        [
+            {
+                "Cumulative estimation stage": (
+                    "Selected observed-factor candidates"
+                ),
+                "Rows remaining": rate_metrics[
+                    "n_factor_candidates"
+                ],
+            },
+            {
+                "Cumulative estimation stage": (
+                    "After restricting training to direct factors"
+                ),
+                "Rows remaining": rate_metrics[
+                    "n_selected_direct_factors"
+                ],
+            },
+            {
+                "Cumulative estimation stage": (
+                    "After requiring all initial predictors"
+                ),
+                "Rows remaining": rate_metrics[
+                    "n_direct_after_predictor_completeness"
+                ],
+            },
+            {
+                "Cumulative estimation stage": (
+                    "After requiring minimum evidence value"
+                ),
+                "Rows remaining": rate_metrics[
+                    "n_after_minimum_value_rule"
+                ],
+            },
+            {
+                "Cumulative estimation stage": (
+                    "After CIF/FOB lower factor bound"
+                ),
+                "Rows remaining": rate_metrics[
+                    "n_after_lower_factor_bound"
+                ],
+            },
+            {
+                "Cumulative estimation stage": (
+                    "After CIF/FOB upper factor bound"
+                ),
+                "Rows remaining": rate_metrics[
+                    "n_after_upper_factor_bound"
+                ],
+            },
+            {
+                "Cumulative estimation stage": (
+                    "After proxy-weight rule"
+                ),
+                "Rows remaining": rate_metrics[
+                    "n_after_proxy_rule"
+                ],
+            },
+            {
+                "Cumulative estimation stage": (
+                    "Final clean observations used for fitting/backtesting"
+                ),
+                "Rows remaining": rate_metrics[
+                    "n_clean_estimation_observations"
+                ],
+            },
+        ]
+    )
+
+    estimation_funnel_rows["Rows remaining"] = pd.to_numeric(
+        estimation_funnel_rows["Rows remaining"],
+        errors="coerce",
+    ).fillna(0).astype(int)
+
+    previous_rows = estimation_funnel_rows[
+        "Rows remaining"
+    ].shift(1)
+
+    estimation_funnel_rows["Rows removed at stage"] = (
+        previous_rows
+        - estimation_funnel_rows["Rows remaining"]
+    )
+
+    estimation_funnel_rows.loc[
+        estimation_funnel_rows.index[0],
+        "Rows removed at stage",
+    ] = 0
+
+    estimation_funnel_rows["Data lost at stage"] = np.where(
+        previous_rows.gt(0),
+        (
+            estimation_funnel_rows["Rows removed at stage"]
+            / previous_rows
+        ),
+        0.0,
+    )
+
+    direct_candidates = int(
+        rate_metrics["n_selected_direct_factors"] or 0
+    )
+    direct_complete = int(
+        rate_metrics["n_direct_after_predictor_completeness"] or 0
+    )
+    direct_predictor_loss = (
+        direct_candidates - direct_complete
+    )
+    direct_predictor_loss_share = (
+        direct_predictor_loss / direct_candidates
+        if direct_candidates
+        else 0.0
     )
 
     overall_table = ranked.rename(
@@ -1067,11 +1534,11 @@ def write_cif_fob_decision_report(
             for predictor in predictors
         ),
         "",
-        "## 5. Training-feature evidence",
+        "## 5. Evidence selection and model-training population",
         "",
         (
-            f"- **Training-feature rows:** "
-            f"{_fmt_int(feature_metrics['n_rows'])}"
+            f"- **Bilateral year-product rows carried by the feature "
+            f"artifact:** {_fmt_int(feature_metrics['n_rows'])}"
         ),
         (
             f"- **Observed years:** "
@@ -1080,9 +1547,139 @@ def write_cif_fob_decision_report(
             f"({_fmt_int(feature_metrics['n_years'])} years)"
         ),
         (
-            f"- **Model-eligible rows:** "
-            f"{_fmt_int(feature_metrics['n_model_eligible'])}"
+            f"- **Configured training factor sources:** "
+            + ", ".join(
+                f"`{source}`"
+                for source in training_factor_sources
+            )
         ),
+        (
+            f"- **Minimum evidence value:** "
+            f"{_fmt_float(cfg.method.estimation.minimum_evidence_value_usd, 2)} USD"
+        ),
+        (
+            f"- **Permitted observed-factor range:** "
+            f"{_fmt_float(cfg.method.estimation.minimum_factor, 3)}–"
+            f"{_fmt_float(cfg.method.estimation.maximum_factor, 3)}"
+        ),
+        (
+            f"- **Exclude proxy weights:** "
+            f"{cfg.method.estimation.exclude_proxy_weights}"
+        ),
+        "",
+        "### 5.1 Selected observed-factor candidates",
+        "",
+        (
+            "The internal `model_eligible` flag means that a row has a "
+            "selected observed-factor candidate. It does **not** mean that "
+            "the row is used to train the model. Direct evidence has "
+            "priority; a mirror factor is selected only where an eligible "
+            "direct factor was not selected."
+        ),
+        "",
+        _markdown_table(
+            source_selection_rows,
+            columns=[
+                "Evidence population",
+                "Rows",
+                "Meaning",
+            ],
+            formatters={
+                "Rows": _fmt_int,
+            },
+        ),
+        "",
+        (
+            f"The selected-factor pool therefore contains "
+            f"{_fmt_int(feature_metrics['n_selected_direct_factors'])} "
+            f"direct rows plus "
+            f"{_fmt_int(feature_metrics['n_selected_mirror_factors'])} "
+            f"mirror rows, giving "
+            f"{_fmt_int(feature_metrics['n_factor_candidates'])} "
+            f"candidate rows in total."
+        ),
+        "",
+        (
+            "The current estimator is configured to train on "
+            + ", ".join(
+                f"`{source}`"
+                for source in training_factor_sources
+            )
+            + " evidence only. The report therefore applies the source "
+            "restriction before evaluating predictor completeness. This "
+            "makes the loss of direct-factor observations explicit. Mirror "
+            "candidates remain in the shared artifact for diagnostics and "
+            "possible alternative experiments, but they are not part of "
+            "the current training population."
+        ),
+        "",
+        "### 5.2 Cumulative reduction to the clean training sample",
+        "",
+        _markdown_table(
+            estimation_funnel_rows,
+            columns=[
+                "Cumulative estimation stage",
+                "Rows remaining",
+                "Rows removed at stage",
+                "Data lost at stage",
+            ],
+            formatters={
+                "Rows remaining": _fmt_int,
+                "Rows removed at stage": _fmt_int,
+                "Data lost at stage": _fmt_fraction_percent,
+            },
+        ),
+        "",
+        (
+            f"After restricting the candidate pool to direct factors, "
+            f"{_fmt_int(direct_candidates)} direct-factor candidates "
+            f"remain. Predictor completeness is then evaluated only within "
+            f"those direct rows. {_fmt_int(direct_predictor_loss)} "
+            f"({_fmt_fraction_percent(direct_predictor_loss_share)}) "
+            f"do not satisfy the "
+            f"initial predictor-completeness requirement, leaving "
+            f"{_fmt_int(direct_complete)} direct rows before the "
+            f"remaining evidence and factor-range filters."
+        ),
+        "",
+        "#### Direct-factor rows excluded by predictor completeness",
+        "",
+        (
+            "The table below reports the first failed requirement in the "
+            "ordered `predictor_completeness_reason` diagnostic. The "
+            "categories are mutually exclusive and therefore sum to the "
+            "number of excluded direct-factor rows."
+        ),
+        "",
+        _markdown_table(
+            direct_predictor_failures,
+            columns=[
+                "Predictor requirement not met",
+                "Direct rows excluded",
+                "Share of excluded direct rows",
+            ],
+            formatters={
+                "Direct rows excluded": _fmt_int,
+                "Share of excluded direct rows": (
+                    _fmt_fraction_percent
+                ),
+            },
+        ),
+        "",
+        (
+            f"The final fitting and temporal-validation sample contains "
+            f"{_fmt_int(rate_metrics['n_clean_estimation_observations'])} "
+            f"observations, equal to "
+            f"{_fmt_percent_value(rate_metrics['clean_estimation_share_of_candidates_percent'])} "
+            f"of the selected-factor candidate pool."
+        ),
+        (
+            f"Clean observations by source: "
+            f"{_fmt_int(rate_metrics['n_clean_direct_observations'])} direct, "
+            f"{_fmt_int(rate_metrics['n_clean_mirror_observations'])} mirror."
+        ),
+        "",
+        "### 5.3 Predictor coverage for downstream prediction",
         "",
         _markdown_table(
             coverage_rows,
@@ -1093,7 +1690,16 @@ def write_cif_fob_decision_report(
             },
         ),
         "",
-        "### Bilateral-distance source usage",
+        (
+            f"Predictor-complete rows can receive model predictions even "
+            f"when they do not contain an observed training factor. This "
+            f"is why the prediction population "
+            f"({_fmt_int(rate_metrics['n_prediction_eligible'])}) is much "
+            f"larger than the clean training population "
+            f"({_fmt_int(rate_metrics['n_clean_estimation_observations'])})."
+        ),
+        "",
+        "### 5.4 Bilateral-distance source usage",
         "",
         (
             f"- Gravity 2021 harmonic-distance rows: "
@@ -1108,12 +1714,19 @@ def write_cif_fob_decision_report(
             f"{_fmt_int(feature_metrics['n_legacy_capital_fallback'])}"
         ),
         "",
-        "### Historical feature availability",
+        "### 5.5 Historical feature availability",
         "",
         (
             f"- Rows with lagged pair factor: "
             f"{_fmt_int(feature_metrics['n_lagged_pair_factor_found'])} "
-            f"({_fmt_percent_value(feature_metrics['lagged_pair_factor_coverage_percent'])})"
+            f"({_fmt_percent_value(feature_metrics['lagged_pair_factor_coverage_percent'])} "
+            f"of all rows)"
+        ),
+        (
+            f"- Selected-factor candidates with lagged pair factor: "
+            f"{_fmt_int(feature_metrics['n_factor_candidates_lagged_pair_factor_found'])} "
+            f"({_fmt_percent_value(feature_metrics['factor_candidate_lagged_pair_factor_coverage_percent'])} "
+            f"of selected-factor candidates)"
         ),
         (
             f"- Rows with lagged pair-product factor: "
@@ -1145,9 +1758,10 @@ def write_cif_fob_decision_report(
         "",
         "## 7. Expanding-window temporal validation",
         "",
-        "### Overall and upper-tail performance",
+        "### Overall predictive performance",
+        "",
         _markdown_table(
-            combined_table,
+            overall_table,
             columns=[
                 "Rank",
                 "Model",
@@ -1157,10 +1771,6 @@ def write_cif_fob_decision_report(
                 "P90 APE",
                 "P95 APE",
                 "Spearman",
-                "Observed P95",
-                "Predicted P95",
-                "Tail median APE",
-                "Tail P90 APE",
             ],
             formatters={
                 "Rank": _fmt_int,
@@ -1170,6 +1780,23 @@ def write_cif_fob_decision_report(
                 "P90 APE": _fmt_fraction_percent,
                 "P95 APE": _fmt_fraction_percent,
                 "Spearman": _fmt_float,
+            },
+        ),
+        "",
+        "### Upper-tail and P95 calibration performance",
+        "",
+        _markdown_table(
+            tail_table,
+            columns=[
+                "Rank",
+                "Model",
+                "Observed P95",
+                "Predicted P95",
+                "Tail median APE",
+                "Tail P90 APE",
+            ],
+            formatters={
+                "Rank": _fmt_int,
                 "Observed P95": _fmt_float,
                 "Predicted P95": _fmt_float,
                 "Tail median APE": _fmt_fraction_percent,
@@ -1182,8 +1809,7 @@ def write_cif_fob_decision_report(
         f"- Lowest mean P90 APE: `{best_p90}`",
         f"- Lowest mean P95 APE: `{best_p95}`",
         f"- Highest mean Spearman correlation: `{best_spearman}`",
-        "",
-        "### Upper-tail metric leaders",
+        f"- Lowest mean upper-tail median APE: `{best_tail}`",
         "",
         "## 8. Primary-model validation by year",
         "",
@@ -1220,11 +1846,19 @@ def write_cif_fob_decision_report(
             f"{_fmt_int(rate_metrics['n_rows'])}"
         ),
         (
-            f"- **Clean estimation observations:** "
+            f"- **Clean observations used for fitting/backtesting:** "
             f"{_fmt_int(rate_metrics['n_clean_estimation_observations'])}"
         ),
         (
-            f"- **Prediction-eligible rows:** "
+            f"- **Clean direct training observations:** "
+            f"{_fmt_int(rate_metrics['n_clean_direct_observations'])}"
+        ),
+        (
+            f"- **Clean mirror training observations:** "
+            f"{_fmt_int(rate_metrics['n_clean_mirror_observations'])}"
+        ),
+        (
+            f"- **Rows eligible to receive predictions:** "
             f"{_fmt_int(rate_metrics['n_prediction_eligible'])}"
         ),
         (
