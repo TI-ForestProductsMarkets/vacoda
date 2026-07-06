@@ -92,10 +92,11 @@ SUPPORTED_PRODUCT_FALLBACKS = {
     "global_year",
 }
 
-REQUIRED_ROUTE_HISTORY_FEATURES = {
+REQUIRED_TRAINING_FEATURES  = {
     "lagged_pair_product_median_factor",
     "log_lagged_bilateral_trade_value",
     "log_lagged_pair_product_trade_value",
+    "hs4_product_group",
 }
 
 
@@ -1052,16 +1053,16 @@ def build_training_features(
         finally:
             reuse_con.close()
 
-        missing_route_features = sorted(
-            REQUIRED_ROUTE_HISTORY_FEATURES
+        missing_required_features  = sorted(
+            REQUIRED_TRAINING_FEATURES
             - existing_columns
         )
 
-        if missing_route_features:
+        if missing_required_features :
             logger.info(
                 "REBUILD — Existing CIF/FOB training features are "
-                "missing newly configured route-history fields: %s",
-                ", ".join(missing_route_features),
+                "missing required fields: %s",
+                ", ".join(missing_required_features),
             )
         else:
             logger.info(
@@ -1362,6 +1363,16 @@ def build_training_features(
                     1,
                     {group_digits}
                 ) AS product_group,
+
+                SUBSTR(
+                    LPAD(
+                        CAST(target_cmd AS VARCHAR),
+                        6,
+                        '0'
+                    ),
+                    1,
+                    4
+                    ) AS hs4_product_group,
 
                 CASE
                     WHEN export_value_fob IS NOT NULL
@@ -2197,7 +2208,7 @@ def build_training_features(
                 AND importer_landlocked IS NOT NULL
                 AND log_oil_price_x_log_distance IS NOT NULL
                 AND log_product_median_unit_value IS NOT NULL
-                AND product_group IS NOT NULL
+                AND hs4_product_group IS NOT NULL
                 AND year IS NOT NULL
             ) AS initial_predictors_complete,
 
@@ -2234,6 +2245,9 @@ def build_training_features(
 
                 WHEN log_oil_price_x_log_distance IS NULL
                     THEN 'missing_oil_distance_interaction'
+
+                WHEN hs4_product_group IS NULL
+                    THEN 'missing_hs4_product_group'
 
                 ELSE 'complete'
             END AS predictor_completeness_reason

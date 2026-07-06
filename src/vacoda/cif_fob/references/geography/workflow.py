@@ -42,9 +42,20 @@ def build_production_geography_references(
 
     Pair geography uses the CEPII Gravity reference directly.
 
-    The VACODA geography crosswalk is written separately for country
-    and pair resolution. The files retain both usability flags so the
-    downstream loader can apply the relevant flag.
+    Country and pair crosswalks are related, but not identical:
+
+    - country_crosswalk is used for country-level predictors such as
+      landlocked status and internal distance;
+    - pair_crosswalk is used for bilateral predictors such as distance
+      and contiguity.
+
+    Because the production pair geography is Gravity-based, the
+    production pair crosswalk must resolve active pair targets against
+    the Gravity country universe, not the legacy CEPII country universe.
+
+    This matters for codes such as COD, ROU and TLS. The legacy CEPII
+    country crosswalk may map these to ZAR, ROM and TMP, while Gravity
+    2021 contains the modern identities COD, ROU and TLS directly.
     """
 
     input_paths = {
@@ -182,6 +193,14 @@ def build_production_geography_references(
         index=False,
     )
 
+    production_country_codes = set(
+        country_geography["country_iso3"]
+        .dropna()
+        .astype(str)
+        .str.strip()
+        .str.upper()
+    )
+
     # ============================================================
     # Pair geography
     # ============================================================
@@ -243,8 +262,25 @@ def build_production_geography_references(
         index=False,
     )
 
+    pair_geography_codes = (
+        set(
+            pair_geography["origin_iso3"]
+            .dropna()
+            .astype(str)
+            .str.strip()
+            .str.upper()
+        )
+        | set(
+            pair_geography["destination_iso3"]
+            .dropna()
+            .astype(str)
+            .str.strip()
+            .str.upper()
+        )
+    )
+
     # ============================================================
-    # Country and pair crosswalks
+    # Base crosswalk
     # ============================================================
 
     crosswalk = pd.read_parquet(
@@ -272,11 +308,28 @@ def build_production_geography_references(
             + ", ".join(missing_crosswalk_columns)
         )
 
-    crosswalk = (
-        crosswalk[required_crosswalk_columns]
-        .sort_values("trade_iso3")
-        .reset_index(drop=True)
-    )
+    crosswalk = crosswalk[
+        required_crosswalk_columns
+    ].copy()
+
+    for column in [
+        "trade_iso3",
+        "cepii_iso3",
+        "mapping_type",
+    ]:
+        crosswalk[column] = (
+            crosswalk[column]
+            .astype("string")
+            .str.strip()
+            .str.upper()
+        )
+
+    for column in [
+        "usable_country",
+        "usable_pair",
+        "is_proxy",
+    ]:
+        crosswalk[column] = crosswalk[column].astype(bool)
 
     duplicate_crosswalk_codes = crosswalk[
         "trade_iso3"
@@ -292,12 +345,125 @@ def build_production_geography_references(
             ].to_string(index=False)
         )
 
-    crosswalk.to_parquet(
+    # ============================================================
+    # Country crosswalk
+    # ============================================================
+
+    country_crosswalk = (
+        crosswalk
+        .sort_values("trade_iso3")
+        .reset_index(drop=True)
+    )
+
+    active_country_targets = country_crosswalk.loc[
+        country_crosswalk["usable_country"]
+        & ~country_crosswalk["is_proxy"]
+        & country_crosswalk["cepii_iso3"].notna(),
+        "cepii_iso3",
+    ]
+
+    missing_country_targets = sorted(
+        set(active_country_targets)
+        - production_country_codes
+    )
+
+    if missing_country_targets:
+        raise ValueError(
+            "Invalid country crosswalk: active nonproxy country "
+            "targets are absent from production country geography:\n  "
+            + "\n  ".join(missing_country_targets)
+        )
+
+    country_crosswalk.to_parquet(
         production_paths["country_crosswalk"],
         index=False,
     )
 
-    crosswalk.to_parquet(
+    # ============================================================
+    # Pair crosswalk
+    #
+    # The pair crosswalk must match the Gravity pair reference. If a
+    # trade code exists directly in Gravity, use that modern identity
+    # for pair resolution, even if the legacy country crosswalk used an
+    # older alias such as COD->ZAR, ROU->ROM or TLS->TMP.
+    #
+    # Codes absent from Gravity remain usable for country geography if
+    # available, but are not active for pair geography.
+    # ============================================================
+
+    pair_crosswalk = crosswalk.copy()
+
+    trade_code_has_gravity_identity = (
+        pair_crosswalk["trade_iso3"]
+        .isin(pair_geography_codes)
+    )
+
+    legacy_target_missing_from_gravity = (
+        pair_crosswalk["usable_pair"]
+        & pair_crosswalk["cepii_iso3"].notna()
+        & ~pair_crosswalk["cepii_iso3"].isin(pair_geography_codes)
+    )
+
+    gravity_identity_override = (
+        trade_code_has_gravity_identity
+        & (
+            pair_crosswalk["cepii_iso3"].isna()
+            | (pair_crosswalk["cepii_iso3"] != pair_crosswalk["trade_iso3"])
+            | legacy_target_missing_from_gravity
+            | pair_crosswalk["is_proxy"]
+        )
+    )
+
+    pair_crosswalk.loc[
+        gravity_identity_override,
+        "cepii_iso3",
+    ] = pair_crosswalk.loc[
+        gravity_identity_override,
+        "trade_iso3",
+    ]
+
+    pair_crosswalk.loc[
+        gravity_identity_override,
+        "mapping_type",
+    ] = "GRAVITY_2021_IDENTITY"
+
+    pair_crosswalk.loc[
+        gravity_identity_override,
+        "is_proxy",
+    ] = False
+
+    pair_crosswalk["usable_pair"] = (
+        pair_crosswalk["cepii_iso3"].notna()
+        & pair_crosswalk["cepii_iso3"].isin(pair_geography_codes)
+        & ~pair_crosswalk["is_proxy"]
+    )
+
+    pair_crosswalk = (
+        pair_crosswalk
+        .sort_values("trade_iso3")
+        .reset_index(drop=True)
+    )
+
+    active_pair_targets = pair_crosswalk.loc[
+        pair_crosswalk["usable_pair"]
+        & ~pair_crosswalk["is_proxy"]
+        & pair_crosswalk["cepii_iso3"].notna(),
+        "cepii_iso3",
+    ]
+
+    missing_pair_targets = sorted(
+        set(active_pair_targets)
+        - pair_geography_codes
+    )
+
+    if missing_pair_targets:
+        raise ValueError(
+            "Invalid pair crosswalk: active nonproxy pair targets "
+            "are absent from production pair geography:\n  "
+            + "\n  ".join(missing_pair_targets)
+        )
+
+    pair_crosswalk.to_parquet(
         production_paths["pair_crosswalk"],
         index=False,
     )
@@ -313,8 +479,44 @@ def build_production_geography_references(
             f"{len(pair_geography):,}"
         )
         print(
-            "  Crosswalk rows: "
-            f"{len(crosswalk):,}"
+            "  Country-crosswalk rows: "
+            f"{len(country_crosswalk):,}"
+        )
+        print(
+            "  Pair-crosswalk rows: "
+            f"{len(pair_crosswalk):,}"
+        )
+        print(
+            "  Gravity identity overrides in pair crosswalk: "
+            f"{int(gravity_identity_override.sum()):,}"
+        )
+
+        if int(gravity_identity_override.sum()) > 0:
+            override_preview = pair_crosswalk.loc[
+                gravity_identity_override,
+                [
+                    "trade_iso3",
+                    "cepii_iso3",
+                    "mapping_type",
+                    "usable_pair",
+                    "is_proxy",
+                ],
+            ].sort_values("trade_iso3")
+
+            print("\n  Pair-crosswalk Gravity identity overrides:")
+            print(
+                override_preview.to_string(index=False)
+            )
+
+        pair_unusable_but_country_usable = pair_crosswalk.loc[
+            pair_crosswalk["usable_country"]
+            & ~pair_crosswalk["usable_pair"],
+            "trade_iso3",
+        ]
+
+        print(
+            "  Country-usable but pair-unusable codes: "
+            f"{len(pair_unusable_but_country_usable):,}"
         )
 
         for label, path in production_paths.items():
@@ -348,10 +550,10 @@ def prepare_geography_references(
     )
 
     vacoda_source_dir = (
-        geography_root / "vacoda_extensions" / "source"
+        geography_root / "vacoda_extension" / "source"
     )
     vacoda_prepared_dir = (
-        geography_root / "vacoda_extensions" / "prepared"
+        geography_root / "vacoda_extension" / "prepared"
     )
 
     production_dir = geography_root / "production"
