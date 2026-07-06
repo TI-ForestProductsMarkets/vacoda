@@ -30,6 +30,7 @@ PATHS_CONFIG_PATH = CONFIG_DIR / PATHS_CONFIG_NAME
 def validate_paths_config(cfg: dict[str, Any]) -> None:
     """Validate required paths.yaml structure."""
     get_required_value(cfg, ("storage_root",), config_name=PATHS_CONFIG_NAME)
+    get_required_value(cfg, ("project_root",), config_name=PATHS_CONFIG_NAME)
 
     data_cfg = get_required_block(
         cfg,
@@ -60,7 +61,7 @@ def validate_paths_config(cfg: dict[str, Any]) -> None:
 
     get_required_value(metadata_cfg, ("root",), config_name=f"{PATHS_CONFIG_NAME}: metadata")
 
-    for key in ("root", "references"):
+    for key in ("root", "references", "geography"):
         get_required_value(repo_cfg, (key,), config_name=f"{PATHS_CONFIG_NAME}: repo")
 
 
@@ -82,6 +83,19 @@ def get_storage_root(cfg: dict[str, Any] | None = None) -> Path:
         config_name=PATHS_CONFIG_NAME,
     )
     return require_path(value, key="storage_root")
+
+
+def get_project_root(cfg: dict[str, Any] | None = None) -> Path:
+    """Return project root."""
+    if cfg is None:
+        cfg = load_paths_config()
+
+    value = get_required_value(
+        cfg,
+        ("project_root",),
+        config_name=PATHS_CONFIG_NAME,
+    )
+    return require_path(value, key="project_root")
 
 
 def get_data_dir(stage: str, cfg: dict[str, Any] | None = None) -> Path:
@@ -126,6 +140,68 @@ def get_repo_references_dir(cfg: dict[str, Any] | None = None) -> Path:
         config_name=PATHS_CONFIG_NAME,
     )
     return require_path(repo_cfg["references"], key="repo.references")
+
+
+def get_repo_geography_dir(cfg: dict[str, Any] | None = None) -> Path:
+    """Return repository geography directory from paths.yaml repo block."""
+    if cfg is None:
+        cfg = load_paths_config()
+
+    repo_cfg = get_required_block(
+        cfg,
+        "repo",
+        config_name=PATHS_CONFIG_NAME,
+    )
+    return require_path(repo_cfg["geography"], key="repo.geography")
+
+def get_geography_cepii_gravity_dir(cfg: dict[str, Any] | None = None) -> Path:
+    """Return CEPII gravity directory from paths.yaml repo block."""
+    if cfg is None:
+        cfg = load_paths_config()
+
+    repo_cfg = get_required_block(
+        cfg,
+        "repo",
+        config_name=PATHS_CONFIG_NAME,
+    )
+    return require_path(repo_cfg["geography"] / "cepii" / "gravity", key="repo.geography.cepii_gravity_2021")
+
+def get_geography_cepii_legacy_dir(cfg: dict[str, Any] | None = None) -> Path:
+    """Return CEPII legacy directory from paths.yaml repo block."""
+    if cfg is None:
+        cfg = load_paths_config()
+
+    repo_cfg = get_required_block(
+        cfg,
+        "repo",
+        config_name=PATHS_CONFIG_NAME,
+    )
+    return require_path(repo_cfg["geography"] / "cepii" / "legacy", key="repo.geography.cepii_legacy")
+
+
+def get_geography_vacoda_extension_dir(cfg: dict[str, Any] | None = None) -> Path:
+    """Return vacoda geography extension directory from paths.yaml repo block."""
+    if cfg is None:
+        cfg = load_paths_config()
+
+    repo_cfg = get_required_block(
+        cfg,
+        "repo",
+        config_name=PATHS_CONFIG_NAME,
+    )
+    return require_path(repo_cfg["geography"] / "vacoda" / "extension", key="repo.geography.vacoda_extension")
+
+def get_geography_production_dir(cfg: dict[str, Any] | None = None) -> Path:
+    """Return production geography directory from paths.yaml repo block."""
+    if cfg is None:
+        cfg = load_paths_config()
+
+    repo_cfg = get_required_block(
+        cfg,
+        "repo",
+        config_name=PATHS_CONFIG_NAME,
+    )
+    return require_path(repo_cfg["geography"] / "production", key="repo.geography.production")
 
 
 def get_output_dir(kind: str, cfg: dict[str, Any] | None = None) -> Path:

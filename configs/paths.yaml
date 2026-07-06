@@ -1,6 +1,7 @@
 # configs/paths.yaml
 
 storage_root: "/storage/vacoda"
+project_root: "/home/saxena/Projects/vacoda"
 
 data:
   root: "{storage_root}/data"
@@ -31,5 +32,6 @@ metadata:
   estimation: "{metadata.root}/estimation.parquet"
 
 repo:
-  root: "/home/saxena/Projects/vacoda"
+  root: "{project_root}"
   references: "{repo.root}/references"
+  geography: "{repo.references}/geography"

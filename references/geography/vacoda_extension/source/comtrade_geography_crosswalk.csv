@@ -1,0 +1,10 @@
+trade_iso3,cepii_iso3,mapping_type,usable_country,usable_pair,is_proxy
+ROU,ROM,legacy_code_alias,True,True,False
+COD,ZAR,legacy_code_alias,True,True,False
+TLS,TMP,legacy_code_alias,True,True,False
+SRB,YUG,successor_proxy,True,True,True
+MNE,YUG,successor_proxy,True,True,True
+SSD,SDN,predecessor_proxy,True,True,True
+S19,,aggregate_code,False,False,False
+E19,,aggregate_code,False,False,False
+_X,,unspecified_code,False,False,False
