@@ -29,7 +29,12 @@ import duckdb
 import numpy as np
 import pandas as pd
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
 from vacoda.config.cif_fob import CifFobConfig
+from vacoda.visualization.distributions import plot_nebula_boxplot
 
 
 # ======================================================================
@@ -1094,8 +1099,7 @@ def _inspect_estimated_rates(
 def _load_validation_artifacts(
     *,
     summary_path: Path,
-    folds_path: Path,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
+    folds_path: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
     if not summary_path.exists():
         raise FileNotFoundError(
             "Temporal-validation summary not found: "
@@ -1123,6 +1127,122 @@ def _load_validation_artifacts(
 
     return summary, folds
 
+
+def _resolve_cif_fob_figure_dir(
+    *,
+    cfg: CifFobConfig,
+) -> Path:
+    """Resolve the CIF/FOB figure directory under output/figures."""
+    try:
+        figures_root = Path(
+            str(cfg.paths.output.figures)
+        )
+    except Exception:
+        figures_root = (
+            cfg.output_dir()
+            .parents[1]
+            / "figures"
+        )
+
+    figure_dir = figures_root / "cif_fob"
+    figure_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    return figure_dir
+
+
+def _load_direct_factor_distribution_data(
+    *,
+    path: Path,
+    threads: int,
+) -> pd.DataFrame:
+    """
+    Load positive directly observed CIF/FOB factors for distribution
+    diagnostics.
+    """
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Training-feature artifact not found: {path}"
+        )
+
+    con = duckdb.connect()
+
+    try:
+        con.execute(
+            f"SET threads = {int(threads)}"
+        )
+
+        df = con.execute(
+            """
+            SELECT
+                observed_cif_fob_factor
+
+            FROM read_parquet(?)
+
+            WHERE model_eligible
+              AND LOWER(CAST(factor_source AS VARCHAR)) = 'direct'
+              AND observed_cif_fob_factor IS NOT NULL
+              AND observed_cif_fob_factor > 0
+            """,
+            [str(path)],
+        ).df()
+
+    finally:
+        con.close()
+
+    if df.empty:
+        raise RuntimeError(
+            "No positive direct CIF/FOB factors available for plotting."
+        )
+
+    return df
+
+
+def _summarize_direct_factor_distribution(
+    *,
+    df: pd.DataFrame,
+    factor_col: str = "observed_cif_fob_factor",
+) -> dict[str, Any]:
+    """Summarize the full positive direct-factor distribution."""
+    factor = pd.to_numeric(
+        df[factor_col],
+        errors="coerce",
+    ).dropna()
+
+    factor = factor[factor > 0]
+
+    if factor.empty:
+        raise RuntimeError(
+            "No positive direct CIF/FOB factors available for summary."
+        )
+
+    n = len(factor)
+    q1 = float(factor.quantile(0.25))
+    median = float(factor.quantile(0.50))
+    q3 = float(factor.quantile(0.75))
+    iqr = q3 - q1
+
+    def n_above(cutoff: float) -> int:
+        return int((factor > cutoff).sum())
+
+    return {
+        "n_positive": n,
+        "q1": q1,
+        "median": median,
+        "q3": q3,
+        "iqr": iqr,
+        "q3_plus_1_5_iqr": q3 + 1.5 * iqr,
+        "q3_plus_2_5_iqr": q3 + 2.5 * iqr,
+        "p95": float(factor.quantile(0.95)),
+        "p99": float(factor.quantile(0.99)),
+        "maximum": float(factor.max()),
+        "n_above_3": n_above(3.0),
+        "share_above_3_percent": 100.0 * n_above(3.0) / n,
+        "n_above_10": n_above(10.0),
+        "share_above_10_percent": 100.0 * n_above(10.0) / n,
+    }
 
 # ======================================================================
 # Decision helpers
@@ -1382,6 +1502,51 @@ def write_cif_fob_decision_report(
         folds_path=folds_path,
     )
 
+    direct_factor_distribution_df = (
+        _load_direct_factor_distribution_data(
+            path=training_features_path,
+            threads=cfg.engine.threads,
+        )
+    )
+
+    direct_factor_distribution_metrics = (
+        _summarize_direct_factor_distribution(
+            df=direct_factor_distribution_df,
+        )
+    )
+
+    figure_dir = _resolve_cif_fob_figure_dir(
+        cfg=cfg,
+    )
+
+    direct_factor_distribution_figure = (
+        figure_dir
+        / (
+            f"{cfg.scope.target_hs.lower()}_"
+            "direct_cif_fob_factor_distribution.png"
+        )
+    )
+
+    fig, _, direct_factor_plot_stats = plot_nebula_boxplot(
+        direct_factor_distribution_df,
+        factor_col="observed_cif_fob_factor",
+        upper_display=float(
+            cfg.method.estimation.maximum_factor
+        ),
+        lower_display=0.0,
+        title=(
+            "Distribution of directly observed CIF/FOB factors"
+        ),
+    )
+
+    fig.savefig(
+        direct_factor_distribution_figure,
+        dpi=180,
+        bbox_inches="tight",
+    )
+    plt.close(fig)
+
+
     ranked = _rank_models(summary)
     model_display_names = {
         "hist_gradient_boosting": "HGB absolute-log",
@@ -1421,15 +1586,7 @@ def write_cif_fob_decision_report(
         .fillna(ranked["model_algorithm"])
     )
 
-    ranked["model_display_name"] = np.where(
-        ranked["predictor_set_name"].astype(str).str.len().gt(0),
-        (
-            ranked["algorithm_display_name"].astype(str)
-            + " / "
-            + ranked["predictor_set_name"].astype(str)
-        ),
-        ranked["algorithm_display_name"].astype(str),
-    )
+    ranked["model_display_name"] =  ranked["algorithm_display_name"].astype(str)
 
     primary_algorithm = str(
         cfg.method.estimation.models.primary
@@ -1830,6 +1987,7 @@ def write_cif_fob_decision_report(
         columns={
             "overall_rank": "Rank",
             "model_display_name": "Model",
+            "predictor_set_name": "Predictor set",
             "mean_observed_p95": "Observed P95",
             "mean_predicted_p95": "Predicted P95",
             "mean_upper_tail_median_ape": "Tail median APE",
@@ -1933,6 +2091,65 @@ def write_cif_fob_decision_report(
         metric="mean_upper_tail_median_ape",
     )
 
+    predictor_set_summary_rows = predictor_set_rows[
+        [
+            "Predictor set",
+            "Predictor count",
+            "Primary",
+            "Categorical predictors",
+        ]
+    ].copy()
+
+    predictor_set_detail_lines: list[str] = []
+
+    for _, row in predictor_set_rows.iterrows():
+        predictor_set_detail_lines.extend(
+            [
+                f"#### `{row['Predictor set']}`",
+                "",
+                f"- **Primary:** `{row['Primary']}`",
+                f"- **Predictor count:** {_fmt_int(row['Predictor count'])}",
+                f"- **Categorical predictors:** "
+                f"{row['Categorical predictors'] or 'none'}",
+                "- **Numeric predictors:**",
+                *[
+                    f"  - `{predictor.strip()}`"
+                    for predictor in str(
+                        row["Numeric predictors"]
+                    ).split(",")
+                    if predictor.strip()
+                ],
+                "",
+            ]
+        )
+
+    overall_performance_table = overall_table[
+        [
+            "Rank",
+            "Model",
+            "Predictor set",
+            "Mean log MAE",
+            "Median APE",
+            "Mean APE",
+            "P90 APE",
+            "P95 APE",
+            "Spearman",
+        ]
+    ].copy()
+
+    tail_performance_table = tail_table[
+        [
+            "Rank",
+            "Model",
+            "Predictor set",
+            "Observed P95",
+            "Predicted P95",
+            "Tail median APE",
+            "Tail P90 APE",
+        ]
+    ].copy()
+
+
     lines = [
         f"# VACODA CIF/FOB Decision Report — {cfg.scope.target_hs}",
         "",
@@ -1994,18 +2211,21 @@ def write_cif_fob_decision_report(
         ),
         "",
         _markdown_table(
-            predictor_set_rows,
+            predictor_set_summary_rows,
             columns=[
                 "Predictor set",
                 "Predictor count",
                 "Primary",
-                "Numeric predictors",
                 "Categorical predictors",
             ],
             formatters={
                 "Predictor count": _fmt_int,
             },
         ),
+        "",
+        "### 4.1 Predictor-set details",
+        "",
+        *predictor_set_detail_lines,
         "",
         "## 5. CIF/FOB data-population journey",
         "",
@@ -2194,13 +2414,63 @@ def write_cif_fob_decision_report(
             f"{_fmt_percent_value(rate_metrics['clean_estimation_share_of_candidates_percent'])} "
             f"of the selected-factor candidate pool."
         ),
+
+        "",
+        "### 5.4 Direct CIF/FOB factor distribution and upper-bound evidence",
+        "",
+        (
+            "The figure below shows the distribution of directly observed "
+            "CIF/FOB factors before the final upper-bound training filter "
+            "is applied. The upper panel shows the point-cloud distribution, "
+            "while the lower panel shows the corresponding boxplot. The "
+            "shaded region marks the interquartile range, containing the "
+            "middle 50% of displayed direct observations."
+        ),
+        "",
+        (
+            f"![Direct CIF/FOB factor distribution]"
+            f"({direct_factor_distribution_figure})"
+        ),
+        "",
+        (
+            f"Across the full positive direct-factor pool "
+            f"({_fmt_int(direct_factor_distribution_metrics['n_positive'])} "
+            f"rows), the median observed CIF/FOB factor is "
+            f"{_fmt_float(direct_factor_distribution_metrics['median'], 3)}, "
+            f"with Q1 "
+            f"{_fmt_float(direct_factor_distribution_metrics['q1'], 3)} "
+            f"and Q3 "
+            f"{_fmt_float(direct_factor_distribution_metrics['q3'], 3)}."
+        ),
+        (
+            f"The full-distribution IQR is "
+            f"{_fmt_float(direct_factor_distribution_metrics['iqr'], 3)}. "
+            f"A strict boxplot-style upper threshold "
+            f"Q3 + 1.5×IQR is "
+            f"{_fmt_float(direct_factor_distribution_metrics['q3_plus_1_5_iqr'], 3)}, "
+            f"while Q3 + 2.5×IQR is "
+            f"{_fmt_float(direct_factor_distribution_metrics['q3_plus_2_5_iqr'], 3)}. "
+            f"The configured upper training bound is "
+            f"{_fmt_float(cfg.method.estimation.maximum_factor, 3)}."
+        ),
+        (
+            f"Direct factors above 3 account for "
+            f"{_fmt_percent_value(direct_factor_distribution_metrics['share_above_3_percent'])} "
+            f"of positive direct observations, while factors above 10 account "
+            f"for "
+            f"{_fmt_percent_value(direct_factor_distribution_metrics['share_above_10_percent'])}. "
+            "The configured upper bound therefore removes the extreme "
+            "right tail while retaining the central and moderately high "
+            "CIF/FOB observations."
+        ),
+
         (
             f"Clean observations by source: "
             f"{_fmt_int(rate_metrics['n_clean_direct_observations'])} direct, "
             f"{_fmt_int(rate_metrics['n_clean_mirror_observations'])} mirror."
         ),
         "",
-        "### 5.4 Predictor coverage for downstream prediction",
+        "### 5.5 Predictor coverage for downstream prediction",
         "",
         _markdown_table(
             coverage_rows,
@@ -2296,12 +2566,13 @@ def write_cif_fob_decision_report(
         "",
         "### Overall predictive performance",
         "",
+        "### 7.1 Overall predictive performance",
+        "",
         _markdown_table(
-            combined_table,
+            overall_performance_table,
             columns=[
                 "Rank",
                 "Model",
-                "Algorithm",
                 "Predictor set",
                 "Mean log MAE",
                 "Median APE",
@@ -2309,10 +2580,6 @@ def write_cif_fob_decision_report(
                 "P90 APE",
                 "P95 APE",
                 "Spearman",
-                "Observed P95",
-                "Predicted P95",
-                "Tail median APE",
-                "Tail P90 APE",
             ],
             formatters={
                 "Rank": _fmt_int,
@@ -2322,6 +2589,31 @@ def write_cif_fob_decision_report(
                 "P90 APE": _fmt_fraction_percent,
                 "P95 APE": _fmt_fraction_percent,
                 "Spearman": _fmt_float,
+            },
+        ),
+        "",
+        "### 7.2 Upper-tail predictive performance",
+        "",
+        (
+            "Upper-tail metrics evaluate how well each model reproduces "
+            "high observed CIF/FOB factors. These metrics should be read "
+            "alongside the overall table because better tail fit can come "
+            "at the cost of worse central accuracy."
+        ),
+        "",
+        _markdown_table(
+            tail_performance_table,
+            columns=[
+                "Rank",
+                "Model",
+                "Predictor set",
+                "Observed P95",
+                "Predicted P95",
+                "Tail median APE",
+                "Tail P90 APE",
+            ],
+            formatters={
+                "Rank": _fmt_int,
                 "Observed P95": _fmt_float,
                 "Predicted P95": _fmt_float,
                 "Tail median APE": _fmt_fraction_percent,
@@ -2468,6 +2760,10 @@ def write_cif_fob_decision_report(
     logger.info(
         "CIF/FOB decision report written: %s",
         report_path,
+    )
+    logger.info(
+        "CIF/FOB direct-factor distribution figure written: %s",
+        direct_factor_distribution_figure,
     )
 
     if latest_report_path is not None:
