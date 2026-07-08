@@ -35,3 +35,7 @@ repo:
   root: "{project_root}"
   references: "{repo.root}/references"
   geography: "{repo.references}/geography"
+  geography_cepii_gravity: "{repo.geography}/cepii_gravity_2021
+  geography_cepii_legacy: "{repo.geography}/cepii_legacy"
+  geography_vacoda_extension: "{repo.geography}/vacoda_extension"
+  geography_production: "{repo.geography}/production"

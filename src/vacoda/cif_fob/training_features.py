@@ -77,6 +77,7 @@ from pathlib import Path
 from typing import Any
 
 import duckdb
+from sklearn import metrics
 
 from vacoda.config.cif_fob import CifFobConfig
 from vacoda.cif_fob.prepare_input import valid_output
@@ -103,6 +104,10 @@ REQUIRED_TRAINING_FEATURES  = {
     "hs4_product_group",
     "log_exporter_gdp",
     "log_importer_gdp",
+    "gatt_pair",
+    "wto_pair",
+    "eu_pair",
+    "fta_wto",
 }
 
 
@@ -248,6 +253,10 @@ def _validate_reference_files(
         "destination_gdp",
         "log_origin_gdp",
         "log_destination_gdp",
+        "gatt_pair",
+        "wto_pair",
+        "eu_pair",
+        "fta_wto",
     }
     country_required = {
         "country_iso3",
@@ -357,7 +366,23 @@ def _validate_reference_files(
             ) AS n_capital_fallback,
             COUNT(*) FILTER (
                 WHERE distance_model_source = 'gravity_2021_distw_harmonic'
-            ) AS n_gravity_harmonic_distance
+            ) AS n_gravity_harmonic_distance,
+
+            COUNT(*) FILTER (
+                WHERE gatt_pair IS NULL
+                    OR gatt_pair NOT IN (0, 1)
+                    OR wto_pair IS NULL
+                    OR wto_pair NOT IN (0, 1)
+                    OR eu_pair IS NULL
+                    OR eu_pair NOT IN (0, 1)
+                    OR fta_wto IS NULL
+                    OR fta_wto NOT IN (0, 1)
+                ) AS n_invalid_policy_indicators,
+
+            SUM(gatt_pair) AS n_pair_reference_gatt_pairs,
+            SUM(wto_pair) AS n_pair_reference_wto_pairs,
+            SUM(eu_pair) AS n_pair_reference_eu_pairs,
+            SUM(fta_wto) AS n_pair_reference_fta_wto_pairs
         FROM read_parquet(?)
         """,
         [str(pair_geography_path)],
@@ -375,6 +400,11 @@ def _validate_reference_files(
         n_weighted_distance,
         n_capital_fallback,
         n_gravity_harmonic_distance,
+        n_invalid_policy_indicators,
+        n_pair_reference_gatt_pairs,
+        n_pair_reference_wto_pairs,
+        n_pair_reference_eu_pairs,
+        n_pair_reference_fta_wto_pairs, 
     ) = pair_audit
 
     if n_pair_null_keys > 0:
@@ -396,6 +426,11 @@ def _validate_reference_files(
         raise RuntimeError(
             "Bilateral geography reference contains invalid contiguous "
             f"values: {n_invalid_contiguous:,}."
+        )
+    if n_invalid_policy_indicators > 0:
+        raise RuntimeError(
+            "Bilateral geography reference contains invalid policy "
+            f"indicator values: {n_invalid_policy_indicators:,}."
         )
 
     country_audit = con.execute(
@@ -658,6 +693,10 @@ def _validate_reference_files(
         "n_oil_reference_rows": int(n_oil_rows),
         "oil_reference_minimum_year": int(oil_minimum_year),
         "oil_reference_maximum_year": int(oil_maximum_year),
+        "n_pair_reference_gatt_pairs": int(n_pair_reference_gatt_pairs or 0),
+        "n_pair_reference_wto_pairs": int(n_pair_reference_wto_pairs or 0),
+        "n_pair_reference_eu_pairs": int(n_pair_reference_eu_pairs or 0),
+        "n_pair_reference_fta_wto_pairs": int(n_pair_reference_fta_wto_pairs or 0),
     }
 
 
@@ -1939,6 +1978,11 @@ def build_training_features(
                 pg.distance_model_km,
                 pg.distance_model_source,
 
+                CAST(pg.gatt_pair AS INTEGER) AS gatt_pair,
+                CAST(pg.wto_pair AS INTEGER) AS wto_pair,
+                CAST(pg.eu_pair AS INTEGER) AS eu_pair,
+                CAST(pg.fta_wto  AS INTEGER) AS fta_wto,
+
                 pg.origin_gdp
                     AS exporter_gdp,
 
@@ -2474,6 +2518,57 @@ def build_training_features(
                     WHERE log_exporter_gdp IS NOT NULL
                       AND log_importer_gdp IS NOT NULL
                 ) AS n_log_both_gdp_found,
+
+                (
+                    SELECT COUNT(*)
+                    FROM read_parquet({output_sql})
+                    WHERE gatt_pair IS NOT NULL
+                ) AS n_gatt_pair_found,
+
+                (
+                   SELECT COUNT(*)
+                   FROM read_parquet({output_sql})
+                   WHERE wto_pair IS NOT NULL
+                ) AS n_wto_pair_found,
+
+
+                (
+                    SELECT COUNT(*)
+                    FROM read_parquet({output_sql})
+                    WHERE eu_pair IS NOT NULL
+                ) AS n_eu_pair_found,
+
+
+                (
+                    SELECT COUNT(*)
+                    FROM read_parquet({output_sql})
+                    WHERE fta_wto IS NOT NULL
+                ) AS n_fta_wto_found,
+
+                (
+                  SELECT COALESCE(SUM(gatt_pair), 0)
+                  FROM read_parquet({output_sql})
+                  WHERE gatt_pair IS NOT NULL
+                ) AS n_gatt_pair_ones,
+
+                
+                (
+                    SELECT COALESCE(SUM(wto_pair), 0)
+                    FROM read_parquet({output_sql})
+                    WHERE wto_pair IS NOT NULL
+                ) AS n_wto_pair_ones,
+
+                (
+                  SELECT COALESCE(SUM(eu_pair), 0)
+                  FROM read_parquet({output_sql})
+                  WHERE eu_pair IS NOT NULL
+                ) AS n_eu_pair_ones,
+
+                (
+                    SELECT COALESCE(SUM(fta_wto), 0)
+                    FROM read_parquet({output_sql})
+                    WHERE fta_wto IS NOT NULL
+                ) AS n_fta_wto_ones,
                 
                 (
                     SELECT COUNT(*)
@@ -2573,6 +2668,14 @@ def build_training_features(
         "n_log_exporter_gdp_found",
         "n_log_importer_gdp_found",
         "n_log_both_gdp_found",
+        "n_gatt_pair_found",
+        "n_wto_pair_found",
+        "n_eu_pair_found",
+        "n_fta_wto_found",
+        "n_gatt_pair_ones",
+        "n_wto_pair_ones",
+        "n_eu_pair_ones",
+        "n_fta_wto_ones",
         "n_rows_with_geography_mapping",
         "n_rows_with_proxy_mapping",
         "n_weighted_distance_used",
@@ -2581,6 +2684,7 @@ def build_training_features(
         "n_initial_predictors_complete",
         "n_model_candidates_predictors_complete",
         "n_model_candidates_predictors_incomplete",
+   
     ]
 
     metrics = {
@@ -2763,7 +2867,38 @@ def build_training_features(
         if output_rows
         else 0.0
     )
-    
+
+    metrics["gatt_pair_coverage_percent"] = (
+        100.0
+        * int(metrics["n_gatt_pair_found"] or 0)
+        / output_rows
+        if output_rows
+        else 0.0
+    )
+
+    metrics["wto_pair_coverage_percent"] = (
+        100.0
+        * int(metrics["n_wto_pair_found"] or 0)
+        / output_rows
+        if output_rows
+        else 0.0
+    )
+
+    metrics["eu_pair_coverage_percent"] = (
+        100.0
+        * int(metrics["n_eu_pair_found"] or 0)
+        / output_rows
+        if output_rows
+        else 0.0
+    )
+
+    metrics["fta_wto_coverage_percent"] = (
+        100.0
+        * int(metrics["n_fta_wto_found"] or 0)
+        / output_rows
+        if output_rows
+        else 0.0
+    )
 
     audit_passed = True
 
@@ -2948,6 +3083,24 @@ def build_training_features(
     logger.info(
         "  Both-side GDP coverage: %.4f%%",
         metrics["log_both_gdp_coverage_percent"],
+    )
+
+    logger.info(
+        "  Policy pair indicators found: "
+        "GATT=%s, WTO=%s, EU=%s, FTA/WTO=%s",
+        metrics["n_gatt_pair_found"],
+        metrics["n_wto_pair_found"],
+        metrics["n_eu_pair_found"],
+        metrics["n_fta_wto_found"],
+    )
+
+    logger.info(
+        "  Policy pair positive rows: "
+        "GATT=%s, WTO=%s, EU=%s, FTA/WTO=%s",
+        metrics["n_gatt_pair_ones"],
+        metrics["n_wto_pair_ones"],
+        metrics["n_eu_pair_ones"],
+        metrics["n_fta_wto_ones"],
     )
     logger.info(
         "  Model candidates with complete predictors: %s",

@@ -1,8 +1,6 @@
 from pathlib import Path
 
-from vacoda.cif_fob.references.geography.cepii_gravity import (
-    prepare_gravity_pair_geography,
-)
+from vacoda.cif_fob.references.geography.cepii_gravity import prepare_gravity_pair_geography,
 
 
 project_root = Path(__file__).resolve().parents[4]

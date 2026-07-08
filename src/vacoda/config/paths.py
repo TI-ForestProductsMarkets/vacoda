@@ -164,7 +164,7 @@ def get_geography_cepii_gravity_dir(cfg: dict[str, Any] | None = None) -> Path:
         "repo",
         config_name=PATHS_CONFIG_NAME,
     )
-    return require_path(repo_cfg["geography"] / "cepii" / "gravity", key="repo.geography.cepii_gravity_2021")
+    return require_path(repo_cfg["geography_cepii_gravity"], key="repo.geography_cepii_gravity")
 
 def get_geography_cepii_legacy_dir(cfg: dict[str, Any] | None = None) -> Path:
     """Return CEPII legacy directory from paths.yaml repo block."""
@@ -176,11 +176,10 @@ def get_geography_cepii_legacy_dir(cfg: dict[str, Any] | None = None) -> Path:
         "repo",
         config_name=PATHS_CONFIG_NAME,
     )
-    return require_path(repo_cfg["geography"] / "cepii" / "legacy", key="repo.geography.cepii_legacy")
-
+    return require_path(repo_cfg["geography_cepii_legacy"], key="repo.geography_cepii_legacy")
 
 def get_geography_vacoda_extension_dir(cfg: dict[str, Any] | None = None) -> Path:
-    """Return vacoda geography extension directory from paths.yaml repo block."""
+    """Return vacoda extension directory from paths.yaml repo block."""
     if cfg is None:
         cfg = load_paths_config()
 
@@ -189,7 +188,7 @@ def get_geography_vacoda_extension_dir(cfg: dict[str, Any] | None = None) -> Pat
         "repo",
         config_name=PATHS_CONFIG_NAME,
     )
-    return require_path(repo_cfg["geography"] / "vacoda" / "extension", key="repo.geography.vacoda_extension")
+    return require_path(repo_cfg["geography_vacoda_extension"], key="repo.geography_vacoda_extension")
 
 def get_geography_production_dir(cfg: dict[str, Any] | None = None) -> Path:
     """Return production geography directory from paths.yaml repo block."""
@@ -201,8 +200,7 @@ def get_geography_production_dir(cfg: dict[str, Any] | None = None) -> Path:
         "repo",
         config_name=PATHS_CONFIG_NAME,
     )
-    return require_path(repo_cfg["geography"] / "production", key="repo.geography.production")
-
+    return require_path(repo_cfg["geography_production"], key="repo.geography_production")
 
 def get_output_dir(kind: str, cfg: dict[str, Any] | None = None) -> Path:
     """Return an output directory by kind."""

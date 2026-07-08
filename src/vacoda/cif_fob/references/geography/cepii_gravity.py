@@ -29,6 +29,11 @@ REQUIRED_COLUMNS = {
     "contig",
     "gdp_o",
     "gdp_d",
+    "wto_o",
+    "wto_d",
+    "eu_o",
+    "eu_d",
+    "fta_wto",
 }
 
 
@@ -305,7 +310,102 @@ def prepare_gravity_pair_geography(
                         AS gravity_distw_harmonic_km,
 
                     TRY_CAST(distw_arithmetic AS DOUBLE)
-                        AS gravity_distw_arithmetic_km
+                        AS gravity_distw_arithmetic_km,
+
+                    CAST(
+                        COALESCE(
+                            TRY_CAST(gatt_o AS INTEGER),
+                            0
+                        )
+                        AS TINYINT
+                    ) AS gatt_origin_member,
+
+                    CAST(
+                        COALESCE(
+                            TRY_CAST(gatt_d AS INTEGER),
+                            0
+                        )
+                        AS TINYINT
+                    ) AS gatt_destination_member,
+
+                    CAST(
+                        COALESCE(
+                            TRY_CAST(wto_o AS INTEGER),
+                            0
+                        )
+                        AS TINYINT
+                    ) AS wto_origin_member,
+
+                    CAST(
+                        COALESCE(
+                            TRY_CAST(wto_d AS INTEGER),
+                            0
+                        )
+                        AS TINYINT
+                    ) AS wto_destination_member,
+
+                    CAST(
+                        COALESCE(
+                            TRY_CAST(eu_o AS INTEGER),
+                            0
+                        )
+                        AS TINYINT
+                    ) AS eu_origin_member,
+
+                    CAST(
+                        COALESCE(
+                            TRY_CAST(eu_d AS INTEGER),
+                            0
+                        )
+                        AS TINYINT
+                    ) AS eu_destination_member,
+
+                    CAST(
+                        COALESCE(
+                            TRY_CAST(gatt_o AS INTEGER),
+                            0
+                        )
+                        *
+                        COALESCE(
+                            TRY_CAST(gatt_d AS INTEGER),
+                            0
+                        )
+                        AS TINYINT
+                    ) AS gatt_pair,
+
+                    CAST(
+                        COALESCE(
+                            TRY_CAST(wto_o AS INTEGER),
+                            0
+                        )
+                        *
+                        COALESCE(
+                            TRY_CAST(wto_d AS INTEGER),
+                            0
+                        )
+                        AS TINYINT
+                    ) AS wto_pair,
+
+                    CAST(
+                        COALESCE(
+                            TRY_CAST(eu_o AS INTEGER),
+                            0
+                        )
+                        *
+                        COALESCE(
+                            TRY_CAST(eu_d AS INTEGER),
+                            0
+                        )
+                        AS TINYINT
+                    ) AS eu_pair,
+
+                    CAST(
+                        COALESCE(
+                            TRY_CAST(fta_wto AS INTEGER),
+                            0
+                        )
+                        AS TINYINT
+                    ) AS fta_wto
 
                 FROM read_csv_auto(
                     {input_sql},
@@ -389,6 +489,22 @@ def prepare_gravity_pair_geography(
                           <> distance_model_km
                 ) AS n_weighted_model_mismatches,
 
+                COUNT(*) FILTER (
+                    WHERE gatt_pair IS NULL
+                       OR gatt_pair NOT IN (0, 1)
+                       OR wto_pair IS NULL
+                       OR wto_pair NOT IN (0, 1)
+                       OR eu_pair IS NULL
+                       OR eu_pair NOT IN (0, 1)
+                       OR fta_wto IS NULL
+                       OR fta_wto NOT IN (0, 1)
+                ) AS n_invalid_policy_indicators,
+
+                SUM(gatt_pair) AS n_gatt_pairs,
+                SUM(wto_pair) AS n_wto_pairs,
+                SUM(eu_pair) AS n_eu_pairs,
+                SUM(fta_wto) AS n_fta_wto_pairs,
+
                 MIN(distance_model_km)
                     AS minimum_model_distance_km,
 
@@ -420,6 +536,11 @@ def prepare_gravity_pair_geography(
             n_missing_log_origin_gdp,
             n_missing_log_destination_gdp,
             n_weighted_model_mismatches,
+            n_invalid_policy_indicators,
+            n_gatt_pairs,
+            n_wto_pairs,
+            n_eu_pairs,
+            n_fta_wto_pairs,
             minimum_model_distance_km,
             median_model_distance_km,
             maximum_model_distance_km,
@@ -446,6 +567,9 @@ def prepare_gravity_pair_geography(
             ),
             "weighted/model distance mismatches": (
                 n_weighted_model_mismatches
+            ),
+            "invalid policy indicators": (
+                n_invalid_policy_indicators
             ),
         }
 
@@ -485,6 +609,13 @@ def prepare_gravity_pair_geography(
                 "Missing origin GDP/log GDP rows: "
                 f"{n_output_missing_or_nonpositive_origin_gdp:,}/"
                 f"{n_missing_log_origin_gdp:,}"
+            )
+            print(
+                "Policy-integration pairs: "
+                f"GATT={int(n_gatt_pairs or 0):,}, "
+                f"WTO={int(n_wto_pairs or 0):,}, "
+                f"EU={int(n_eu_pairs or 0):,}, "
+                f"FTA/WTO={int(n_fta_wto_pairs or 0):,}"
             )
             print(
                 "Missing destination GDP/log GDP rows: "
