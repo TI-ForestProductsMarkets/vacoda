@@ -30,6 +30,10 @@ Bilateral:
     contiguity
     exporter_landlocked
     importer_landlocked
+    exporter_gdp
+    importer_gdp
+    log_exporter_gdp
+    log_importer_gdp
     lagged_pair_median_factor
     lagged_pair_product_median_factor
 
@@ -97,6 +101,8 @@ REQUIRED_TRAINING_FEATURES  = {
     "log_lagged_bilateral_trade_value",
     "log_lagged_pair_product_trade_value",
     "hs4_product_group",
+    "log_exporter_gdp",
+    "log_importer_gdp",
 }
 
 
@@ -238,6 +244,10 @@ def _validate_reference_files(
         "distance_model_km",
         "distance_model_source",
         "log_distance_model_km",
+        "origin_gdp",
+        "destination_gdp",
+        "log_origin_gdp",
+        "log_destination_gdp",
     }
     country_required = {
         "country_iso3",
@@ -926,6 +936,19 @@ def _inspect_existing_training_features(
                 COUNT(*) FILTER (
                     WHERE log_lagged_pair_product_trade_value IS NOT NULL
                 ) AS n_lagged_pair_product_trade_value_found,
+
+                COUNT(*) FILTER (
+                    WHERE log_exporter_gdp IS NOT NULL
+                ) AS n_log_exporter_gdp_found,
+
+                COUNT(*) FILTER (
+                    WHERE log_importer_gdp IS NOT NULL
+                ) AS n_log_importer_gdp_found,
+
+                COUNT(*) FILTER (
+                    WHERE log_exporter_gdp IS NOT NULL
+                      AND log_importer_gdp IS NOT NULL
+                ) AS n_log_both_gdp_found,
                 
                 COUNT(DISTINCT year) AS n_years
 
@@ -958,6 +981,9 @@ def _inspect_existing_training_features(
         "n_lagged_pair_product_factor_found",
         "n_lagged_bilateral_trade_value_found",
         "n_lagged_pair_product_trade_value_found",
+        "n_log_exporter_gdp_found",
+        "n_log_importer_gdp_found",
+        "n_log_both_gdp_found",
         "n_years",
     ]
     
@@ -1913,6 +1939,18 @@ def build_training_features(
                 pg.distance_model_km,
                 pg.distance_model_source,
 
+                pg.origin_gdp
+                    AS exporter_gdp,
+
+                pg.destination_gdp
+                    AS importer_gdp,
+
+                pg.log_origin_gdp
+                    AS log_exporter_gdp,
+
+                pg.log_destination_gdp
+                    AS log_importer_gdp,
+
                 pg.log_distance_model_km
                     AS log_distance,
 
@@ -2417,6 +2455,25 @@ def build_training_features(
                     FROM read_parquet({output_sql})
                     WHERE log_lagged_pair_product_trade_value IS NOT NULL
                 ) AS n_lagged_pair_product_trade_value_found,
+
+                (
+                    SELECT COUNT(*)
+                    FROM read_parquet({output_sql})
+                    WHERE log_exporter_gdp IS NOT NULL
+                ) AS n_log_exporter_gdp_found,
+
+                (
+                    SELECT COUNT(*)
+                    FROM read_parquet({output_sql})
+                    WHERE log_importer_gdp IS NOT NULL
+                ) AS n_log_importer_gdp_found,
+
+                (
+                    SELECT COUNT(*)
+                    FROM read_parquet({output_sql})
+                    WHERE log_exporter_gdp IS NOT NULL
+                      AND log_importer_gdp IS NOT NULL
+                ) AS n_log_both_gdp_found,
                 
                 (
                     SELECT COUNT(*)
@@ -2513,6 +2570,9 @@ def build_training_features(
         "n_lagged_pair_product_factor_found",
         "n_lagged_bilateral_trade_value_found",
         "n_lagged_pair_product_trade_value_found",
+        "n_log_exporter_gdp_found",
+        "n_log_importer_gdp_found",
+        "n_log_both_gdp_found",
         "n_rows_with_geography_mapping",
         "n_rows_with_proxy_mapping",
         "n_weighted_distance_used",
@@ -2679,6 +2739,30 @@ def build_training_features(
         if model_candidates
         else 0.0
     )
+
+    metrics["log_exporter_gdp_coverage_percent"] = (
+        100.0
+        * int(metrics["n_log_exporter_gdp_found"] or 0)
+        / output_rows
+        if output_rows
+        else 0.0
+    )
+
+    metrics["log_importer_gdp_coverage_percent"] = (
+        100.0
+        * int(metrics["n_log_importer_gdp_found"] or 0)
+        / output_rows
+        if output_rows
+        else 0.0
+    )
+
+    metrics["log_both_gdp_coverage_percent"] = (
+        100.0
+        * int(metrics["n_log_both_gdp_found"] or 0)
+        / output_rows
+        if output_rows
+        else 0.0
+    )
     
 
     audit_passed = True
@@ -2840,6 +2924,30 @@ def build_training_features(
         metrics[
             "n_lagged_pair_product_trade_value_found"
         ],
+    )
+    logger.info(
+        "  Rows with exporter GDP: %s",
+        metrics["n_log_exporter_gdp_found"],
+    )
+    logger.info(
+        "  Exporter GDP coverage: %.4f%%",
+        metrics["log_exporter_gdp_coverage_percent"],
+    )
+    logger.info(
+        "  Rows with importer GDP: %s",
+        metrics["n_log_importer_gdp_found"],
+    )
+    logger.info(
+        "  Importer GDP coverage: %.4f%%",
+        metrics["log_importer_gdp_coverage_percent"],
+    )
+    logger.info(
+        "  Rows with both exporter and importer GDP: %s",
+        metrics["n_log_both_gdp_found"],
+    )
+    logger.info(
+        "  Both-side GDP coverage: %.4f%%",
+        metrics["log_both_gdp_coverage_percent"],
     )
     logger.info(
         "  Model candidates with complete predictors: %s",

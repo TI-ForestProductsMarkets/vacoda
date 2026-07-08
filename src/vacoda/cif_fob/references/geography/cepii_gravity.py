@@ -2,8 +2,9 @@
 Prepare the CEPII Gravity v202211 bilateral geography reference.
 
 This module reads the official CEPII Gravity CSV directly, selects one
-reference year, validates the bilateral geography fields, and writes a
-VACODA-compatible Parquet file.
+reference year, validates the bilateral geography fields, retains the
+CEPII origin/destination GDP fields, and writes a VACODA-compatible
+Parquet file.
 
 No VACODA-authored crosswalk logic belongs in this module.
 """
@@ -26,6 +27,8 @@ REQUIRED_COLUMNS = {
     "distw_harmonic",
     "distw_arithmetic",
     "contig",
+    "gdp_o",
+    "gdp_d",
 }
 
 
@@ -147,6 +150,26 @@ def prepare_gravity_pair_geography(
 
                 COUNT(*) FILTER (
                     WHERE TRY_CAST(year AS INTEGER) = {int(reference_year)}
+                      AND TRY_CAST(country_exists_o AS INTEGER) = 1
+                      AND TRY_CAST(country_exists_d AS INTEGER) = 1
+                      AND (
+                          TRY_CAST(gdp_o AS DOUBLE) IS NULL
+                          OR TRY_CAST(gdp_o AS DOUBLE) <= 0
+                      )
+                ) AS n_missing_or_nonpositive_origin_gdp,
+
+                COUNT(*) FILTER (
+                    WHERE TRY_CAST(year AS INTEGER) = {int(reference_year)}
+                      AND TRY_CAST(country_exists_o AS INTEGER) = 1
+                      AND TRY_CAST(country_exists_d AS INTEGER) = 1
+                      AND (
+                          TRY_CAST(gdp_d AS DOUBLE) IS NULL
+                          OR TRY_CAST(gdp_d AS DOUBLE) <= 0
+                      )
+                ) AS n_missing_or_nonpositive_destination_gdp,
+
+                COUNT(*) FILTER (
+                    WHERE TRY_CAST(year AS INTEGER) = {int(reference_year)}
                       AND (
                       TRY_CAST(country_exists_o AS INTEGER) <> 1
                       OR TRY_CAST(country_exists_d AS INTEGER) <> 1
@@ -171,6 +194,8 @@ def prepare_gravity_pair_geography(
             n_null_pair_keys,
             n_invalid_model_distances,
             n_invalid_contiguous,
+            n_missing_or_nonpositive_origin_gdp,
+            n_missing_or_nonpositive_destination_gdp,
             n_excluded_nonexistent_country_rows
         ) = source_audit
 
@@ -180,6 +205,14 @@ def prepare_gravity_pair_geography(
             )
         if verbose:
             print(f"Excluded nonexistent country rows: {n_excluded_nonexistent_country_rows}")
+            print(
+                "Missing/nonpositive origin GDP rows: "
+                f"{n_missing_or_nonpositive_origin_gdp}"
+            )
+            print(
+                "Missing/nonpositive destination GDP rows: "
+                f"{n_missing_or_nonpositive_destination_gdp}"
+            )
             
         source_failures = {
             "null country-pair keys": n_null_pair_keys,
@@ -250,6 +283,24 @@ def prepare_gravity_pair_geography(
                         AS INTEGER
                     ) AS gravity_reference_year,
 
+                    TRY_CAST(gdp_o AS DOUBLE)
+                        AS origin_gdp,
+
+                    TRY_CAST(gdp_d AS DOUBLE)
+                        AS destination_gdp,
+
+                    CASE
+                        WHEN TRY_CAST(gdp_o AS DOUBLE) > 0
+                            THEN LN(TRY_CAST(gdp_o AS DOUBLE))
+                        ELSE NULL
+                    END AS log_origin_gdp,
+
+                    CASE
+                        WHEN TRY_CAST(gdp_d AS DOUBLE) > 0
+                            THEN LN(TRY_CAST(gdp_d AS DOUBLE))
+                        ELSE NULL
+                    END AS log_destination_gdp,
+
                     TRY_CAST(distw_harmonic AS DOUBLE)
                         AS gravity_distw_harmonic_km,
 
@@ -316,6 +367,24 @@ def prepare_gravity_pair_geography(
                 ) AS n_wrong_reference_year,
 
                 COUNT(*) FILTER (
+                    WHERE origin_gdp IS NULL
+                       OR origin_gdp <= 0
+                ) AS n_missing_or_nonpositive_origin_gdp,
+
+                COUNT(*) FILTER (
+                    WHERE destination_gdp IS NULL
+                       OR destination_gdp <= 0
+                ) AS n_missing_or_nonpositive_destination_gdp,
+
+                COUNT(*) FILTER (
+                    WHERE log_origin_gdp IS NULL
+                ) AS n_missing_log_origin_gdp,
+
+                COUNT(*) FILTER (
+                    WHERE log_destination_gdp IS NULL
+                ) AS n_missing_log_destination_gdp,
+
+                COUNT(*) FILTER (
                     WHERE distance_weighted_km
                           <> distance_model_km
                 ) AS n_weighted_model_mismatches,
@@ -346,6 +415,10 @@ def prepare_gravity_pair_geography(
             n_missing_log_distances,
             n_output_invalid_contiguous,
             n_wrong_reference_year,
+            n_output_missing_or_nonpositive_origin_gdp,
+            n_output_missing_or_nonpositive_destination_gdp,
+            n_missing_log_origin_gdp,
+            n_missing_log_destination_gdp,
             n_weighted_model_mismatches,
             minimum_model_distance_km,
             median_model_distance_km,
@@ -407,6 +480,16 @@ def prepare_gravity_pair_geography(
             print(
                 "Median distance: "
                 f"{median_model_distance_km:,.3f} km"
+            )
+            print(
+                "Missing origin GDP/log GDP rows: "
+                f"{n_output_missing_or_nonpositive_origin_gdp:,}/"
+                f"{n_missing_log_origin_gdp:,}"
+            )
+            print(
+                "Missing destination GDP/log GDP rows: "
+                f"{n_output_missing_or_nonpositive_destination_gdp:,}/"
+                f"{n_missing_log_destination_gdp:,}"
             )
             print(f"Saved to:        {output_path}")
 

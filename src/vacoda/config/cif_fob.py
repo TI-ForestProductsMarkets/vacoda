@@ -6,7 +6,7 @@ Config reader for configs/steps/cif_fob.yaml.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
@@ -28,7 +28,6 @@ CIF_FOB_CONFIG_PATH = get_step_config_path("cif_fob")
 
 def load_cif_fob_config(config_path: Path | None = None) -> dict[str, Any]:
     return load_yaml_config(config_path or CIF_FOB_CONFIG_PATH)
-
 
 def _render_value(value: Any, *, target_hs: str) -> Any:
     if isinstance(value, dict):
@@ -1349,9 +1348,10 @@ CifFobCandidateModelConfig = (
     | CifFobLogLinearRegressionConfig
 )
 
-
 @dataclass(frozen=True)
 class CifFobModelsConfig:
+    """Registry of configured CIF/FOB estimation model candidates."""
+
     primary: str
     candidates: dict[str, CifFobCandidateModelConfig]
 
@@ -1360,11 +1360,6 @@ class CifFobModelsConfig:
         cls,
         cfg: dict[str, Any],
     ) -> "CifFobModelsConfig":
-        primary = require_str(
-            cfg.get("primary"),
-            key="cif_fob.method.estimation.models.primary",
-        ).strip().lower()
-
         candidates_raw = require_dict(
             cfg.get("candidates"),
             key="cif_fob.method.estimation.models.candidates",
@@ -1372,94 +1367,61 @@ class CifFobModelsConfig:
 
         candidates: dict[str, CifFobCandidateModelConfig] = {}
 
-        for raw_name, raw_model_cfg in candidates_raw.items():
-            name = require_str(
-                raw_name,
-                key="cif_fob.method.estimation.models.candidates.name",
-            ).strip().lower()
+        hgb_names = {
+            "hist_gradient_boosting",
+            "hist_gradient_boosting_squared",
+            "hist_gradient_boosting_squared_level",
+            "hist_gradient_boosting_squared_regularized",
+        }
+        log_linear_names = {
+            "log_linear_regression",
+            "log_linear_regression_smearing",
+        }
 
-            model_cfg = require_dict(
-                raw_model_cfg,
-                key=f"cif_fob.method.estimation.models.candidates.{name}",
-            )
-
-            model_type = require_str(
-                model_cfg.get("type"),
+        for name, candidate_cfg in candidates_raw.items():
+            candidate_cfg = require_dict(
+                candidate_cfg,
                 key=(
                     "cif_fob.method.estimation.models."
-                    f"candidates.{name}.type"
+                    f"candidates.{name}"
                 ),
-            ).strip().lower()
+            )
 
-            if name == "hist_gradient_boosting":
+            if name in hgb_names:
                 candidates[name] = (
                     CifFobHistGradientBoostingConfig.from_dict(
-                        name,
-                        model_cfg,
-                    )
-                )
-            elif name == "log_linear_regression":
-                candidates[name] = (
-                    CifFobLogLinearRegressionConfig.from_dict(
-                        name,
-                        model_cfg,
-                    )
-                )
-            elif name == "hist_gradient_boosting_squared":
-                candidates[name] = (
-                    CifFobHistGradientBoostingConfig.from_dict(
-                        name,
-                        model_cfg,
-                    )
-                )
-            elif name == "log_linear_regression_smearing":
-                candidates[name] = (
-                    CifFobLogLinearRegressionConfig.from_dict(
-                        name,
-                        model_cfg,
-                    )
-                )
-            elif name == "hist_gradient_boosting_squared_level":
-                candidates[name] = (
-                    CifFobHistGradientBoostingConfig.from_dict(
-                        name,
-                        model_cfg,
-                    )
-                )
-
-            elif name == "hist_gradient_boosting_squared_regularized":
-                candidates[name] = (
-                    CifFobHistGradientBoostingConfig.from_dict(
-                        name,
-                        model_cfg,
+                        name=name,
+                        cfg=candidate_cfg,
                     )
                 )
             elif name == "xgboost_log_squared":
+                candidates[name] = CifFobXGBoostConfig.from_dict(
+                    name=name,
+                    cfg=candidate_cfg,
+                )
+            elif name in log_linear_names:
                 candidates[name] = (
-                    CifFobXGBoostConfig.from_dict(
-                        name,
-                        model_cfg,
+                    CifFobLogLinearRegressionConfig.from_dict(
+                        name=name,
+                        cfg=candidate_cfg,
                     )
                 )
             else:
                 raise ValueError(
-                    f"Unsupported CIF/FOB candidate model: {name!r}"
+                    "Unsupported CIF/FOB model candidate "
+                    f"{name!r}."
                 )
 
-            if candidates[name].type != model_type:
-                raise ValueError(
-                    f"Model {name!r} type mismatch: "
-                    f"{model_type!r}."
-                )
+        primary = require_str(
+            cfg.get("primary"),
+            key="cif_fob.method.estimation.models.primary",
+        ).strip()
 
         if primary not in candidates:
             raise ValueError(
-                f"Primary model {primary!r} is not defined in candidates."
-            )
-
-        if not candidates[primary].enabled:
-            raise ValueError(
-                f"Primary model {primary!r} is disabled."
+                f"Configured primary CIF/FOB model {primary!r} is not "
+                "present in models.candidates. Available candidates: "
+                + ", ".join(sorted(candidates))
             )
 
         return cls(
@@ -1468,11 +1430,127 @@ class CifFobModelsConfig:
         )
 
     def enabled(self) -> dict[str, CifFobCandidateModelConfig]:
+        """Return enabled model candidates, preserving YAML order."""
         return {
-            name: model
-            for name, model in self.candidates.items()
-            if model.enabled
+            name: candidate
+            for name, candidate in self.candidates.items()
+            if candidate.enabled
         }
+
+    @property
+    def enabled_candidates(self) -> dict[str, CifFobCandidateModelConfig]:
+        """Alias for callers that prefer property-style access."""
+        return self.enabled()
+
+    def get_candidate(
+        self,
+        name: str | None = None,
+    ) -> CifFobCandidateModelConfig:
+        """Return a named candidate, or the configured primary."""
+        candidate_name = name or self.primary
+
+        if candidate_name not in self.candidates:
+            raise KeyError(
+                f"Unknown CIF/FOB model candidate {candidate_name!r}. "
+                f"Available candidates: {sorted(self.candidates)}"
+            )
+
+        return self.candidates[candidate_name]
+
+
+@dataclass(frozen=True)
+class CifFobPredictorSetConfig:
+    """One named predictor set used for model-comparison runs."""
+
+    name: str
+    numeric: tuple[str, ...]
+    categorical: tuple[str, ...]
+
+    @classmethod
+    def from_dict(
+        cls,
+        name: str,
+        cfg: dict[str, Any],
+    ) -> "CifFobPredictorSetConfig":
+        numeric = tuple(
+            _require_str_list(
+                cfg.get("numeric"),
+                key=(
+                    "cif_fob.method.estimation."
+                    f"predictor_sets.{name}.numeric"
+                ),
+            )
+        )
+        categorical = tuple(
+            _require_str_list(
+                cfg.get("categorical"),
+                key=(
+                    "cif_fob.method.estimation."
+                    f"predictor_sets.{name}.categorical"
+                ),
+            )
+        )
+
+        predictors = list(numeric + categorical)
+        duplicates = sorted(
+            {
+                predictor
+                for predictor in predictors
+                if predictors.count(predictor) > 1
+            }
+        )
+        if duplicates:
+            raise ValueError(
+                f"Predictor set {name!r} contains duplicates: "
+                + ", ".join(duplicates)
+            )
+
+        if not predictors:
+            raise ValueError(
+                f"Predictor set {name!r} must contain at least one "
+                "numeric or categorical predictor."
+            )
+
+        return cls(
+            name=name,
+            numeric=numeric,
+            categorical=categorical,
+        )
+
+    @property
+    def all_predictors(self) -> list[str]:
+        """Return numeric + categorical predictors in stable order."""
+        return [
+            *self.numeric,
+            *self.categorical,
+        ]
+
+
+def _parse_predictor_sets(
+    raw: dict[str, Any] | None,
+) -> dict[str, CifFobPredictorSetConfig]:
+    """Parse optional model-comparison predictor sets."""
+    if raw is None:
+        return {}
+
+    raw = require_dict(
+        raw,
+        key="cif_fob.method.estimation.predictor_sets",
+    )
+
+    return {
+        name: CifFobPredictorSetConfig.from_dict(
+            name=name,
+            cfg=require_dict(
+                predictor_set_cfg,
+                key=(
+                    "cif_fob.method.estimation."
+                    f"predictor_sets.{name}"
+                ),
+            ),
+        )
+        for name, predictor_set_cfg in raw.items()
+    }
 
 
 @dataclass(frozen=True)
@@ -1559,11 +1637,50 @@ class CifFobEstimationConfig:
     minimum_factor: float
     maximum_factor: float
     exclude_proxy_weights: bool
+
+    diagnostics: Any
     training_factor_sources: list[str]
-    source_weights: CifFobEstimationSourceWeightsConfig
-    validation: CifFobEstimationValidationConfig
+    source_weights: Any
+    validation: Any
     models: CifFobModelsConfig
-    diagnostics: CifFobEstimationDiagnosticsConfig
+    primary_predictor_set: str | None = None
+
+    # New model-comparison predictor sets.
+    predictor_sets: dict[str, CifFobPredictorSetConfig] = field(
+        default_factory=dict
+    )
+
+    def get_predictor_set(
+        self,
+        name: str,
+    ) -> CifFobPredictorSetConfig:
+        """Return one named predictor set."""
+        if name not in self.predictor_sets:
+            raise KeyError(
+                f"Unknown CIF/FOB predictor set {name!r}. "
+                f"Available predictor sets: {sorted(self.predictor_sets)}"
+            )
+
+        return self.predictor_sets[name]
+
+    def primary_predictor_set_name(self) -> str | None:
+        """Return configured primary predictor set, or a default."""
+        if not self.predictor_sets:
+            return None
+
+        if self.primary_predictor_set:
+            if self.primary_predictor_set not in self.predictor_sets:
+                raise KeyError(
+                    "Configured primary predictor set "
+                    f"{self.primary_predictor_set!r} is not present. "
+                    f"Available predictor sets: {sorted(self.predictor_sets)}"
+                )
+            return self.primary_predictor_set
+
+        # Default to the last configured set, which is usually the full
+        # model in a staged comparison ladder.
+        return next(reversed(self.predictor_sets))
+
 
     @classmethod
     def from_dict(
@@ -1651,6 +1768,20 @@ class CifFobEstimationConfig:
                     cfg.get("models"),
                     key="cif_fob.method.estimation.models",
                 )
+            ),
+            primary_predictor_set=(
+                require_str(
+                    cfg.get("primary_predictor_set"),
+                    key=(
+                        "cif_fob.method.estimation."
+                        "primary_predictor_set"
+                    ),
+                ).strip()
+                if cfg.get("primary_predictor_set") is not None
+                else None
+            ),
+            predictor_sets=_parse_predictor_sets(
+                cfg.get("predictor_sets")
             ),
         )
 

@@ -821,6 +821,9 @@ def _inspect_direct_predictor_failures(
         "missing_oil_distance_interaction": (
             "Oil-price × distance interaction unavailable"
         ),
+        "missing_hs4_product_group": (
+            "HS4 product-group predictor unavailable"
+        ),
         "complete": "Complete",
     }
 
@@ -1131,10 +1134,16 @@ def _rank_models(
 ) -> pd.DataFrame:
     ranked = summary.copy()
 
+    metadata_columns = {
+        "model_name",
+        "model_algorithm",
+        "predictor_set_name",
+    }
+
     numeric_columns = [
         column
         for column in ranked.columns
-        if column != "model_name"
+        if column not in metadata_columns
     ]
 
     for column in numeric_columns:
@@ -1386,20 +1395,70 @@ def write_cif_fob_decision_report(
         "log_linear_regression_smearing": "Log-linear OLS smearing",
     }
 
-    ranked["model_display_name"] = (
-        ranked["model_name"]
+    if "model_algorithm" not in ranked.columns:
+        ranked["model_algorithm"] = (
+            ranked["model_name"]
+            .astype(str)
+            .str.split("__", n=1)
+            .str[0]
+        )
+
+    if "predictor_set_name" not in ranked.columns:
+        split_parts = (
+            ranked["model_name"]
+            .astype(str)
+            .str.split("__", n=1, expand=True)
+        )
+        ranked["predictor_set_name"] = (
+            split_parts[1]
+            if split_parts.shape[1] > 1
+            else ""
+        )
+
+    ranked["algorithm_display_name"] = (
+        ranked["model_algorithm"]
         .map(model_display_names)
-        .fillna(ranked["model_name"])
+        .fillna(ranked["model_algorithm"])
     )
-    primary_model = str(
+
+    ranked["model_display_name"] = np.where(
+        ranked["predictor_set_name"].astype(str).str.len().gt(0),
+        (
+            ranked["algorithm_display_name"].astype(str)
+            + " / "
+            + ranked["predictor_set_name"].astype(str)
+        ),
+        ranked["algorithm_display_name"].astype(str),
+    )
+
+    primary_algorithm = str(
         cfg.method.estimation.models.primary
     ).strip().lower()
+
+    primary_predictor_set = str(
+        getattr(
+            cfg.method.estimation,
+            "primary_predictor_set",
+            "",
+        )
+        or ""
+    ).strip()
+
+    primary_model = (
+        f"{primary_algorithm}__{primary_predictor_set}"
+        if primary_predictor_set
+        else primary_algorithm
+    )
+
+    if primary_model not in set(ranked["model_name"].astype(str)):
+        primary_model = primary_algorithm
+
     enabled_models = dict(
         cfg.method.estimation.models.enabled()
     )
 
     primary_folds = folds.loc[
-        folds["model_name"].eq(primary_model)
+        folds["model_name"].astype(str).eq(primary_model)
     ].copy()
 
     report_path = cfg.artifact_path(run_id)
@@ -1478,6 +1537,61 @@ def write_cif_fob_decision_report(
             for name, model_cfg in enabled_models.items()
         ]
     )
+
+    predictor_sets_cfg = getattr(
+        cfg.method.estimation,
+        "predictor_sets",
+        {},
+    )
+
+    if predictor_sets_cfg:
+        predictor_set_rows = pd.DataFrame(
+            [
+                {
+                    "Predictor set": name,
+                    "Numeric predictors": ", ".join(
+                        getattr(predictor_set, "numeric", [])
+                    ),
+                    "Categorical predictors": ", ".join(
+                        getattr(predictor_set, "categorical", [])
+                    ),
+                    "Predictor count": (
+                        len(getattr(predictor_set, "numeric", []))
+                        + len(getattr(predictor_set, "categorical", []))
+                    ),
+                    "Primary": name == primary_predictor_set,
+                }
+                for name, predictor_set in predictor_sets_cfg.items()
+            ]
+        )
+    else:
+        predictor_set_rows = pd.DataFrame(
+            [
+                {
+                    "Predictor set": "global",
+                    "Numeric predictors": ", ".join(
+                        cfg.method.predictors.all()
+                    ),
+                    "Categorical predictors": ", ".join(
+                        sorted(
+                            {
+                                value
+                                for model_cfg in enabled_models.values()
+                                for value in getattr(
+                                    model_cfg,
+                                    "categorical_predictors",
+                                    (),
+                                )
+                            }
+                        )
+                    ),
+                    "Predictor count": len(
+                        cfg.method.predictors.all()
+                    ),
+                    "Primary": True,
+                }
+            ]
+        )
 
     coverage_rows = pd.DataFrame(
         [
@@ -1701,6 +1815,8 @@ def write_cif_fob_decision_report(
         columns={
             "overall_rank": "Rank",
             "model_display_name": "Model",
+            "model_algorithm": "Algorithm",
+            "predictor_set_name": "Predictor set",
             "mean_mae_log_factor": "Mean log MAE",
             "mean_median_ape": "Median APE",
             "mean_mean_ape": "Mean APE",
@@ -1817,8 +1933,6 @@ def write_cif_fob_decision_report(
         metric="mean_upper_tail_median_ape",
     )
 
-    predictors = cfg.method.predictors.all()
-
     lines = [
         f"# VACODA CIF/FOB Decision Report — {cfg.scope.target_hs}",
         "",
@@ -1830,7 +1944,13 @@ def write_cif_fob_decision_report(
             f"- **Configured year range:** "
             f"{cfg.scope.min_year}–{cfg.scope.max_year}"
         ),
-        f"- **Primary model:** `{primary_model}`",
+        f"- **Primary model run:** `{primary_model}`",
+        f"- **Primary algorithm:** `{primary_algorithm}`",
+        (
+            f"- **Primary predictor set:** `{primary_predictor_set}`"
+            if primary_predictor_set
+            else "- **Primary predictor set:** `global`"
+        ),
         "- **Enabled candidate models:**",
         *[
             f"  - `{name}`"
@@ -1865,11 +1985,26 @@ def write_cif_fob_decision_report(
             columns=["Reference role", "Path"],
         ),
         "",
-        "## 4. Configured predictors",
+        "## 4. Configured predictor sets",
         "",
-        "\n".join(
-            f"- `{predictor}`"
-            for predictor in predictors
+        (
+            "The report now distinguishes estimator algorithms from "
+            "predictor sets. This makes the model-comparison grid explicit "
+            "while preserving the previous global-predictor fallback."
+        ),
+        "",
+        _markdown_table(
+            predictor_set_rows,
+            columns=[
+                "Predictor set",
+                "Predictor count",
+                "Primary",
+                "Numeric predictors",
+                "Categorical predictors",
+            ],
+            formatters={
+                "Predictor count": _fmt_int,
+            },
         ),
         "",
         "## 5. CIF/FOB data-population journey",
@@ -2139,6 +2274,12 @@ def write_cif_fob_decision_report(
         "",
         "## 6. Candidate model configuration",
         "",
+        (
+            "Candidate models define estimator algorithms. In the validation "
+            "section, each algorithm may appear once per configured "
+            "predictor set."
+        ),
+        "",
         _markdown_table(
             model_rows,
             columns=[
@@ -2160,6 +2301,8 @@ def write_cif_fob_decision_report(
             columns=[
                 "Rank",
                 "Model",
+                "Algorithm",
+                "Predictor set",
                 "Mean log MAE",
                 "Median APE",
                 "Mean APE",

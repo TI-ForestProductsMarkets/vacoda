@@ -10,6 +10,151 @@ import seaborn as sns
 import numpy as np
 from vacoda.utils.diagnostics import compute_data_coverage
 
+import numpy as np
+import matplotlib.pyplot as plt
+
+
+def plot_nebula_boxplot(
+    df,
+    factor_col="observed_cif_fob_factor",
+    upper_display=3.0,
+    lower_display=0.0,
+    max_points=250_000,
+    random_seed=42,
+    title="Distribution of usable direct CIF/FOB factors",
+):
+    """
+    Plot CIF/FOB factor distribution as a combined nebula point-cloud and boxplot.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        DataFrame containing CIF/FOB factor values.
+    factor_col : str
+        Column name containing CIF/FOB factor.
+    upper_display : float
+        Upper x-axis display limit and data display filter.
+        Values above this are excluded from the visual display.
+    lower_display : float
+        Lower x-axis display limit.
+    max_points : int
+        Maximum number of points to draw in the nebula plot.
+        Useful because the dataset can be very large.
+    random_seed : int
+        Random seed for reproducible jitter and sampling.
+    title : str
+        Figure title.
+
+    Returns
+    -------
+    fig, axes, stats : matplotlib Figure, Axes array, dict
+        The figure, axes, and summary statistics used in the plot.
+    """
+
+    # Keep valid positive values only
+    x_all = df[factor_col].dropna()
+    x_all = x_all[x_all > 0]
+
+    # Display subset
+    x_display = x_all[(x_all >= lower_display) & (x_all <= upper_display)].to_numpy()
+
+    if len(x_display) == 0:
+        raise ValueError("No valid CIF/FOB factor values available within display range.")
+
+    # Quartiles calculated on displayed data
+    q1 = np.quantile(x_display, 0.25)
+    median = np.quantile(x_display, 0.50)
+    q3 = np.quantile(x_display, 0.75)
+    iqr = q3 - q1
+
+    upper_15_iqr = q3 + 1.5 * iqr
+    upper_25_iqr = q3 + 2.5 * iqr
+
+    # Sampling for readable point cloud
+    rng = np.random.default_rng(random_seed)
+
+    if len(x_display) > max_points:
+        sample_idx = rng.choice(len(x_display), size=max_points, replace=False)
+        x_points = x_display[sample_idx]
+    else:
+        x_points = x_display
+
+    # Vertical jitter for nebula effect
+    y_points = rng.normal(loc=0, scale=0.055, size=len(x_points))
+
+    fig, axes = plt.subplots(
+        2,
+        1,
+        figsize=(12, 6),
+        sharex=True,
+        gridspec_kw={"height_ratios": [2.2, 1]},
+    )
+
+    ax1, ax2 = axes
+
+    # -------------------------
+    # Top panel: nebula
+    # -------------------------
+    ax1.axvspan(q1, q3, alpha=0.15, label="IQR, middle 50%")
+    ax1.scatter(x_points, y_points, s=2, alpha=0.04)
+
+    ax1.axvline(1.0, linestyle="--", linewidth=1, label="Factor = 1")
+    ax1.axvline(median, linestyle="-", linewidth=1.8, label=f"Median = {median:.3f}")
+    ax1.axvline(
+        upper_15_iqr,
+        linestyle=":",
+        linewidth=1.3,
+        label=f"Q3 + 1.5×IQR = {upper_15_iqr:.3f}",
+    )
+    ax1.axvline(
+        upper_25_iqr,
+        linestyle="-.",
+        linewidth=1.3,
+        label=f"Q3 + 2.5×IQR = {upper_25_iqr:.3f}",
+    )
+
+    ax1.set_yticks([])
+    ax1.set_ylabel("Point cloud")
+    ax1.set_title(title)
+    ax1.legend(loc="upper right", fontsize=8, frameon=True)
+
+    # -------------------------
+    # Bottom panel: boxplot
+    # -------------------------
+    ax2.boxplot(
+        x_display,
+        vert=False,
+        showfliers=True,
+        widths=0.55,
+    )
+
+    ax2.axvspan(q1, q3, alpha=0.15)
+    ax2.axvline(1.0, linestyle="--", linewidth=1)
+    ax2.axvline(median, linestyle="-", linewidth=1.8)
+
+    ax2.set_yticks([])
+    ax2.set_ylabel("Boxplot")
+    ax2.set_xlabel("Observed CIF/FOB factor")
+    ax2.set_xlim(lower_display, upper_display)
+
+    plt.tight_layout()
+
+    stats = {
+        "n_total_positive": len(x_all),
+        "n_displayed": len(x_display),
+        "display_share_percent": 100 * len(x_display) / len(x_all),
+        "q1": q1,
+        "median": median,
+        "q3": q3,
+        "iqr": iqr,
+        "q3_plus_1_5_iqr": upper_15_iqr,
+        "q3_plus_2_5_iqr": upper_25_iqr,
+        "lower_display": lower_display,
+        "upper_display": upper_display,
+    }
+
+    return fig, axes, stats
+
 
 def plot_data_coverage_pie(df: pd.DataFrame, cols: list, indicator="absence"):
     stats = compute_data_coverage(df, cols, indicator=indicator)

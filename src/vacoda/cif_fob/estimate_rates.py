@@ -83,6 +83,19 @@ class FittedLogLinearModel:
     smearing_factor: float
 
 
+@dataclass(frozen=True)
+class EstimationRunSpec:
+    """One concrete algorithm × predictor-set estimation run."""
+
+    run_name: str
+    model_name: str
+    predictor_set_name: str | None
+    model_cfg: Any
+    predictors: list[str]
+    categorical_predictors: list[str]
+    is_primary: bool
+
+
 # ======================================================================
 # Generic helpers
 # ======================================================================
@@ -119,7 +132,7 @@ def _safe_model_prefix(model_name: str) -> str:
 
 
 def _configured_predictors(cfg: CifFobConfig) -> list[str]:
-    """Return unique configured predictors while preserving YAML order."""
+    """Return unique legacy/global predictors while preserving YAML order."""
     predictors = cfg.method.predictors.all()
 
     if not predictors:
@@ -140,6 +153,144 @@ def _configured_predictors(cfg: CifFobConfig) -> list[str]:
         )
 
     return predictors
+
+
+def _configured_predictor_sets(
+    cfg: CifFobConfig,
+) -> dict[str, Any]:
+    """Return configured predictor sets, or a legacy fallback set."""
+    predictor_sets = getattr(
+        cfg.method.estimation,
+        "predictor_sets",
+        {},
+    )
+
+    if predictor_sets:
+        return dict(predictor_sets)
+
+    # Backward-compatible fallback: one implicit predictor set using the
+    # old global cif_fob.method.predictors block.
+    class _LegacyPredictorSet:
+        name = "global_predictors"
+        categorical: tuple[str, ...] = tuple()
+
+        @property
+        def all_predictors(self) -> list[str]:
+            return _configured_predictors(cfg)
+
+    return {
+        "global_predictors": _LegacyPredictorSet(),
+    }
+
+
+def _all_predictors_for_validation(
+    predictor_sets: dict[str, Any],
+) -> list[str]:
+    """Return the union of all predictors used by all predictor sets."""
+    predictors: list[str] = []
+
+    for predictor_set in predictor_sets.values():
+        predictors.extend(
+            list(predictor_set.all_predictors)
+        )
+
+    duplicates_removed = list(dict.fromkeys(predictors))
+
+    if not duplicates_removed:
+        raise ValueError(
+            "No predictors are configured for CIF/FOB estimation."
+        )
+
+    return duplicates_removed
+
+
+def _resolve_run_specs(
+    *,
+    cfg: CifFobConfig,
+    model_configs: dict[str, Any],
+    predictor_sets: dict[str, Any],
+    primary_model_name: str,
+) -> list[EstimationRunSpec]:
+    """Build concrete algorithm × predictor-set run specifications."""
+    estimation_cfg = cfg.method.estimation
+    primary_predictor_set_name = None
+
+    if predictor_sets:
+        resolver = getattr(
+            estimation_cfg,
+            "primary_predictor_set_name",
+            None,
+        )
+        if callable(resolver):
+            primary_predictor_set_name = resolver()
+        else:
+            primary_predictor_set_name = next(reversed(predictor_sets))
+
+    run_specs: list[EstimationRunSpec] = []
+
+    for predictor_set_name, predictor_set in predictor_sets.items():
+        predictors = list(predictor_set.all_predictors)
+        categorical_predictors = [
+            str(value)
+            for value in getattr(
+                predictor_set,
+                "categorical",
+                (),
+            )
+        ]
+
+        unknown_categorical = sorted(
+            set(categorical_predictors) - set(predictors)
+        )
+        if unknown_categorical:
+            raise ValueError(
+                f"Predictor set {predictor_set_name!r} declares "
+                "categorical predictors that are not in its full "
+                "predictor list: "
+                + ", ".join(unknown_categorical)
+            )
+
+        for model_name, model_cfg in model_configs.items():
+            if predictor_set_name == "global_predictors":
+                run_name = model_name
+                categorical_for_run = _model_categorical_predictors(
+                    cfg=cfg,
+                    model_cfg=model_cfg,
+                )
+            else:
+                run_name = f"{model_name}__{predictor_set_name}"
+                categorical_for_run = categorical_predictors
+
+            is_primary = (
+                model_name == primary_model_name
+                and (
+                    predictor_set_name == "global_predictors"
+                    or predictor_set_name == primary_predictor_set_name
+                )
+            )
+
+            run_specs.append(
+                EstimationRunSpec(
+                    run_name=run_name,
+                    model_name=model_name,
+                    predictor_set_name=(
+                        None
+                        if predictor_set_name == "global_predictors"
+                        else predictor_set_name
+                    ),
+                    model_cfg=model_cfg,
+                    predictors=predictors,
+                    categorical_predictors=categorical_for_run,
+                    is_primary=is_primary,
+                )
+            )
+
+    if not any(spec.is_primary for spec in run_specs):
+        raise RuntimeError(
+            "Could not resolve a primary CIF/FOB estimation run."
+        )
+
+    return run_specs
 
 
 def _enabled_model_configs(
@@ -1281,9 +1432,7 @@ def _run_temporal_backtest(
     *,
     clean: pd.DataFrame,
     cfg: CifFobConfig,
-    predictors: list[str],
-    model_name: str,
-    model_cfg: Any,
+    run_spec: EstimationRunSpec,
     minimum_factor: float,
     maximum_factor: float,
     validation_years: list[int],
@@ -1299,10 +1448,10 @@ def _run_temporal_backtest(
         Mapping from validation year to
         (original row index, predicted log factor, predicted factor).
     """
-    categorical_predictors = _model_categorical_predictors(
-        cfg=cfg,
-        model_cfg=model_cfg,
-    )
+    model_name = run_spec.model_name
+    model_cfg = run_spec.model_cfg
+    predictors = run_spec.predictors
+    categorical_predictors = run_spec.categorical_predictors
 
     unknown_categorical = sorted(
         set(categorical_predictors) - set(predictors)
@@ -1310,8 +1459,8 @@ def _run_temporal_backtest(
 
     if unknown_categorical:
         raise ValueError(
-            f"Model {model_name!r} declares categorical predictors that "
-            "are not configured predictors: "
+            f"Run {run_spec.run_name!r} declares categorical predictors "
+            "that are not configured predictors: "
             + ", ".join(unknown_categorical)
         )
 
@@ -1367,7 +1516,9 @@ def _run_temporal_backtest(
 
         fold_rows.append(
             {
-                "model_name": model_name,
+                "model_name": run_spec.run_name,
+                "model_algorithm": model_name,
+                "predictor_set_name": run_spec.predictor_set_name,
                 "validation_year": int(validation_year),
                 "n_train": int(len(train_frame)),
                 "n_holdout": int(len(validation_frame)),
@@ -1396,6 +1547,8 @@ def _summarise_backtests(
         for column in fold_results.columns
         if column not in {
             "model_name",
+            "model_algorithm",
+            "predictor_set_name",
             "validation_year",
             "n_train",
             "n_holdout",
@@ -1410,6 +1563,16 @@ def _summarise_backtests(
     ):
         row: dict[str, Any] = {
             "model_name": model_name,
+            "model_algorithm": (
+                group["model_algorithm"].iloc[0]
+                if "model_algorithm" in group.columns
+                else model_name
+            ),
+            "predictor_set_name": (
+                group["predictor_set_name"].iloc[0]
+                if "predictor_set_name" in group.columns
+                else None
+            ),
             "n_folds": int(len(group)),
             "first_validation_year": int(
                 group["validation_year"].min()
@@ -1621,9 +1784,21 @@ def estimate_cif_fob_rates(
             threads=cfg.engine.threads,
         )
 
-    predictors = _configured_predictors(cfg)
     estimation_cfg = cfg.method.estimation
     primary_model_name, model_configs = _enabled_model_configs(cfg)
+    predictor_sets = _configured_predictor_sets(cfg)
+    run_specs = _resolve_run_specs(
+        cfg=cfg,
+        model_configs=model_configs,
+        predictor_sets=predictor_sets,
+        primary_model_name=primary_model_name,
+    )
+    predictors = _all_predictors_for_validation(predictor_sets)
+    primary_run_name = next(
+        spec.run_name
+        for spec in run_specs
+        if spec.is_primary
+    )
 
     minimum_evidence_value = float(
         estimation_cfg.minimum_evidence_value_usd
@@ -1637,12 +1812,17 @@ def estimate_cif_fob_rates(
     logger.info("Estimating and comparing CIF/FOB rates.")
     logger.info("  Input: %s", input_path)
     logger.info("  Output: %s", output_path)
-    logger.info("  Predictors: %s", ", ".join(predictors))
+    logger.info("  Predictor union: %s", ", ".join(predictors))
+    logger.info(
+        "  Predictor sets: %s",
+        ", ".join(predictor_sets),
+    )
     logger.info(
         "  Enabled models: %s",
         ", ".join(model_configs),
     )
     logger.info("  Primary model: %s", primary_model_name)
+    logger.info("  Primary estimation run: %s", primary_run_name)
     logger.info(
         "  Minimum evidence value: %.2f USD",
         minimum_evidence_value,
@@ -1853,15 +2033,16 @@ def estimate_cif_fob_rates(
         tuple[pd.Index, np.ndarray, np.ndarray],
     ] = {}
 
-    for model_name, model_cfg in model_configs.items():
-        logger.info("  Backtesting model: %s", model_name)
+    for run_spec in run_specs:
+        logger.info(
+            "  Backtesting run: %s",
+            run_spec.run_name,
+        )
 
         fold_results, predictions_by_year = _run_temporal_backtest(
             clean=clean,
             cfg=cfg,
-            predictors=predictors,
-            model_name=model_name,
-            model_cfg=model_cfg,
+            run_spec=run_spec,
             minimum_factor=minimum_factor,
             maximum_factor=maximum_factor,
             validation_years=validation_years,
@@ -1869,13 +2050,13 @@ def estimate_cif_fob_rates(
 
         if fold_results.empty:
             raise RuntimeError(
-                f"Model {model_name!r} produced no temporal folds."
+                f"Run {run_spec.run_name!r} produced no temporal folds."
             )
 
         all_fold_results.append(fold_results)
 
         if latest_holdout_year in predictions_by_year:
-            latest_predictions_by_model[model_name] = (
+            latest_predictions_by_model[run_spec.run_name] = (
                 predictions_by_year[latest_holdout_year]
             )
 
@@ -1951,31 +2132,18 @@ def estimate_cif_fob_rates(
     primary_factor_column: str | None = None
     primary_log_column: str | None = None
 
-    for model_name, model_cfg in model_configs.items():
-        categorical_predictors = _model_categorical_predictors(
-            cfg=cfg,
-            model_cfg=model_cfg,
+    for run_spec in run_specs:
+        logger.info(
+            "  Final full-sample fit: %s",
+            run_spec.run_name,
         )
-
-        unknown_categorical = sorted(
-            set(categorical_predictors) - set(predictors)
-        )
-
-        if unknown_categorical:
-            raise ValueError(
-                f"Model {model_name!r} declares unknown categorical "
-                "predictors: "
-                + ", ".join(unknown_categorical)
-            )
-
-        logger.info("  Final full-sample fit: %s", model_name)
 
         fitted = _fit_model(
-            model_name=model_name,
-            model_cfg=model_cfg,
+            model_name=run_spec.model_name,
+            model_cfg=run_spec.model_cfg,
             train_frame=clean,
-            predictors=predictors,
-            categorical_predictors=categorical_predictors,
+            predictors=run_spec.predictors,
+            categorical_predictors=run_spec.categorical_predictors,
             sample_weight=clean["estimation_source_weight"],
         )
 
@@ -1989,7 +2157,7 @@ def estimate_cif_fob_rates(
             maximum_factor,
         )
 
-        prefix = _safe_model_prefix(model_name)
+        prefix = _safe_model_prefix(run_spec.run_name)
         log_column = (
             f"{prefix}_predicted_log_cif_fob_factor"
         )
@@ -2010,7 +2178,7 @@ def estimate_cif_fob_rates(
             factor_column,
         ] = predicted_factor
 
-        if model_name == primary_model_name:
+        if run_spec.is_primary:
             primary_log_column = log_column
             primary_factor_column = factor_column
 
@@ -2028,10 +2196,11 @@ def estimate_cif_fob_rates(
     ]
     data["estimated_factor_method"] = np.where(
         data["prediction_eligible"],
-        primary_model_name,
+        primary_run_name,
         None,
     )
     data["primary_model_name"] = primary_model_name
+    data["primary_estimation_run"] = primary_run_name
     data["estimation_holdout_year"] = latest_holdout_year
     data["estimation_training_observations"] = len(clean)
     data["factor_for_application"] = data[
@@ -2217,6 +2386,7 @@ def estimate_cif_fob_rates(
 
     logger.info("CIF/FOB rates estimated and compared.")
     logger.info("  Primary model: %s", primary_model_name)
+    logger.info("  Primary estimation run: %s", primary_run_name)
     logger.info("  Output rows: %s", n_output_rows)
     logger.info(
         "  Clean estimation observations: %s",
@@ -2254,7 +2424,7 @@ def estimate_cif_fob_rates(
     logger.info("  Output: %s", output_path)
 
     latest_primary_row = fold_results.loc[
-        (fold_results["model_name"] == primary_model_name)
+        (fold_results["model_name"] == primary_run_name)
         & (
             fold_results["validation_year"]
             == latest_holdout_year
@@ -2275,7 +2445,13 @@ def estimate_cif_fob_rates(
         "output_path": output_path,
         "estimated_rates_path": output_path,
         "primary_model_name": primary_model_name,
+        "primary_estimation_run": primary_run_name,
         "enabled_models": list(model_configs),
+        "enabled_estimation_runs": [
+            spec.run_name
+            for spec in run_specs
+        ],
+        "predictor_sets": list(predictor_sets),
         "n_output_rows": n_output_rows,
         "n_clean_estimation_observations": (
             n_clean_estimation_observations

@@ -75,27 +75,27 @@ cif_fob:
       filename: "target_{target_hs_lower}_cif_fob_training_features.parquet"
 
     estimated_rates:
-      enable: false
+      enable: true
       filename: "target_{target_hs_lower}_cif_fob_estimated_rates.parquet"
     
     temporal_validation_summary:
-      enable: false
+      enable: true
       filename: "target_{target_hs_lower}_cif_fob_temporal_validation_summary.csv"
 
     temporal_validation_folds:
-      enable: false
+      enable: true
       filename: "target_{target_hs_lower}_cif_fob_temporal_validation_folds.csv"
 
     upper_tail_audit_summary:
-      enable: false
+      enable: true
       filename: "target_{target_hs_lower}_cif_fob_upper_tail_audit_summary.csv"
 
     upper_tail_route_history:
-      enable: false
+      enable: true
       filename: "target_{target_hs_lower}_cif_fob_upper_tail_route_history.csv"
 
     upper_tail_observations:
-      enable: false
+      enable: true
       filename: "target_{target_hs_lower}_cif_fob_upper_tail_observations.parquet"
 
     corrected_trade:
@@ -103,7 +103,7 @@ cif_fob:
       filename: "comtrade_target_{target_hs_lower}_cif_fob_corrected.parquet"
 
   artifacts:
-    enable: false
+    enable: true
     kind: "reports"
     subdir: "cif_fob/target_{target_hs_lower}"
     filename: "target_{target_hs_lower}_cif_fob_decision_report"
@@ -247,7 +247,7 @@ cif_fob:
             target_transformation: "log"
 
             categorical_predictors:
-              - product_group
+              - hs4_product_group
 
             loss: "squared_error"
             learning_rate: 0.05
@@ -271,14 +271,14 @@ cif_fob:
             max_bins: 255
             random_state: 42
             categorical_predictors:
-              - product_group
+              - hs4_product_group
 
           hist_gradient_boosting_squared_level:
             enabled: true
             type: "machine_learning"
             target_transformation: "none"
             categorical_predictors:
-              - product_group
+              - hs4_product_group
 
             loss: "squared_error"
             learning_rate: 0.05
@@ -294,7 +294,7 @@ cif_fob:
             type: "machine_learning"
             target_transformation: "log"
             categorical_predictors:
-              - product_group
+              - hs4_product_group
 
             loss: "squared_error"
             learning_rate: 0.05
@@ -310,7 +310,7 @@ cif_fob:
             type: "machine_learning"
             target_transformation: "log"
             categorical_predictors:
-              - product_group
+              - hs4_product_group
             objective: "reg:squarederror"
             eval_metric: "mae"
 
@@ -353,7 +353,7 @@ cif_fob:
               inverse_transform: "exp"
               
             categorical_predictors:
-              - product_group
+              - hs4_product_group
 
           log_linear_regression_smearing:
             enabled: true
@@ -375,64 +375,77 @@ cif_fob:
             categorical_predictors:
               - hs4_product_group
 
+      primary_predictor_set: "model_4_full_history"
 
-    predictor_sets:
-      model_1_classical_gravity:
-        numeric:
-          - log_distance
-          - log_distance_squared
-          - contiguity
-          - exporter_landlocked
-          - importer_landlocked
-          - log_product_median_unit_value
-        categorical:
-          - hs4_product_group
+      predictor_sets:
+        model_1_classical_gravity:
+          numeric:
+            - log_distance
+            - log_distance_squared
+            - contiguity
+            - exporter_landlocked
+            - importer_landlocked
+            - log_product_median_unit_value
+            - log_exporter_gdp
+            - log_importer_gdp
 
-      model_2_classical_year_oil:
-        numeric:
-          - log_distance
-          - log_distance_squared
-          - contiguity
-          - exporter_landlocked
-          - importer_landlocked
-          - log_product_median_unit_value
-          - year
-          - log_oil_price_x_log_distance
-        categorical:
-          - hs4_product_group
+          categorical:
+            - hs4_product_group
 
-      model_3_trade_scale_history:
-        numeric:
-          - log_distance
-          - log_distance_squared
-          - contiguity
-          - exporter_landlocked
-          - importer_landlocked
-          - log_product_median_unit_value
-          - year
-          - log_oil_price_x_log_distance
-          - log_lagged_bilateral_trade_value
-          - log_lagged_pair_product_trade_value
-        categorical:
-          - hs4_product_group
+        model_2_classical_year_oil:
+          numeric:
+            - log_distance
+            - log_distance_squared
+            - contiguity
+            - exporter_landlocked
+            - importer_landlocked
+            - log_product_median_unit_value
+            - year
+            - log_oil_price_x_log_distance
+            - log_exporter_gdp
+            - log_importer_gdp
 
-      model_4_full_history:
-        numeric:
-          - log_distance
-          - log_distance_squared
-          - contiguity
-          - exporter_landlocked
-          - importer_landlocked
-          - log_product_median_unit_value
-          - year
-          - log_oil_price_x_log_distance
-          - log_lagged_bilateral_trade_value
-          - log_lagged_pair_product_trade_value
-          - lagged_pair_median_factor
-          - years_since_latest_pair_factor
-          - lagged_pair_product_median_factor
-        categorical:
-          - hs4_product_group        
+          categorical:
+            - hs4_product_group
+
+        model_3_trade_scale_history:
+          numeric:
+            - log_distance
+            - log_distance_squared
+            - contiguity
+            - exporter_landlocked
+            - importer_landlocked
+            - log_product_median_unit_value
+            - year
+            - log_oil_price_x_log_distance
+            - log_lagged_bilateral_trade_value
+            - log_lagged_pair_product_trade_value
+            - log_exporter_gdp
+            - log_importer_gdp
+
+          categorical:
+            - hs4_product_group
+
+        model_4_full_history:
+          numeric:
+            - log_distance
+            - log_distance_squared
+            - contiguity
+            - exporter_landlocked
+            - importer_landlocked
+            - log_product_median_unit_value
+            - year
+            - log_oil_price_x_log_distance
+            - log_lagged_bilateral_trade_value
+            - log_lagged_pair_product_trade_value
+            - lagged_pair_median_factor
+            - years_since_latest_pair_factor
+            - lagged_pair_product_median_factor
+            - log_exporter_gdp
+            - log_importer_gdp
+
+          categorical:
+            - hs4_product_group        
 
     predictors:
       bilateral:
@@ -443,6 +456,9 @@ cif_fob:
         - importer_landlocked
         - lagged_pair_median_factor
         - years_since_latest_pair_factor
+        - log_exporter_gdp
+        - log_importer_gdp
+
       
       fuel_and_time:
         - log_oil_price_x_log_distance
@@ -450,7 +466,7 @@ cif_fob:
 
       product:
         - log_product_median_unit_value
-        - product_group
+        - hs4_product_group
 
       route:
         - log_lagged_bilateral_trade_value
