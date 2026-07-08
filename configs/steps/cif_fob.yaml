@@ -227,6 +227,8 @@ cif_fob:
             - mean_ape
             - p90_ape
             - p95_ape
+            - rmse_log_factor
+            - r2_log_factor
             - spearman_correlation
             - observed_p95
             - predicted_p95

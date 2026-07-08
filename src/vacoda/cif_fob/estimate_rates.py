@@ -26,6 +26,7 @@ import pandas as pd
 from scipy.stats import spearmanr
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.metrics import mean_absolute_error
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 try:
     import statsmodels.api as sm
@@ -1362,8 +1363,91 @@ def _predict_model(
 # Validation metrics
 # ======================================================================
 
-
 def _metric_values(
+    *,
+    observed_factor: np.ndarray,
+    predicted_factor: np.ndarray,
+    upper_tail_threshold: float,
+) -> dict[str, float]:
+    """Return the full configured metric family."""
+    observed_factor = np.asarray(observed_factor, dtype=float)
+    predicted_factor = np.asarray(predicted_factor, dtype=float)
+
+    safe_observed_factor = np.maximum(observed_factor, 1e-12)
+    safe_predicted_factor = np.maximum(predicted_factor, 1e-12)
+
+    observed_log_factor = np.log(safe_observed_factor)
+    predicted_log_factor = np.log(safe_predicted_factor)
+
+    ape = (
+        np.abs(predicted_factor - observed_factor)
+        / safe_observed_factor
+    )
+
+    upper_mask = observed_factor >= upper_tail_threshold
+
+    if len(observed_factor) >= 2:
+        correlation_result = spearmanr(
+            observed_factor,
+            predicted_factor,
+            nan_policy="omit",
+        )
+        spearman_correlation = float(
+            correlation_result.statistic
+            if hasattr(correlation_result, "statistic")
+            else correlation_result[0]
+        )
+    else:
+        spearman_correlation = np.nan
+
+    metrics = {
+        "mae_log_factor": float(
+            mean_absolute_error(
+                observed_log_factor,
+                predicted_log_factor,
+            )
+        ),
+        "rmse_log_factor": float(
+            np.sqrt(
+                mean_squared_error(
+                    observed_log_factor,
+                    predicted_log_factor,
+                )
+            )
+        ),
+        "r2_log_factor": float(
+            r2_score(
+                observed_log_factor,
+                predicted_log_factor,
+            )
+        ),
+        "median_ape": float(np.median(ape)),
+        "mean_ape": float(np.mean(ape)),
+        "p90_ape": float(np.quantile(ape, 0.90)),
+        "p95_ape": float(np.quantile(ape, 0.95)),
+        "spearman_correlation": spearman_correlation,
+        "observed_p95": float(
+            np.quantile(observed_factor, 0.95)
+        ),
+        "predicted_p95": float(
+            np.quantile(predicted_factor, 0.95)
+        ),
+        "upper_tail_median_ape": (
+            float(np.median(ape[upper_mask]))
+            if upper_mask.any()
+            else np.nan
+        ),
+        "upper_tail_p90_ape": (
+            float(np.quantile(ape[upper_mask], 0.90))
+            if upper_mask.any()
+            else np.nan
+        ),
+        "n_upper_tail": int(upper_mask.sum()),
+    }
+
+    return metrics
+
+def _metric_values_deprecated(
     *,
     observed_factor: np.ndarray,
     predicted_factor: np.ndarray,
