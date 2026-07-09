@@ -6,20 +6,14 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from vacoda.cif_fob.references.geography.workflow import prepare_geography_references
+from vacoda.cif_fob.references.macroeconomic import prepare_annual_oil_prices
+from vacoda.config.paths import get_references_macroeconomic_dir
 
-from vacoda.cif_fob.references.geography.workflow import (
-    prepare_geography_references,
-)
-from vacoda.cif_fob.references.macroeconomic import (
-    prepare_annual_oil_prices,
-)
-
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
 N_THREADS = 58
 GRAVITY_REFERENCE_YEAR = 2021
 
 def prepare_cif_fob_references(
-    project_root: Path,
     *,
     gravity_reference_year: int = GRAVITY_REFERENCE_YEAR,
     threads: int = N_THREADS,
@@ -35,36 +29,23 @@ def prepare_cif_fob_references(
     - annual crude-oil prices.
     """
 
-    project_root = Path(project_root).resolve()
-
     outputs = prepare_geography_references(
-        project_root=project_root,
         gravity_reference_year=gravity_reference_year,
         threads=threads,
         verbose=verbose,
     )
 
-    oil_output = (
-        project_root
-        / "references"
-        / "macroeconomic"
-        / "prepared"
-        / "annual_oil_prices.parquet"
-    )
+
+    oil_input_path = get_references_macroeconomic_dir() / "source" / "CMO-Historical-Data-Annual.xlsx"
+    oil_output_path = get_references_macroeconomic_dir() / "prepared" / "annual_oil_prices.parquet"
 
     prepare_annual_oil_prices(
-        input_path=(
-            project_root
-            / "references"
-            / "macroeconomic"
-            / "source"
-            / "CMO-Historical-Data-Annual.xlsx"
-        ),
-        output_path=oil_output,
+        input_path=oil_input_path,
+        output_path=oil_output_path,
         verbose=verbose,
     )
 
-    outputs["annual_oil_prices"] = oil_output
+    outputs["annual_oil_prices"] = oil_output_path
 
     return outputs
 
@@ -109,10 +90,7 @@ def main() -> int:
     if args.threads <= 0:
         raise ValueError("--threads must be greater than zero.")
 
-    print(f"Project root: {PROJECT_ROOT}")
-
     outputs = prepare_cif_fob_references(
-        project_root=PROJECT_ROOT,
         gravity_reference_year=args.gravity_reference_year,
         threads=args.threads,
         verbose=not args.quiet,

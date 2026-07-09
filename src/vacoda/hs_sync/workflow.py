@@ -4,9 +4,11 @@ Defines the main workflow orchestration for HS-sync allocation and application.
 
 """
 from __future__ import annotations
+from typing import Callable
 
 from time import perf_counter
 from logging import Logger
+from vacoda.config.hs_sync import HsSyncConfig
 from vacoda.hs_sync.mapping import run_comtrade_mapping_preparation
 from vacoda.hs_sync.coverage_audit import (
     load_target_hs_coverage_inputs,

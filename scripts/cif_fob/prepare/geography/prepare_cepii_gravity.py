@@ -1,27 +1,10 @@
 from pathlib import Path
 
-from vacoda.cif_fob.references.geography.cepii_gravity import prepare_gravity_pair_geography,
+from vacoda.cif_fob.references.geography.cepii_gravity import prepare_gravity_pair_geography
+from vacoda.config.paths import get_geography_cepii_gravity_dir
 
-
-project_root = Path(__file__).resolve().parents[4]
-print(f"Project root: {project_root}")
-
-INPUT_PATH = (
-    project_root
-    / "references"
-    / "geography"
-    / "cepii_gravity_2021"
-    / "source"
-    / "Gravity_V202211.csv"
-)
-OUTPUT_PATH = (
-    project_root
-    / "references"
-    / "geography"
-    / "cepii_gravity_2021"
-    / "prepared"
-    / "country_pair_geography.parquet"
-)
+INPUT_PATH =  get_geography_cepii_gravity_dir() / "source" / "Gravity_V202211.csv"
+OUTPUT_PATH = get_geography_cepii_gravity_dir() / "prepared" / "country_pair_geography.parquet"
 
 print(f"Input path: {INPUT_PATH}")
 print(f"Output path: {OUTPUT_PATH}")

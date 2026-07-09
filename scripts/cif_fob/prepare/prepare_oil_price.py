@@ -5,29 +5,12 @@ It loads the nominal annual prices, standardizes column names, converts values t
 and saves the cleaned reference as a Parquet file for use in the CIF-FOB model.
 """
 
-from pathlib import Path
-
 import numpy as np
 import pandas as pd
+from vacoda.config.paths import get_references_macroeconomic_dir
 
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-
-input_path = (
-    PROJECT_ROOT
-    / "references"
-    / "macroeconomic"
-    / "source"
-    / "CMO-Historical-Data-Annual.xlsx"
-)
-
-output_path = (
-    PROJECT_ROOT
-    / "references"
-    / "macroeconomic"
-    / "prepared"
-    / "annual_oil_prices.parquet"
-)
+input_path = get_references_macroeconomic_dir() / "source" / "CMO-Historical-Data-Annual.xlsx"
+output_path = get_references_macroeconomic_dir() / "prepared" / "annual_oil_prices.parquet"
 
 
 # ============================================================

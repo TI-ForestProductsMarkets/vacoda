@@ -1975,6 +1975,8 @@ def write_cif_fob_decision_report(
             "model_algorithm": "Algorithm",
             "predictor_set_name": "Predictor set",
             "mean_mae_log_factor": "Mean log MAE",
+            "mean_rmse_log_factor": "RMSE log",
+            "mean_r2_log_factor": "R² log",
             "mean_median_ape": "Median APE",
             "mean_mean_ape": "Mean APE",
             "mean_p90_ape": "P90 APE",
@@ -2000,13 +2002,14 @@ def write_cif_fob_decision_report(
             [
                 "Rank",
                 "Model",
+                "Predictor set",
                 "Observed P95",
                 "Predicted P95",
                 "Tail median APE",
                 "Tail P90 APE",
             ]
         ],
-        on=["Rank", "Model"],
+        on=["Rank", "Model","Predictor set"],
         how="left",
     )
 
@@ -2018,6 +2021,10 @@ def write_cif_fob_decision_report(
             "n_train": "Train rows",
             "n_holdout": "Holdout rows",
             "mae_log_factor": "Mean log MAE",
+            "rmse_log_factor": "RMSE log",
+            "r2_log_factor": "R² log",
+            "mean_rmse_log_factor": "RMSE log",
+            "mean_r2_log_factor": "R² log",
             "median_ape": "Median APE",
             "mean_ape": "Mean APE",
             "p90_ape": "P90 APE",
@@ -2036,6 +2043,8 @@ def write_cif_fob_decision_report(
         "Train rows",
         "Holdout rows",
         "Mean log MAE",
+        "RMSE log",
+        "R² log",
         "Median APE",
         "Mean APE",
         "P90 APE",
@@ -2053,6 +2062,8 @@ def write_cif_fob_decision_report(
         "Train rows": _fmt_int,
         "Holdout rows": _fmt_int,
         "Mean log MAE": _fmt_float,
+        "RMSE log": _fmt_float,
+        "R² log": _fmt_float,
         "Median APE": _fmt_fraction_percent,
         "Mean APE": _fmt_fraction_percent,
         "P90 APE": _fmt_fraction_percent,
@@ -2068,6 +2079,16 @@ def write_cif_fob_decision_report(
     best_mae = _best_model(
         ranked,
         metric="mean_mae_log_factor",
+    )
+    best_rmse = _best_model(
+        ranked,
+        metric="mean_rmse_log_factor",
+    )
+
+    best_r2 = _best_model(
+        ranked,
+        metric="mean_r2_log_factor",
+        higher_is_better=True,
     )
     best_median_ape = _best_model(
         ranked,
@@ -2123,18 +2144,24 @@ def write_cif_fob_decision_report(
             ]
         )
 
-    overall_performance_table = overall_table[
-        [
-            "Rank",
-            "Model",
-            "Predictor set",
-            "Mean log MAE",
-            "Median APE",
-            "Mean APE",
-            "P90 APE",
-            "P95 APE",
-            "Spearman",
-        ]
+    overall_performance_table = combined_table[
+    [
+        "Rank",
+        "Model",
+        "Predictor set",
+        "Mean log MAE",
+        "RMSE log",
+        "R² log",
+        "Median APE",
+        "Mean APE",
+        "P90 APE",
+        "P95 APE",
+        "Spearman",
+        "Observed P95",
+        "Predicted P95",
+        "Tail median APE",
+        "Tail P90 APE",
+       ] 
     ].copy()
 
     tail_performance_table = tail_table[
@@ -2499,7 +2526,7 @@ def write_cif_fob_decision_report(
             f"training factor."
         ),
         "",
-        "### 5.5 Bilateral-distance source usage",
+        "### 5.6 Bilateral-distance source usage",
         "",
         (
             f"- Gravity 2021 harmonic-distance rows: "
@@ -2514,7 +2541,7 @@ def write_cif_fob_decision_report(
             f"{_fmt_int(feature_metrics['n_legacy_capital_fallback'])}"
         ),
         "",
-        "### 5.6 Historical feature availability",
+        "### 5.7 Historical feature availability",
         "",
         (
             f"- Rows with lagged pair factor: "
@@ -2564,10 +2591,6 @@ def write_cif_fob_decision_report(
         "",
         "## 7. Expanding-window temporal validation",
         "",
-        "### Overall predictive performance",
-        "",
-        "### 7.1 Overall predictive performance",
-        "",
         _markdown_table(
             overall_performance_table,
             columns=[
@@ -2575,38 +2598,13 @@ def write_cif_fob_decision_report(
                 "Model",
                 "Predictor set",
                 "Mean log MAE",
+                "RMSE log",
+                "R² log",
                 "Median APE",
                 "Mean APE",
                 "P90 APE",
                 "P95 APE",
                 "Spearman",
-            ],
-            formatters={
-                "Rank": _fmt_int,
-                "Mean log MAE": _fmt_float,
-                "Median APE": _fmt_fraction_percent,
-                "Mean APE": _fmt_fraction_percent,
-                "P90 APE": _fmt_fraction_percent,
-                "P95 APE": _fmt_fraction_percent,
-                "Spearman": _fmt_float,
-            },
-        ),
-        "",
-        "### 7.2 Upper-tail predictive performance",
-        "",
-        (
-            "Upper-tail metrics evaluate how well each model reproduces "
-            "high observed CIF/FOB factors. These metrics should be read "
-            "alongside the overall table because better tail fit can come "
-            "at the cost of worse central accuracy."
-        ),
-        "",
-        _markdown_table(
-            tail_performance_table,
-            columns=[
-                "Rank",
-                "Model",
-                "Predictor set",
                 "Observed P95",
                 "Predicted P95",
                 "Tail median APE",
@@ -2614,14 +2612,25 @@ def write_cif_fob_decision_report(
             ],
             formatters={
                 "Rank": _fmt_int,
+                "Mean log MAE": _fmt_float,
+                "RMSE log": _fmt_float,
+                "R² log": _fmt_float,
+                "Median APE": _fmt_fraction_percent,
+                "Mean APE": _fmt_fraction_percent,
+                "P90 APE": _fmt_fraction_percent,
+                "P95 APE": _fmt_fraction_percent,
+                "Spearman": _fmt_float,
                 "Observed P95": _fmt_float,
                 "Predicted P95": _fmt_float,
                 "Tail median APE": _fmt_fraction_percent,
                 "Tail P90 APE": _fmt_fraction_percent,
             },
         ),
+
         f"",
         f"- Lowest mean log-factor MAE: `{best_mae}`",
+        f"- Lowest mean log-factor RMSE: `{best_rmse}`",
+        f"- Highest mean log-factor R²: `{best_r2}`",
         f"- Lowest mean median APE: `{best_median_ape}`",
         f"- Lowest mean P90 APE: `{best_p90}`",
         f"- Lowest mean P95 APE: `{best_p95}`",

@@ -3,35 +3,21 @@
 Prepare VACODA-owned geography extension references.
 """
 
-from pathlib import Path
-
 from vacoda.cif_fob.references.geography.vacoda_extension import (
     prepare_vacoda_country_geography,
     prepare_vacoda_geography_crosswalk,
 )
 
+from vacoda.config.paths import get_geography_vacoda_extension_dir
 
-PROJECT_ROOT = Path(__file__).resolve().parents[4]
 
-SOURCE_DIR = (
-    PROJECT_ROOT
-    / "references"
-    / "geography"
-    / "vacoda_extensions"
-    / "source"
-)
-
-PREPARED_DIR = (
-    PROJECT_ROOT
-    / "references"
-    / "geography"
-    / "vacoda_extensions"
-    / "prepared"
-)
+SOURCE_DIR = get_geography_vacoda_extension_dir() / "source"
+PREPARED_DIR = get_geography_vacoda_extension_dir() / "prepared"
 
 
 def main() -> int:
-    print(f"Project root: {PROJECT_ROOT}")
+    print(f"Source directory: {SOURCE_DIR}")
+    print(f"Prepared directory: {PREPARED_DIR}")
 
     prepare_vacoda_country_geography(
         input_path=(

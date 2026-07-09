@@ -2,21 +2,19 @@
 """Prepare all CEPII legacy geography references."""
 from __future__ import annotations
 
-from pathlib import Path
-
 from vacoda.cif_fob.references.geography.cepii_legacy import (
     prepare_legacy_country_geography,
     prepare_legacy_pair_geography,
 )
+from vacoda.config.paths import get_geography_cepii_legacy_dir
 
-
-PROJECT_ROOT = Path(__file__).resolve().parents[4]
-SOURCE_DIR = PROJECT_ROOT / "references" / "geography" / "cepii_legacy" / "source"
-PREPARED_DIR = PROJECT_ROOT / "references" / "geography" / "cepii_legacy" / "prepared"
+SOURCE_DIR = get_geography_cepii_legacy_dir() / "source"
+PREPARED_DIR = get_geography_cepii_legacy_dir() / "prepared"
 
 
 def main() -> int:
-    print(f"Project root: {PROJECT_ROOT}")
+    print(f"Source directory: {SOURCE_DIR}")
+    print(f"Prepared directory: {PREPARED_DIR}")
 
     prepare_legacy_country_geography(
         input_path=SOURCE_DIR / "geo_cepii.xls",

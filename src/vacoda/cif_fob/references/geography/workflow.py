@@ -13,9 +13,7 @@ from __future__ import annotations
 from pathlib import Path
 import pandas as pd
 
-from vacoda.cif_fob.references.geography.cepii_gravity import (
-    prepare_gravity_pair_geography,
-)
+from vacoda.cif_fob.references.geography.cepii_gravity import  prepare_gravity_pair_geography
 from vacoda.cif_fob.references.geography.cepii_legacy import (
     prepare_legacy_country_geography,
     prepare_legacy_pair_geography,
@@ -23,6 +21,12 @@ from vacoda.cif_fob.references.geography.cepii_legacy import (
 from vacoda.cif_fob.references.geography.vacoda_extension import (
     prepare_vacoda_country_geography,
     prepare_vacoda_geography_crosswalk,
+)
+from vacoda.config.paths import (
+    get_geography_cepii_gravity_dir,
+    get_geography_cepii_legacy_dir,
+    get_geography_vacoda_extension_dir,
+    get_geography_production_dir,
 )
 
 def build_production_geography_references(
@@ -525,38 +529,26 @@ def build_production_geography_references(
     return production_paths
 
 def prepare_geography_references(
-    project_root: Path,
     *,
     gravity_reference_year: int = 2021,
     threads: int = 16,
     verbose: bool = True,
 ) -> dict[str, Path]:
     """Prepare all source-specific geography reference Parquets."""
-    project_root = Path(project_root).resolve()
 
     if threads <= 0:
         raise ValueError("threads must be greater than zero.")
 
-    geography_root = project_root / "references" / "geography"
+    legacy_source_dir = get_geography_cepii_legacy_dir() / "source"
+    legacy_prepared_dir = get_geography_cepii_legacy_dir() / "prepared"
 
-    legacy_source_dir = geography_root / "cepii_legacy" / "source"
-    legacy_prepared_dir = geography_root / "cepii_legacy" / "prepared"
+    gravity_source_dir = get_geography_cepii_gravity_dir() / "source"
+    gravity_prepared_dir = get_geography_cepii_gravity_dir() / "prepared"
 
-    gravity_source_dir = (
-        geography_root / "cepii_gravity_2021" / "source"
-    )
-    gravity_prepared_dir = (
-        geography_root / "cepii_gravity_2021" / "prepared"
-    )
+    vacoda_source_dir = get_geography_vacoda_extension_dir() / "source"
+    vacoda_prepared_dir = get_geography_vacoda_extension_dir() / "prepared"
 
-    vacoda_source_dir = (
-        geography_root / "vacoda_extension" / "source"
-    )
-    vacoda_prepared_dir = (
-        geography_root / "vacoda_extension" / "prepared"
-    )
-
-    production_dir = geography_root / "production"
+    production_dir = get_geography_production_dir()
 
     source_paths = {
         "CEPII legacy country source": (
@@ -611,7 +603,6 @@ def prepare_geography_references(
     }
 
     if verbose:
-        print(f"Project root: {project_root}")
         print("\nValidated geography source files:")
         for label, path in source_paths.items():
             print(f"  {label}: {path}")

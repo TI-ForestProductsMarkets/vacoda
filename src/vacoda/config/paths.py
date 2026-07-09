@@ -154,6 +154,18 @@ def get_repo_geography_dir(cfg: dict[str, Any] | None = None) -> Path:
     )
     return require_path(repo_cfg["geography"], key="repo.geography")
 
+def get_repo_macroeconomic_dir(cfg: dict[str, Any] | None = None) -> Path:
+    """Return repository macroeconomic directory from paths.yaml repo block."""
+    if cfg is None:
+        cfg = load_paths_config()
+
+    repo_cfg = get_required_block(
+        cfg,
+        "repo",
+        config_name=PATHS_CONFIG_NAME,
+    )
+    return require_path(repo_cfg["macroeconomic"], key="repo.macroeconomic")
+
 def get_geography_cepii_gravity_dir(cfg: dict[str, Any] | None = None) -> Path:
     """Return CEPII gravity directory from paths.yaml repo block."""
     if cfg is None:
