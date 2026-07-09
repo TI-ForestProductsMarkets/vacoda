@@ -217,11 +217,9 @@ def write_primary_holdout_diagnostics(
     estimated_rates_path: Path,
     output_path: Path,
     primary_run_name: str,
-) -> pd.DataFrame:
+) -> dict[str, Any]:
     """
     Build and write primary-model holdout diagnostics.
-
-    Returns the diagnostics dataframe after writing.
     """
     diagnostics = build_primary_holdout_diagnostics(
         estimated_rates_path=estimated_rates_path,
@@ -239,4 +237,40 @@ def write_primary_holdout_diagnostics(
         index=False,
     )
 
-    return diagnostics
+    return {
+        "status": "completed",
+        "diagnostics_path": output_path,
+        "output_path": output_path,
+        "primary_run_name": primary_run_name,
+        "n_rows": len(diagnostics),
+        "year_min": (
+            int(diagnostics["year"].min())
+            if "year" in diagnostics.columns
+            and not diagnostics.empty
+            else None
+        ),
+        "year_max": (
+            int(diagnostics["year"].max())
+            if "year" in diagnostics.columns
+            and not diagnostics.empty
+            else None
+        ),
+        "median_ape": (
+            float(diagnostics["ape"].median())
+            if "ape" in diagnostics.columns
+            and not diagnostics.empty
+            else None
+        ),
+        "mean_ape": (
+            float(diagnostics["ape"].mean())
+            if "ape" in diagnostics.columns
+            and not diagnostics.empty
+            else None
+        ),
+        "p90_ape": (
+            float(diagnostics["ape"].quantile(0.90))
+            if "ape" in diagnostics.columns
+            and not diagnostics.empty
+            else None
+        ),
+    }

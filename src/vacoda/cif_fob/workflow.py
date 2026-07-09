@@ -387,14 +387,11 @@ def run_cif_fob_workflow(
                     producer_product="estimated-rates Parquet",
                 )
 
-                primary_run_name =estimated_rates_result.get(
-                    "primary_estimation_run"
-                )
+                primary_run_name =estimated_rates_result.get("primary_estimation_run")
 
                 if not primary_run_name:
-                    primary_run_name = estimated_rates_result.get(
-                        "primary_model_name"
-                    )
+                    primary_run_name = estimated_rates_result.get("primary_model_name")
+
                 if not primary_run_name:
                     raise RuntimeError(
                         "Diagnostics step requires the primary estimation "
@@ -403,17 +400,11 @@ def run_cif_fob_workflow(
                         "'primary_model_name'."
                     )
 
-                diagnostics_frame = write_primary_holdout_diagnostics(
-                                        estimated_rates_path=estimated_rates_path,
-                                        output_path=cfg.product_path("diagnostics"),
-                                        primary_run_name=str(primary_run_name),
-                                        )
-                diagnostics_result = {
-                     "status": "completed",
-                     "diagnostics_path": cfg.product_path("diagnostics"),
-                     "output_path": cfg.product_path("diagnostics"),
-                     "n_rows": len(diagnostics_frame),
-                 }
+                diagnostics_result = write_primary_holdout_diagnostics(
+                        estimated_rates_path=estimated_rates_path,
+                        output_path=cfg.product_path("diagnostics"),
+                        primary_run_name=str(primary_run_name),
+                    )
 
             else:
                 logger.info(
