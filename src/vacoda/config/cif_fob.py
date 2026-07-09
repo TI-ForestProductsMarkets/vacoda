@@ -279,6 +279,7 @@ class CifFobProductsConfig:
     upper_tail_audit_summary: CifFobProductConfig
     upper_tail_route_history: CifFobProductConfig
     upper_tail_observations: CifFobProductConfig
+    diagnostics: CifFobProductConfig
     corrected_trade: CifFobProductConfig
 
     @classmethod
@@ -327,6 +328,10 @@ class CifFobProductsConfig:
             upper_tail_observations=CifFobProductConfig.from_dict(
                 require_dict(cfg.get("upper_tail_observations"), key="cif_fob.products.upper_tail_observations"),
                 key="cif_fob.products.upper_tail_observations",
+            ),
+            diagnostics=CifFobProductConfig.from_dict(
+                require_dict(cfg.get("diagnostics"), key="cif_fob.products.diagnostics"),
+                key="cif_fob.products.diagnostics",
             ),
         )
 
@@ -2136,6 +2141,7 @@ class CifFobConfig:
             "upper_tail_audit_summary": self.products.upper_tail_audit_summary,
             "upper_tail_route_history": self.products.upper_tail_route_history,
             "upper_tail_observations": self.products.upper_tail_observations,
+            "diagnostics": self.products.diagnostics,
             "corrected_trade": self.products.corrected_trade,
         }
 
@@ -2156,6 +2162,7 @@ class CifFobConfig:
             "upper_tail_audit_summary": self.product_path("upper_tail_audit_summary"),
             "upper_tail_route_history": self.product_path("upper_tail_route_history"),
             "upper_tail_observations": self.product_path("upper_tail_observations"),
+            "diagnostics": self.product_path("diagnostics"),
             "corrected_trade": self.product_path("corrected_trade"),
         }
 
@@ -2171,6 +2178,7 @@ class CifFobConfig:
             "upper_tail_audit_summary": self.products.upper_tail_audit_summary,
             "upper_tail_route_history": self.products.upper_tail_route_history,
             "upper_tail_observations": self.products.upper_tail_observations,
+            "diagnostics": self.products.diagnostics,
             "corrected_trade": self.products.corrected_trade,
         }
 

@@ -23,6 +23,7 @@ from vacoda.cif_fob.prepare_input import prepare_cif_fob_input
 from vacoda.cif_fob.reporting import write_cif_fob_decision_report
 from vacoda.cif_fob.training_features import build_training_features
 from vacoda.cif_fob.training_sample import build_training_sample
+from vacoda.cif_fob.diagnostics import write_primary_holdout_diagnostics
 from vacoda.config.cif_fob import CifFobConfig
 from vacoda.utils.display import get_symbols
 from vacoda.utils.logger import get_logger
@@ -35,6 +36,7 @@ WORKFLOW_STEPS = [
     "Build CIF/FOB training sample",
     "Build CIF/FOB training features",
     "Estimate CIF/FOB correction rates",
+    "Build CIF/FOB diagnostics",
     "Write CIF/FOB decision report",
 ]
 
@@ -133,12 +135,13 @@ def run_cif_fob_workflow(
     logger.info(
         "Enabled products: "
         "prepared_input=%s mirror_pairs=%s training_sample=%s "
-        "training_features=%s estimated_rates=%s corrected_trade=%s",
+        "training_features=%s estimated_rates=%s diagnostics=%s corrected_trade=%s",
         cfg.products.prepared_input.enable,
         cfg.products.mirror_pairs.enable,
         cfg.products.training_sample.enable,
         cfg.products.training_features.enable,
         cfg.products.estimated_rates.enable,
+        cfg.products.diagnostics.enable,
         cfg.products.corrected_trade.enable,
     )
     logger.info(
@@ -181,6 +184,11 @@ def run_cif_fob_workflow(
     estimated_rates_result = _artifact_result(
         path_key="estimated_rates_path",
         path=cfg.product_path("estimated_rates"),
+    )
+    
+    diagnostics_result = _artifact_result(
+        path_key="diagnostics_path",
+        path=cfg.product_path("diagnostics"),
     )
 
     report_result: dict[str, Any] = {
@@ -361,7 +369,62 @@ def run_cif_fob_workflow(
             STEP += 1
 
         # ==================================================================
-        # STEP 6 — Write human-readable decision report
+        # STEP 6 — Build CIF/FOB diagnostics
+        # ==================================================================
+
+        with timed_step(logger, STEP, WORKFLOW_STEPS[STEP-1], total_steps=TOTAL_WORKFLOW_STEPS):
+            if cfg.products.diagnostics.enable:
+                _log_step_header(
+                    logger=logger,
+                    symbol=build,
+                    title=WORKFLOW_STEPS[STEP-1],
+                )
+
+                estimated_rates_path  = _require_artifact(
+                    result=estimated_rates_result,
+                    path_key="estimated_rates_path",
+                    consumer_step="Diagnostics step",
+                    producer_product="estimated-rates Parquet",
+                )
+
+                primary_run_name =estimated_rates_result.get(
+                    "primary_estimation_run"
+                )
+
+                if not primary_run_name:
+                    primary_run_name = estimated_rates_result.get(
+                        "primary_model_name"
+                    )
+                if not primary_run_name:
+                    raise RuntimeError(
+                        "Diagnostics step requires the primary estimation "
+                        "run name, but estimated_rates_result does not "
+                        "contain 'primary_estimation_run' or "
+                        "'primary_model_name'."
+                    )
+
+                diagnostics_frame = write_primary_holdout_diagnostics(
+                                        estimated_rates_path=estimated_rates_path,
+                                        output_path=cfg.product_path("diagnostics"),
+                                        primary_run_name=str(primary_run_name),
+                                        )
+                diagnostics_result = {
+                     "status": "completed",
+                     "diagnostics_path": cfg.product_path("diagnostics"),
+                     "output_path": cfg.product_path("diagnostics"),
+                     "n_rows": len(diagnostics_frame),
+                 }
+
+            else:
+                logger.info(
+                    "%s SKIP — %s (disabled in config)",
+                    warn,
+                    WORKFLOW_STEPS[STEP-1],
+                )
+            STEP += 1
+
+        # ==================================================================
+        # STEP 7 — Write human-readable decision report
         # ==================================================================
 
         with timed_step(logger, STEP, WORKFLOW_STEPS[STEP-1], total_steps=TOTAL_WORKFLOW_STEPS):
@@ -386,11 +449,20 @@ def run_cif_fob_workflow(
                     producer_product="estimated-rates Parquet",
                 )
 
+                if cfg.products.diagnostics.enable:
+                    _require_artifact(
+                        result=diagnostics_result,
+                        path_key="diagnostics_path",
+                        consumer_step="CIF/FOB reporting step",
+                        producer_product="diagnostics Parquet",
+                    )
+
                 report_result = write_cif_fob_decision_report(
                     cfg=cfg,
                     run_id=run_id,
                     training_features_result=training_features_result,
                     estimated_rates_result=estimated_rates_result,
+                    diagnostics_result=diagnostics_result,
                     logger=logger,
                 )
             else:
@@ -418,6 +490,7 @@ def run_cif_fob_workflow(
     latest_output_path: Path | None = None
 
     for result, path_key in [
+        (diagnostics_result, "diagnostics_path"),
         (estimated_rates_result, "estimated_rates_path"),
         (training_features_result, "training_features_path"),
         (training_sample_result, "training_sample_path"),
@@ -458,6 +531,9 @@ def run_cif_fob_workflow(
         "estimated_rates_path": estimated_rates_result.get(
             "estimated_rates_path"
         ),
+        "diagnostics_path": diagnostics_result.get(
+            "diagnostics_path"
+        ),
         "decision_report_path": report_result.get(
             "report_path"
         ),
@@ -471,6 +547,7 @@ def run_cif_fob_workflow(
             "training_features": cfg.products.training_features.enable,
             "estimated_rates": cfg.products.estimated_rates.enable,
             "corrected_trade": cfg.products.corrected_trade.enable,
+            "diagnostics": cfg.products.diagnostics.enable,
             "decision_report": cfg.artifacts.enable,
         },
         "steps": {
@@ -479,6 +556,7 @@ def run_cif_fob_workflow(
             "training_sample": training_sample_result,
             "training_features": training_features_result,
             "estimated_rates": estimated_rates_result,
+            "diagnostics": diagnostics_result,
             "decision_report": report_result,
         },
     }

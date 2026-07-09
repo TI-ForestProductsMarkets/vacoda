@@ -1437,6 +1437,7 @@ def write_cif_fob_decision_report(
     run_id: str,
     training_features_result: dict[str, Any],
     estimated_rates_result: dict[str, Any],
+    diagnostics_result: dict[str, Any] | None = None,
     logger,
 ) -> dict[str, Any]:
     """
@@ -1449,12 +1450,9 @@ def write_cif_fob_decision_report(
             "latest_report_path": None,
         }
 
-    training_features_path = training_features_result.get(
-        "training_features_path"
-    )
-    estimated_rates_path = estimated_rates_result.get(
-        "estimated_rates_path"
-    )
+    training_features_path = training_features_result.get("training_features_path")
+    estimated_rates_path = estimated_rates_result.get("estimated_rates_path")
+    diagnostics_path = diagnostics_result.get("diagnostics_path") if diagnostics_result else None
 
     if not isinstance(training_features_path, Path):
         training_features_path = cfg.product_path(

@@ -98,6 +98,10 @@ cif_fob:
       enable: true
       filename: "target_{target_hs_lower}_cif_fob_upper_tail_observations.parquet"
 
+    diagnostics:
+      enable: true
+      filename: "target_{target_hs_lower}_cif_fob_diagnostics.parquet"
+
     corrected_trade:
       enable: false
       filename: "comtrade_target_{target_hs_lower}_cif_fob_corrected.parquet"
