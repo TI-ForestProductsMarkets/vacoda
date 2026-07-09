@@ -3,12 +3,386 @@ vacoda.visualization.relationships
 
 Two-variable (2-D) relationship plots.
 """
+from __future__ import annotations
 
-import matplotlib.pyplot as plt
 import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
 import pandas as pd
+
+from typing import Iterable
+
+def _split_estimation_run_name(run_name: str) -> tuple[str, str]:
+    """Split algorithm × predictor-set run name."""
+    if "__" not in str(run_name):
+        return str(run_name), ""
+
+    algorithm, predictor_set = str(run_name).split("__", 1)
+    return algorithm, predictor_set
+
+
+def _short_algorithm_name(name: str) -> str:
+    """Return compact display name for model algorithm."""
+    mapping = {
+        "hist_gradient_boosting": "HGB absolute-log",
+        "hist_gradient_boosting_squared": "HGB squared-log",
+        "hist_gradient_boosting_squared_level": "HGB squared-level",
+        "hist_gradient_boosting_squared_regularized": "HGB squared-log regularized",
+        "log_linear_regression": "OLS log-linear",
+        "log_linear_regression_smearing": "OLS smearing",
+        "xgboost_log_squared": "XGBoost squared-log",
+    }
+    return mapping.get(str(name), str(name))
+
+
+def _metric_is_percentage(metric: str) -> bool:
+    lowered = metric.lower()
+    return (
+        "ape" in lowered
+        or "share" in lowered
+        or "percent" in lowered
+    )
+
+
+def _display_metric_values(
+    frame: pd.DataFrame,
+    *,
+    metric: str,
+) -> pd.Series:
+    values = pd.to_numeric(
+        frame[metric],
+        errors="coerce",
+    )
+
+    if _metric_is_percentage(metric):
+        return values * 100.0
+
+    return values
+
+
+def _metric_axis_label(
+    metric: str,
+    *,
+    label: str | None = None,
+) -> str:
+    if label is None:
+        label = metric
+
+    if _metric_is_percentage(metric):
+        return f"{label} (%)"
+
+    return label
+
+
+def plot_central_vs_tail_tradeoff(
+    summary: pd.DataFrame,
+    *,
+    x_metric: str = "mean_median_ape",
+    y_metric: str = "mean_upper_tail_median_ape",
+    primary_run_name: str | None = None,
+    x_label: str = "Median APE",
+    y_label: str = "Upper-tail median APE",
+    title: str = "Central accuracy vs upper-tail accuracy",
+    annotate_top_n: int = 10,
+):
+    """
+    Plot model trade-off between central accuracy and upper-tail accuracy.
+
+    Each point is one algorithm × predictor-set run.
+
+    Lower-left is better when both metrics are error metrics.
+    """
+    required = {"model_name", x_metric, y_metric}
+    missing = required - set(summary.columns)
+    if missing:
+        raise ValueError(
+            "Model summary is missing required columns: "
+            + ", ".join(sorted(missing))
+        )
+
+    plot_data = summary.copy()
+    plot_data = plot_data.dropna(
+        subset=[x_metric, y_metric]
+    )
+
+    if plot_data.empty:
+        raise ValueError(
+            "No finite values available for central-vs-tail plot."
+        )
+
+    parsed = plot_data["model_name"].apply(
+        _split_estimation_run_name
+    )
+    plot_data["algorithm"] = [
+        item[0] for item in parsed
+    ]
+    plot_data["predictor_set"] = [
+        item[1] for item in parsed
+    ]
+    plot_data["algorithm_label"] = plot_data["algorithm"].map(
+        _short_algorithm_name
+    )
+
+    plot_data["x_display"] = _display_metric_values(
+        plot_data,
+        metric=x_metric,
+    )
+    plot_data["y_display"] = _display_metric_values(
+        plot_data,
+        metric=y_metric,
+    )
+
+    plot_data["rank_score"] = (
+        plot_data["x_display"].rank(method="min")
+        + plot_data["y_display"].rank(method="min")
+    )
+
+    fig, ax = plt.subplots(
+        figsize=(9, 6.5)
+    )
+
+    for algorithm, group in plot_data.groupby(
+        "algorithm_label",
+        sort=True,
+    ):
+        ax.scatter(
+            group["x_display"],
+            group["y_display"],
+            label=algorithm,
+            alpha=0.8,
+        )
+
+    if primary_run_name is not None:
+        primary = plot_data[
+            plot_data["model_name"].astype(str)
+            == str(primary_run_name)
+        ]
+        if not primary.empty:
+            ax.scatter(
+                primary["x_display"],
+                primary["y_display"],
+                s=140,
+                marker="*",
+                label="Primary",
+            )
+
+    annotate = plot_data.sort_values(
+        "rank_score",
+        ascending=True,
+    ).head(annotate_top_n)
+
+    if primary_run_name is not None:
+        primary = plot_data[
+            plot_data["model_name"].astype(str)
+            == str(primary_run_name)
+        ]
+        if not primary.empty:
+            annotate = pd.concat(
+                [annotate, primary],
+                ignore_index=True,
+            ).drop_duplicates(
+                subset=["model_name"],
+                keep="first",
+            )
+
+    for _, row in annotate.iterrows():
+        short_label = (
+            _short_algorithm_name(row["algorithm"])
+            .replace("HGB ", "HGB\n")
+            .replace("OLS ", "OLS\n")
+        )
+        predictor_label = str(row["predictor_set"]).replace(
+            "model_",
+            "m",
+        )
+        label = f"{short_label}\n{predictor_label}"
+
+        ax.annotate(
+            label,
+            xy=(row["x_display"], row["y_display"]),
+            xytext=(4, 4),
+            textcoords="offset points",
+            fontsize=8,
+            alpha=0.85,
+        )
+
+    ax.set_xlabel(
+        _metric_axis_label(
+            x_metric,
+            label=x_label,
+        )
+    )
+    ax.set_ylabel(
+        _metric_axis_label(
+            y_metric,
+            label=y_label,
+        )
+    )
+    ax.set_title(title)
+    ax.grid(alpha=0.25)
+    ax.legend(
+        fontsize=8,
+        frameon=False,
+    )
+
+    fig.tight_layout()
+
+    return fig, ax, plot_data
+
+
+def plot_temporal_validation_metric(
+    folds: pd.DataFrame,
+    *,
+    metric: str = "median_ape",
+    selected_runs: Iterable[str] | None = None,
+    primary_run_name: str | None = None,
+    year_column: str = "validation_year",
+    metric_label: str = "Median APE",
+    title: str = "Temporal validation performance",
+):
+    """
+    Plot validation metric over time for selected model runs.
+
+    Good default selected runs:
+      - primary HGB run
+      - HGB squared run with same predictor set
+      - OLS run with same predictor set
+    """
+    required = {"model_name", year_column, metric}
+    missing = required - set(folds.columns)
+    if missing:
+        raise ValueError(
+            "Temporal folds are missing required columns: "
+            + ", ".join(sorted(missing))
+        )
+
+    plot_data = folds.copy()
+    plot_data = plot_data.dropna(
+        subset=["model_name", year_column, metric]
+    )
+
+    if selected_runs is not None:
+        selected_runs = [str(value) for value in selected_runs]
+        plot_data = plot_data[
+            plot_data["model_name"].astype(str).isin(selected_runs)
+        ].copy()
+
+    if plot_data.empty:
+        raise ValueError(
+            "No temporal-validation rows available after filtering."
+        )
+
+    parsed = plot_data["model_name"].apply(
+        _split_estimation_run_name
+    )
+    plot_data["algorithm"] = [
+        item[0] for item in parsed
+    ]
+    plot_data["predictor_set"] = [
+        item[1] for item in parsed
+    ]
+    plot_data["algorithm_label"] = plot_data["algorithm"].map(
+        _short_algorithm_name
+    )
+
+    plot_data["display_label"] = (
+        plot_data["algorithm_label"]
+        + " / "
+        + plot_data["predictor_set"].astype(str)
+    )
+
+    if primary_run_name is not None:
+        is_primary = (
+            plot_data["model_name"].astype(str)
+            == str(primary_run_name)
+        )
+        plot_data.loc[
+            is_primary,
+            "display_label",
+        ] = (
+            plot_data.loc[
+                is_primary,
+                "display_label",
+            ]
+            + "  [primary]"
+        )
+
+    plot_data["metric_display"] = _display_metric_values(
+        plot_data,
+        metric=metric,
+    )
+
+    plot_data[year_column] = pd.to_numeric(
+        plot_data[year_column],
+        errors="coerce",
+    ).astype(int)
+
+    grouped = (
+        plot_data
+        .groupby(
+            [year_column, "model_name", "display_label"],
+            as_index=False,
+        )["metric_display"]
+        .mean()
+        .sort_values([year_column, "display_label"])
+    )
+
+    fig, ax = plt.subplots(
+        figsize=(10, 6)
+    )
+
+    for label, group in grouped.groupby(
+        "display_label",
+        sort=True,
+    ):
+        ax.plot(
+            group[year_column],
+            group["metric_display"],
+            marker="o",
+            label=label,
+        )
+
+    ax.set_xlabel("Validation year")
+    ax.set_ylabel(
+        _metric_axis_label(
+            metric,
+            label=metric_label,
+        )
+    )
+    ax.set_title(title)
+    ax.grid(alpha=0.25)
+    ax.legend(
+        fontsize=8,
+        frameon=False,
+    )
+
+    fig.tight_layout()
+
+    return fig, ax, grouped
+
+
+def plot_rmse_vs_mae_tradeoff(
+    summary: pd.DataFrame,
+    *,
+    primary_run_name: str | None = None,
+    title: str = "MAE vs RMSE trade-off",
+):
+    """
+    Plot mean log MAE against mean log RMSE.
+
+    This helps explain why squared-loss models can look better on RMSE
+    while absolute-loss models can be better on central accuracy.
+    """
+    return plot_central_vs_tail_tradeoff(
+        summary,
+        x_metric="mean_mae_log_factor",
+        y_metric="mean_rmse_log_factor",
+        primary_run_name=primary_run_name,
+        x_label="Mean log MAE",
+        y_label="Mean log RMSE",
+        title=title,
+        annotate_top_n=10,
+    )
 
 def plot_numeric_relationship(df, 
                               x_col="netweight_kg", 

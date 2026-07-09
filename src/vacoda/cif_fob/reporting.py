@@ -28,13 +28,21 @@ from typing import Any
 import duckdb
 import numpy as np
 import pandas as pd
-
+import matplotlib.pyplot as plt
 import matplotlib
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 
 from vacoda.config.cif_fob import CifFobConfig
+from vacoda.config.paths import get_figure_dir
 from vacoda.visualization.distributions import plot_nebula_boxplot
+from vacoda.visualization.distributions import (
+    plot_model_metric_ranking,
+    plot_observed_vs_predicted_p95,
+)
+from vacoda.visualization.relationships import (
+    plot_central_vs_tail_tradeoff,
+    plot_temporal_validation_metric,
+) 
 
 
 # ======================================================================
@@ -1132,19 +1140,13 @@ def _resolve_cif_fob_figure_dir(
     *,
     cfg: CifFobConfig,
 ) -> Path:
-    """Resolve the CIF/FOB figure directory under output/figures."""
-    try:
-        figures_root = Path(
-            str(cfg.paths.output.figures)
-        )
-    except Exception:
-        figures_root = (
-            cfg.output_dir()
-            .parents[1]
-            / "figures"
-        )
+    """Resolve CIF/FOB figure directory under output/figures."""
+    figure_dir = (
+        get_figure_dir()
+        / "cif_fob"
+        / f"target_{cfg.scope.target_hs.lower()}"
+    )
 
-    figure_dir = figures_root / "cif_fob"
     figure_dir.mkdir(
         parents=True,
         exist_ok=True,
@@ -1515,18 +1517,14 @@ def write_cif_fob_decision_report(
         )
     )
 
-    figure_dir = _resolve_cif_fob_figure_dir(
-        cfg=cfg,
-    )
+    figure_dir = _resolve_cif_fob_figure_dir(cfg=cfg,)
 
-    direct_factor_distribution_figure = (
-        figure_dir
-        / (
-            f"{cfg.scope.target_hs.lower()}_"
-            "direct_cif_fob_factor_distribution.png"
-        )
-    )
 
+    #############################################################################
+    # FIGURE PLOTTING
+    #############################################################################
+
+    ## 1. Plot the distribution of directly observed CIF/FOB factors
     fig, _, direct_factor_plot_stats = plot_nebula_boxplot(
         direct_factor_distribution_df,
         factor_col="observed_cif_fob_factor",
@@ -1538,7 +1536,10 @@ def write_cif_fob_decision_report(
             "Distribution of directly observed CIF/FOB factors"
         ),
     )
-
+    direct_factor_distribution_figure = (
+        figure_dir
+        / f"{cfg.scope.target_hs.lower()}_direct_cif_fob_factor_distribution.png"
+    )
     fig.savefig(
         direct_factor_distribution_figure,
         dpi=180,
@@ -1546,6 +1547,110 @@ def write_cif_fob_decision_report(
     )
     plt.close(fig)
 
+    ## 2. Plot the model ranking by mean log-factor MAE
+    primary_run_name = str(
+        cfg.method.estimation.models.primary
+    ).strip().lower() 
+    fig, _, _ = plot_model_metric_ranking(
+        summary,
+        metric="mean_mae_log_factor",
+        primary_run_name=primary_run_name,
+        top_n=18,
+        higher_is_better=False,
+        title="CIF/FOB model ranking by mean log MAE",
+        metric_label="Mean log MAE",
+    )
+    
+    fig.savefig(
+        figure_dir
+        / f"{cfg.scope.target_hs.lower()}_cif_fob_model_ranking_mean_log_mae.png",
+        dpi=180,
+        bbox_inches="tight",
+    )
+    plt.close(fig)
+
+    ## 3. Plot the model ranking by median APE
+    fig, _, _ = plot_model_metric_ranking(
+        summary,
+        metric="mean_median_ape",
+        primary_run_name=primary_run_name,
+        top_n=18,
+        higher_is_better=False,
+        title="CIF/FOB model ranking by median APE",
+        metric_label="Median APE",
+    )
+    fig.savefig(
+        figure_dir
+        / f"{cfg.scope.target_hs.lower()}_cif_fob_model_ranking_median_ape.png",
+        dpi=180,
+        bbox_inches="tight",
+    )
+    plt.close(fig)
+
+
+    ## 4. Plot the model ranking by upper-tail median APE
+    fig, _, _ = plot_central_vs_tail_tradeoff(
+        summary,
+        x_metric="mean_median_ape",
+        y_metric="mean_upper_tail_median_ape",
+        primary_run_name=primary_run_name,
+        x_label="Median APE",
+        y_label="Upper-tail median APE",
+        title="CIF/FOB central accuracy vs upper-tail accuracy",
+    )
+
+    fig.savefig(
+        figure_dir
+        / f"{cfg.scope.target_hs.lower()}_cif_fob_central_vs_tail_tradeoff.png",
+        dpi=180,
+        bbox_inches="tight",
+    )
+    plt.close(fig)
+
+
+    ## 5.  Plot the temporal validation stability of the primary model and a few other candidates
+    selected_runs = [
+        "hist_gradient_boosting__model_5_full_history",
+        "hist_gradient_boosting_squared__model_5_full_history",
+        "log_linear_regression__model_5_full_history",]
+
+    fig, _, _ = plot_temporal_validation_metric(
+        folds,
+        metric="median_ape",
+        selected_runs=selected_runs,
+        primary_run_name=primary_run_name,
+        metric_label="Median APE",
+        title="CIF/FOB temporal validation stability",
+    )
+
+    fig.savefig(
+        figure_dir
+        / f"{cfg.scope.target_hs.lower()}_cif_fob_temporal_validation_median_ape.png",
+        dpi=180,
+        bbox_inches="tight",
+    )
+    plt.close(fig)
+
+    ## 6. Plot Observed vs Predicted P95 for the primary model and a few other candidates
+    fig, _, _ = plot_observed_vs_predicted_p95(
+        summary,
+        primary_run_name=primary_run_name,
+        top_n=12,
+        ranking_metric="mean_mae_log_factor",
+        observed_column="mean_observed_p95",
+        predicted_column="mean_predicted_p95",
+        title="CIF/FOB observed vs predicted upper-tail factor",
+    )
+    fig.savefig(
+        figure_dir
+        / f"{cfg.scope.target_hs.lower()}_cif_fob_observed_vs_predicted_p95.png",
+        dpi=180,
+        bbox_inches="tight",
+    )
+    plt.close(fig)
+
+
+    #####################################################################################
 
     ranked = _rank_models(summary)
     model_display_names = {
@@ -2204,6 +2309,7 @@ def write_cif_fob_decision_report(
         f"- **Estimated-rate artifact:** `{estimated_rates_path}`",
         f"- **Temporal-validation summary:** `{summary_path}`",
         f"- **Temporal-validation folds:** `{folds_path}`",
+        f"= **Figure directory:** `{figure_dir}`",
         "",
         "## 2. Method position within VACODA",
         "",
@@ -2238,7 +2344,7 @@ def write_cif_fob_decision_report(
         ),
         "",
         _markdown_table(
-            predictor_set_summary_rows,
+            predictor_set_rows,
             columns=[
                 "Predictor set",
                 "Predictor count",
@@ -2455,8 +2561,9 @@ def write_cif_fob_decision_report(
         ),
         "",
         (
-            f"![Direct CIF/FOB factor distribution]"
-            f"({direct_factor_distribution_figure})"
+            f"![Direct CIF/FOB factor distribution]("
+            f"{figure_dir / f'{cfg.scope.target_hs.lower()}_direct_cif_fob_factor_distribution.png'}"
+            f")"
         ),
         "",
         (
@@ -2591,15 +2698,16 @@ def write_cif_fob_decision_report(
         "",
         "## 7. Expanding-window temporal validation",
         "",
+        "### Overall predictive performance",
+        "",
         _markdown_table(
-            overall_performance_table,
+            combined_table,
             columns=[
                 "Rank",
                 "Model",
+                "Algorithm",
                 "Predictor set",
                 "Mean log MAE",
-                "RMSE log",
-                "R² log",
                 "Median APE",
                 "Mean APE",
                 "P90 APE",

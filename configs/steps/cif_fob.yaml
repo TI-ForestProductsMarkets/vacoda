@@ -163,7 +163,13 @@ cif_fob:
     estimation:
       minimum_evidence_value_usd: 0.0
       minimum_factor: 1.0
-      maximum_factor: 3.0
+
+      ## upper-limit on cif/fob:  min(domain_cap, max(Q3 + 2.5×IQR, P99))
+      maximum_factor_rule: 
+        method: robust_adaptive_cap
+        iqr_multiplier: 2.5
+        percentile: 0.99 
+        domain_cap: 3.0
       exclude_proxy_weights: true
 
       diagnostics:

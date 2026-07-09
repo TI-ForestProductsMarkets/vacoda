@@ -23,6 +23,7 @@ from typing import Any
 import duckdb
 import numpy as np
 import pandas as pd
+from plotly import data
 from scipy.stats import spearmanr
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
@@ -697,6 +698,126 @@ def _evidence_value(frame: pd.DataFrame) -> pd.Series:
         dtype="float64",
     )
 
+def _resolve_maximum_factor(
+    *,
+    data: pd.DataFrame,
+    cfg: CifFobConfig,
+    minimum_factor: float,
+) -> dict[str, Any]:
+    """
+    Resolve the effective upper CIF/FOB factor bound.
+
+    Current rule:
+
+        min(domain_cap, max(Q3 + k×IQR, P99))
+
+    The distribution is calculated from positive selected direct factors,
+    before applying the final upper-bound filter.
+    """
+    rule = cfg.method.estimation.maximum_factor_rule
+
+    method = str(rule.method).strip().lower()
+
+    if method != "robust_adaptive_cap":
+        raise ValueError(
+            "Unsupported maximum_factor_rule.method: "
+            f"{method!r}."
+        )
+
+    observed_factor = pd.to_numeric(
+        data["observed_cif_fob_factor"],
+        errors="coerce",
+    )
+
+    factor_source = (
+        data["factor_source"]
+        .astype("string")
+        .str.lower()
+    )
+
+    model_eligible = (
+        data["model_eligible"]
+        .fillna(False)
+        .astype(bool)
+    )
+
+    direct_positive = observed_factor.loc[
+        model_eligible
+        & factor_source.eq("direct")
+        & observed_factor.notna()
+        & observed_factor.gt(0)
+    ]
+
+    if direct_positive.empty:
+        raise RuntimeError(
+            "Cannot resolve adaptive maximum CIF/FOB factor: "
+            "no positive selected direct factors are available."
+        )
+
+    q1 = float(
+        direct_positive.quantile(0.25)
+    )
+    median = float(
+        direct_positive.quantile(0.50)
+    )
+    q3 = float(
+        direct_positive.quantile(0.75)
+    )
+    iqr = q3 - q1
+
+    iqr_limit = q3 + float(rule.iqr_multiplier) * iqr
+
+    percentile_limit = float(
+        direct_positive.quantile(
+            float(rule.percentile)
+        )
+    )
+
+    statistical_limit = max(
+        iqr_limit,
+        percentile_limit,
+    )
+
+    domain_cap = float(
+        rule.domain_cap
+    )
+
+    maximum_factor = min(
+        domain_cap,
+        statistical_limit,
+    )
+
+    if maximum_factor < minimum_factor:
+        raise RuntimeError(
+            "Resolved maximum CIF/FOB factor is below the configured "
+            "minimum factor: "
+            f"minimum_factor={minimum_factor:.6f}, "
+            f"maximum_factor={maximum_factor:.6f}."
+        )
+
+    return {
+        "method": method,
+        "minimum_factor": float(minimum_factor),
+        "maximum_factor": float(maximum_factor),
+        "domain_cap": domain_cap,
+        "q1": q1,
+        "median": median,
+        "q3": q3,
+        "iqr": iqr,
+        "iqr_multiplier": float(rule.iqr_multiplier),
+        "iqr_limit": float(iqr_limit),
+        "percentile": float(rule.percentile),
+        "percentile_limit": percentile_limit,
+        "statistical_limit": float(statistical_limit),
+        "n_direct_positive_factors": int(len(direct_positive)),
+        "n_direct_factors_above_maximum": int(
+            direct_positive.gt(maximum_factor).sum()
+        ),
+        "share_direct_factors_above_maximum_percent": (
+            100.0
+            * float(direct_positive.gt(maximum_factor).mean())
+        ),
+    }
 
 def _resolve_latest_holdout_year(
     *,
@@ -2057,9 +2178,6 @@ def estimate_cif_fob_rates(
     minimum_factor = float(
         estimation_cfg.minimum_factor
     )
-    maximum_factor = float(
-        estimation_cfg.maximum_factor
-    )
     exclude_proxy_weights = bool(
         estimation_cfg.exclude_proxy_weights
     )
@@ -2082,11 +2200,7 @@ def estimate_cif_fob_rates(
         "  Minimum evidence value: %.2f USD",
         minimum_evidence_value,
     )
-    logger.info(
-        "  Permitted observed-factor range: %.3f-%.3f",
-        minimum_factor,
-        maximum_factor,
-    )
+
     logger.info(
         "  Exclude proxy weights: %s",
         exclude_proxy_weights,
@@ -2162,6 +2276,50 @@ def estimate_cif_fob_rates(
         raise RuntimeError(
             "Rate-estimation input contains no rows."
         )
+    
+    maximum_factor_metrics = _resolve_maximum_factor(
+        data=data,
+        cfg=cfg,
+        minimum_factor=minimum_factor,
+        )
+
+    maximum_factor = float(maximum_factor_metrics["maximum_factor"])
+
+    logger.info(
+        "  Direct positive factors above resolved maximum: %s "
+        "(%.4f%%)",
+        maximum_factor_metrics["n_direct_factors_above_maximum"],
+        maximum_factor_metrics[
+            "share_direct_factors_above_maximum_percent"
+        ],
+    )
+    
+    logger.info(
+        "  Permitted observed-factor range: %.3f-%.3f",
+        minimum_factor,
+        maximum_factor,
+    )
+
+    logger.info(
+        "  Maximum-factor rule: %s",
+        maximum_factor_metrics["method"],
+    )
+
+    logger.info(
+        "  Maximum-factor components: "
+        "Q1=%.6f, median=%.6f, Q3=%.6f, IQR=%.6f, "
+        "IQR limit=%.6f, P%.2f=%.6f, domain cap=%.6f, "
+        "resolved maximum=%.6f",
+        maximum_factor_metrics["q1"],
+        maximum_factor_metrics["median"],
+        maximum_factor_metrics["q3"],
+        maximum_factor_metrics["iqr"],
+        maximum_factor_metrics["iqr_limit"],
+        100.0 * maximum_factor_metrics["percentile"],
+        maximum_factor_metrics["percentile_limit"],
+        maximum_factor_metrics["domain_cap"],
+        maximum_factor_metrics["maximum_factor"],
+    )
 
     # ==================================================================
     # Shared clean estimation sample
@@ -2579,10 +2737,20 @@ def estimate_cif_fob_rates(
     data["primary_estimation_run"] = primary_run_name
     data["estimation_holdout_year"] = latest_holdout_year
     data["estimation_training_observations"] = len(clean)
-
-    data["factor_for_application"] = data[
-        "estimated_cif_fob_factor"
-    ]
+    data["estimation_minimum_factor"] = minimum_factor
+    data["estimation_maximum_factor"] = maximum_factor
+    data["maximum_factor_rule_method"] = maximum_factor_metrics["method"]
+    data["maximum_factor_domain_cap"] = maximum_factor_metrics["domain_cap"]
+    data["maximum_factor_q1"] = maximum_factor_metrics["q1"]
+    data["maximum_factor_median"] = maximum_factor_metrics["median"]
+    data["maximum_factor_q3"] = maximum_factor_metrics["q3"]
+    data["maximum_factor_iqr"] = maximum_factor_metrics["iqr"]
+    data["maximum_factor_iqr_multiplier"] = (maximum_factor_metrics["iqr_multiplier"])
+    data["maximum_factor_iqr_limit"] = maximum_factor_metrics["iqr_limit"]
+    data["maximum_factor_percentile"] = maximum_factor_metrics["percentile"]
+    data["maximum_factor_percentile_limit"] = maximum_factor_metrics["percentile_limit"]
+    data["maximum_factor_statistical_limit"] = maximum_factor_metrics["statistical_limit"]
+    data["factor_for_application"] = data["estimated_cif_fob_factor"]
 
     # ==================================================================
     # Write and audit main output
@@ -2823,6 +2991,9 @@ def estimate_cif_fob_rates(
         "estimated_rates_path": output_path,
         "primary_model_name": primary_model_name,
         "primary_estimation_run": primary_run_name,
+        "minimum_factor": minimum_factor,
+        "maximum_factor": maximum_factor,
+        "maximum_factor_rule":maximum_factor_metrics,
         "enabled_models": list(model_configs),
         "enabled_estimation_runs": [
             spec.run_name
@@ -2864,734 +3035,3 @@ def estimate_cif_fob_rates(
 
 
 
-
-
-def estimate_cif_fob_rates_deprecated(
-    *,
-    cfg: CifFobConfig,
-    input_path: Path,
-    force: bool = False,
-    logger,
-) -> dict[str, Any]:
-    """
-    Estimate CIF/FOB factors from the Step 4 feature artifact.
-
-    The workflow signature remains unchanged.
-    """
-    output_path = cfg.product_path("estimated_rates")
-
-    if not input_path.exists():
-        raise FileNotFoundError(
-            f"CIF/FOB training-features Parquet not found: {input_path}"
-        )
-
-    if not force and valid_output(output_path):
-        logger.info(
-            "REUSE — CIF/FOB estimated rates already exist: %s",
-            output_path,
-        )
-        return _inspect_existing_estimated_rates(
-            output_path=output_path,
-            threads=cfg.engine.threads,
-        )
-
-    estimation_cfg = cfg.method.estimation
-    primary_model_name, model_configs = _enabled_model_configs(cfg)
-    predictor_sets = _configured_predictor_sets(cfg)
-    run_specs = _resolve_run_specs(
-        cfg=cfg,
-        model_configs=model_configs,
-        predictor_sets=predictor_sets,
-        primary_model_name=primary_model_name,
-    )
-    predictors = _all_predictors_for_validation(predictor_sets)
-    primary_run_name = next(
-        spec.run_name
-        for spec in run_specs
-        if spec.is_primary
-    )
-
-    minimum_evidence_value = float(
-        estimation_cfg.minimum_evidence_value_usd
-    )
-    minimum_factor = float(estimation_cfg.minimum_factor)
-    maximum_factor = float(estimation_cfg.maximum_factor)
-    exclude_proxy_weights = bool(
-        estimation_cfg.exclude_proxy_weights
-    )
-
-    logger.info("Estimating and comparing CIF/FOB rates.")
-    logger.info("  Input: %s", input_path)
-    logger.info("  Output: %s", output_path)
-    logger.info("  Predictor union: %s", ", ".join(predictors))
-    logger.info(
-        "  Predictor sets: %s",
-        ", ".join(predictor_sets),
-    )
-    logger.info(
-        "  Enabled models: %s",
-        ", ".join(model_configs),
-    )
-    logger.info("  Primary model: %s", primary_model_name)
-    logger.info("  Primary estimation run: %s", primary_run_name)
-    logger.info(
-        "  Minimum evidence value: %.2f USD",
-        minimum_evidence_value,
-    )
-    logger.info(
-        "  Permitted observed-factor range: %.3f-%.3f",
-        minimum_factor,
-        maximum_factor,
-    )
-    logger.info(
-        "  Exclude proxy weights: %s",
-        exclude_proxy_weights,
-    )
-    logger.info(
-        "  Training factor sources: %s",
-        ", ".join(estimation_cfg.training_factor_sources),
-    )
-
-    con = duckdb.connect()
-
-    try:
-        con.execute(
-            f"SET threads = {int(cfg.engine.threads)}"
-        )
-
-        _validate_input_columns(
-            con=con,
-            input_path=input_path,
-            predictors=predictors,
-        )
-
-        select_columns = [
-            "year",
-            "exporter_iso",
-            "importer_iso",
-            "target_cmd",
-            "model_eligible",
-            "initial_predictors_complete",
-            "factor_source",
-            "observed_cif_fob_factor",
-            "import_direct_covered_primary_value",
-            "export_value_fob",
-            "import_value_cif",
-            "pair_uses_weight_proxy",
-            "pair_uses_estimated_weight",
-            "import_weight_estimated",
-            "lagged_pair_factor_observations",
-            "lagged_pair_factor_years",
-            "lagged_pair_factor_found",
-            *[
-                predictor
-                for predictor in predictors
-                if predictor != "year"
-            ],
-        ]
-
-        select_columns = list(dict.fromkeys(select_columns))
-
-        quoted_select = ",\n".join(
-            _quoted_identifier(column)
-            for column in select_columns
-        )
-
-        data = con.execute(
-            f"""
-            SELECT
-                {quoted_select}
-            FROM read_parquet({_sql_literal(input_path)})
-            """
-        ).df()
-
-    finally:
-        con.close()
-
-    if data.empty:
-        raise RuntimeError(
-            "Rate-estimation input contains no rows."
-        )
-
-    # ==================================================================
-    # Shared clean estimation sample
-    # ==================================================================
-
-    data["estimation_evidence_value"] = _evidence_value(data)
-    data["estimation_source_weight"] = _source_weight(
-        frame=data,
-        cfg=cfg,
-    )
-
-    # With minimum_evidence_value_usd: 0.0 this deliberately requires
-    # positive evidence instead of allowing zero-valued observations.
-    data["passes_minimum_value"] = (
-        data["estimation_evidence_value"]
-        .gt(minimum_evidence_value)
-        .fillna(False)
-    )
-
-    observed_factor = pd.to_numeric(
-        data["observed_cif_fob_factor"],
-        errors="coerce",
-    )
-
-    data["passes_factor_lower_bound"] = (
-        observed_factor
-        .ge(minimum_factor)
-        .fillna(False)
-    )
-    data["passes_factor_upper_bound"] = (
-        observed_factor
-        .le(maximum_factor)
-        .fillna(False)
-    )
-
-    if exclude_proxy_weights:
-        # The proxy rule is relevant to mirror evidence. Direct evidence
-        # is not rejected merely because a mirror-oriented proxy flag is
-        # present in the shared table.
-        is_direct = (
-            data["factor_source"]
-            .astype("string")
-            .str.lower()
-            .eq("direct")
-        )
-        data["passes_proxy_rule"] = (
-            is_direct
-            | (
-                ~data["pair_uses_weight_proxy"]
-                .fillna(False)
-                .astype(bool)
-            )
-        )
-    else:
-        data["passes_proxy_rule"] = True
-
-    data["prediction_eligible"] = (
-        data["initial_predictors_complete"]
-        .fillna(False)
-        .astype(bool)
-    )
-
-    training_factor_sources = [
-        source.strip().lower()
-        for source in estimation_cfg.training_factor_sources
-    ]
-
-    data["passes_factor_source_rule"] = (
-        data["factor_source"]
-        .astype("string")
-        .str.lower()
-        .isin(training_factor_sources)
-    )
-
-    data["clean_estimation_eligible"] = (
-        data["model_eligible"].fillna(False).astype(bool)
-        & data["prediction_eligible"]
-        & data["passes_factor_source_rule"]
-        & data["passes_minimum_value"]
-        & data["passes_factor_lower_bound"]
-        & data["passes_factor_upper_bound"]
-        & data["passes_proxy_rule"]
-        & data["estimation_source_weight"].gt(0)
-        & observed_factor.notna()
-    )
-
-    clean = data.loc[
-        data["clean_estimation_eligible"]
-    ].copy()
-
-    if clean.empty:
-        raise RuntimeError(
-            "No observations passed the configured clean-estimation rules."
-        )
-
-    clean["observed_cif_fob_factor"] = pd.to_numeric(
-        clean["observed_cif_fob_factor"],
-        errors="raise",
-    )
-    clean["log_observed_factor"] = np.log(
-        clean["observed_cif_fob_factor"]
-    )
-
-    latest_holdout_year = _resolve_latest_holdout_year(
-        clean=clean,
-        cfg=cfg,
-    )
-    validation_years = _resolve_temporal_validation_years(
-        clean=clean,
-        cfg=cfg,
-    )
-
-    if latest_holdout_year not in validation_years:
-        validation_years = sorted(
-            set(validation_years + [latest_holdout_year])
-        )
-
-    logger.info(
-        "  Temporal validation years: %s",
-        ", ".join(str(year) for year in validation_years),
-    )
-
-    # ==================================================================
-    # Run identical temporal folds for every model
-    # ==================================================================
-
-    all_fold_results: list[pd.DataFrame] = []
-    latest_predictions_by_model: dict[
-        str,
-        tuple[pd.Index, np.ndarray, np.ndarray],
-    ] = {}
-
-    # ==================================================================
-    # Full-sample fit and prediction for every enabled model
-    # ==================================================================
-
-    prediction_rows = data.loc[
-        data["prediction_eligible"]
-    ].copy()
-
-    if prediction_rows.empty:
-        raise RuntimeError(
-            "No rows have complete predictors for final estimation."
-        )
-
-    for run_spec in run_specs:
-        logger.info(
-            "  Backtesting run: %s",
-            run_spec.run_name,
-        )
-
-        fold_results, predictions_by_year = _run_temporal_backtest(
-            clean=clean,
-            cfg=cfg,
-            run_spec=run_spec,
-            minimum_factor=minimum_factor,
-            maximum_factor=maximum_factor,
-            validation_years=validation_years,
-        )
-
-        if fold_results.empty:
-            raise RuntimeError(
-                f"Run {run_spec.run_name!r} produced no temporal folds."
-            )
-
-        all_fold_results.append(fold_results)
-
-        if latest_holdout_year in predictions_by_year:
-            latest_predictions_by_model[run_spec.run_name] = (
-                predictions_by_year[latest_holdout_year]
-            )
-
-        latest_row = fold_results.loc[
-            fold_results["validation_year"].eq(
-                latest_holdout_year
-            )
-        ]
-
-        if not latest_row.empty:
-            row = latest_row.iloc[0]
-            logger.info(
-                "    Latest holdout %s — median APE %.4f%%, "
-                "p90 APE %.4f%%, p95 APE %.4f%%",
-                latest_holdout_year,
-                100.0 * float(row["median_ape"]),
-                100.0 * float(row["p90_ape"]),
-                100.0 * float(row["p95_ape"]),
-            )
-
-    fold_results = pd.concat(
-        all_fold_results,
-        ignore_index=True,
-    )
-    validation_summary = _summarise_backtests(
-        fold_results
-    )
-
-    _write_validation_outputs(
-        cfg=cfg,
-        fold_results=fold_results,
-        summary=validation_summary,
-    )
-
-    # Preserve latest genuine OOS predictions for every model.
-    data["is_temporal_holdout"] = (
-        data["year"].eq(latest_holdout_year)
-        & data["clean_estimation_eligible"]
-    )
-
-    for model_name, prediction_tuple in (
-        latest_predictions_by_model.items()
-    ):
-        row_index, predicted_log, predicted_factor = prediction_tuple
-        prefix = _safe_model_prefix(model_name)
-
-        data[f"{prefix}_holdout_predicted_log_factor"] = np.nan
-        data[f"{prefix}_holdout_predicted_factor"] = np.nan
-
-        data.loc[
-            row_index,
-            f"{prefix}_holdout_predicted_log_factor",
-        ] = predicted_log
-
-        data.loc[
-            row_index,
-            f"{prefix}_holdout_predicted_factor",
-        ] = predicted_factor
-
-    primary_factor_column: str | None = None
-    primary_log_column: str | None = None
-
-    for run_spec in run_specs:
-        logger.info(
-            "  Final full-sample fit: %s",
-            run_spec.run_name,
-        )
-
-        fitted = _fit_model(
-            model_name=run_spec.model_name,
-            model_cfg=run_spec.model_cfg,
-            train_frame=clean,
-            predictors=run_spec.predictors,
-            categorical_predictors=run_spec.categorical_predictors,
-            sample_weight=clean["estimation_source_weight"],
-        )
-
-        predicted_log = _predict_model(
-            fitted,
-            prediction_rows,
-        )
-        predicted_factor = np.clip(
-            np.exp(predicted_log),
-            minimum_factor,
-            maximum_factor,
-        )
-
-        prefix = _safe_model_prefix(run_spec.run_name)
-        log_column = (
-            f"{prefix}_predicted_log_cif_fob_factor"
-        )
-        factor_column = (
-            f"{prefix}_estimated_cif_fob_factor"
-        )
-
-        data[log_column] = np.nan
-        data[factor_column] = np.nan
-
-        data.loc[
-            prediction_rows.index,
-            log_column,
-        ] = predicted_log
-
-        data.loc[
-            prediction_rows.index,
-            factor_column,
-        ] = predicted_factor
-
-        if run_spec.is_primary:
-            primary_log_column = log_column
-            primary_factor_column = factor_column
-
-    if primary_factor_column is None or primary_log_column is None:
-        raise RuntimeError(
-            "Primary model predictions were not produced."
-        )
-
-    # Stable downstream aliases.
-    data["predicted_log_cif_fob_factor"] = data[
-        primary_log_column
-    ]
-    data["estimated_cif_fob_factor"] = data[
-        primary_factor_column
-    ]
-    data["estimated_factor_method"] = np.where(
-        data["prediction_eligible"],
-        primary_run_name,
-        None,
-    )
-    data["primary_model_name"] = primary_model_name
-    data["primary_estimation_run"] = primary_run_name
-    data["estimation_holdout_year"] = latest_holdout_year
-    data["estimation_training_observations"] = len(clean)
-    data["factor_for_application"] = data[
-        "estimated_cif_fob_factor"
-    ]
-
-    # ==================================================================
-    # Write and audit main output
-    # ==================================================================
-
-    _write_dataframe(
-        frame=data,
-        output_path=output_path,
-        threads=cfg.engine.threads,
-    )
-
-    con = duckdb.connect()
-
-    try:
-        con.execute(
-            f"SET threads = {int(cfg.engine.threads)}"
-        )
-
-        output_sql = _sql_literal(output_path)
-
-        audit_row = con.execute(
-            f"""
-            WITH duplicate_keys AS (
-                SELECT
-                    year,
-                    exporter_iso,
-                    importer_iso,
-                    target_cmd,
-                    COUNT(*) AS n_rows
-                FROM read_parquet({output_sql})
-                GROUP BY
-                    year,
-                    exporter_iso,
-                    importer_iso,
-                    target_cmd
-                HAVING COUNT(*) > 1
-            )
-            SELECT
-                (
-                    SELECT COUNT(*)
-                    FROM read_parquet({output_sql})
-                ) AS n_output_rows,
-
-                (
-                    SELECT COUNT(*)
-                    FROM duplicate_keys
-                ) AS n_duplicate_keys,
-
-                (
-                    SELECT COUNT(*)
-                    FROM read_parquet({output_sql})
-                    WHERE clean_estimation_eligible
-                ) AS n_clean_estimation_observations,
-
-                (
-                    SELECT COUNT(*)
-                    FROM read_parquet({output_sql})
-                    WHERE prediction_eligible
-                ) AS n_prediction_eligible,
-
-                (
-                    SELECT COUNT(*)
-                    FROM read_parquet({output_sql})
-                    WHERE estimated_cif_fob_factor IS NOT NULL
-                ) AS n_with_estimated_factor,
-
-                (
-                    SELECT COUNT(*)
-                    FROM read_parquet({output_sql})
-                    WHERE prediction_eligible
-                      AND estimated_cif_fob_factor IS NULL
-                ) AS n_missing_prediction_when_eligible,
-
-                (
-                    SELECT COUNT(*)
-                    FROM read_parquet({output_sql})
-                    WHERE NOT prediction_eligible
-                      AND estimated_cif_fob_factor IS NOT NULL
-                ) AS n_prediction_when_ineligible,
-
-                (
-                    SELECT COUNT(*)
-                    FROM read_parquet({output_sql})
-                    WHERE estimated_cif_fob_factor IS NOT NULL
-                      AND (
-                            estimated_cif_fob_factor < {minimum_factor}
-                         OR estimated_cif_fob_factor > {maximum_factor}
-                      )
-                ) AS n_prediction_bound_failures,
-
-                (
-                    SELECT MEDIAN(estimated_cif_fob_factor)
-                    FROM read_parquet({output_sql})
-                    WHERE estimated_cif_fob_factor IS NOT NULL
-                ) AS median_estimated_factor,
-
-                (
-                    SELECT QUANTILE_CONT(
-                        estimated_cif_fob_factor,
-                        0.05
-                    )
-                    FROM read_parquet({output_sql})
-                    WHERE estimated_cif_fob_factor IS NOT NULL
-                ) AS estimated_factor_p05,
-
-                (
-                    SELECT QUANTILE_CONT(
-                        estimated_cif_fob_factor,
-                        0.95
-                    )
-                    FROM read_parquet({output_sql})
-                    WHERE estimated_cif_fob_factor IS NOT NULL
-                ) AS estimated_factor_p95
-            """
-        ).fetchone()
-
-    finally:
-        con.close()
-
-    if audit_row is None:
-        raise RuntimeError(
-            "Could not audit estimated-rate output."
-        )
-
-    (
-        n_output_rows,
-        n_duplicate_keys,
-        n_clean_estimation_observations,
-        n_prediction_eligible,
-        n_with_estimated_factor,
-        n_missing_prediction_when_eligible,
-        n_prediction_when_ineligible,
-        n_prediction_bound_failures,
-        median_estimated_factor,
-        estimated_factor_p05,
-        estimated_factor_p95,
-    ) = audit_row
-
-    if n_output_rows != len(data):
-        raise RuntimeError(
-            "Estimated-rate output row count does not match input: "
-            f"output={n_output_rows:,}, input={len(data):,}."
-        )
-
-    if n_duplicate_keys > 0:
-        raise RuntimeError(
-            "Estimated-rate output contains duplicate bilateral keys: "
-            f"{n_duplicate_keys:,}."
-        )
-
-    if n_missing_prediction_when_eligible > 0:
-        raise RuntimeError(
-            "Prediction-eligible rows are missing primary-model "
-            f"estimates: {n_missing_prediction_when_eligible:,}."
-        )
-
-    if n_prediction_when_ineligible > 0:
-        raise RuntimeError(
-            "Prediction-ineligible rows unexpectedly received primary "
-            f"model estimates: {n_prediction_when_ineligible:,}."
-        )
-
-    if n_prediction_bound_failures > 0:
-        raise RuntimeError(
-            "Estimated factors fall outside configured limits: "
-            f"{n_prediction_bound_failures:,}."
-        )
-
-    ready_for_trade_correction = (
-        int(n_with_estimated_factor or 0) > 0
-    )
-
-    prediction_coverage_percent = (
-        100.0 * n_with_estimated_factor / n_output_rows
-        if n_output_rows
-        else 0.0
-    )
-
-    logger.info("CIF/FOB rates estimated and compared.")
-    logger.info("  Primary model: %s", primary_model_name)
-    logger.info("  Primary estimation run: %s", primary_run_name)
-    logger.info("  Output rows: %s", n_output_rows)
-    logger.info(
-        "  Clean estimation observations: %s",
-        n_clean_estimation_observations,
-    )
-    logger.info(
-        "  Prediction-eligible rows: %s",
-        n_prediction_eligible,
-    )
-    logger.info(
-        "  Rows with primary estimated factor: %s",
-        n_with_estimated_factor,
-    )
-    logger.info(
-        "  Estimated-factor coverage: %.4f%%",
-        prediction_coverage_percent,
-    )
-    logger.info(
-        "  Median primary estimated factor: %s",
-        median_estimated_factor,
-    )
-    logger.info(
-        "  Primary estimated factor p05/p95: %s / %s",
-        estimated_factor_p05,
-        estimated_factor_p95,
-    )
-    logger.info(
-        "  Temporal validation folds: %s",
-        cfg.product_path("temporal_validation_folds"),
-    )
-    logger.info(
-        "  Temporal validation summary: %s",
-        cfg.product_path("temporal_validation_summary"),
-    )
-    logger.info("  Output: %s", output_path)
-
-    latest_primary_row = fold_results.loc[
-        (fold_results["model_name"] == primary_run_name)
-        & (
-            fold_results["validation_year"]
-            == latest_holdout_year
-        )
-    ]
-
-    latest_primary_metrics: dict[str, Any] = {}
-
-    if not latest_primary_row.empty:
-        latest_primary_metrics = latest_primary_row.iloc[0].to_dict()
-
-    return {
-        "status": "completed",
-        "audit_passed": True,
-        "ready_for_trade_correction": (
-            ready_for_trade_correction
-        ),
-        "output_path": output_path,
-        "estimated_rates_path": output_path,
-        "primary_model_name": primary_model_name,
-        "primary_estimation_run": primary_run_name,
-        "enabled_models": list(model_configs),
-        "enabled_estimation_runs": [
-            spec.run_name
-            for spec in run_specs
-        ],
-        "predictor_sets": list(predictor_sets),
-        "n_output_rows": n_output_rows,
-        "n_clean_estimation_observations": (
-            n_clean_estimation_observations
-        ),
-        "n_prediction_eligible": n_prediction_eligible,
-        "n_with_estimated_factor": n_with_estimated_factor,
-        "prediction_coverage_percent": (
-            prediction_coverage_percent
-        ),
-        "n_duplicate_keys": n_duplicate_keys,
-        "median_estimated_factor": median_estimated_factor,
-        "estimated_factor_p05": estimated_factor_p05,
-        "estimated_factor_p95": estimated_factor_p95,
-        "holdout_year": latest_holdout_year,
-        "temporal_validation_years": validation_years,
-        "temporal_validation_fold_count": int(
-            len(fold_results)
-        ),
-        "temporal_validation_summary_path": (
-            cfg.product_path(
-                "temporal_validation_summary"
-            )
-        ),
-        "temporal_validation_folds_path": (
-            cfg.product_path(
-                "temporal_validation_folds"
-            )
-        ),
-        "latest_primary_holdout_metrics": (
-            latest_primary_metrics
-        ),
-    }

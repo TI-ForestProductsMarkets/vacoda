@@ -3,16 +3,374 @@ vacoda.visualization.distributions
 
 One-variable (1-D) distribution plots.
 """
+from __future__ import annotations
 
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
+from typing import Iterable
+
 from vacoda.utils.diagnostics import compute_data_coverage
 
-import numpy as np
-import matplotlib.pyplot as plt
+def _split_estimation_run_name(run_name: str) -> tuple[str, str]:
+    """Split algorithm × predictor-set run name."""
+    if "__" not in str(run_name):
+        return str(run_name), ""
 
+    algorithm, predictor_set = str(run_name).split("__", 1)
+    return algorithm, predictor_set
+
+
+def _short_algorithm_name(name: str) -> str:
+    """Return compact display name for model algorithm."""
+    mapping = {
+        "hist_gradient_boosting": "HGB absolute-log",
+        "hist_gradient_boosting_squared": "HGB squared-log",
+        "hist_gradient_boosting_squared_level": "HGB squared-level",
+        "hist_gradient_boosting_squared_regularized": "HGB squared-log regularized",
+        "log_linear_regression": "OLS log-linear",
+        "log_linear_regression_smearing": "OLS smearing",
+        "xgboost_log_squared": "XGBoost squared-log",
+    }
+    return mapping.get(str(name), str(name))
+
+
+def _metric_is_percentage(metric: str) -> bool:
+    """Return whether a metric should be displayed as percent."""
+    lowered = metric.lower()
+    return (
+        "ape" in lowered
+        or "share" in lowered
+        or "percent" in lowered
+    )
+
+
+def _prepare_metric_for_plot(
+    frame: pd.DataFrame,
+    *,
+    metric: str,
+) -> pd.Series:
+    """Return metric values in display scale."""
+    values = pd.to_numeric(
+        frame[metric],
+        errors="coerce",
+    )
+
+    if _metric_is_percentage(metric):
+        return values * 100.0
+
+    return values
+
+
+def plot_model_metric_ranking(
+    summary: pd.DataFrame,
+    *,
+    metric: str = "mean_mae_log_factor",
+    primary_run_name: str | None = None,
+    top_n: int | None = 20,
+    higher_is_better: bool = False,
+    title: str | None = None,
+    metric_label: str | None = None,
+):
+    """
+    Plot ranked model runs for one validation metric.
+
+    Best use:
+      - mean_mae_log_factor
+      - mean_median_ape
+      - mean_p90_ape
+      - mean_rmse_log_factor
+
+    Parameters
+    ----------
+    summary:
+        Temporal validation summary with one row per model run.
+    metric:
+        Column to rank by.
+    primary_run_name:
+        Full primary run name, e.g.
+        'hist_gradient_boosting__model_5_full_history'.
+    top_n:
+        Maximum number of rows to display. If primary is outside top_n,
+        it is still included.
+    higher_is_better:
+        Use True for R² or Spearman. Use False for error metrics.
+    title:
+        Optional chart title.
+    metric_label:
+        Optional x-axis label.
+
+    Returns
+    -------
+    fig, ax, plot_data
+    """
+    required = {"model_name", metric}
+    missing = required - set(summary.columns)
+    if missing:
+        raise ValueError(
+            "Model summary is missing required columns: "
+            + ", ".join(sorted(missing))
+        )
+
+    plot_data = summary.copy()
+    plot_data = plot_data[
+        plot_data[metric].notna()
+    ].copy()
+
+    if plot_data.empty:
+        raise ValueError(
+            f"No finite values available for metric {metric!r}."
+        )
+
+    parsed = plot_data["model_name"].apply(
+        _split_estimation_run_name
+    )
+    plot_data["algorithm"] = [
+        item[0] for item in parsed
+    ]
+    plot_data["predictor_set"] = [
+        item[1] for item in parsed
+    ]
+    plot_data["algorithm_label"] = plot_data["algorithm"].map(
+        _short_algorithm_name
+    )
+
+    plot_data["display_label"] = (
+        plot_data["algorithm_label"]
+        + " / "
+        + plot_data["predictor_set"].astype(str)
+    )
+
+    if primary_run_name is not None:
+        plot_data["is_primary"] = (
+            plot_data["model_name"].astype(str)
+            == str(primary_run_name)
+        )
+        plot_data.loc[
+            plot_data["is_primary"],
+            "display_label",
+        ] = (
+            plot_data.loc[
+                plot_data["is_primary"],
+                "display_label",
+            ]
+            + "  [primary]"
+        )
+    else:
+        plot_data["is_primary"] = False
+
+    plot_data["metric_display"] = _prepare_metric_for_plot(
+        plot_data,
+        metric=metric,
+    )
+
+    plot_data = plot_data.sort_values(
+        metric,
+        ascending=not higher_is_better,
+    )
+
+    if top_n is not None and len(plot_data) > top_n:
+        top = plot_data.head(top_n).copy()
+
+        if primary_run_name is not None:
+            primary = plot_data[
+                plot_data["model_name"].astype(str)
+                == str(primary_run_name)
+            ]
+            if not primary.empty:
+                top = pd.concat(
+                    [top, primary],
+                    ignore_index=True,
+                ).drop_duplicates(
+                    subset=["model_name"],
+                    keep="first",
+                )
+
+        plot_data = top.sort_values(
+            metric,
+            ascending=not higher_is_better,
+        )
+
+    fig_height = max(
+        4.5,
+        0.34 * len(plot_data) + 1.5,
+    )
+    fig, ax = plt.subplots(
+        figsize=(11, fig_height)
+    )
+
+    y_positions = np.arange(len(plot_data))
+
+    ax.barh(
+        y_positions,
+        plot_data["metric_display"].to_numpy(dtype=float),
+    )
+
+    ax.set_yticks(y_positions)
+    ax.set_yticklabels(
+        plot_data["display_label"].tolist()
+    )
+    ax.invert_yaxis()
+
+    if metric_label is None:
+        metric_label = metric
+
+    if _metric_is_percentage(metric):
+        metric_label = f"{metric_label} (%)"
+
+    ax.set_xlabel(metric_label)
+    ax.set_ylabel("Model run")
+
+    if title is None:
+        title = f"Model ranking by {metric}"
+
+    ax.set_title(title)
+
+    ax.grid(
+        axis="x",
+        alpha=0.25,
+    )
+
+    fig.tight_layout()
+
+    return fig, ax, plot_data
+
+
+def plot_observed_vs_predicted_p95(
+    summary: pd.DataFrame,
+    *,
+    primary_run_name: str | None = None,
+    top_n: int = 12,
+    ranking_metric: str = "mean_mae_log_factor",
+    observed_column: str = "mean_observed_p95",
+    predicted_column: str = "mean_predicted_p95",
+    title: str = "Observed vs predicted upper-tail factor by model",
+):
+    """
+    Compare observed and predicted P95 factors for top model runs.
+
+    This is useful for showing whether a model compresses the upper tail.
+    """
+    required = {
+        "model_name",
+        ranking_metric,
+        observed_column,
+        predicted_column,
+    }
+    missing = required - set(summary.columns)
+    if missing:
+        raise ValueError(
+            "Model summary is missing required columns: "
+            + ", ".join(sorted(missing))
+        )
+
+    plot_data = summary.copy()
+    plot_data = plot_data.dropna(
+        subset=[
+            ranking_metric,
+            observed_column,
+            predicted_column,
+        ]
+    )
+
+    plot_data = plot_data.sort_values(
+        ranking_metric,
+        ascending=True,
+    )
+
+    if len(plot_data) > top_n:
+        top = plot_data.head(top_n).copy()
+
+        if primary_run_name is not None:
+            primary = plot_data[
+                plot_data["model_name"].astype(str)
+                == str(primary_run_name)
+            ]
+            if not primary.empty:
+                top = pd.concat(
+                    [top, primary],
+                    ignore_index=True,
+                ).drop_duplicates(
+                    subset=["model_name"],
+                    keep="first",
+                )
+
+        plot_data = top
+
+    parsed = plot_data["model_name"].apply(
+        _split_estimation_run_name
+    )
+    plot_data["algorithm"] = [
+        item[0] for item in parsed
+    ]
+    plot_data["predictor_set"] = [
+        item[1] for item in parsed
+    ]
+    plot_data["display_label"] = (
+        plot_data["algorithm"].map(_short_algorithm_name)
+        + " / "
+        + plot_data["predictor_set"].astype(str)
+    )
+
+    if primary_run_name is not None:
+        is_primary = (
+            plot_data["model_name"].astype(str)
+            == str(primary_run_name)
+        )
+        plot_data.loc[
+            is_primary,
+            "display_label",
+        ] = (
+            plot_data.loc[
+                is_primary,
+                "display_label",
+            ]
+            + "  [primary]"
+        )
+
+    y_positions = np.arange(len(plot_data))
+    bar_height = 0.38
+
+    fig_height = max(
+        4.5,
+        0.36 * len(plot_data) + 1.5,
+    )
+    fig, ax = plt.subplots(
+        figsize=(11, fig_height)
+    )
+
+    ax.barh(
+        y_positions - bar_height / 2,
+        plot_data[observed_column].to_numpy(dtype=float),
+        height=bar_height,
+        label="Observed P95",
+    )
+    ax.barh(
+        y_positions + bar_height / 2,
+        plot_data[predicted_column].to_numpy(dtype=float),
+        height=bar_height,
+        label="Predicted P95",
+    )
+
+    ax.set_yticks(y_positions)
+    ax.set_yticklabels(
+        plot_data["display_label"].tolist()
+    )
+    ax.invert_yaxis()
+
+    ax.set_xlabel("CIF/FOB factor")
+    ax.set_ylabel("Model run")
+    ax.set_title(title)
+    ax.legend()
+    ax.grid(
+        axis="x",
+        alpha=0.25,
+    )
+
+    fig.tight_layout()
+
+    return fig, ax, plot_data
 
 def plot_nebula_boxplot(
     df,

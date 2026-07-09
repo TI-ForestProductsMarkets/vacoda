@@ -603,6 +603,61 @@ class CifFobEstimationSourceWeightsConfig:
 
 
 @dataclass(frozen=True)
+class CifFobMaximumFactorRuleConfig:
+    method: str
+    iqr_multiplier: float
+    percentile: float
+    domain_cap: float
+
+    @classmethod
+    def from_dict(
+        cls,
+        cfg: dict[str, Any],
+        *,
+        minimum_factor: float,
+    ) -> "CifFobMaximumFactorRuleConfig":
+        method = require_str(
+            cfg.get("method"),
+            key="cif_fob.method.estimation.maximum_factor_rule.method",
+        ).strip().lower()
+
+        if method != "robust_adaptive_cap":
+            raise ValueError(
+                "Unsupported cif_fob maximum_factor_rule.method: "
+                f"{method!r}."
+            )
+
+        return cls(
+            method=method,
+            iqr_multiplier=require_float(
+                cfg.get("iqr_multiplier"),
+                key=(
+                    "cif_fob.method.estimation."
+                    "maximum_factor_rule.iqr_multiplier"
+                ),
+                min_value=0.0,
+            ),
+            percentile=require_float(
+                cfg.get("percentile"),
+                key=(
+                    "cif_fob.method.estimation."
+                    "maximum_factor_rule.percentile"
+                ),
+                min_value=0.0,
+                max_value=1.0,
+            ),
+            domain_cap=require_float(
+                cfg.get("domain_cap"),
+                key=(
+                    "cif_fob.method.estimation."
+                    "maximum_factor_rule.domain_cap"
+                ),
+                min_value=minimum_factor,
+            ),
+        )
+
+
+@dataclass(frozen=True)
 class CifFobTemporalBacktestOutputConfig:
     summary_product: str
     fold_product: str
@@ -1635,7 +1690,7 @@ class CifFobEstimationModelConfig:
 class CifFobEstimationConfig:
     minimum_evidence_value_usd: float
     minimum_factor: float
-    maximum_factor: float
+    maximum_factor_rule: CifFobMaximumFactorRuleConfig
     exclude_proxy_weights: bool
 
     diagnostics: Any
@@ -1649,6 +1704,11 @@ class CifFobEstimationConfig:
     predictor_sets: dict[str, CifFobPredictorSetConfig] = field(
         default_factory=dict
     )
+
+    @property
+    def maximum_factor(self) -> float:
+        """Return the effective upper cap implied by maximum_factor_rule."""
+        return self.maximum_factor_rule.domain_cap
 
     def get_predictor_set(
         self,
@@ -1693,11 +1753,14 @@ class CifFobEstimationConfig:
             min_value=0.0,
         )
 
-        maximum_factor = require_float(
-            cfg.get("maximum_factor"),
-            key="cif_fob.method.estimation.maximum_factor",
-            min_value=minimum_factor,
+        maximum_factor_rule = CifFobMaximumFactorRuleConfig.from_dict(
+            require_dict(
+                cfg.get("maximum_factor_rule"),
+                key="cif_fob.method.estimation.maximum_factor_rule",
+            ),
+            minimum_factor=minimum_factor,
         )
+
 
         training_factor_sources = _require_str_list(
                                     cfg.get(
@@ -1726,7 +1789,7 @@ class CifFobEstimationConfig:
                 min_value=0.0,
             ),
             minimum_factor=minimum_factor,
-            maximum_factor=maximum_factor,
+            maximum_factor_rule=maximum_factor_rule,
             exclude_proxy_weights=require_bool(
                 cfg.get("exclude_proxy_weights"),
                 key=(
