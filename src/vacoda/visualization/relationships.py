@@ -9,30 +9,12 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
 import pandas as pd
-
+from vacoda.visualization.labels import (
+    short_algorithm_name,
+    short_predictor_set_name,
+    split_estimation_run_name,
+    )
 from typing import Iterable
-
-def _split_estimation_run_name(run_name: str) -> tuple[str, str]:
-    """Split algorithm × predictor-set run name."""
-    if "__" not in str(run_name):
-        return str(run_name), ""
-
-    algorithm, predictor_set = str(run_name).split("__", 1)
-    return algorithm, predictor_set
-
-
-def _short_algorithm_name(name: str) -> str:
-    """Return compact display name for model algorithm."""
-    mapping = {
-        "hist_gradient_boosting": "HGB absolute-log",
-        "hist_gradient_boosting_squared": "HGB squared-log",
-        "hist_gradient_boosting_squared_level": "HGB squared-level",
-        "hist_gradient_boosting_squared_regularized": "HGB squared-log regularized",
-        "log_linear_regression": "OLS log-linear",
-        "log_linear_regression_smearing": "OLS smearing",
-        "xgboost_log_squared": "XGBoost squared-log",
-    }
-    return mapping.get(str(name), str(name))
 
 
 def _metric_is_percentage(metric: str) -> bool:
@@ -82,8 +64,8 @@ def plot_central_vs_tail_tradeoff(
     primary_run_name: str | None = None,
     x_label: str = "Median APE",
     y_label: str = "Upper-tail median APE",
-    title: str = "Central accuracy vs upper-tail accuracy",
-    annotate_top_n: int = 10,
+    title: str = "CIF/FOB central accuracy vs upper-tail accuracy",
+    highlight_runs: dict[str, str] | None = None,
 ):
     """
     Plot model trade-off between central accuracy and upper-tail accuracy.
@@ -103,7 +85,7 @@ def plot_central_vs_tail_tradeoff(
     plot_data = summary.copy()
     plot_data = plot_data.dropna(
         subset=[x_metric, y_metric]
-    )
+    ).copy()
 
     if plot_data.empty:
         raise ValueError(
@@ -111,8 +93,9 @@ def plot_central_vs_tail_tradeoff(
         )
 
     parsed = plot_data["model_name"].apply(
-        _split_estimation_run_name
+        split_estimation_run_name
     )
+
     plot_data["algorithm"] = [
         item[0] for item in parsed
     ]
@@ -120,7 +103,7 @@ def plot_central_vs_tail_tradeoff(
         item[1] for item in parsed
     ]
     plot_data["algorithm_label"] = plot_data["algorithm"].map(
-        _short_algorithm_name
+        short_algorithm_name
     )
 
     plot_data["x_display"] = _display_metric_values(
@@ -132,13 +115,17 @@ def plot_central_vs_tail_tradeoff(
         metric=y_metric,
     )
 
-    plot_data["rank_score"] = (
-        plot_data["x_display"].rank(method="min")
-        + plot_data["y_display"].rank(method="min")
-    )
+    if highlight_runs is None:
+        highlight_runs = {}
+
+    if primary_run_name is not None:
+        highlight_runs = {
+            **highlight_runs,
+            str(primary_run_name): "Primary: HGB m5",
+        }
 
     fig, ax = plt.subplots(
-        figsize=(9, 6.5)
+        figsize=(10, 6.5)
     )
 
     for algorithm, group in plot_data.groupby(
@@ -149,86 +136,88 @@ def plot_central_vs_tail_tradeoff(
             group["x_display"],
             group["y_display"],
             label=algorithm,
-            alpha=0.8,
+            alpha=0.75,
+            s=55,
         )
 
-    if primary_run_name is not None:
-        primary = plot_data[
-            plot_data["model_name"].astype(str)
-            == str(primary_run_name)
-        ]
-        if not primary.empty:
-            ax.scatter(
-                primary["x_display"],
-                primary["y_display"],
-                s=140,
-                marker="*",
-                label="Primary",
+    # Highlight selected decision-relevant runs only.
+    highlight_data = plot_data[
+        plot_data["model_name"].astype(str).isin(
+            set(highlight_runs.keys())
+        )
+    ].copy()
+
+    if not highlight_data.empty:
+        ax.scatter(
+            highlight_data["x_display"],
+            highlight_data["y_display"],
+            s=160,
+            marker="*",
+            label="Highlighted runs",
+            zorder=5,
+        )
+
+        for _, row in highlight_data.iterrows():
+            run_name = str(row["model_name"])
+            label = highlight_runs.get(
+                run_name,
+                run_name,
             )
 
-    annotate = plot_data.sort_values(
-        "rank_score",
-        ascending=True,
-    ).head(annotate_top_n)
-
-    if primary_run_name is not None:
-        primary = plot_data[
-            plot_data["model_name"].astype(str)
-            == str(primary_run_name)
-        ]
-        if not primary.empty:
-            annotate = pd.concat(
-                [annotate, primary],
-                ignore_index=True,
-            ).drop_duplicates(
-                subset=["model_name"],
-                keep="first",
+            ax.annotate(
+                label,
+                xy=(
+                    row["x_display"],
+                    row["y_display"],
+                ),
+                xytext=(8, 8),
+                textcoords="offset points",
+                fontsize=9,
+                weight="bold",
+                alpha=0.9,
+                arrowprops={
+                    "arrowstyle": "-",
+                    "lw": 0.8,
+                    "alpha": 0.6,
+                },
             )
-
-    for _, row in annotate.iterrows():
-        short_label = (
-            _short_algorithm_name(row["algorithm"])
-            .replace("HGB ", "HGB\n")
-            .replace("OLS ", "OLS\n")
-        )
-        predictor_label = str(row["predictor_set"]).replace(
-            "model_",
-            "m",
-        )
-        label = f"{short_label}\n{predictor_label}"
-
-        ax.annotate(
-            label,
-            xy=(row["x_display"], row["y_display"]),
-            xytext=(4, 4),
-            textcoords="offset points",
-            fontsize=8,
-            alpha=0.85,
-        )
 
     ax.set_xlabel(
         _metric_axis_label(
             x_metric,
-            label=x_label,
+            label=f"{x_label} — lower is better",
         )
     )
     ax.set_ylabel(
         _metric_axis_label(
             y_metric,
-            label=y_label,
+            label=f"{y_label} — lower is better",
         )
     )
+
     ax.set_title(title)
     ax.grid(alpha=0.25)
+
     ax.legend(
         fontsize=8,
         frameon=False,
+        loc="best",
+    )
+
+    # Add small explanatory note inside the plot.
+    ax.text(
+        0.01,
+        0.01,
+        "Each point is one algorithm × predictor-set run. Lower-left is better.",
+        transform=ax.transAxes,
+        fontsize=8,
+        alpha=0.75,
+        va="bottom",
     )
 
     fig.tight_layout()
 
     return fig, ax, plot_data
-
 
 def plot_temporal_validation_metric(
     folds: pd.DataFrame,
@@ -273,7 +262,7 @@ def plot_temporal_validation_metric(
         )
 
     parsed = plot_data["model_name"].apply(
-        _split_estimation_run_name
+        split_estimation_run_name
     )
     plot_data["algorithm"] = [
         item[0] for item in parsed
@@ -282,13 +271,16 @@ def plot_temporal_validation_metric(
         item[1] for item in parsed
     ]
     plot_data["algorithm_label"] = plot_data["algorithm"].map(
-        _short_algorithm_name
+        short_algorithm_name
+    )
+    plot_data["predictor_set_label"] = plot_data["predictor_set"].map(
+        short_predictor_set_name
     )
 
     plot_data["display_label"] = (
         plot_data["algorithm_label"]
         + " / "
-        + plot_data["predictor_set"].astype(str)
+        + plot_data["predictor_set_label"].astype(str)
     )
 
     if primary_run_name is not None:
@@ -349,6 +341,8 @@ def plot_temporal_validation_metric(
             label=metric_label,
         )
     )
+    ax.set_xticks(sorted(grouped[year_column].unique()))
+    ax.set_xticklabels([str(int(y)) for y in sorted(grouped[year_column].unique())])
     ax.set_title(title)
     ax.grid(alpha=0.25)
     ax.legend(

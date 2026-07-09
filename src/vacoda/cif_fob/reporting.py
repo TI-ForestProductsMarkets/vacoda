@@ -1525,7 +1525,7 @@ def write_cif_fob_decision_report(
     #############################################################################
 
     ## 1. Plot the distribution of directly observed CIF/FOB factors
-    fig, _, direct_factor_plot_stats = plot_nebula_boxplot(
+    fig, _, _ = plot_nebula_boxplot(
         direct_factor_distribution_df,
         factor_col="observed_cif_fob_factor",
         upper_display=float(
@@ -1554,7 +1554,7 @@ def write_cif_fob_decision_report(
     fig, _, _ = plot_model_metric_ranking(
         summary,
         metric="mean_mae_log_factor",
-        primary_run_name=primary_run_name,
+        primary_run_name=None,
         top_n=18,
         higher_is_better=False,
         title="CIF/FOB model ranking by mean log MAE",
@@ -1587,18 +1587,59 @@ def write_cif_fob_decision_report(
     )
     plt.close(fig)
 
+    ## 4. Plot the model ranking by RMSE
+    fig, _, _ = plot_model_metric_ranking(
+        summary,
+        metric="mean_rmse_log_factor",
+        primary_run_name=primary_run_name,
+        top_n=18,
+        higher_is_better=False,
+        title="CIF/FOB model ranking by RMSE-Log",
+        metric_label="RMSE-Log",
+    )
+    fig.savefig(
+        figure_dir
+        / f"{cfg.scope.target_hs.lower()}_cif_fob_model_ranking_rmse.png",
+        dpi=180,
+        bbox_inches="tight",
+    )
+    plt.close(fig)
 
-    ## 4. Plot the model ranking by upper-tail median APE
+    ## 4. Plot the model ranking by R2 
+    fig, _, _ = plot_model_metric_ranking(
+        summary,
+        metric="mean_r2_log_factor",
+        primary_run_name=primary_run_name,
+        top_n=18,
+        higher_is_better=True,
+        title="CIF/FOB model ranking by R2-Log",
+        metric_label="R2-Log",
+    )
+    fig.savefig(
+        figure_dir
+        / f"{cfg.scope.target_hs.lower()}_cif_fob_model_ranking_r2.png",
+        dpi=180,
+        bbox_inches="tight",
+    )
+    plt.close(fig)
+
+    ## 5. Plot the model ranking by upper-tail median APE
+    highlight_runs = {
+        "hist_gradient_boosting__model_5_full_history": ("Primary: HGB M5"),
+        "hist_gradient_boosting_squared__model_5_full_history": ("Tail challenger: HGB² M5"),
+        "log_linear_regression__model_5_full_history": ("OLS baseline: M5"),
+    }
+
     fig, _, _ = plot_central_vs_tail_tradeoff(
         summary,
         x_metric="mean_median_ape",
         y_metric="mean_upper_tail_median_ape",
-        primary_run_name=primary_run_name,
+        primary_run_name="hist_gradient_boosting__model_5_full_history",
+        highlight_runs=highlight_runs,
         x_label="Median APE",
         y_label="Upper-tail median APE",
         title="CIF/FOB central accuracy vs upper-tail accuracy",
     )
-
     fig.savefig(
         figure_dir
         / f"{cfg.scope.target_hs.lower()}_cif_fob_central_vs_tail_tradeoff.png",
@@ -1608,7 +1649,7 @@ def write_cif_fob_decision_report(
     plt.close(fig)
 
 
-    ## 5.  Plot the temporal validation stability of the primary model and a few other candidates
+    ## 6.  Plot the temporal validation stability of the primary model and a few other candidates
     selected_runs = [
         "hist_gradient_boosting__model_5_full_history",
         "hist_gradient_boosting_squared__model_5_full_history",
@@ -1631,7 +1672,7 @@ def write_cif_fob_decision_report(
     )
     plt.close(fig)
 
-    ## 6. Plot Observed vs Predicted P95 for the primary model and a few other candidates
+    ## 7. Plot Observed vs Predicted P95 for the primary model and a few other candidates
     fig, _, _ = plot_observed_vs_predicted_p95(
         summary,
         primary_run_name=primary_run_name,

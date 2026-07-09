@@ -9,31 +9,13 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
-from typing import Iterable
+from vacoda.visualization.labels import (
+    short_algorithm_name,
+    short_predictor_set_name,
+    split_estimation_run_name,
+    )
 
 from vacoda.utils.diagnostics import compute_data_coverage
-
-def _split_estimation_run_name(run_name: str) -> tuple[str, str]:
-    """Split algorithm × predictor-set run name."""
-    if "__" not in str(run_name):
-        return str(run_name), ""
-
-    algorithm, predictor_set = str(run_name).split("__", 1)
-    return algorithm, predictor_set
-
-
-def _short_algorithm_name(name: str) -> str:
-    """Return compact display name for model algorithm."""
-    mapping = {
-        "hist_gradient_boosting": "HGB absolute-log",
-        "hist_gradient_boosting_squared": "HGB squared-log",
-        "hist_gradient_boosting_squared_level": "HGB squared-level",
-        "hist_gradient_boosting_squared_regularized": "HGB squared-log regularized",
-        "log_linear_regression": "OLS log-linear",
-        "log_linear_regression_smearing": "OLS smearing",
-        "xgboost_log_squared": "XGBoost squared-log",
-    }
-    return mapping.get(str(name), str(name))
 
 
 def _metric_is_percentage(metric: str) -> bool:
@@ -124,7 +106,7 @@ def plot_model_metric_ranking(
         )
 
     parsed = plot_data["model_name"].apply(
-        _split_estimation_run_name
+        split_estimation_run_name
     )
     plot_data["algorithm"] = [
         item[0] for item in parsed
@@ -133,13 +115,17 @@ def plot_model_metric_ranking(
         item[1] for item in parsed
     ]
     plot_data["algorithm_label"] = plot_data["algorithm"].map(
-        _short_algorithm_name
+        short_algorithm_name
+    )
+
+    plot_data["predictor_set_label"] = plot_data["predictor_set"].map(
+        short_predictor_set_name
     )
 
     plot_data["display_label"] = (
         plot_data["algorithm_label"]
         + " / "
-        + plot_data["predictor_set"].astype(str)
+        + plot_data["predictor_set_label"].astype(str)
     )
 
     if primary_run_name is not None:
@@ -299,7 +285,7 @@ def plot_observed_vs_predicted_p95(
         plot_data = top
 
     parsed = plot_data["model_name"].apply(
-        _split_estimation_run_name
+        split_estimation_run_name
     )
     plot_data["algorithm"] = [
         item[0] for item in parsed
@@ -307,10 +293,13 @@ def plot_observed_vs_predicted_p95(
     plot_data["predictor_set"] = [
         item[1] for item in parsed
     ]
+    plot_data["predictor_set_label"] = plot_data["predictor_set"].map(
+        short_predictor_set_name
+    )
     plot_data["display_label"] = (
-        plot_data["algorithm"].map(_short_algorithm_name)
+        plot_data["algorithm"].map(short_algorithm_name)
         + " / "
-        + plot_data["predictor_set"].astype(str)
+        + plot_data["predictor_set_label"].astype(str)
     )
 
     if primary_run_name is not None:
