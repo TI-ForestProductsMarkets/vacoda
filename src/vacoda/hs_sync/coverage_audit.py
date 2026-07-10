@@ -24,11 +24,10 @@ from vacoda.hs_sync.harvard.diagnostics import build_trade_source_pair_summary
 
 from vacoda.io.reports import TextReport, write_text_report
 from vacoda.io.writer import write_csv, write_parquet
-from vacoda.utils.logger import get_logger, rel_path
-from vacoda.utils.timing import timed_step, timed_workflow
+from vacoda.utils.logger import rel_path
 
 
-logger = get_logger("HS_SYNC.COVERAGE_AUDIT")
+#logger = get_logger("HS_SYNC.COVERAGE_AUDIT")
 
 
 def _format_value(value: float) -> str:
