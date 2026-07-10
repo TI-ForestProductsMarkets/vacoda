@@ -1,6 +1,11 @@
+"""
+Diagnostics for primary model temporal holdout.
+"""
+
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import duckdb
 import numpy as np

@@ -95,6 +95,19 @@ def _log_step_header(
     logger.info("=" * 72)
 
 
+def _resolve_primary_estimation_name(
+    *,
+    estimated_rates_result: dict[str, Any],
+) -> str | None:
+    """Resolve full primary estimation run name from Step 5 metadata."""
+    value = estimated_rates_result.get("primary_estimation_run")
+
+    if value and "__" in str(value):
+        return str(value)
+
+    return None
+
+
 def run_cif_fob_workflow(
     *,
     cfg: CifFobConfig,
@@ -381,30 +394,54 @@ def run_cif_fob_workflow(
                 )
 
                 estimated_rates_path  = _require_artifact(
-                    result=estimated_rates_result,
-                    path_key="estimated_rates_path",
-                    consumer_step="Diagnostics step",
-                    producer_product="estimated-rates Parquet",
-                )
+                                            result=estimated_rates_result,
+                                            path_key="estimated_rates_path",
+                                            consumer_step="Diagnostics step",
+                                            producer_product="estimated-rates Parquet",
+                                        )
 
-                primary_run_name =estimated_rates_result.get("primary_estimation_run")
+                primary_estimation_name = _resolve_primary_estimation_name(estimated_rates_result=estimated_rates_result,)
 
-                if not primary_run_name:
-                    primary_run_name = estimated_rates_result.get("primary_model_name")
+                if not primary_estimation_name:
+                    logger.warning(
+                        "%s SKIP — %s (missing primary run metadata in "
+                        "estimated_rates_result)",
+                        warn,
+                        WORKFLOW_STEPS[STEP - 1],
+                    )
+                    diagnostics_result = {
+                        "status": "skipped",
+                        "diagnostics_path": None,
+                        "output_path": None,
+                        "reason": (
+                            "Missing 'primary_estimation_run' and "
+                            "'primary_model_name' in estimated_rates_result."
+                        ),
+                    }
+                else:
+                    diagnostics_result = write_primary_holdout_diagnostics(
+                                            estimated_rates_path=estimated_rates_path,
+                                            output_path=cfg.product_path("diagnostics"),
+                                            primary_run_name=primary_estimation_name,
+                                            )
 
-                if not primary_run_name:
-                    raise RuntimeError(
-                        "Diagnostics step requires the primary estimation "
-                        "run name, but estimated_rates_result does not "
-                        "contain 'primary_estimation_run' or "
-                        "'primary_model_name'."
+
+                    logger.info(
+                        "%s CIF/FOB diagnostics written: %s",
+                        ok,
+                        diagnostics_result["diagnostics_path"],
                     )
 
-                diagnostics_result = write_primary_holdout_diagnostics(
-                        estimated_rates_path=estimated_rates_path,
-                        output_path=cfg.product_path("diagnostics"),
-                        primary_run_name=str(primary_run_name),
-                    )
+                    logger.info(
+                        "Diagnostics rows: %s; years: %s-%s; "
+                        "median APE: %.4f; mean APE: %.4f; P90 APE: %.4f",
+                        diagnostics_result["n_rows"],
+                        diagnostics_result["year_min"],
+                        diagnostics_result["year_max"],
+                        diagnostics_result["median_ape"],
+                        diagnostics_result["mean_ape"],
+                        diagnostics_result["p90_ape"],
+                    )                                            
 
             else:
                 logger.info(

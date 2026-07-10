@@ -57,6 +57,160 @@ def plot_grouped_error_bars(
     x_label: str = "Median APE (%)",
     y_label: str = "Group",
     higher_is_worse: bool = True,
+    sort_by_error: bool = True,
+):
+    """
+    Plot median model error by group.
+
+    Intended for heterogeneity diagnostics:
+      - product group
+      - factor band
+      - value band
+      - distance band
+      - route type
+
+    Expects one row per holdout prediction.
+
+    Parameters
+    ----------
+    sort_by_error:
+        If True, sort groups by median error.
+        If False, preserve the existing group order. This is useful for
+        naturally ordered bands such as distance or value bins.
+    """
+    required = {group_column, error_column}
+    missing = required - set(frame.columns)
+    if missing:
+        raise ValueError(
+            "Input frame is missing required columns: "
+            + ", ".join(sorted(missing))
+        )
+
+    data = frame.copy()
+    data[error_column] = pd.to_numeric(
+        data[error_column],
+        errors="coerce",
+    )
+
+    data = data.dropna(
+        subset=[group_column, error_column]
+    )
+
+    if data.empty:
+        raise ValueError(
+            "No data available for grouped error plot."
+        )
+
+    grouped = (
+        data
+        .groupby(
+            group_column,
+            as_index=False,
+            observed=True,
+        )
+        .agg(
+            n_observations=(error_column, "size"),
+            median_error=(error_column, "median"),
+            mean_error=(error_column, "mean"),
+            p90_error=(error_column, lambda x: x.quantile(0.90)),
+        )
+    )
+
+    grouped = grouped[
+        grouped["n_observations"] >= int(min_observations)
+    ].copy()
+
+    if grouped.empty:
+        raise ValueError(
+            "No groups satisfy the minimum observation requirement."
+        )
+
+    # APE is usually stored as a fraction, so convert to percent.
+    if "ape" in error_column.lower():
+        grouped["median_error_display"] = (
+            grouped["median_error"] * 100.0
+        )
+        grouped["mean_error_display"] = (
+            grouped["mean_error"] * 100.0
+        )
+        grouped["p90_error_display"] = (
+            grouped["p90_error"] * 100.0
+        )
+    else:
+        grouped["median_error_display"] = grouped["median_error"]
+        grouped["mean_error_display"] = grouped["mean_error"]
+        grouped["p90_error_display"] = grouped["p90_error"]
+
+    if sort_by_error:
+        grouped = grouped.sort_values(
+            "median_error_display",
+            ascending=not higher_is_worse,
+        )
+
+    if top_n is not None:
+        grouped = grouped.head(int(top_n)).copy()
+
+    grouped[group_column] = grouped[group_column].astype(str)
+
+    fig_height = max(
+        4.5,
+        0.34 * len(grouped) + 1.5,
+    )
+
+    fig, ax = plt.subplots(
+        figsize=(10.5, fig_height)
+    )
+
+    y_positions = np.arange(len(grouped))
+
+    ax.barh(
+        y_positions,
+        grouped["median_error_display"].to_numpy(dtype=float),
+    )
+
+    ax.set_yticks(y_positions)
+    ax.set_yticklabels(
+        grouped[group_column].tolist()
+    )
+    ax.invert_yaxis()
+
+    ax.set_xlabel(x_label)
+    ax.set_ylabel(y_label)
+    ax.set_title(title)
+    ax.grid(
+        axis="x",
+        alpha=0.25,
+    )
+
+    for y_position, value, n_obs in zip(
+        y_positions,
+        grouped["median_error_display"],
+        grouped["n_observations"],
+    ):
+        ax.text(
+            value,
+            y_position,
+            f"  {value:.2f}%  n={int(n_obs):,}",
+            va="center",
+            fontsize=8,
+        )
+
+    fig.tight_layout()
+
+    return fig, ax, grouped
+
+def plot_grouped_error_bars_deprecated(
+    frame: pd.DataFrame,
+    *,
+    group_column: str,
+    error_column: str = "ape",
+    count_column: str | None = None,
+    min_observations: int = 100,
+    top_n: int | None = 20,
+    title: str = "Model error by group",
+    x_label: str = "Median APE (%)",
+    y_label: str = "Group",
+    higher_is_worse: bool = True,
 ):
     """
     Plot median model error by group.

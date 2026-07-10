@@ -43,6 +43,9 @@ from vacoda.visualization.relationships import (
     plot_central_vs_tail_tradeoff,
     plot_temporal_validation_metric,
 ) 
+from vacoda.visualization.distributions import (
+    plot_grouped_error_bars,
+)
 
 
 # ======================================================================
@@ -870,8 +873,7 @@ def _inspect_direct_predictor_failures(
 def _inspect_estimated_rates(
     *,
     path: Path,
-    threads: int,
-) -> dict[str, Any]:
+    threads: int,) -> dict[str, Any]:
     """
     Inspect the final prediction artifact and every cumulative estimation gate.
 
@@ -1154,6 +1156,140 @@ def _resolve_cif_fob_figure_dir(
 
     return figure_dir
 
+def _save_cif_fob_figure(
+    *,
+    fig,
+    root_dir: Path,
+    category: str,
+    target_hs: str,
+    stem: str,
+    figure_paths: dict[str, Path],
+    key: str,
+    dpi: int = 180,
+) -> Path:
+    """Save a CIF/FOB figure in a category subdirectory and close it."""
+    category_dir = root_dir / category
+    category_dir.mkdir(parents=True, exist_ok=True)
+
+    target_prefix = target_hs.lower()
+    path = category_dir / f"{target_prefix}_{stem}.png"
+
+    try:
+        fig.savefig(
+            path,
+            dpi=dpi,
+            bbox_inches="tight",
+        )
+    finally:
+        plt.close(fig)
+
+    figure_paths[key] = path
+    return path
+
+def _write_primary_diagnostics_figures(
+    *,
+    cfg: CifFobConfig,
+    diagnostics_result: dict[str, Any],
+    figure_dir: Path,
+    logger,
+) -> dict[str, Path]:
+    """Write primary-model heterogeneity diagnostic figures."""
+    diagnostics_path = diagnostics_result.get("diagnostics_path")
+    figure_dir.mkdir(parents=True, exist_ok=True)
+
+    if not isinstance(diagnostics_path, Path):
+        diagnostics_path = Path(str(diagnostics_path))
+
+    if not diagnostics_path.exists():
+        logger.warning(
+            "Diagnostics artifact not found: %s",
+            diagnostics_path,
+        )
+        return {}
+
+    diagnostics = pd.read_parquet(diagnostics_path)
+
+    if diagnostics.empty:
+        logger.warning(
+            "Diagnostics artifact is empty: %s",
+            diagnostics_path,
+        )
+        return {}
+
+    target_prefix = cfg.scope.target_hs.lower()
+    figure_paths: dict[str, Path] = {}
+
+    ## Diagnostic error by observed factor band
+    fig, _, _ = plot_grouped_error_bars(
+        diagnostics,
+        group_column="observed_factor_band",
+        error_column="ape",
+        min_observations=100,
+        top_n=None,
+        title="Primary-model error by observed CIF/FOB factor band",
+        x_label="Median APE (%)",
+        y_label="Observed factor band",
+    )
+    path = figure_dir / f"{target_prefix}_cif_fob_error_by_observed_factor_band.png"
+    fig.savefig(path, dpi=180, bbox_inches="tight")
+    plt.close(fig)
+    figure_paths["error_by_observed_factor_band"] = path
+
+    ## Diagnostic error by evidence-value band
+    fig, _, _ = plot_grouped_error_bars(
+        diagnostics,
+        group_column="value_band",
+        error_column="ape",
+        min_observations=100,
+        top_n=None,
+        title="Primary-model error by evidence-value band",
+        x_label="Median APE (%)",
+        y_label="Evidence-value band",
+    )
+    path = figure_dir / f"{target_prefix}_cif_fob_error_by_value_band.png"
+    fig.savefig(path, dpi=180, bbox_inches="tight")
+    plt.close(fig)
+    figure_paths["error_by_value_band"] = path
+
+    ## Diagnostic error by route-distance band
+    fig, _, _ = plot_grouped_error_bars(
+        diagnostics,
+        group_column="distance_band",
+        error_column="ape",
+        min_observations=100,
+        top_n=None,
+        title="Primary-model error by route-distance band",
+        x_label="Median APE (%)",
+        y_label="Distance band",
+        sort_by_error=False
+    )
+    path = figure_dir / f"{target_prefix}_cif_fob_error_by_distance_band.png"
+    fig.savefig(path, dpi=180, bbox_inches="tight")
+    plt.close(fig)
+    figure_paths["error_by_distance_band"] = path
+
+    ## Diagnostic error by HS4 product group
+    fig, _, _ = plot_grouped_error_bars(
+        diagnostics,
+        group_column="hs4_product_group",
+        error_column="ape",
+        min_observations=300,
+        top_n=20,
+        title="Primary-model error by HS4 product group",
+        x_label="Median APE (%)",
+        y_label="HS4 product group",
+    )
+    path = figure_dir / f"{target_prefix}_cif_fob_error_by_hs4_product_group.png"
+    fig.savefig(path, dpi=180, bbox_inches="tight")
+    plt.close(fig)
+    figure_paths["error_by_hs4_product_group"] = path
+
+    logger.info(
+        "Primary-model diagnostics figures written: %s",
+        len(figure_paths),
+    )
+
+    return figure_paths
 
 def _load_direct_factor_distribution_data(
     *,
@@ -1452,7 +1588,6 @@ def write_cif_fob_decision_report(
 
     training_features_path = training_features_result.get("training_features_path")
     estimated_rates_path = estimated_rates_result.get("estimated_rates_path")
-    diagnostics_path = diagnostics_result.get("diagnostics_path") if diagnostics_result else None
 
     if not isinstance(training_features_path, Path):
         training_features_path = cfg.product_path(
@@ -1516,7 +1651,17 @@ def write_cif_fob_decision_report(
     )
 
     figure_dir = _resolve_cif_fob_figure_dir(cfg=cfg,)
+    figure_paths: dict[str, Path] = {}
 
+    if (diagnostics_result is not None and diagnostics_result.get("status") == "completed"):
+        figure_paths.update(
+            _write_primary_diagnostics_figures(
+                cfg=cfg,
+                diagnostics_result=diagnostics_result,
+                figure_dir=figure_dir / "holdout_diagnostics",
+                logger=logger,
+            )
+        )
 
     #############################################################################
     # FIGURE PLOTTING
@@ -1534,21 +1679,19 @@ def write_cif_fob_decision_report(
             "Distribution of directly observed CIF/FOB factors"
         ),
     )
-    direct_factor_distribution_figure = (
-        figure_dir
-        / f"{cfg.scope.target_hs.lower()}_direct_cif_fob_factor_distribution.png"
+
+    direct_factor_distribution_figure = _save_cif_fob_figure(
+        fig=fig,
+        root_dir=figure_dir,
+        category="input_diagnostics",
+        target_hs=cfg.scope.target_hs,
+        stem="direct_cif_fob_factor_distribution",
+        figure_paths=figure_paths,
+        key="direct_factor_distribution",
     )
-    fig.savefig(
-        direct_factor_distribution_figure,
-        dpi=180,
-        bbox_inches="tight",
-    )
-    plt.close(fig)
 
     ## 2. Plot the model ranking by mean log-factor MAE
-    primary_run_name = str(
-        cfg.method.estimation.models.primary
-    ).strip().lower() 
+    primary_run_name = str(cfg.method.estimation.models.primary).strip().lower() 
     fig, _, _ = plot_model_metric_ranking(
         summary,
         metric="mean_mae_log_factor",
@@ -1559,13 +1702,15 @@ def write_cif_fob_decision_report(
         metric_label="Mean log MAE",
     )
     
-    fig.savefig(
-        figure_dir
-        / f"{cfg.scope.target_hs.lower()}_cif_fob_model_ranking_mean_log_mae.png",
-        dpi=180,
-        bbox_inches="tight",
+    _save_cif_fob_figure(
+        fig=fig,
+        root_dir=figure_dir,
+        category="model_comparison",
+        target_hs=cfg.scope.target_hs,
+        stem="cif_fob_model_ranking_mean_log_mae",
+        figure_paths=figure_paths,
+        key="model_ranking_mean_log_mae",
     )
-    plt.close(fig)
 
     ## 3. Plot the model ranking by median APE
     fig, _, _ = plot_model_metric_ranking(
@@ -1577,13 +1722,16 @@ def write_cif_fob_decision_report(
         title="CIF/FOB model ranking by median APE",
         metric_label="Median APE",
     )
-    fig.savefig(
-        figure_dir
-        / f"{cfg.scope.target_hs.lower()}_cif_fob_model_ranking_median_ape.png",
-        dpi=180,
-        bbox_inches="tight",
+    _save_cif_fob_figure(
+        fig=fig,
+        root_dir=figure_dir,
+        category="model_comparison",
+        target_hs=cfg.scope.target_hs,
+        stem="cif_fob_model_ranking_median_ape",
+        figure_paths=figure_paths,
+        key="model_ranking_median_ape",
     )
-    plt.close(fig)
+
 
     ## 4. Plot the model ranking by RMSE
     fig, _, _ = plot_model_metric_ranking(
@@ -1595,13 +1743,15 @@ def write_cif_fob_decision_report(
         title="CIF/FOB model ranking by RMSE-Log",
         metric_label="RMSE-Log",
     )
-    fig.savefig(
-        figure_dir
-        / f"{cfg.scope.target_hs.lower()}_cif_fob_model_ranking_rmse.png",
-        dpi=180,
-        bbox_inches="tight",
+    _save_cif_fob_figure(
+        fig=fig,
+        root_dir=figure_dir,
+        category="model_comparison",
+        target_hs=cfg.scope.target_hs,
+        stem="cif_fob_model_ranking_rmse",
+        figure_paths=figure_paths,
+        key="model_ranking_rmse",
     )
-    plt.close(fig)
 
     ## 4. Plot the model ranking by R2 
     fig, _, _ = plot_model_metric_ranking(
@@ -1613,13 +1763,15 @@ def write_cif_fob_decision_report(
         title="CIF/FOB model ranking by R2-Log",
         metric_label="R2-Log",
     )
-    fig.savefig(
-        figure_dir
-        / f"{cfg.scope.target_hs.lower()}_cif_fob_model_ranking_r2.png",
-        dpi=180,
-        bbox_inches="tight",
+    _save_cif_fob_figure(
+        fig=fig,
+        root_dir=figure_dir,
+        category="model_comparison",
+        target_hs=cfg.scope.target_hs,
+        stem="cif_fob_model_ranking_r2",
+        figure_paths=figure_paths,
+        key="model_ranking_r2",
     )
-    plt.close(fig)
 
     ## 5. Plot the model ranking by upper-tail median APE
     highlight_runs = {
@@ -1638,13 +1790,15 @@ def write_cif_fob_decision_report(
         y_label="Upper-tail median APE",
         title="CIF/FOB central accuracy vs upper-tail accuracy",
     )
-    fig.savefig(
-        figure_dir
-        / f"{cfg.scope.target_hs.lower()}_cif_fob_central_vs_tail_tradeoff.png",
-        dpi=180,
-        bbox_inches="tight",
+    _save_cif_fob_figure(
+        fig=fig,
+        root_dir=figure_dir,
+        category="model_comparison",
+        target_hs=cfg.scope.target_hs,
+        stem="cif_fob_central_vs_tail_tradeoff",
+        figure_paths=figure_paths,
+        key="central_vs_tail_tradeoff",
     )
-    plt.close(fig)
 
 
     ## 6.  Plot the temporal validation stability of the primary model and a few other candidates
@@ -1662,13 +1816,15 @@ def write_cif_fob_decision_report(
         title="CIF/FOB temporal validation stability",
     )
 
-    fig.savefig(
-        figure_dir
-        / f"{cfg.scope.target_hs.lower()}_cif_fob_temporal_validation_median_ape.png",
-        dpi=180,
-        bbox_inches="tight",
+    _save_cif_fob_figure(
+        fig=fig,
+        root_dir=figure_dir,
+        category="temporal_validation",
+        target_hs=cfg.scope.target_hs,
+        stem="cif_fob_temporal_validation_median_ape",
+        figure_paths=figure_paths,
+        key="temporal_validation_median_ape",
     )
-    plt.close(fig)
 
     ## 7. Plot Observed vs Predicted P95 for the primary model and a few other candidates
     fig, _, _ = plot_observed_vs_predicted_p95(
@@ -1680,14 +1836,15 @@ def write_cif_fob_decision_report(
         predicted_column="mean_predicted_p95",
         title="CIF/FOB observed vs predicted upper-tail factor",
     )
-    fig.savefig(
-        figure_dir
-        / f"{cfg.scope.target_hs.lower()}_cif_fob_observed_vs_predicted_p95.png",
-        dpi=180,
-        bbox_inches="tight",
+    _save_cif_fob_figure(
+        fig=fig,
+        root_dir=figure_dir,
+        category="model_comparison",
+        target_hs=cfg.scope.target_hs,
+        stem="cif_fob_observed_vs_predicted_p95",
+        figure_paths=figure_paths,
+        key="observed_vs_predicted_p95",
     )
-    plt.close(fig)
-
 
     #####################################################################################
 
@@ -2348,7 +2505,7 @@ def write_cif_fob_decision_report(
         f"- **Estimated-rate artifact:** `{estimated_rates_path}`",
         f"- **Temporal-validation summary:** `{summary_path}`",
         f"- **Temporal-validation folds:** `{folds_path}`",
-        f"= **Figure directory:** `{figure_dir}`",
+        f"- **Figure directory:** `{figure_dir}`",
         "",
         "## 2. Method position within VACODA",
         "",
@@ -2792,7 +2949,83 @@ def write_cif_fob_decision_report(
             formatters=fold_formatters,
         ),
         "",
-        "## 9. Decision assessment",
+        "## 9. Primary-model heterogeneity diagnostics",
+        "",
+        (
+            "The diagnostics artifact evaluates the selected primary "
+            "model on row-level temporal holdout observations. "
+            "The purpose is to identify where prediction errors are "
+            "concentrated across factor size, trade value, route "
+            "distance, and product group."
+        ),
+        "",
+        f"- **Diagnostics rows:** {diagnostics_result.get('n_rows'):,}",
+        (
+            f"- **Diagnostics years:** "
+            f"{diagnostics_result.get('year_min')}-"
+            f"{diagnostics_result.get('year_max')}"
+        ),
+        (
+            f"- **Median APE:** "
+            f"{100.0 * diagnostics_result.get('median_ape'):.2f}%"
+        ),
+        (
+            f"- **Mean APE:** "
+            f"{100.0 * diagnostics_result.get('mean_ape'):.2f}%"
+        ),
+        (
+            f"- **P90 APE:** "
+            f"{100.0 * diagnostics_result.get('p90_ape'):.2f}%"
+        ),
+        (
+            "These diagnostics are based on the latest temporal holdout "
+            "year only, not the full row-level validation history."
+        ),
+        "### 9.1 Error by observed CIF/FOB factor band",
+        "",
+        (
+            f"![Error by observed CIF/FOB factor band]("
+            f"{figure_paths.get('error_by_observed_factor_band', '')}"
+            f")"
+            if figure_paths.get("error_by_observed_factor_band")
+            else "_Figure not available._"
+        ),
+        "",
+        "### 9.2 Error by evidence-value band",
+        "",
+        (
+            f"![Error by evidence-value band]("
+            f"{figure_paths.get('error_by_value_band', '')}"
+            f")"
+            if figure_paths.get("error_by_value_band")
+            else "_Figure not available._"
+        ),
+        "",
+        "### 9.3 Error by route-distance band",
+        "",
+        (
+            f"![Error by route-distance band]("
+            f"{figure_paths.get('error_by_distance_band', '')}"
+            f")"
+            if figure_paths.get("error_by_distance_band")
+            else "_Figure not available._"
+        ),
+        "",
+        "### 9.4 Error by HS4 product group",
+        "",
+        (
+            f"![Error by HS4 product group]("
+            f"{figure_paths.get('error_by_hs4_product_group', '')}"
+            f")"
+            if figure_paths.get("error_by_hs4_product_group")
+            else "_Figure not available._"
+        ),
+        "",
+        "",
+        "",
+        
+        "",
+        "## 10. Decision assessment",
         "",
         _primary_decision_text(
             primary_model=primary_model,
@@ -2812,7 +3045,7 @@ def write_cif_fob_decision_report(
             "workflow report."
         ),
         "",
-        "## 10. Final estimated-rate artifact",
+        "## 11. Final estimated-rate artifact",
         "",
         (
             f"- **Output rows:** "
@@ -2857,7 +3090,7 @@ def write_cif_fob_decision_report(
             f"{_fmt_float(rate_metrics['maximum_estimated_factor'])}"
         ),
         "",
-        "## 11. Known limitations",
+        "## 12. Known limitations",
         "",
         (
             "- All tested global estimators should be interpreted as "
@@ -2880,7 +3113,7 @@ def write_cif_fob_decision_report(
             "for this workflow report."
         ),
         "",
-        "## 12. Downstream readiness",
+        "## 13. Downstream readiness",
         "",
         (
             "The estimated-rate artifact is ready for the CIF/FOB "

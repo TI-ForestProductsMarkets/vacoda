@@ -1982,6 +1982,24 @@ def _inspect_existing_estimated_rates(
             SELECT
                 COUNT(*) AS n_rows,
 
+                ANY_VALUE(primary_model_name)
+                    AS primary_model_name,
+
+                ANY_VALUE(primary_estimation_run)
+                    AS primary_estimation_run,
+
+                ANY_VALUE(estimation_minimum_factor)
+                    AS minimum_factor,
+
+                ANY_VALUE(estimation_maximum_factor)
+                    AS maximum_factor,
+
+                ANY_VALUE(estimation_holdout_year)
+                    AS holdout_year,
+
+                ANY_VALUE(estimation_training_observations)
+                    AS estimation_training_observations,
+
                 COUNT(*) FILTER (
                     WHERE prediction_eligible
                 ) AS n_prediction_eligible,
@@ -1997,7 +2015,17 @@ def _inspect_existing_estimated_rates(
                 MEDIAN(estimated_cif_fob_factor)
                     FILTER (
                         WHERE estimated_cif_fob_factor IS NOT NULL
-                    ) AS median_estimated_factor
+                    ) AS median_estimated_factor,
+
+                QUANTILE_CONT(estimated_cif_fob_factor, 0.05)
+                    FILTER (
+                        WHERE estimated_cif_fob_factor IS NOT NULL
+                    ) AS estimated_factor_p05,
+
+                QUANTILE_CONT(estimated_cif_fob_factor, 0.95)
+                    FILTER (
+                        WHERE estimated_cif_fob_factor IS NOT NULL
+                    ) AS estimated_factor_p95
 
             FROM read_parquet(?)
             """,
@@ -2014,29 +2042,74 @@ def _inspect_existing_estimated_rates(
 
     (
         n_rows,
+        primary_model_name,
+        primary_estimation_run,
+        minimum_factor,
+        maximum_factor,
+        holdout_year,
+        estimation_training_observations,
         n_prediction_eligible,
         n_with_estimated_factor,
         n_clean_estimation_observations,
         median_estimated_factor,
+        estimated_factor_p05,
+        estimated_factor_p95,
     ) = row
+
+    if not primary_estimation_run:
+        raise RuntimeError(
+            "Existing estimated-rates output does not contain "
+            "'primary_estimation_run'. Re-run Step 5 with force=True "
+            "so the estimated-rates artifact is written with primary "
+            "model metadata."
+        )
+
+    n_prediction_eligible = int(n_prediction_eligible or 0)
+    n_with_estimated_factor = int(n_with_estimated_factor or 0)
+
+    prediction_coverage_percent = (
+        100.0 * n_with_estimated_factor / n_prediction_eligible
+        if n_prediction_eligible > 0
+        else 0.0
+    )
 
     return {
         "status": "reused",
         "audit_passed": True,
         "ready_for_trade_correction": (
-            int(n_with_estimated_factor or 0) > 0
+            n_with_estimated_factor > 0
         ),
         "output_path": output_path,
         "estimated_rates_path": output_path,
-        "n_rows": n_rows,
+
+        # Critical metadata needed downstream.
+        "primary_model_name": primary_model_name,
+        "primary_estimation_run": primary_estimation_run,
+        "minimum_factor": minimum_factor,
+        "maximum_factor": maximum_factor,
+        "holdout_year": holdout_year,
+
+        # Keep both names if other parts of the code expect either.
+        "n_rows": int(n_rows or 0),
+        "n_output_rows": int(n_rows or 0),
+
         "n_prediction_eligible": n_prediction_eligible,
         "n_with_estimated_factor": n_with_estimated_factor,
-        "n_clean_estimation_observations": (
-            n_clean_estimation_observations
-        ),
-        "median_estimated_factor": median_estimated_factor,
-    }
+        "prediction_coverage_percent": prediction_coverage_percent,
 
+        "n_clean_estimation_observations": (
+            int(n_clean_estimation_observations or 0)
+        ),
+        "estimation_training_observations": (
+            int(estimation_training_observations or 0)
+            if estimation_training_observations is not None
+            else None
+        ),
+
+        "median_estimated_factor": median_estimated_factor,
+        "estimated_factor_p05": estimated_factor_p05,
+        "estimated_factor_p95": estimated_factor_p95,
+    }
 
 # ======================================================================
 # Output helpers
