@@ -1104,10 +1104,7 @@ def build_training_features(
             f"{input_path}"
         )
 
-    if (
-        not force
-        and valid_output(output_path)
-    ):
+    if (not force and valid_output(output_path)):
         reuse_con = duckdb.connect()
 
         try:

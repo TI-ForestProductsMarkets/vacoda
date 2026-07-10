@@ -384,6 +384,7 @@ def run_cif_fob_workflow(
                             "training_evidence_audit"
                         ),
                         threads=cfg.engine.threads,
+                        logger=logger
                     )
                 )
 

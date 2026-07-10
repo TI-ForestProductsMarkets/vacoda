@@ -30,34 +30,158 @@ from typing import Any
 import duckdb
 import numpy as np
 import pandas as pd
+from vacoda.cif_fob.prepare_input import valid_output
+
+REQUIRED_TRAINING_EVIDENCE_AUDIT_COLUMNS = {
+    "dimension",
+    "group",
+    "total_rows",
+    "prediction_rows",
+    "direct_evidence_rows",
+    "clean_training_rows",
+    "row_share",
+    "prediction_share",
+    "direct_evidence_share",
+    "clean_training_share",
+    "direct_representation_ratio",
+    "clean_representation_ratio",
+    "direct_coverage_within_group",
+    "clean_training_coverage_within_group",
+    "clean_representation_flag",
+    "direct_representation_flag",
+}
+
+def _inspect_existing_training_evidence_audit(
+    *,
+    output_path: Path,
+) -> dict[str, Any]:
+    """
+    Validate and summarize an existing training-evidence audit CSV.
+
+    Only the CSV header and required summary columns are loaded.
+    """
+    try:
+        columns = set(
+            pd.read_csv(
+                output_path,
+                nrows=0,
+            ).columns
+        )
+    except (OSError, pd.errors.ParserError, UnicodeDecodeError) as exc:
+        raise RuntimeError(
+            "Existing training-evidence audit CSV could not be read: "
+            f"{output_path}"
+        ) from exc
+
+    if not REQUIRED_TRAINING_EVIDENCE_AUDIT_COLUMNS.issubset(columns):
+        return {
+            "columns": columns,
+            "result": None,
+        }
+
+    summary_columns = [
+        "dimension",
+        "clean_representation_ratio",
+    ]
+
+    existing = pd.read_csv(
+        output_path,
+        usecols=summary_columns,
+    )
+
+    return {
+        "columns": columns,
+        "result": _summarize_training_evidence_audit(
+            audit=existing,
+            output_path=output_path,
+            status="reused",
+        ),
+    }
+
+
+def _summarize_training_evidence_audit(
+    *,
+    audit: pd.DataFrame,
+    output_path: Path,
+    status: str,
+) -> dict[str, Any]:
+    """Return the standard training-evidence-audit result dictionary."""
+    clean_ratio = pd.to_numeric(
+        audit.get(
+            "clean_representation_ratio",
+            pd.Series(dtype="float64"),
+        ),
+        errors="coerce",
+    )
+
+    return {
+        "status": status,
+        "training_evidence_audit_path": output_path,
+        "output_path": output_path,
+        "n_rows": len(audit),
+        "n_dimensions": (
+            int(audit["dimension"].nunique())
+            if "dimension" in audit.columns
+            and not audit.empty
+            else 0
+        ),
+        "minimum_clean_representation_ratio": (
+            float(clean_ratio.min())
+            if clean_ratio.notna().any()
+            else None
+        ),
+        "maximum_clean_representation_ratio": (
+            float(clean_ratio.max())
+            if clean_ratio.notna().any()
+            else None
+        ),
+    }
+
 
 def write_training_evidence_audit(
     *,
     input_path: Path,
     output_path: Path,
     threads: int = 16,
+    logger,
 ) -> dict[str, Any]:
     """
     Build and write the CIF/FOB training-evidence audit.
 
-    Parameters
-    ----------
-    input_path:
-        Path to the CIF/FOB training-features Parquet artifact.
-
-    output_path:
-        Path where the audit CSV should be written.
-
-    threads:
-        DuckDB thread count.
-
-    Returns
-    -------
-    dict[str, Any]
-        Standard workflow-style result dictionary.
+    Reuse an existing valid audit CSV unless force=True.
     """
     input_path = Path(input_path)
     output_path = Path(output_path)
+
+    if not input_path.exists():
+        raise FileNotFoundError(
+            "Training-features artifact not found: "
+            f"{input_path}"
+        )
+
+    if valid_output(output_path):
+        existing_result = _inspect_existing_training_evidence_audit(
+            output_path=output_path,
+        )
+
+        missing_required_columns = sorted(
+            REQUIRED_TRAINING_EVIDENCE_AUDIT_COLUMNS
+            - existing_result["columns"]
+        )
+
+        if missing_required_columns:
+            logger.info(
+                "REBUILD — Existing CIF/FOB training-evidence audit is "
+                "missing required columns: %s",
+                ", ".join(missing_required_columns),
+            )
+        else:
+            logger.info(
+                "REUSE — CIF/FOB training-evidence audit already exists: %s",
+                output_path,
+            )
+
+            return existing_result["result"]
 
     audit = build_training_evidence_audit(
         input_path=input_path,
@@ -74,31 +198,16 @@ def write_training_evidence_audit(
         index=False,
     )
 
-    return {
-        "status": "completed",
-        "training_evidence_audit_path": output_path,
-        "output_path": output_path,
-        "n_rows": len(audit),
-        "n_dimensions": (
-            int(audit["dimension"].nunique())
-            if "dimension" in audit.columns
-            and not audit.empty
-            else 0
-        ),
-        "minimum_clean_representation_ratio": (
-            float(audit["clean_representation_ratio"].min())
-            if "clean_representation_ratio" in audit.columns
-            and not audit.empty
-            else None
-        ),
-        "maximum_clean_representation_ratio": (
-            float(audit["clean_representation_ratio"].max())
-            if "clean_representation_ratio" in audit.columns
-            and not audit.empty
-            else None
-        ),
-    }
+    logger.info(
+        "WRITE — CIF/FOB training-evidence audit written: %s",
+        output_path,
+    )
 
+    return _summarize_training_evidence_audit(
+        audit=audit,
+        output_path=output_path,
+        status="completed",
+    )
 
 def build_training_evidence_audit(
     *,
