@@ -28,6 +28,7 @@ import pandas as pd
 
 from vacoda.utils.logger import get_logger, rel_path
 from vacoda.io.reports import write_dataframe_report
+from vacoda.config.hs_sync import HarvardStagingLayoutConfig
 
 if TYPE_CHECKING:
     from vacoda.config.hs_sync import HsSyncConfig
@@ -1625,6 +1626,10 @@ def run_harvard_staging(
     raw_parquet_root = paths.raw_parquet_root
     aggregated_root = paths.aggregated_root
     artifact_dir = paths.artifact_dir
+    preservation_base = Path(cfg.harvard_staging.artifact.preservation_filename)
+    preservation_latest_filename = (
+        f"{preservation_base.stem}_latest{preservation_base.suffix}"
+    )
 
     if cfg.harvard_staging.skip.if_complete and not cfg.harvard_staging.overwrite:
         marker_valid, marker_reasons = harvard_staging_success_marker_valid(cfg=cfg)
@@ -1808,11 +1813,6 @@ def run_harvard_staging(
     )
 
     artifact_dir = cfg.harvard_staging.artifact.resolve_output_dir()
-    
-    preservation_base = Path(cfg.harvard_staging.artifact.preservation_filename)
-    preservation_latest_filename = (
-        f"{preservation_base.stem}_latest{preservation_base.suffix}"    
-    )
 
     inventory_outputs = write_dataframe_report(
         inventory,

@@ -2577,15 +2577,6 @@ def write_cif_fob_decision_report(
         metric="mean_upper_tail_median_ape",
     )
 
-    predictor_set_summary_rows = predictor_set_rows[
-        [
-            "Predictor set",
-            "Predictor count",
-            "Primary",
-            "Categorical predictors",
-        ]
-    ].copy()
-
     predictor_set_detail_lines: list[str] = []
 
     for _, row in predictor_set_rows.iterrows():
@@ -2608,39 +2599,6 @@ def write_cif_fob_decision_report(
                 "",
             ]
         )
-
-    overall_performance_table = combined_table[
-    [
-        "Rank",
-        "Model",
-        "Predictor set",
-        "Mean log MAE",
-        "RMSE log",
-        "R² log",
-        "Median APE",
-        "Mean APE",
-        "P90 APE",
-        "P95 APE",
-        "Spearman",
-        "Observed P95",
-        "Predicted P95",
-        "Tail median APE",
-        "Tail P90 APE",
-       ] 
-    ].copy()
-
-    tail_performance_table = tail_table[
-        [
-            "Rank",
-            "Model",
-            "Predictor set",
-            "Observed P95",
-            "Predicted P95",
-            "Tail median APE",
-            "Tail P90 APE",
-        ]
-    ].copy()
-
 
     lines = [
         f"# VACODA CIF/FOB Decision Report — {cfg.scope.target_hs}",
@@ -2781,7 +2739,7 @@ def write_cif_fob_decision_report(
             f"({_fmt_int(feature_metrics['n_years'])} years)"
         ),
         (
-            f"- **Configured training factor sources:** "
+            "- **Configured training factor sources:** "
             + ", ".join(
                 f"`{source}`"
                 for source in training_factor_sources
@@ -3095,7 +3053,7 @@ def write_cif_fob_decision_report(
             },
         ),
 
-        f"",
+        "",
         f"- Lowest mean log-factor MAE: `{best_mae}`",
         f"- Lowest mean log-factor RMSE: `{best_rmse}`",
         f"- Highest mean log-factor R²: `{best_r2}`",

@@ -586,7 +586,6 @@ def run_hs_sync_applied_output_audit(
     con.execute(f"PRAGMA threads={int(threads)}")
 
     try:
-        raw_sql = _sql_literal(input_glob)
         parquet_sql = _sql_literal(applied_path)
         weights_sql = _sql_literal(weights_path)
 

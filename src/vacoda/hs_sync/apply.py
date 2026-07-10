@@ -358,7 +358,7 @@ def _build_pre_apply_audit(
     Audit input rows and whether all source_hs/source_cmd pairs find weights.
     """
 
-    input_glob_sql = _sql_literal(input_glob)
+    #input_glob_sql = _sql_literal(input_glob)
     scan = duckdb_scan_relation(
         path=input_glob,
         file_format=input_format,
@@ -456,7 +456,6 @@ def _write_synced_output(
     target-HS rows.
     """
 
-    input_glob_sql = _sql_literal(input_glob)
     output_path_sql = _sql_literal(output_path)
     scan = duckdb_scan_relation(
         path=input_glob,

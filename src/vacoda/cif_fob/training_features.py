@@ -77,8 +77,6 @@ from pathlib import Path
 from typing import Any
 
 import duckdb
-from sklearn import metrics
-
 from vacoda.config.cif_fob import CifFobConfig
 from vacoda.cif_fob.prepare_input import valid_output
 

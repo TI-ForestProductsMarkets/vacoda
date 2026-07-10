@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 import duckdb
@@ -1008,7 +1007,7 @@ def main() -> None:
         f"{', '.join(predictors)}"
     )
     print(
-        f"Categorical:           "
+        "Categorical:           "
         + (
             ", ".join(
                 categorical_predictors

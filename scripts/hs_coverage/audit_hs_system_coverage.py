@@ -7,7 +7,6 @@ from datetime import datetime
 from vacoda.config.hs_coverage import (
     get_logging_file,
     get_logging_level,
-    get_logging_timestamp_bool,
     load_hs_coverage_config,
 )
 from vacoda.config.paths import resolve_log_path

@@ -13,7 +13,6 @@ from time import perf_counter
 from vacoda.config.dataset import DatasetConfig
 from vacoda.config.pipeline import PipelineConfig
 from vacoda.dataset.staging import build_comtrade_staging_dataset
-from vacoda.utils.logger import get_logger
 from vacoda.config.paths import resolve_log_path
 from vacoda.utils.logger import (
     get_logger,

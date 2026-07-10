@@ -23,7 +23,6 @@ from typing import Any
 import duckdb
 import numpy as np
 import pandas as pd
-from plotly import data
 from scipy.stats import spearmanr
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score

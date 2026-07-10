@@ -5,10 +5,6 @@ This configuration file controls how the weight generator runs.
 Edit the settings below to match your environment and requirements.
 """
 
-from pathlib import Path
-import sys
-from datetime import date, timedelta
-from src.config.source_target_pairs import SOURCE_TARGET_ENABLED_PAIRS
 
 
 # =============================================================================
