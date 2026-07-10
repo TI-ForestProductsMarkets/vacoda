@@ -13,7 +13,7 @@ def run_complete_mapping_weights(
     *,
     cfg: HsSyncConfig,
     run_id: str,
-    logger: logger.Logger,
+    logger: None | object = None,
 ) -> dict[str, object]:
     """
     Build the complete target-HS mapping-weight table.

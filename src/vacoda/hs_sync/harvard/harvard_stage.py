@@ -1708,6 +1708,8 @@ def run_harvard_staging(
     logger.info("Country reference directory: %s", rel_path(country_reference_dir))
     logger.info("Country reference glob: %s", country_reference_glob)
 
+    layout = cfg.harvard_staging.layout
+
     if is_complete and not cfg.harvard_staging.overwrite:
         detailed_ok, problems = check_harvard_staging_complete(
             output_root=output_root,

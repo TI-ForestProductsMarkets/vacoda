@@ -1231,7 +1231,7 @@ def run_comtrade_mapping_audit(
     fail_on_error: bool = True,
     report_dir: Path | None = None,
     filename: str = "audit_comtrade_hs_mapping_normalization.md",
-    logger: logging.Logger = logger,
+    logger: None | object = None,
 ) -> dict[str, Any]:
     """
     Run audit for normalized UNSD/Comtrade mapping files and coverage outputs.

@@ -9,8 +9,6 @@ Harvard optimized conversion-weight table.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pandas as pd
 from vacoda.config.hs_sync import HsSyncConfig
 from vacoda.config.pipeline import PipelineConfig

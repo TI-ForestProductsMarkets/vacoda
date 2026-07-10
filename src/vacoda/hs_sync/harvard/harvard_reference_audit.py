@@ -14,8 +14,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import duckdb
-import pandas as pd
-
 from vacoda.io.reports import write_text_report
 
 if TYPE_CHECKING:

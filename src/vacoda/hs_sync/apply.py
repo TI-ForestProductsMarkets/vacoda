@@ -15,7 +15,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 import duckdb
 import pandas as pd
@@ -230,7 +229,7 @@ def _register_weights(
     if not weights_path.exists():
         raise FileNotFoundError(f"Mapping weights file not found: {weights_path}")
 
-    weights_sql = _sql_literal(weights_path)
+    #weights_sql = _sql_literal(weights_path)
 
     scan = duckdb_scan_relation(
         path=weights_path,
@@ -591,7 +590,7 @@ def run_hs_sync_apply(
     *,
     cfg: HsSyncConfig,
     run_id: str,
-    logger: Logger,
+    logger: None | object = None,
 ) -> dict[str, object]:
     """
     Apply complete HS-sync mapping weights to raw Comtrade rows.
@@ -604,7 +603,6 @@ def run_hs_sync_apply(
 
     input_dir = cfg.apply_trade_data_dir()
     input_pattern = cfg.coverage.input.pattern
-    input_format = cfg.coverage.input.format
 
     if input_pattern is None:
         raise ValueError("coverage.input.pattern is required for HS-sync apply.")

@@ -860,7 +860,7 @@ def run_equal_split_allocation(
     *,
     cfg: HsSyncConfig,
     run_id: str,
-    logger: Logger,
+    logger: None | object = None,
 ) -> dict[str, Path]:
     """
     Build equal-split allocation weights for observed needs-weights cases.

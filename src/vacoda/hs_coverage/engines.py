@@ -7,6 +7,7 @@ import duckdb
 import pandas as pd
 import polars as pl
 from vacoda.utils.progress import progress_bar
+from vacoda.io.duckdb_scan import duckdb_scan_relation
 
 def _quote_ident(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
@@ -29,7 +30,7 @@ def build_year_hs_counts_duckdb(
     Build year × HS-system counts using DuckDB.
     """
     data_dir = Path(data_dir)
-    input_format = cfg.coverage.input.format
+    #input_format = cfg.coverage.input.format
 
     if not data_dir.exists():
         raise FileNotFoundError(f"Data directory does not exist: {data_dir}")

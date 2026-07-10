@@ -25,7 +25,6 @@ from vacoda.hs_sync.workflow import run_hs_sync_workflow
 from vacoda.pipeline.checkpoint import (
     checkpoint_path,
     config_fingerprint,
-    file_fingerprint,
     file_list_fingerprint,
     file_manifest_fingerprint,
     load_checkpoint,

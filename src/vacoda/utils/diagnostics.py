@@ -1,10 +1,14 @@
-from typing import List
+"""
+vacoda.utils.diagnostics
+-----------------------
+This module provides utility functions for computing and logging diagnostics related to feature coverage and recoverability in pandas
+"""
 
 import pandas as pd
 
 from vacoda.utils.logger import get_logger
 
-_logger = get_logger("DIAGNOSITC")
+_logger = get_logger("DIAGNOSTICS")
 
 
 def compute_feature_coverage(df: pd.DataFrame, feature: str) -> pd.Series:

@@ -840,7 +840,7 @@ def plot_data_coverage_bar(df: pd.DataFrame,
     stats = compute_data_coverage(df, cols, indicator=criteria)
 
     word = "absent" if criteria == "absence" else "present"
-    opposite = "present" if criteria == "absence" else "absent"
+    #opposite = "present" if criteria == "absence" else "absent"
     #labels = [f"All {opposite}"] + [f"{c} {word}" for c in cols] + [f"All {word}"]
     labels = [f"None {word}"] + [f"{c} {word}" for c in cols] + [f"At least one {word}"]
     keys = [f"none_{criteria}_%"] + [f"{c}_{criteria}_%" for c in cols] + [f"at_least_one_{criteria}_%"]

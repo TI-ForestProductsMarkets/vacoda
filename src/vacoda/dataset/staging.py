@@ -250,8 +250,6 @@ def build_comtrade_staging_dataset(
             """
         ).fetchdf().iloc[0]
 
-        basic_failed_checks = []
-
         ready_for_hs_sync = (
                 int(row["n_rows"]) > 0
                 and int(row["null_primary_value_rows"]) == 0

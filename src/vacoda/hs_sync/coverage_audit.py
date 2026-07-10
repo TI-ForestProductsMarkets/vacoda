@@ -24,7 +24,7 @@ from vacoda.hs_sync.harvard.diagnostics import build_trade_source_pair_summary
 
 from vacoda.io.reports import TextReport, write_text_report
 from vacoda.io.writer import write_csv, write_parquet
-from vacoda.utils.logger import rel_path
+from vacoda.utils.logger import rel_path, get_logger
 
 
 #logger = get_logger("HS_SYNC.COVERAGE_AUDIT")
@@ -343,7 +343,7 @@ def build_target_hs_mapping_coverage_artifact(
 def load_target_hs_coverage_inputs(
     *,
     cfg: HsSyncConfig,
-    logger: Logger,
+    logger: None | object = None,
 ) -> dict[str, object]:
     input_dir = cfg.coverage_input_dir()
     mapping_dir = cfg.coverage_mapping_dir()
@@ -402,7 +402,7 @@ def build_target_hs_coverage_products(
     cfg: HsSyncConfig,
     source_summary: pd.DataFrame,
     mappings: dict[str, pd.DataFrame],
-    logger: Logger,
+    logger: None | object = None,
 ) -> dict[str, pd.DataFrame]:
     target_hs = cfg.coverage.target_hs
 
@@ -477,7 +477,7 @@ def write_target_hs_coverage_outputs(
     cfg: HsSyncConfig,
     tables: dict[str, pd.DataFrame],
     run_id: str | None,
-    logger: Logger,
+    logger: None | object = None,
 ) -> dict[str, Path]:
     outputs: dict[str, Path] = {}
 
@@ -575,7 +575,7 @@ def run_target_hs_mapping_coverage_audit(
     *,
     cfg: HsSyncConfig,
     run_id: str | None = None,
-    logger: Logger | None = None,
+    logger: None | object = None,
 ) -> dict[str, object]:
     """
     Compatibility wrapper for target-HS mapping coverage diagnostics.
