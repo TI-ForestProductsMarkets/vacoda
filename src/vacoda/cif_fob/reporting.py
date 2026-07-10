@@ -43,9 +43,8 @@ from vacoda.visualization.relationships import (
     plot_central_vs_tail_tradeoff,
     plot_temporal_validation_metric,
 ) 
-from vacoda.visualization.distributions import (
-    plot_grouped_error_bars,
-)
+from vacoda.visualization.distributions import plot_grouped_error_bars
+from vacoda.visualization.audits import plot_representation_ratio_bars
 
 
 # ======================================================================
@@ -1186,6 +1185,154 @@ def _save_cif_fob_figure(
     figure_paths[key] = path
     return path
 
+
+def _write_training_evidence_audit_figures(
+    *,
+    cfg: CifFobConfig,
+    training_evidence_audit_result: dict[str, Any],
+    figure_dir: Path,
+    logger,
+) -> dict[str, Path]:
+    """Write training-evidence representativeness audit figures."""
+    audit_path = training_evidence_audit_result.get(
+        "training_evidence_audit_path"
+    )
+    figure_dir.mkdir(parents=True, exist_ok=True)
+
+    if not isinstance(audit_path, Path):
+        audit_path = Path(str(audit_path))
+
+    if not audit_path.exists():
+        logger.warning(
+            "Training-evidence audit artifact not found: %s",
+            audit_path,
+        )
+        return {}
+
+    audit = pd.read_csv(audit_path)
+
+    if audit.empty:
+        logger.warning(
+            "Training-evidence audit artifact is empty: %s",
+            audit_path,
+        )
+        return {}
+
+    target_prefix = cfg.scope.target_hs.lower()
+
+    figure_paths: dict[str, Path] = {}
+
+    # Exporter continent representation
+    fig, _, _ = plot_representation_ratio_bars(
+        audit,
+        dimension="exporter_continent",
+        ratio_column="clean_representation_ratio",
+        min_prediction_rows=100,
+        top_n=None,
+        title="Training-evidence representation by exporter continent",
+        x_label="Clean-training representation ratio",
+        y_label="Exporter continent",
+    )
+
+    path = (
+        figure_dir
+        / f"{target_prefix}_cif_fob_training_representation_exporter_continent.png"
+    )
+    fig.savefig(path, dpi=180, bbox_inches="tight")
+    plt.close(fig)
+    figure_paths["training_representation_exporter_continent"] = path
+
+    # Importer continent representation
+    fig, _, _ = plot_representation_ratio_bars(
+        audit,
+        dimension="importer_continent",
+        ratio_column="clean_representation_ratio",
+        min_prediction_rows=100,
+        top_n=None,
+        title="Training-evidence representation by importer continent",
+        x_label="Clean-training representation ratio",
+        y_label="Importer continent",
+    )
+
+    path = (
+        figure_dir
+        / f"{target_prefix}_cif_fob_training_representation_importer_continent.png"
+    )
+    fig.savefig(path, dpi=180, bbox_inches="tight")
+    plt.close(fig)
+    figure_paths["training_representation_importer_continent"] = path
+
+    # Value-band representation
+    fig, _, _ = plot_representation_ratio_bars(
+        audit,
+        dimension="value_band",
+        ratio_column="clean_representation_ratio",
+        min_prediction_rows=100,
+        top_n=None,
+        title="Training-evidence representation by evidence-value band",
+        x_label="Clean-training representation ratio",
+        y_label="Evidence-value band",
+        sort_by_ratio=True,
+    )
+
+    path = (
+        figure_dir
+        / f"{target_prefix}_cif_fob_training_representation_value_band.png"
+    )
+    fig.savefig(path, dpi=180, bbox_inches="tight")
+    plt.close(fig)
+    figure_paths["training_representation_value_band"] = path
+
+    # Distance-band representation
+    fig, _, _ = plot_representation_ratio_bars(
+        audit,
+        dimension="distance_band",
+        ratio_column="clean_representation_ratio",
+        min_prediction_rows=100,
+        top_n=None,
+        title="Training-evidence representation by route-distance band",
+        x_label="Clean-training representation ratio",
+        y_label="Distance band",
+        sort_by_ratio=True,
+    )
+
+    path = (
+        figure_dir
+        / f"{target_prefix}_cif_fob_training_representation_distance_band.png"
+    )
+    fig.savefig(path, dpi=180, bbox_inches="tight")
+    plt.close(fig)
+    figure_paths["training_representation_distance_band"] = path
+
+    # HS4 product group: show most underrepresented groups.
+    fig, _, _ = plot_representation_ratio_bars(
+        audit,
+        dimension="hs4_product_group",
+        ratio_column="clean_representation_ratio",
+        min_prediction_rows=300,
+        top_n=20,
+        title="Most underrepresented HS4 product groups in training evidence",
+        x_label="Clean-training representation ratio",
+        y_label="HS4 product group",
+        sort_by_ratio=True,
+    )
+
+    path = (
+        figure_dir
+        / f"{target_prefix}_cif_fob_training_representation_hs4_product_group.png"
+    )
+    fig.savefig(path, dpi=180, bbox_inches="tight")
+    plt.close(fig)
+    figure_paths["training_representation_hs4_product_group"] = path
+
+    logger.info(
+        "Training-evidence audit figures written: %s",
+        len(figure_paths),
+    )
+
+    return figure_paths
+
+
 def _write_primary_diagnostics_figures(
     *,
     cfg: CifFobConfig,
@@ -1574,6 +1721,7 @@ def write_cif_fob_decision_report(
     training_features_result: dict[str, Any],
     estimated_rates_result: dict[str, Any],
     diagnostics_result: dict[str, Any] | None = None,
+    training_evidence_audit_result: dict[str, Any] | None = None,
     logger,
 ) -> dict[str, Any]:
     """
@@ -1653,6 +1801,7 @@ def write_cif_fob_decision_report(
     figure_dir = _resolve_cif_fob_figure_dir(cfg=cfg,)
     figure_paths: dict[str, Path] = {}
 
+    ## Write Diaognostics Figures for the primary model if available
     if (diagnostics_result is not None and diagnostics_result.get("status") == "completed"):
         figure_paths.update(
             _write_primary_diagnostics_figures(
@@ -1662,6 +1811,21 @@ def write_cif_fob_decision_report(
                 logger=logger,
             )
         )
+
+    ## Write Training Evidence Audit Figures if available
+    if (
+        training_evidence_audit_result is not None
+        and training_evidence_audit_result.get("status") == "completed"
+    ):
+        figure_paths.update(
+            _write_training_evidence_audit_figures(
+                cfg=cfg,
+                training_evidence_audit_result=training_evidence_audit_result,
+                figure_dir=figure_dir/ "training_evidence_audit",
+                logger=logger,
+            )
+        )
+
 
     #############################################################################
     # FIGURE PLOTTING

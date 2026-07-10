@@ -22,6 +22,7 @@ from vacoda.cif_fob.mirror_pairs import build_mirror_pairs
 from vacoda.cif_fob.prepare_input import prepare_cif_fob_input
 from vacoda.cif_fob.reporting import write_cif_fob_decision_report
 from vacoda.cif_fob.training_features import build_training_features
+from vacoda.cif_fob.training_evidence_audit import write_training_evidence_audit
 from vacoda.cif_fob.training_sample import build_training_sample
 from vacoda.cif_fob.diagnostics import write_primary_holdout_diagnostics
 from vacoda.config.cif_fob import CifFobConfig
@@ -35,6 +36,7 @@ WORKFLOW_STEPS = [
     "Build CIF/FOB mirror pairs",
     "Build CIF/FOB training sample",
     "Build CIF/FOB training features",
+    "Audit CIF/FOB training evidence",
     "Estimate CIF/FOB correction rates",
     "Build CIF/FOB diagnostics",
     "Write CIF/FOB decision report",
@@ -194,6 +196,11 @@ def run_cif_fob_workflow(
         path=cfg.product_path("training_features"),
     )
 
+    training_evidence_audit_result = _artifact_result(
+        path_key="training_evidence_audit_path",
+        path=cfg.product_path("training_evidence_audit"),
+    )
+
     estimated_rates_result = _artifact_result(
         path_key="estimated_rates_path",
         path=cfg.product_path("estimated_rates"),
@@ -282,6 +289,7 @@ def run_cif_fob_workflow(
                     )
 
             STEP += 1
+        
         # ==================================================================
         # STEP 3 — Build factor-candidate training sample
         # ==================================================================
@@ -315,6 +323,7 @@ def run_cif_fob_workflow(
                 )
                 
             STEP += 1
+        
         # ==================================================================
         # STEP 4 — Enrich training sample with predictors
         # ==================================================================
@@ -348,8 +357,60 @@ def run_cif_fob_workflow(
                 )
 
             STEP += 1
+
         # ==================================================================
-        # STEP 5 — Estimate CIF/FOB correction rates
+        # STEP 5 — Audit training-evidence representativeness
+        # ==================================================================
+
+        with timed_step(logger, STEP, WORKFLOW_STEPS[STEP - 1], total_steps=TOTAL_WORKFLOW_STEPS,):
+            if cfg.products.training_evidence_audit.enable:
+                _log_step_header(
+                    logger=logger,
+                    symbol=build,
+                    title=WORKFLOW_STEPS[STEP - 1],
+                )
+
+                training_features_path = _require_artifact(
+                    result=training_features_result,
+                    path_key="training_features_path",
+                    consumer_step="Training-evidence audit step",
+                    producer_product="training-features Parquet",
+                )
+
+                training_evidence_audit_result = (
+                    write_training_evidence_audit(
+                        input_path=training_features_path,
+                        output_path=cfg.product_path(
+                            "training_evidence_audit"
+                        ),
+                        threads=cfg.engine.threads,
+                    )
+                )
+
+                logger.info(
+                    "%s CIF/FOB training-evidence audit written: %s",
+                    ok,
+                    training_evidence_audit_result[
+                        "training_evidence_audit_path"
+                    ],
+                )
+                logger.info(
+                    "Training-evidence audit rows: %s",
+                    training_evidence_audit_result["n_rows"],
+                )
+
+            else:
+                logger.info(
+                    "%s SKIP — %s (disabled in config)",
+                    warn,
+                    WORKFLOW_STEPS[STEP - 1],
+                )
+
+            STEP += 1
+
+        
+        # ==================================================================
+        # STEP 6 — Estimate CIF/FOB correction rates
         # ==================================================================
 
         with timed_step(logger, STEP, WORKFLOW_STEPS[STEP-1], total_steps=TOTAL_WORKFLOW_STEPS):
@@ -382,7 +443,7 @@ def run_cif_fob_workflow(
             STEP += 1
 
         # ==================================================================
-        # STEP 6 — Build CIF/FOB diagnostics
+        # STEP 7 — Build CIF/FOB diagnostics
         # ==================================================================
 
         with timed_step(logger, STEP, WORKFLOW_STEPS[STEP-1], total_steps=TOTAL_WORKFLOW_STEPS):
@@ -452,7 +513,7 @@ def run_cif_fob_workflow(
             STEP += 1
 
         # ==================================================================
-        # STEP 7 — Write human-readable decision report
+        # STEP 8 — Write human-readable decision report
         # ==================================================================
 
         with timed_step(logger, STEP, WORKFLOW_STEPS[STEP-1], total_steps=TOTAL_WORKFLOW_STEPS):
@@ -491,6 +552,7 @@ def run_cif_fob_workflow(
                     training_features_result=training_features_result,
                     estimated_rates_result=estimated_rates_result,
                     diagnostics_result=diagnostics_result,
+                    training_evidence_audit_result=training_evidence_audit_result,
                     logger=logger,
                 )
             else:
@@ -556,6 +618,9 @@ def run_cif_fob_workflow(
         "training_features_path": training_features_result.get(
             "training_features_path"
         ),
+        "training_evidence_audit_path": training_evidence_audit_result.get(
+            "training_evidence_audit_path"
+        ),
         "estimated_rates_path": estimated_rates_result.get(
             "estimated_rates_path"
         ),
@@ -573,6 +638,7 @@ def run_cif_fob_workflow(
             "mirror_pairs": cfg.products.mirror_pairs.enable,
             "training_sample": cfg.products.training_sample.enable,
             "training_features": cfg.products.training_features.enable,
+            "training_evidence_audit": cfg.products.training_evidence_audit.enable,
             "estimated_rates": cfg.products.estimated_rates.enable,
             "corrected_trade": cfg.products.corrected_trade.enable,
             "diagnostics": cfg.products.diagnostics.enable,
@@ -583,6 +649,7 @@ def run_cif_fob_workflow(
             "mirror_pairs": mirror_result,
             "training_sample": training_sample_result,
             "training_features": training_features_result,
+            "training_evidence_audit": training_evidence_audit_result,
             "estimated_rates": estimated_rates_result,
             "diagnostics": diagnostics_result,
             "decision_report": report_result,

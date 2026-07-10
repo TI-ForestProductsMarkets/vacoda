@@ -273,6 +273,7 @@ class CifFobProductsConfig:
     mirror_pairs: CifFobProductConfig
     training_sample: CifFobProductConfig
     training_features: CifFobProductConfig
+    training_evidence_audit: CifFobProductConfig
     estimated_rates: CifFobProductConfig
     temporal_validation_summary: CifFobProductConfig
     temporal_validation_folds: CifFobProductConfig
@@ -300,6 +301,10 @@ class CifFobProductsConfig:
             training_features=CifFobProductConfig.from_dict(
                 require_dict(cfg.get("training_features"), key="cif_fob.products.training_features"),
                 key="cif_fob.products.training_features",
+            ),
+            training_evidence_audit=CifFobProductConfig.from_dict(
+                require_dict(cfg.get("training_evidence_audit"), key="cif_fob.products.training_evidence_audit"),
+                key="cif_fob.products.training_evidence_audit",
             ),
             estimated_rates=CifFobProductConfig.from_dict(
                 require_dict(cfg.get("estimated_rates"), key="cif_fob.products.estimated_rates"),
@@ -2135,6 +2140,7 @@ class CifFobConfig:
             "mirror_pairs": self.products.mirror_pairs,
             "training_sample": self.products.training_sample,
             "training_features": self.products.training_features,
+            "training_evidence_audit": self.products.training_evidence_audit,
             "estimated_rates": self.products.estimated_rates,
             "temporal_validation_summary": self.products.temporal_validation_summary,
             "temporal_validation_folds": self.products.temporal_validation_folds,
@@ -2156,6 +2162,7 @@ class CifFobConfig:
             "mirror_pairs": self.product_path("mirror_pairs"),
             "training_sample": self.product_path("training_sample"),
             "training_features": self.product_path("training_features"),
+            "training_evidence_audit": self.product_path("training_evidence_audit"),
             "estimated_rates": self.product_path("estimated_rates"),
             "temporal_validation_summary": self.product_path("temporal_validation_summary"),
             "temporal_validation_folds": self.product_path("temporal_validation_folds"),
@@ -2172,6 +2179,7 @@ class CifFobConfig:
             "mirror_pairs": self.products.mirror_pairs,
             "training_sample": self.products.training_sample,
             "training_features": self.products.training_features,
+            "training_evidence_audit": self.products.training_evidence_audit,
             "estimated_rates": self.products.estimated_rates,
             "temporal_validation_summary": self.products.temporal_validation_summary,
             "temporal_validation_folds": self.products.temporal_validation_folds,

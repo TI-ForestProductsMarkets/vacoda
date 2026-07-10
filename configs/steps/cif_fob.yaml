@@ -74,6 +74,10 @@ cif_fob:
       enable: true
       filename: "target_{target_hs_lower}_cif_fob_training_features.parquet"
 
+    training_evidence_audit:
+      enable: true
+      filename: "target_{target_hs_lower}_cif_fob_training_evidence_audit.csv"
+
     estimated_rates:
       enable: true
       filename: "target_{target_hs_lower}_cif_fob_estimated_rates.parquet"
