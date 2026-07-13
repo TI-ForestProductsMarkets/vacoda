@@ -14,7 +14,7 @@ from vacoda.visualization.labels import (
     short_predictor_set_name,
     split_estimation_run_name,
     )
-from typing import Iterable
+from typing import Iterable, Sequence
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 from matplotlib.colors import LogNorm
@@ -57,7 +57,450 @@ def _metric_axis_label(
 
     return label
 
+
+def plot_observed_vs_predicted_with_tolerance_bands(
+    frame: pd.DataFrame,
+    *,
+    observed_column: str,
+    predicted_column: str,
+    tolerance_bands: Sequence[float] = (0.05, 0.10, 0.20),
+    title: str = (
+        "Primary model: observed vs predicted CIF/FOB factor "
+        "with tolerance bands"
+    ),
+    gridsize: int = 45,
+    min_count: int = 3,
+    lower_quantile: float = 0.001,
+    upper_quantile: float = 0.995,
+    show_density: bool = True,
+    show_band_coverage: bool = True,
+    ax: Axes | None = None,
+) -> tuple[Figure, Axes]:
+    """
+    Plot observed versus predicted values with percentage-tolerance bands.
+
+    A prediction lies inside a p-percent band when:
+
+        observed * (1 - p) <= predicted <= observed * (1 + p)
+
+    Quantile limits affect only the displayed range. Coverage percentages
+    are calculated using all valid observations.
+    """
+    required_columns = {
+        observed_column,
+        predicted_column,
+    }
+    missing_columns = required_columns.difference(frame.columns)
+
+    if missing_columns:
+        raise KeyError(
+            "Missing required columns: "
+            + ", ".join(sorted(missing_columns))
+        )
+
+    if not tolerance_bands:
+        raise ValueError(
+            "At least one tolerance band is required."
+        )
+
+    if not 0 <= lower_quantile < upper_quantile <= 1:
+        raise ValueError(
+            "Quantiles must satisfy "
+            "0 <= lower_quantile < upper_quantile <= 1."
+        )
+
+    bands = sorted(
+        {float(value) for value in tolerance_bands},
+        reverse=True,
+    )
+
+    if any(value <= 0 or value >= 1 for value in bands):
+        raise ValueError(
+            "Tolerance bands must be greater than 0 and less than 1."
+        )
+
+    # Convert columns before using them.
+    observed = pd.to_numeric(
+        frame[observed_column],
+        errors="coerce",
+    ).to_numpy(dtype=float)
+
+    predicted = pd.to_numeric(
+        frame[predicted_column],
+        errors="coerce",
+    ).to_numpy(dtype=float)
+
+    valid = (
+        np.isfinite(observed)
+        & np.isfinite(predicted)
+        & (observed > 0)
+        & (predicted > 0)
+    )
+
+    observed = observed[valid]
+    predicted = predicted[valid]
+
+    if observed.size == 0:
+        raise ValueError(
+            "No finite positive observed/predicted pairs are available."
+        )
+
+    # Use the combined distribution so both axes have identical limits.
+    combined = np.concatenate(
+        [observed, predicted]
+    )
+
+    lower_limit = float(
+        np.quantile(combined, lower_quantile)
+    )
+    upper_limit = float(
+        np.quantile(combined, upper_quantile)
+    )
+
+    if lower_limit >= upper_limit:
+        raise ValueError(
+            "Invalid plot limits: lower limit must be below upper limit."
+        )
+
+    displayed = (
+        (observed >= lower_limit)
+        & (observed <= upper_limit)
+        & (predicted >= lower_limit)
+        & (predicted <= upper_limit)
+    )
+
+    observed_display = observed[displayed]
+    predicted_display = predicted[displayed]
+
+    if observed_display.size == 0:
+        raise ValueError(
+            "No observations remain within the requested display range."
+        )
+
+    if ax is None:
+        fig, ax = plt.subplots(
+            figsize=(8.5, 7.5)
+        )
+    else:
+        fig = ax.figure
+
+    x_reference = np.linspace(
+        lower_limit,
+        upper_limit,
+        500,
+    )
+
+    band_styles = {
+            0.20: {
+                "facecolor": "#c9dfef",
+                "edgecolor": "#4f9ed1",
+                "alpha": 0.55,
+                "linestyle": ":",
+            },
+            0.10: {
+                "facecolor": "#f6d6bd",
+                "edgecolor": "#e9892d",
+                "alpha": 0.55,
+                "linestyle": "--",
+            },
+            0.05: {
+                "facecolor": "#c6dfc1",
+                "edgecolor": "#4e9a4a",
+                "alpha": 0.55,
+                "linestyle": "-",
+            },
+        }
+    # Draw widest band first.
+    for tolerance in bands:
+        lower_band = (
+            x_reference * (1.0 - tolerance)
+        )
+        upper_band = (
+            x_reference * (1.0 + tolerance)
+        )
+
+        coverage = float(
+            np.mean(
+                np.abs(predicted - observed)
+                / observed
+                <= tolerance
+            )
+        )
+
+        style = band_styles.get(
+            tolerance,
+            {
+                "facecolor": "#bdd7e7",
+                "edgecolor": "#4f8bad",
+                "alpha": 0.30,
+                "linestyle": "--",
+            },
+        )
+
+        if show_band_coverage:
+            label = (
+                f"Within ±{tolerance:.0%}: "
+                f"{coverage:.1%} of observations"
+            )
+        else:
+            label = f"Within ±{tolerance:.0%}"
+
+        ax.fill_between(
+            x_reference,
+            lower_band,
+            upper_band,
+            facecolor=style["facecolor"],
+            alpha=style["alpha"],
+            linewidth=0,
+            label=label,
+            zorder=1,
+        )
+
+        ax.plot(
+            x_reference,
+            lower_band,
+            color=style["edgecolor"],
+            linewidth=1.0,
+            linestyle=style["linestyle"],
+            alpha=0.95,
+            zorder=2,
+        )
+
+        ax.plot(
+            x_reference,
+            upper_band,
+            color=style["edgecolor"],
+            linewidth=1.0,
+            linestyle=style["linestyle"],
+            alpha=0.95,
+            zorder=2,
+        )
+
+    if show_density:
+        ax.hexbin(
+            observed_display,
+            predicted_display,
+            gridsize=gridsize,
+            mincnt=min_count,
+            extent=(
+                lower_limit,
+                upper_limit,
+                lower_limit,
+                upper_limit,
+            ),
+            cmap="Greys",
+            norm=LogNorm(vmin=min_count),
+            linewidths=0,
+            alpha=0.70,
+            zorder=3,
+        )
+
+    ax.plot(
+        [lower_limit, upper_limit],
+        [lower_limit, upper_limit],
+        linestyle="--",
+        linewidth=1.3,
+        color="0.15",
+        label="Perfect prediction",
+        zorder=4,
+    )
+
+    ax.set_xlim(
+        lower_limit,
+        upper_limit,
+    )
+    ax.set_ylim(
+        lower_limit,
+        upper_limit,
+    )
+    ax.set_aspect(
+        "equal",
+        adjustable="box",
+    )
+
+    ax.set_xlabel(
+        "Observed CIF/FOB factor"
+    )
+    ax.set_ylabel(
+        "Predicted CIF/FOB factor"
+    )
+    ax.set_title(title)
+
+    ax.grid(alpha=0.18)
+
+    ax.legend(
+        loc="upper left",
+        frameon=True,
+        framealpha=0.92,
+        edgecolor="0.85",
+        fontsize=9,
+    )
+
+    fig.text(
+        0.5,
+        0.015,
+        (
+            f"{observed_display.size:,} of "
+            f"{observed.size:,} observations displayed; "
+            f"range: {lower_quantile:.1%}–"
+            f"{upper_quantile:.1%} quantiles."
+        ),
+        ha="center",
+        fontsize=9,
+    )
+
+    fig.tight_layout(
+        rect=(0, 0.04, 1, 1)
+    )
+
+    return fig, ax
+
 def plot_observed_vs_predicted_density(
+    frame: pd.DataFrame,
+    *,
+    observed_column: str,
+    predicted_column: str,
+    title: str = "Primary model: observed vs predicted CIF/FOB factor",
+    gridsize: int = 45,
+    min_count: int = 3,
+    lower_quantile: float = 0.001,
+    upper_quantile: float = 0.995,
+    ax: Axes | None = None,
+) -> tuple[Figure, Axes]:
+    """
+    Plot observed versus predicted CIF/FOB factors using a restrained
+    hexbin-density visualization.
+
+    Quantile limits affect only the displayed range, not model evaluation.
+    """
+    required = {observed_column, predicted_column}
+    missing = required.difference(frame.columns)
+
+    if missing:
+        raise KeyError(
+            "Missing required columns: "
+            + ", ".join(sorted(missing))
+        )
+
+    observed = pd.to_numeric(
+        frame[observed_column],
+        errors="coerce",
+    ).to_numpy(dtype=float)
+
+    predicted = pd.to_numeric(
+        frame[predicted_column],
+        errors="coerce",
+    ).to_numpy(dtype=float)
+
+    valid = (
+        np.isfinite(observed)
+        & np.isfinite(predicted)
+        & (observed > 0)
+        & (predicted > 0)
+    )
+
+    observed = observed[valid]
+    predicted = predicted[valid]
+
+    if observed.size == 0:
+        raise ValueError(
+            "No finite positive observed/predicted pairs are available."
+        )
+
+    combined = np.concatenate([observed, predicted])
+
+    lower_limit = float(np.quantile(combined, lower_quantile))
+    upper_limit = float(np.quantile(combined, upper_quantile))
+
+    displayed = (
+        (observed >= lower_limit)
+        & (observed <= upper_limit)
+        & (predicted >= lower_limit)
+        & (predicted <= upper_limit)
+    )
+
+    observed_display = observed[displayed]
+    predicted_display = predicted[displayed]
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(8.2, 7.0))
+    else:
+        fig = ax.figure
+
+    density = ax.hexbin(
+            observed_display,
+            predicted_display,
+            gridsize=gridsize,
+            mincnt=min_count,
+            extent=(
+                lower_limit,
+                upper_limit,
+                lower_limit,
+                upper_limit,
+            ),
+            cmap="Blues",
+            norm=LogNorm(vmin=min_count),
+            linewidths=0,
+            alpha=0.9,
+        )
+
+    ax.plot(
+        [lower_limit, upper_limit],
+        [lower_limit, upper_limit],
+        linestyle="--",
+        linewidth=1.2,
+        color="0.35",
+        label="Perfect prediction",
+    )
+
+    ax.set_xlim(lower_limit, upper_limit)
+    ax.set_ylim(lower_limit, upper_limit)
+    ax.set_aspect("equal", adjustable="box")
+
+    ax.set_xlabel("Observed CIF/FOB factor")
+    ax.set_ylabel("Predicted CIF/FOB factor")
+    ax.set_title(title)
+
+    ax.grid(alpha=0.18)
+    ax.legend(
+        loc="upper left",
+        frameon=False,
+        fontsize=10,
+    )
+    colorbar = fig.colorbar(
+        density,
+        ax=ax,
+        pad=0.018,
+        shrink=0.82,
+        aspect=28,
+    )
+    colorbar.set_label("Count per hexagon")
+    ax.text(
+            0.67,
+            0.83,
+            "High observed factors are\ncompressed toward the centre",
+            transform=ax.transAxes,
+            ha="center",
+            va="center",
+            fontsize=9,
+            color="0.35",
+        )
+    fig.text(
+        0.5,
+        0.015,
+        (
+            f"{observed_display.size:,} of {observed.size:,} observations shown; "
+            f"display range: {lower_quantile:.1%}–{upper_quantile:.1%} quantiles."
+        ),
+        ha="center",
+        fontsize=9,
+    )
+
+    fig.tight_layout(rect=(0, 0.035, 1, 1))
+
+    return fig, ax
+
+def plot_observed_vs_predicted_density_deprecated(
     frame: pd.DataFrame,
     *,
     observed_column: str,

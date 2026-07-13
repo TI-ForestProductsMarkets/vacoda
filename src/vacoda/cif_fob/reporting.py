@@ -34,16 +34,18 @@ matplotlib.use("Agg")
 
 from vacoda.config.cif_fob import CifFobConfig
 from vacoda.config.paths import get_figure_dir
-from vacoda.visualization.distributions import plot_nebula_boxplot
 from vacoda.visualization.distributions import (
+    plot_nebula_boxplot,
     plot_model_metric_ranking,
     plot_observed_vs_predicted_p95,
+    plot_grouped_error_bars
 )
 from vacoda.visualization.relationships import (
     plot_central_vs_tail_tradeoff,
+    plot_observed_vs_predicted_density,
     plot_temporal_validation_metric,
+    plot_observed_vs_predicted_with_tolerance_bands
 ) 
-from vacoda.visualization.distributions import plot_grouped_error_bars
 from vacoda.visualization.audits import plot_representation_ratio_bars
 from vacoda.cif_fob.training_evidence_audit import DISTANCE_BAND_ORDER
 
@@ -1840,6 +1842,31 @@ def write_cif_fob_decision_report(
             diagnostics_status or "no result",
         )
 
+    primary_density_frame: pd.DataFrame | None = None
+
+    if diagnostics_status in {"completed", "reused"}:
+        diagnostics_path = diagnostics_result.get("diagnostics_path")
+
+        if not isinstance(diagnostics_path, Path):
+            diagnostics_path = Path(str(diagnostics_path))
+
+        if diagnostics_path.exists():
+            primary_density_frame = pd.read_parquet(diagnostics_path)
+
+            if primary_density_frame.empty:
+                logger.warning(
+                    "Primary-model diagnostics artifact is empty; "
+                    "skipping observed-vs-predicted density plot: %s",
+                    diagnostics_path,
+                )
+                primary_density_frame = None
+        else:
+            logger.warning(
+                "Primary-model diagnostics artifact missing; "
+                "skipping observed-vs-predicted density plot: %s",
+                diagnostics_path,
+            )
+
     ## Write Training-Evidence Audit Figures if available
     training_evidence_status = (
         training_evidence_audit_result.get("status")
@@ -2059,6 +2086,57 @@ def write_cif_fob_decision_report(
         key="observed_vs_predicted_p95",
         logger=logger
     )
+
+    ## 8. Plot density of observed vs predicted factors for the primary model
+    if primary_density_frame is not None:
+        fig, _ = plot_observed_vs_predicted_density(
+            primary_density_frame,
+            observed_column="observed_cif_fob_factor",
+            predicted_column="predicted_cif_fob_factor",
+            title=(
+                "Primary model: observed vs predicted "
+                "CIF/FOB factor density"
+            ),
+        )
+        _save_cif_fob_figure(
+            fig=fig,
+            root_dir=figure_dir,
+            category="model_comparison",
+            target_hs=cfg.scope.target_hs,
+            stem="cif_fob_observed_vs_predicted_density",
+            figure_paths=figure_paths,
+            key="observed_vs_predicted_density",
+            logger=logger,
+        )
+    else:
+        logger.info(
+            "PLOTS — Skipping observed-vs-predicted density figure "
+            "because primary diagnostics data is unavailable."
+        )
+
+    ## 9.
+    if primary_density_frame is not None: 
+        fig, _ = plot_observed_vs_predicted_with_tolerance_bands(
+            primary_density_frame,
+            observed_column="observed_cif_fob_factor",
+            predicted_column="predicted_cif_fob_factor",
+            tolerance_bands=(0.05, 0.10, 0.20),
+        )
+        _save_cif_fob_figure(
+            fig=fig,
+            root_dir=figure_dir,
+            category="model_comparison",
+            target_hs=cfg.scope.target_hs,
+            stem="cif_fob_observed_vs_predicted_tolerance_bands",
+            figure_paths=figure_paths,
+            key="observed_vs_predicted_tolerance_bands",
+            logger=logger,
+        )
+    else:
+        logger.info(
+            "PLOTS — Skipping observed-vs-predicted tolerance-bands figure "
+            "because primary diagnostics data is unavailable."
+        )
 
     #####################################################################################
 
@@ -3351,6 +3429,23 @@ def write_cif_fob_decision_report(
             f"{figure_paths.get('error_by_hs4_product_group', '')}"
             f")"
             if figure_paths.get("error_by_hs4_product_group")
+            else "_Figure not available._"
+        ),
+        "",
+        "### 9.5 Observed vs predicted factor density (primary holdout)",
+        "",
+        (
+            "This density plot is built from the primary-model temporal "
+            "holdout diagnostics rows (direct-source rows with positive "
+            "observed CIF/FOB factor and non-null primary holdout "
+            "predictions)."
+        ),
+        "",
+        (
+            f"![Observed vs predicted CIF/FOB factor density]("
+            f"{figure_paths.get('observed_vs_predicted_density', '')}"
+            f")"
+            if figure_paths.get("observed_vs_predicted_density")
             else "_Figure not available._"
         ),
         "",
