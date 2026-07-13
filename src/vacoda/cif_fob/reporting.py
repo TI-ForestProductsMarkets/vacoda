@@ -45,6 +45,7 @@ from vacoda.visualization.relationships import (
 ) 
 from vacoda.visualization.distributions import plot_grouped_error_bars
 from vacoda.visualization.audits import plot_representation_ratio_bars
+from vacoda.cif_fob.training_evidence_audit import DISTANCE_BAND_ORDER
 
 
 # ======================================================================
@@ -1164,11 +1165,15 @@ def _save_cif_fob_figure(
     stem: str,
     figure_paths: dict[str, Path],
     key: str,
+    logger=None,
     dpi: int = 180,
 ) -> Path:
     """Save a CIF/FOB figure in a category subdirectory and close it."""
     category_dir = root_dir / category
-    category_dir.mkdir(parents=True, exist_ok=True)
+    category_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
     target_prefix = target_hs.lower()
     path = category_dir / f"{target_prefix}_{stem}.png"
@@ -1183,8 +1188,15 @@ def _save_cif_fob_figure(
         plt.close(fig)
 
     figure_paths[key] = path
-    return path
 
+    if logger is not None:
+        logger.info(
+            "PLOT WRITTEN — %s: %s",
+            key,
+            path,
+        )
+
+    return path
 
 def _write_training_evidence_audit_figures(
     *,
@@ -1194,9 +1206,8 @@ def _write_training_evidence_audit_figures(
     logger,
 ) -> dict[str, Path]:
     """Write training-evidence representativeness audit figures."""
-    audit_path = training_evidence_audit_result.get(
-        "training_evidence_audit_path"
-    )
+
+    audit_path = training_evidence_audit_result.get("training_evidence_audit_path")
     figure_dir.mkdir(parents=True, exist_ok=True)
 
     if not isinstance(audit_path, Path):
@@ -1293,9 +1304,8 @@ def _write_training_evidence_audit_figures(
         title="Training-evidence representation by route-distance band",
         x_label="Clean-training representation ratio",
         y_label="Distance band",
-        sort_by_ratio=True,
+        group_order=DISTANCE_BAND_ORDER
     )
-
     path = (
         figure_dir
         / f"{target_prefix}_cif_fob_training_representation_distance_band.png"
@@ -1802,7 +1812,19 @@ def write_cif_fob_decision_report(
     figure_paths: dict[str, Path] = {}
 
     ## Write Diaognostics Figures for the primary model if available
-    if (diagnostics_result is not None and diagnostics_result.get("status") == "completed"):
+    diagnostics_status = (
+        diagnostics_result.get("status")
+        if diagnostics_result is not None
+        else None
+    )
+
+    if diagnostics_status in {"completed", "reused"}:
+        logger.info(
+            "PLOTS — Writing primary-model diagnostic figures "
+            "(status=%s)",
+            diagnostics_status,
+        )
+
         figure_paths.update(
             _write_primary_diagnostics_figures(
                 cfg=cfg,
@@ -1811,21 +1833,41 @@ def write_cif_fob_decision_report(
                 logger=logger,
             )
         )
+    else:
+        logger.info(
+            "PLOTS — Skipping primary-model diagnostic figures "
+            "(status=%s)",
+            diagnostics_status or "no result",
+        )
 
-    ## Write Training Evidence Audit Figures if available
-    if (
-        training_evidence_audit_result is not None
-        and training_evidence_audit_result.get("status") == "completed"
-    ):
+    ## Write Training-Evidence Audit Figures if available
+    training_evidence_status = (
+        training_evidence_audit_result.get("status")
+        if training_evidence_audit_result is not None
+        else None
+    )
+
+    if training_evidence_status in {"completed", "reused"}:
+        logger.info(
+            "PLOTS — Writing training-evidence audit figures "
+            "(status=%s)",
+            training_evidence_status,
+        )
+
         figure_paths.update(
             _write_training_evidence_audit_figures(
                 cfg=cfg,
                 training_evidence_audit_result=training_evidence_audit_result,
-                figure_dir=figure_dir/ "training_evidence_audit",
+                figure_dir=figure_dir / "training_evidence_audit",
                 logger=logger,
             )
         )
-
+    else:
+        logger.info(
+            "PLOTS — Skipping training-evidence audit figures "
+            "(status=%s)",
+            training_evidence_status or "no result",
+        )
 
     #############################################################################
     # FIGURE PLOTTING
@@ -1852,6 +1894,7 @@ def write_cif_fob_decision_report(
         stem="direct_cif_fob_factor_distribution",
         figure_paths=figure_paths,
         key="direct_factor_distribution",
+        logger=logger
     )
 
     ## 2. Plot the model ranking by mean log-factor MAE
@@ -1874,6 +1917,7 @@ def write_cif_fob_decision_report(
         stem="cif_fob_model_ranking_mean_log_mae",
         figure_paths=figure_paths,
         key="model_ranking_mean_log_mae",
+        logger=logger,
     )
 
     ## 3. Plot the model ranking by median APE
@@ -1894,6 +1938,7 @@ def write_cif_fob_decision_report(
         stem="cif_fob_model_ranking_median_ape",
         figure_paths=figure_paths,
         key="model_ranking_median_ape",
+        logger=logger,
     )
 
 
@@ -1915,6 +1960,7 @@ def write_cif_fob_decision_report(
         stem="cif_fob_model_ranking_rmse",
         figure_paths=figure_paths,
         key="model_ranking_rmse",
+        logger=logger,
     )
 
     ## 4. Plot the model ranking by R2 
@@ -1935,6 +1981,7 @@ def write_cif_fob_decision_report(
         stem="cif_fob_model_ranking_r2",
         figure_paths=figure_paths,
         key="model_ranking_r2",
+        logger=logger,
     )
 
     ## 5. Plot the model ranking by upper-tail median APE
@@ -1962,6 +2009,7 @@ def write_cif_fob_decision_report(
         stem="cif_fob_central_vs_tail_tradeoff",
         figure_paths=figure_paths,
         key="central_vs_tail_tradeoff",
+        logger=logger,
     )
 
 
@@ -1988,6 +2036,7 @@ def write_cif_fob_decision_report(
         stem="cif_fob_temporal_validation_median_ape",
         figure_paths=figure_paths,
         key="temporal_validation_median_ape",
+        logger=logger,
     )
 
     ## 7. Plot Observed vs Predicted P95 for the primary model and a few other candidates
@@ -2008,6 +2057,7 @@ def write_cif_fob_decision_report(
         stem="cif_fob_observed_vs_predicted_p95",
         figure_paths=figure_paths,
         key="observed_vs_predicted_p95",
+        logger=logger
     )
 
     #####################################################################################

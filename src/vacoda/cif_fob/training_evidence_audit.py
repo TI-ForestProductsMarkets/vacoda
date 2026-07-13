@@ -31,6 +31,7 @@ import duckdb
 import numpy as np
 import pandas as pd
 from vacoda.cif_fob.prepare_input import valid_output
+from vacoda.visualization.audits import  DISTANCE_BAND_ORDER
 
 REQUIRED_TRAINING_EVIDENCE_AUDIT_COLUMNS = {
     "dimension",
@@ -463,9 +464,9 @@ def _add_audit_bands(
         ],
         labels=[
             "<10k",
-            "10k–100k",
-            "100k–1M",
-            "1M–10M",
+            "10k-100k",
+            "100k-1M",
+            "1M-10M",
             ">10M",
         ],
         include_lowest=True,
@@ -491,13 +492,7 @@ def _add_audit_bands(
             12_000,
             np.inf,
         ],
-        labels=[
-            "<1k km",
-            "1k–3k km",
-            "3k–7k km",
-            "7k–12k km",
-            ">12k km",
-        ],
+        labels=list(DISTANCE_BAND_ORDER),
         include_lowest=True,
     )
 
@@ -522,12 +517,12 @@ def _add_audit_bands(
             3.00,
         ],
         labels=[
-            "1.00–1.05",
-            "1.05–1.10",
-            "1.10–1.20",
-            "1.20–1.50",
-            "1.50–2.00",
-            "2.00–3.00",
+            "1.00-1.05",
+            "1.05-1.10",
+            "1.10-1.20",
+            "1.20-1.50",
+            "1.50-2.00",
+            "2.00-3.00",
         ],
         include_lowest=True,
     )

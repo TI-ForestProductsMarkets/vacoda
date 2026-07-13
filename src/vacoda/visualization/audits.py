@@ -10,6 +10,13 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+DISTANCE_BAND_ORDER: tuple[str, ...] = (
+    "<1k km",
+    "1k–3k km",
+    "3k–7k km",
+    "7k–12k km",
+    ">12k km",
+)
 
 def plot_representation_ratio_bars(
     audit: pd.DataFrame,
@@ -25,6 +32,7 @@ def plot_representation_ratio_bars(
     x_label: str = "Representation ratio",
     y_label: str = "Group",
     sort_by_ratio: bool = True,
+    group_order: list[str] | None = None,
 ):
     """
     Plot representation ratio for one audit dimension.
@@ -86,8 +94,37 @@ def plot_representation_ratio_bars(
         raise ValueError(
             "No groups satisfy the minimum prediction-row requirement."
         )
+    
+    if group_order is not None:
+        group_order = [str(group) for group in group_order]
 
-    if sort_by_ratio:
+        plot_data[group_column] = (
+            plot_data[group_column]
+            .astype("string")
+        )
+
+        order_lookup = {
+            group: position
+            for position, group in enumerate(group_order)
+        }
+
+        plot_data["_group_sort_order"] = (
+            plot_data[group_column]
+            .map(order_lookup)
+            .fillna(len(group_order))
+            .astype(int)
+        )
+
+        plot_data = (
+            plot_data
+            .sort_values(
+                ["_group_sort_order", group_column],
+                ascending=[True, True],
+            )
+            .drop(columns="_group_sort_order")
+        )
+
+    elif sort_by_ratio:
         plot_data = plot_data.sort_values(
             ratio_column,
             ascending=True,
