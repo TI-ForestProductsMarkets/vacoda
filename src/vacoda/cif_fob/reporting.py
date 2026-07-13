@@ -2340,11 +2340,43 @@ def write_cif_fob_decision_report(
         for source in cfg.method.estimation.training_factor_sources
     ]
 
+    paired_population = int(
+        feature_metrics["n_rows"]
+    )
+
+    selected_direct = int(
+        feature_metrics["n_selected_direct_factors"]
+    )
+
+    selected_mirror = int(
+        feature_metrics["n_selected_mirror_factors"]
+    )
+
+    selected_total = int(
+        feature_metrics["n_factor_candidates"]
+    )
+
+    no_selected_factor = (
+        paired_population
+        - selected_total
+    )
+
+
     source_selection_rows = pd.DataFrame(
         [
             {
                 "Evidence population": "Selected direct factors",
-                "Rows": feature_metrics["n_selected_direct_factors"],
+                "Rows": selected_direct,
+                "Share of paired groups": (
+                    selected_direct / paired_population
+                    if paired_population
+                    else 0.0
+                ),
+                "Share of selected-factor pool": (
+                    selected_direct / selected_total
+                    if selected_total
+                    else 0.0
+                ),
                 "Meaning": (
                     "Direct importer CIF/FOB factor selected as the "
                     "observed target."
@@ -2352,7 +2384,17 @@ def write_cif_fob_decision_report(
             },
             {
                 "Evidence population": "Selected mirror factors",
-                "Rows": feature_metrics["n_selected_mirror_factors"],
+                "Rows": selected_mirror,
+                "Share of paired groups": (
+                    selected_mirror / paired_population
+                    if paired_population
+                    else 0.0
+                ),
+                "Share of selected-factor pool": (
+                    selected_mirror / selected_total
+                    if selected_total
+                    else 0.0
+                ),
                 "Meaning": (
                     "Mirror factor retained where an eligible direct "
                     "factor was not selected."
@@ -2362,10 +2404,31 @@ def write_cif_fob_decision_report(
                 "Evidence population": (
                     "All rows with a selected observed-factor candidate"
                 ),
-                "Rows": feature_metrics["n_factor_candidates"],
+                "Rows": selected_total,
+                "Share of paired groups": (
+                    selected_total / paired_population
+                    if paired_population
+                    else 0.0
+                ),
+                "Share of selected-factor pool": 1.0,
                 "Meaning": (
                     "Internal `model_eligible` pool; not yet the model "
                     "training sample."
+                ),
+            },
+            {
+                "Evidence population": "No selected observed factor",
+                "Rows": no_selected_factor,
+                "Share of paired groups": (
+                    no_selected_factor / paired_population
+                    if paired_population
+                    else 0.0
+                ),
+                "Share of selected-factor pool": np.nan,
+                "Meaning": (
+                    "No usable observed CIF/FOB target was selected. "
+                    "These rows may still receive model predictions when "
+                    "their predictors are complete."
                 ),
             },
         ]
@@ -2650,6 +2713,65 @@ def write_cif_fob_decision_report(
             ]
         )
 
+    paired_groups = int(
+        population_metrics["n_bilateral_mirror_groups"]
+    )
+
+    bilateral_reporting_rows = pd.DataFrame(
+        [
+            {
+                "Reporting case": "Both importer and exporter reports",
+                "Groups": population_metrics[
+                    "n_groups_with_both_reports"
+                ],
+                "Share of paired groups": (
+                    population_metrics["n_groups_with_both_reports"]
+                    / paired_groups
+                ),
+                "Potential observed-factor evidence": (
+                    "Direct or mirror"
+                ),
+            },
+            {
+                "Reporting case": "Import-only",
+                "Groups": population_metrics[
+                    "n_import_only_groups"
+                ],
+                "Share of paired groups": (
+                    population_metrics["n_import_only_groups"]
+                    / paired_groups
+                ),
+                "Potential observed-factor evidence": (
+                    "Direct only"
+                ),
+            },
+            {
+                "Reporting case": "Export-only",
+                "Groups": population_metrics[
+                    "n_export_only_groups"
+                ],
+                "Share of paired groups": (
+                    population_metrics["n_export_only_groups"]
+                    / paired_groups
+                ),
+                "Potential observed-factor evidence": (
+                    "Neither direct nor mirror"
+                ),
+            },
+        ]
+    )
+
+    direct_structural_share = (
+        population_metrics["n_groups_with_both_reports"]
+        + population_metrics["n_import_only_groups"]
+    ) / paired_groups
+
+    mirror_structural_share = (
+        population_metrics["n_groups_with_both_reports"]
+        / paired_groups
+    )
+
+
     lines = [
         f"# VACODA CIF/FOB Decision Report — {cfg.scope.target_hs}",
         "",
@@ -2770,6 +2892,32 @@ def write_cif_fob_decision_report(
             f"multi-component groups."
         ),
         "",
+        _markdown_table(
+            bilateral_reporting_rows,
+            columns=[
+                "Reporting case",
+                "Groups",
+                "Share of paired groups",
+                "Potential observed-factor evidence",
+            ],
+            formatters={
+                "Groups": _fmt_int,
+                "Share of paired groups": _fmt_fraction_percent,
+            },
+        ),
+        "",
+        (
+            "Structurally, both-report and import-only groups can "
+            "potentially provide direct-factor evidence, representing "
+            f"{_fmt_fraction_percent(direct_structural_share)} "
+            "of paired groups. Mirror-factor evidence is possible "
+            "only for both-report groups, representing "
+            f"{_fmt_fraction_percent(mirror_structural_share)} "
+            "of paired groups. These are maximum structural candidate "
+            "populations before value, weight, concordance, and factor-quality "
+            "requirements are applied."
+        ),
+        "",
         (
             f"The bilateral mirror artifact contains "
             f"{_fmt_int(population_metrics['n_bilateral_mirror_groups'])} "
@@ -2824,21 +2972,30 @@ def write_cif_fob_decision_report(
             columns=[
                 "Evidence population",
                 "Rows",
+                "Share of paired groups",
+                "Share of selected-factor pool",
                 "Meaning",
             ],
             formatters={
                 "Rows": _fmt_int,
-            },
+                "Share of paired groups": _fmt_fraction_percent,
+                "Share of selected-factor pool": _fmt_fraction_percent,
+                },
         ),
         "",
         (
-            f"The selected-factor pool therefore contains "
-            f"{_fmt_int(feature_metrics['n_selected_direct_factors'])} "
-            f"direct rows plus "
-            f"{_fmt_int(feature_metrics['n_selected_mirror_factors'])} "
-            f"mirror rows, giving "
-            f"{_fmt_int(feature_metrics['n_factor_candidates'])} "
-            f"candidate rows in total."
+            f"Of the {_fmt_int(paired_population)} paired bilateral groups, "
+            f"{_fmt_int(selected_total)} "
+            f"({_fmt_fraction_percent(selected_total / paired_population)}) "
+            "contain a selected observed CIF/FOB factor. "
+            f"Direct factors account for {_fmt_int(selected_direct)} groups "
+            f"({_fmt_fraction_percent(selected_direct / paired_population)} "
+            "of all paired groups), while mirror factors account for "
+            f"{_fmt_int(selected_mirror)} groups "
+            f"({_fmt_fraction_percent(selected_mirror / paired_population)}). "
+            f"The remaining {_fmt_int(no_selected_factor)} groups "
+            f"({_fmt_fraction_percent(no_selected_factor / paired_population)}) "
+            "do not contain a selected observed factor."
         ),
         "",
         (
@@ -3104,6 +3261,8 @@ def write_cif_fob_decision_report(
         ),
 
         "",
+
+        f"",
         f"- Lowest mean log-factor MAE: `{best_mae}`",
         f"- Lowest mean log-factor RMSE: `{best_rmse}`",
         f"- Highest mean log-factor R²: `{best_r2}`",
