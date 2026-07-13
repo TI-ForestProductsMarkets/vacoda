@@ -434,7 +434,6 @@ cif_fob:
             - log_product_median_unit_value
             - year
             - log_oil_price_x_log_distance
-            - log_lagged_bilateral_trade_value
             - log_exporter_gdp
             - log_importer_gdp
             - gatt_pair

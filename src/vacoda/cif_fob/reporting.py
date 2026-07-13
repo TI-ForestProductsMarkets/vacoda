@@ -3233,6 +3233,8 @@ def write_cif_fob_decision_report(
                 "Algorithm",
                 "Predictor set",
                 "Mean log MAE",
+                "RMSE log",
+                "R² log",
                 "Median APE",
                 "Mean APE",
                 "P90 APE",
