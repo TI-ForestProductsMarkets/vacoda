@@ -33,6 +33,7 @@ def short_algorithm_name(name: str) -> str:
 def short_predictor_set_name(name: str) -> str:
     """Return compact display name for predictor set."""
     mapping = {
+        "model_0_baci_replication": "M0",
         "model_1_classical_gravity": "M1",
         "model_2_classical_year_oil": "M2",
         "model_3_policy_integration": "M3",

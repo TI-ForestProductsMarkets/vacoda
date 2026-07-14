@@ -116,6 +116,7 @@ def _safe_model_prefix(model_name: str) -> str:
     aliases = {
         "hist_gradient_boosting": "hgb",
         "hist_gradient_boosting_squared": "hgb_sq",
+        "hist_gradient_boosting_representation_weighted": "hgb_wgt",
         "hist_gradient_boosting_squared_level": "hgb_sq_lvl",
         "hist_gradient_boosting_squared_regularized": "hgb_sq_reg",
         "log_linear_regression": "ols",
@@ -1503,6 +1504,170 @@ def _build_log_linear_design(
 
     return design, learned_fill_values
 
+def _evidence_value_band(
+    values: pd.Series,
+    *,
+    boundaries: list[float],
+) -> pd.Series:
+    """Assign stable evidence-value bands."""
+
+    numeric = pd.to_numeric(values, errors="coerce")
+
+    bins = [-np.inf, *boundaries, np.inf]
+
+    labels = [
+        "<10k",
+        "10k-100k",
+        "100k-1M",
+        "1M-10M",
+        ">10M",
+    ]
+
+    if len(labels) != len(bins) - 1:
+        raise ValueError(
+            "Evidence-value labels do not match configured boundaries."
+        )
+
+    return pd.cut(
+        numeric,
+        bins=bins,
+        labels=labels,
+        right=False,
+        ordered=True,
+    )
+
+def _value_representation_weight(
+    *,
+    train_frame: pd.DataFrame,
+    reference_frame: pd.DataFrame,
+    boundaries: list[float],
+    minimum_weight: float,
+    maximum_weight: float,
+    normalize_mean_to_one: bool,
+) -> pd.Series:
+    """
+    Calculate inverse representation weights by evidence-value band.
+
+    A weight above 1 increases the influence of an underrepresented band.
+    A weight below 1 reduces the influence of an overrepresented band.
+    """
+
+    train_band = _evidence_value_band(
+        train_frame["estimation_evidence_value"],
+        boundaries=boundaries,
+    )
+
+    reference_band = _evidence_value_band(
+        reference_frame["estimation_evidence_value"],
+        boundaries=boundaries,
+    )
+
+    train_share = train_band.value_counts(
+        normalize=True,
+        sort=False,
+        dropna=False,
+    )
+
+    reference_share = reference_band.value_counts(
+        normalize=True,
+        sort=False,
+        dropna=False,
+    )
+
+    representation_ratio = (
+        train_share
+        / reference_share.replace(0.0, np.nan)
+    )
+
+    inverse_ratio = (
+        1.0
+        / representation_ratio.replace(0.0, np.nan)
+    )
+
+    row_weight = (
+        train_band.map(inverse_ratio)
+        .astype("float64")
+        .fillna(1.0)
+        .clip(
+            lower=float(minimum_weight),
+            upper=float(maximum_weight),
+        )
+    )
+
+    if normalize_mean_to_one:
+        mean_weight = float(row_weight.mean())
+
+        if np.isfinite(mean_weight) and mean_weight > 0:
+            row_weight = row_weight / mean_weight
+
+    return row_weight
+
+def _training_sample_weight(
+    *,
+    train_frame: pd.DataFrame,
+    reference_frame: pd.DataFrame,
+    model_cfg: Any,
+    cfg: CifFobConfig,
+) -> pd.Series:
+    """Return the final training weight for one model run."""
+
+    source_weight = (
+        train_frame["estimation_source_weight"]
+        .astype("float64")
+        .copy()
+    )
+
+    weighting_cfg = getattr(
+        model_cfg,
+        "sample_weighting",
+        None,
+    )
+
+    method = (
+        str(getattr(weighting_cfg, "method", "source_only"))
+        .strip()
+        .lower()
+    )
+
+    if method == "source_only":
+        return source_weight
+
+    if method != "source_x_value_representation":
+        raise ValueError(
+            f"Unsupported sample-weighting method: {method!r}."
+        )
+
+    representation_cfg = (
+        cfg.method.estimation.representation_weighting.value_band
+    )
+
+    representation_weight = _value_representation_weight(
+        train_frame=train_frame,
+        reference_frame=reference_frame,
+        boundaries=[
+            float(value)
+            for value in representation_cfg.boundaries_usd
+        ],
+        minimum_weight=float(
+            representation_cfg.minimum_weight
+        ),
+        maximum_weight=float(
+            representation_cfg.maximum_weight
+        ),
+        normalize_mean_to_one=bool(
+            representation_cfg.normalize_mean_to_one
+        ),
+    )
+
+    final_weight = source_weight * representation_weight
+
+    # Keep the average scale stable across model runs.
+    mean_weight = float(final_weight.mean())
+
+    if np.isfinite(mean_weight) and mean_weight > 0:
+        final_weight = final_weight / mean_weight
+
+    return final_weight
 
 def _fit_log_linear(
     *,
@@ -1646,6 +1811,7 @@ def _fit_model(
     if model_name in {
         "hist_gradient_boosting",
         "hist_gradient_boosting_squared",
+        "hist_gradient_boosting_representation_weighted"
         "hist_gradient_boosting_squared_level",
         "hist_gradient_boosting_squared_regularized",
     }:

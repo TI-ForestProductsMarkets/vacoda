@@ -180,6 +180,21 @@ cif_fob:
         domain_cap: 3.0
       exclude_proxy_weights: true
 
+      ## Weighting on Value and Representation for the training sample.
+      representation_weighting:
+        value_band:
+          enabled: true
+
+          boundaries_usd:
+            - 10000
+            - 100000
+            - 1000000
+            - 10000000
+
+          minimum_weight: 0.25
+          maximum_weight: 3.00
+          normalize_mean_to_one: true
+
       diagnostics:
         upper_tail_audit:
           enabled: true
@@ -258,7 +273,7 @@ cif_fob:
 
         candidates:
           hist_gradient_boosting_squared:
-            enabled: true
+            enabled: false
             type: "machine_learning"
             target_transformation: "log"
 
@@ -288,6 +303,22 @@ cif_fob:
             random_state: 42
             categorical_predictors:
               - hs4_product_group
+
+          hist_gradient_boosting_representation_weighted:
+            enabled: true
+            type: "machine_learning"
+            target_transformation: "log"
+            loss: "absolute_error"
+            learning_rate: 0.05
+            max_iter: 300
+            max_leaf_nodes: 63
+            min_samples_leaf: 20
+            l2_regularization: 0.0
+            max_bins: 255
+            random_state: 42
+
+            sample_weighting:
+              method: "source_x_value_representation"
 
           hist_gradient_boosting_squared_level:
             enabled: false
@@ -394,6 +425,19 @@ cif_fob:
       primary_predictor_set: "model_5_full_history"
 
       predictor_sets:
+
+        model_0_baci_replication:
+          numeric:
+            - log_distance
+            - log_distance_squared
+            - contiguity
+            - exporter_landlocked
+            - importer_landlocked
+            - log_product_median_unit_value
+
+          categorical:
+            - year
+
         model_1_classical_gravity:
           numeric:
             - log_distance
