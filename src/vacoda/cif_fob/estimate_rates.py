@@ -905,6 +905,77 @@ def _resolve_temporal_validation_years(
 
 
 # ======================================================================
+# HistGradiantBoosting Weightage helpers
+#=====================================================================
+
+def _training_sample_weight(
+    *,
+    train_frame: pd.DataFrame,
+    reference_frame: pd.DataFrame,
+    model_cfg: Any,
+    cfg: CifFobConfig,
+) -> pd.Series:
+    """Return the final training weight for one model run."""
+
+    source_weight = (
+        train_frame["estimation_source_weight"]
+        .astype("float64")
+        .copy()
+    )
+
+    weighting_cfg = getattr(
+        model_cfg,
+        "sample_weighting",
+        None,
+    )
+
+    method = (
+        str(getattr(weighting_cfg, "method", "source_only"))
+        .strip()
+        .lower()
+    )
+
+    if method == "source_only":
+        return source_weight
+
+    if method != "source_x_value_representation":
+        raise ValueError(
+            f"Unsupported sample-weighting method: {method!r}."
+        )
+
+    representation_cfg = (
+        cfg.method.estimation.representation_weighting.value_band
+    )
+
+    representation_weight = _value_representation_weight(
+        train_frame=train_frame,
+        reference_frame=reference_frame,
+        boundaries=[
+            float(value)
+            for value in representation_cfg.boundaries_usd
+        ],
+        minimum_weight=float(
+            representation_cfg.minimum_weight
+        ),
+        maximum_weight=float(
+            representation_cfg.maximum_weight
+        ),
+        normalize_mean_to_one=bool(
+            representation_cfg.normalize_mean_to_one
+        ),
+    )
+
+    final_weight = source_weight * representation_weight
+
+    # Keep the average scale stable across model runs.
+    mean_weight = float(final_weight.mean())
+
+    if np.isfinite(mean_weight) and mean_weight > 0:
+        final_weight = final_weight / mean_weight
+
+    return final_weight
+
+# ======================================================================
 # HistGradientBoosting helpers
 # ======================================================================
 
@@ -1846,14 +1917,22 @@ def _run_temporal_backtest(
         if train_frame.empty or validation_frame.empty:
             continue
 
+        sample_weight = _training_sample_weight(
+            train_frame=train_frame,
+            reference_frame=train_frame,
+            model_cfg=model_cfg,
+            cfg=cfg,
+        )
+
         fitted = _fit_model(
             model_name=model_name,
             model_cfg=model_cfg,
             train_frame=train_frame,
             predictors=predictors,
             categorical_predictors=categorical_predictors,
-            sample_weight=train_frame["estimation_source_weight"],
+            sample_weight=sample_weight,
         )
+
 
         predicted_log = _predict_model(
             fitted,
@@ -1875,6 +1954,14 @@ def _run_temporal_backtest(
             upper_tail_threshold=upper_tail_threshold,
         )
 
+        sample_weight_squared_sum = float(
+            np.square(sample_weight).sum()
+        )
+        effective_sample_size = float(
+            sample_weight.sum() ** 2
+            / sample_weight_squared_sum
+        )
+
         fold_rows.append(
             {
                 "model_name": run_spec.run_name,
@@ -1883,6 +1970,18 @@ def _run_temporal_backtest(
                 "validation_year": int(validation_year),
                 "n_train": int(len(train_frame)),
                 "n_holdout": int(len(validation_frame)),
+                "sample_weight_method": str(
+                    getattr(
+                        getattr(model_cfg, "sample_weighting", None),
+                        "method",
+                        "source_only",
+                    )
+                ),
+                "sample_weight_min": float(sample_weight.min()),
+                "sample_weight_median": float(sample_weight.median()),
+                "sample_weight_mean": float(sample_weight.mean()),
+                "sample_weight_max": float(sample_weight.max()),
+                "effective_sample_size": effective_sample_size,
                 **metrics,
             }
         )
