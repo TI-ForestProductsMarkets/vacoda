@@ -44,6 +44,200 @@ def _prepare_metric_for_plot(
 
     return values
 
+def plot_model_error_by_group(
+    frame: pd.DataFrame,
+    *,
+    group_column: str,
+    model_column: str,
+    error_column: str = "ape",
+    aggregation: str = "median",
+    group_order: list[str] | None = None,
+    title: str | None = None,
+    x_label: str = "",
+    y_label: str | None = None,
+):
+    """
+    Plot grouped model errors by category.
+
+    Parameters
+    ----------
+    frame
+        Long-format frame containing one row per observation and model.
+    group_column
+        Column defining the comparison groups, such as ``value_band``.
+    model_column
+        Column containing model labels.
+    error_column
+        Row-level error column, such as ``ape``.
+    aggregation
+        Error summary to plot. Supported values are:
+
+        - ``"median"``
+        - ``"mean"``
+        - ``"p90"``
+        - ``"p95"``
+
+    group_order
+        Optional explicit order for the group categories.
+    title
+        Figure title.
+    x_label
+        X-axis label.
+    y_label
+        Y-axis label. When omitted, it is derived from ``aggregation``.
+
+    Returns
+    -------
+    tuple
+        ``(fig, ax, grouped)``
+    """
+
+    required_columns = {
+        group_column,
+        model_column,
+        error_column,
+    }
+
+    missing_columns = sorted(
+        required_columns - set(frame.columns)
+    )
+
+    if missing_columns:
+        raise ValueError(
+            "Model-group comparison frame is missing columns: "
+            + ", ".join(missing_columns)
+        )
+
+    aggregation = aggregation.strip().lower()
+
+    supported_aggregations = {
+        "median",
+        "mean",
+        "p90",
+        "p95",
+    }
+
+    if aggregation not in supported_aggregations:
+        raise ValueError(
+            f"Unsupported aggregation {aggregation!r}. "
+            f"Expected one of {sorted(supported_aggregations)}."
+        )
+
+    plot_data = frame[
+        [
+            group_column,
+            model_column,
+            error_column,
+        ]
+    ].copy()
+
+    plot_data[error_column] = pd.to_numeric(
+        plot_data[error_column],
+        errors="coerce",
+    )
+
+    plot_data = plot_data.dropna(
+        subset=[
+            group_column,
+            model_column,
+            error_column,
+        ]
+    )
+
+    plot_data = plot_data.loc[
+        np.isfinite(plot_data[error_column])
+    ].copy()
+
+    if plot_data.empty:
+        raise ValueError(
+            "No valid observations are available for the "
+            "model-error comparison plot."
+        )
+
+    grouped_source = (
+        plot_data
+        .groupby(
+            [
+                group_column,
+                model_column,
+            ],
+            observed=False,
+            sort=False,
+        )[error_column]
+    )
+
+    if aggregation == "median":
+        aggregated = grouped_source.median()
+        aggregation_label = "Median"
+    elif aggregation == "mean":
+        aggregated = grouped_source.mean()
+        aggregation_label = "Mean"
+    elif aggregation == "p90":
+        aggregated = grouped_source.quantile(0.90)
+        aggregation_label = "P90"
+    else:
+        aggregated = grouped_source.quantile(0.95)
+        aggregation_label = "P95"
+
+    metric_column = f"{aggregation}_error_percent"
+
+    grouped = (
+        aggregated
+        .mul(100.0)
+        .reset_index(name=metric_column)
+    )
+
+    if group_order is not None:
+        grouped[group_column] = pd.Categorical(
+            grouped[group_column],
+            categories=group_order,
+            ordered=True,
+        )
+
+        grouped = grouped.sort_values(
+            [
+                group_column,
+                model_column,
+            ],
+            kind="stable",
+        )
+
+    pivot = grouped.pivot(
+        index=group_column,
+        columns=model_column,
+        values=metric_column,
+    )
+
+    if group_order is not None:
+        pivot = pivot.reindex(group_order)
+
+    ax = pivot.plot(
+        kind="bar",
+        figsize=(10, 6),
+    )
+
+    ax.set_title(
+        title
+        or f"{aggregation_label} model error by group"
+    )
+    ax.set_xlabel(x_label)
+    ax.set_ylabel(
+        y_label
+        or f"{aggregation_label} APE (%)"
+    )
+    ax.tick_params(
+        axis="x",
+        rotation=0,
+    )
+    ax.legend(
+        title="Model",
+        frameon=False,
+    )
+
+    fig = ax.get_figure()
+    fig.tight_layout()
+
+    return fig, ax, grouped
 
 def plot_grouped_error_bars(
     frame: pd.DataFrame,

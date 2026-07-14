@@ -288,6 +288,8 @@ cif_fob:
             l2_regularization: 0.0
             max_bins: 255
             random_state: 42
+            sample_weighting:
+              method: "source_only"
 
           hist_gradient_boosting:
             enabled: true
@@ -303,8 +305,10 @@ cif_fob:
             random_state: 42
             categorical_predictors:
               - hs4_product_group
+            sample_weighting:
+              method: "source_only"
 
-          hist_gradient_boosting_representation_weighted:
+          hist_gradient_boosting_weighted:
             enabled: true
             type: "machine_learning"
             target_transformation: "log"
@@ -318,7 +322,7 @@ cif_fob:
             random_state: 42
 
             sample_weighting:
-              method: "source_x_value_representation"
+              method: "value_band_weighting"
 
           hist_gradient_boosting_squared_level:
             enabled: false
@@ -335,6 +339,8 @@ cif_fob:
             l2_regularization: 0.0
             max_bins: 255
             random_state: 42
+            sample_weighting:
+              method: "source_only"
 
           hist_gradient_boosting_squared_regularized:
             enabled: false
@@ -351,6 +357,8 @@ cif_fob:
             l2_regularization: 0.1
             max_bins: 255
             random_state: 42
+            sample_weighting:
+              method: "source_only"
         
           xgboost_log_squared:
             enabled: false
@@ -381,6 +389,9 @@ cif_fob:
             early_stopping_rounds: 75
             n_jobs: 16
 
+            sample_weighting:
+              method: "source_only"
+
 
           log_linear_regression:
             enabled: true
@@ -398,6 +409,9 @@ cif_fob:
 
             prediction:
               inverse_transform: "exp"
+
+            sample_weighting:
+              method: "source_only"
               
             categorical_predictors:
               - hs4_product_group
@@ -427,6 +441,7 @@ cif_fob:
       predictor_sets:
 
         model_0_baci_replication:
+          enabled: false
           numeric:
             - log_distance
             - log_distance_squared
@@ -439,6 +454,7 @@ cif_fob:
             - year
 
         model_1_classical_gravity:
+          enabled: false
           numeric:
             - log_distance
             - log_distance_squared
@@ -453,6 +469,7 @@ cif_fob:
             - hs4_product_group
 
         model_2_classical_year_oil:
+          enabled: false
           numeric:
             - log_distance
             - log_distance_squared
@@ -469,6 +486,7 @@ cif_fob:
             - hs4_product_group
 
         model_3_policy_integration:
+          enabled: false
           numeric:
             - log_distance
             - log_distance_squared
@@ -488,6 +506,7 @@ cif_fob:
             - hs4_product_group
 
         model_4_trade_scale_history:
+          enabled: false
           numeric:
             - log_distance
             - log_distance_squared
@@ -506,6 +525,7 @@ cif_fob:
             - hs4_product_group
 
         model_5_full_history:
+          enabled: true
           numeric:
             - log_distance
             - log_distance_squared
@@ -531,6 +551,7 @@ cif_fob:
             - hs4_product_group   
 
         model_6_policy_plus_factor_history:
+          enabled: false
           numeric:
             - log_distance
             - log_distance_squared

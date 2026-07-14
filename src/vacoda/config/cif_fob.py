@@ -613,6 +613,94 @@ class CifFobEstimationSourceWeightsConfig:
 
 
 @dataclass(frozen=True)
+class CifFobRepresentationValueBandConfig:
+    enabled: bool
+    boundaries_usd: tuple[int, ...]
+    minimum_weight: float
+    maximum_weight: float
+    normalize_mean_to_one: bool
+
+    @classmethod
+    def from_dict(
+        cls,
+        cfg: dict[str, Any],
+    ) -> "CifFobRepresentationValueBandConfig":
+        boundaries_raw = cfg.get("boundaries_usd")
+
+        if not isinstance(boundaries_raw, list):
+            raise TypeError(
+                "cif_fob.method.estimation.representation_weighting."
+                "value_band.boundaries_usd must be a list."
+            )
+
+        return cls(
+            enabled=require_bool(
+                cfg.get("enabled"),
+                key=(
+                    "cif_fob.method.estimation.representation_weighting."
+                    "value_band.enabled"
+                ),
+            ),
+            boundaries_usd=tuple(
+                require_int(
+                    value,
+                    key=(
+                        "cif_fob.method.estimation.representation_weighting."
+                        "value_band.boundaries_usd"
+                    ),
+                    min_value=0,
+                )
+                for value in boundaries_raw
+            ),
+            minimum_weight=require_float(
+                cfg.get("minimum_weight"),
+                key=(
+                    "cif_fob.method.estimation.representation_weighting."
+                    "value_band.minimum_weight"
+                ),
+                min_value=0.0,
+            ),
+            maximum_weight=require_float(
+                cfg.get("maximum_weight"),
+                key=(
+                    "cif_fob.method.estimation.representation_weighting."
+                    "value_band.maximum_weight"
+                ),
+                min_value=0.0,
+            ),
+            normalize_mean_to_one=require_bool(
+                cfg.get("normalize_mean_to_one"),
+                key=(
+                    "cif_fob.method.estimation.representation_weighting."
+                    "value_band.normalize_mean_to_one"
+                ),
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class CifFobRepresentationWeightingConfig:
+    value_band: CifFobRepresentationValueBandConfig
+
+    @classmethod
+    def from_dict(
+        cls,
+        cfg: dict[str, Any],
+    ) -> "CifFobRepresentationWeightingConfig":
+        return cls(
+            value_band=CifFobRepresentationValueBandConfig.from_dict(
+                require_dict(
+                    cfg.get("value_band"),
+                    key=(
+                        "cif_fob.method.estimation.representation_weighting."
+                        "value_band"
+                    ),
+                )
+            )
+        )
+
+
+@dataclass(frozen=True)
 class CifFobMaximumFactorRuleConfig:
     method: str
     iqr_multiplier: float
@@ -994,6 +1082,35 @@ class CifFobModelBaseConfig:
     type: str
     categorical_predictors: tuple[str, ...]
 
+@dataclass(frozen=True)
+class CifFobSampleWeightingConfig:
+    method: str
+
+    @classmethod
+    def from_dict(
+        cls,
+        cfg: dict[str, Any],
+        *,
+        key: str,
+    ) -> "CifFobSampleWeightingConfig":
+        method = require_str(
+            cfg.get("method"),
+            key=f"{key}.method",
+        ).strip().lower()
+
+        allowed_methods = {
+            "source_only",
+            "value_band_weighting",
+        }
+
+        if method not in allowed_methods:
+            raise ValueError(
+                f"{key}.method must be one of "
+                f"{sorted(allowed_methods)}, got {method!r}."
+            )
+
+        return cls(method=method)
+    
 
 @dataclass(frozen=True)
 class CifFobHistGradientBoostingConfig:
@@ -1011,6 +1128,7 @@ class CifFobHistGradientBoostingConfig:
     max_bins: int
     random_state: int
     target_transformation: str
+    sample_weighting: CifFobSampleWeightingConfig
 
     @classmethod
     def from_dict(
@@ -1041,7 +1159,21 @@ class CifFobHistGradientBoostingConfig:
             raise ValueError(
         f"{name}.target_transformation must be 'log' or 'none', "
         f"got {target_transformation!r}."
-    )
+            )
+        
+        sample_weighting = CifFobSampleWeightingConfig.from_dict(
+            require_dict(
+                cfg.get("sample_weighting", {"method": "source_only"}),
+                key=(
+                    "cif_fob.method.estimation.models."
+                    f"candidates.{name}.sample_weighting"
+                ),
+            ),
+            key=(
+                "cif_fob.method.estimation.models."
+                f"candidates.{name}.sample_weighting"
+            ),
+        )
 
         return cls(
             name=name,
@@ -1052,7 +1184,7 @@ class CifFobHistGradientBoostingConfig:
             type="machine_learning",
             categorical_predictors=tuple(
                 _require_str_list(
-                    cfg.get("categorical_predictors"),
+                    cfg.get("categorical_predictors", []),
                     key=(
                         "cif_fob.method.estimation.models."
                         f"candidates.{name}.categorical_predictors"
@@ -1109,6 +1241,7 @@ class CifFobHistGradientBoostingConfig:
                 ),
             ),
             target_transformation=target_transformation,
+            sample_weighting=sample_weighting,
 
         )
     
@@ -1435,6 +1568,7 @@ class CifFobModelsConfig:
         hgb_names = {
             "hist_gradient_boosting",
             "hist_gradient_boosting_squared",
+            "hist_gradient_boosting_weighted",
             "hist_gradient_boosting_squared_level",
             "hist_gradient_boosting_squared_regularized",
         }
@@ -1528,6 +1662,7 @@ class CifFobPredictorSetConfig:
     """One named predictor set used for model-comparison runs."""
 
     name: str
+    enabled: bool
     numeric: tuple[str, ...]
     categorical: tuple[str, ...]
 
@@ -1578,6 +1713,10 @@ class CifFobPredictorSetConfig:
 
         return cls(
             name=name,
+            enabled=require_bool(
+                cfg.get("enabled"),
+                key=f"cif_fob.method.estimation.predictor_sets.{name}.enabled",
+            ),
             numeric=numeric,
             categorical=categorical,
         )
@@ -1702,6 +1841,7 @@ class CifFobEstimationConfig:
     minimum_factor: float
     maximum_factor_rule: CifFobMaximumFactorRuleConfig
     exclude_proxy_weights: bool
+    representation_weighting: CifFobRepresentationWeightingConfig
 
     diagnostics: Any
     training_factor_sources: list[str]
@@ -1806,6 +1946,17 @@ class CifFobEstimationConfig:
                     "cif_fob.method.estimation."
                     "exclude_proxy_weights"
                 ),
+            ),
+            representation_weighting=(
+                CifFobRepresentationWeightingConfig.from_dict(
+                    require_dict(
+                        cfg.get("representation_weighting"),
+                        key=(
+                            "cif_fob.method.estimation."
+                            "representation_weighting"
+                        ),
+                    )
+                )
             ),
             training_factor_sources=training_factor_sources,
             source_weights=(

@@ -116,7 +116,7 @@ def _safe_model_prefix(model_name: str) -> str:
     aliases = {
         "hist_gradient_boosting": "hgb",
         "hist_gradient_boosting_squared": "hgb_sq",
-        "hist_gradient_boosting_representation_weighted": "hgb_wgt",
+        "hist_gradient_boosting_weighted": "hgb_wgt",
         "hist_gradient_boosting_squared_level": "hgb_sq_lvl",
         "hist_gradient_boosting_squared_regularized": "hgb_sq_reg",
         "log_linear_regression": "ols",
@@ -166,8 +166,20 @@ def _configured_predictor_sets(
         {},
     )
 
+
     if predictor_sets:
-        return dict(predictor_sets)
+            enabled_sets = {
+                name: predictor_set
+                for name, predictor_set in predictor_sets.items()
+                if bool(getattr(predictor_set, "enabled", True))
+            }
+
+            if not enabled_sets:
+                raise ValueError(
+                    "No CIF/FOB predictor sets are enabled."
+                )
+
+            return enabled_sets
 
     # Backward-compatible fallback: one implicit predictor set using the
     # old global cif_fob.method.predictors block.
@@ -1632,7 +1644,7 @@ def _training_sample_weight(
     if method == "source_only":
         return source_weight
 
-    if method != "source_x_value_representation":
+    if method != "value_band_weighting":
         raise ValueError(
             f"Unsupported sample-weighting method: {method!r}."
         )
@@ -1811,7 +1823,7 @@ def _fit_model(
     if model_name in {
         "hist_gradient_boosting",
         "hist_gradient_boosting_squared",
-        "hist_gradient_boosting_representation_weighted"
+        "hist_gradient_boosting_weighted",
         "hist_gradient_boosting_squared_level",
         "hist_gradient_boosting_squared_regularized",
     }:
@@ -1959,11 +1971,14 @@ def _metric_values(
 def _run_temporal_backtest(
     *,
     clean: pd.DataFrame,
+    prediction_rows: pd.DataFrame,
     cfg: CifFobConfig,
     run_spec: EstimationRunSpec,
     minimum_factor: float,
     maximum_factor: float,
-    validation_years: list[int]) -> tuple[pd.DataFrame, dict[int, tuple[pd.Index, np.ndarray, np.ndarray]]]:
+    validation_years: list[int]) -> tuple[
+    pd.DataFrame,
+    dict[int, tuple[pd.Index, np.ndarray, np.ndarray]],]:
     """
     Run expanding-window folds for one model.
 
@@ -2012,13 +2027,27 @@ def _run_temporal_backtest(
         if train_frame.empty or validation_frame.empty:
             continue
 
+        reference_frame = prediction_rows.loc[prediction_rows["year"].lt(validation_year)]
+        if reference_frame.empty:
+            raise RuntimeError(
+                f"No prediction-eligible reference rows are available before "
+                f"validation year {validation_year}."
+            )
+
+        sample_weight = _training_sample_weight(
+            train_frame=train_frame,
+            reference_frame=reference_frame,
+            model_cfg=model_cfg,
+            cfg=cfg,
+        )
+
         fitted = _fit_model(
             model_name=model_name,
             model_cfg=model_cfg,
             train_frame=train_frame,
             predictors=predictors,
             categorical_predictors=categorical_predictors,
-            sample_weight=train_frame["estimation_source_weight"],
+            sample_weight=sample_weight,
         )
 
         predicted_log = _predict_model(
@@ -2041,6 +2070,32 @@ def _run_temporal_backtest(
             upper_tail_threshold=upper_tail_threshold,
         )
 
+        sample_weight_squared_sum = float(np.square(sample_weight).sum())
+
+        if sample_weight.isna().any():
+            raise RuntimeError(
+                f"Sample weights contain missing values for validation year "
+                f"{validation_year}."
+            )
+
+        if not np.isfinite(sample_weight.to_numpy(dtype=float)).all():
+            raise RuntimeError(
+                f"Sample weights contain non-finite values for validation year "
+                f"{validation_year}."
+            )
+
+        if (sample_weight <= 0).any():
+            raise RuntimeError(
+                f"Sample weights must be strictly positive for validation year "
+                f"{validation_year}."
+            )
+
+        effective_sample_size = (
+            float(sample_weight.sum() ** 2 / sample_weight_squared_sum)
+            if sample_weight_squared_sum > 0
+            else np.nan
+        )
+
         fold_rows.append(
             {
                 "model_name": run_spec.run_name,
@@ -2049,6 +2104,20 @@ def _run_temporal_backtest(
                 "validation_year": int(validation_year),
                 "n_train": int(len(train_frame)),
                 "n_holdout": int(len(validation_frame)),
+                "n_reference": int(len(reference_frame)),
+                "sample_weight_method": str(
+                    getattr(
+                        getattr(model_cfg, "sample_weighting", None),
+                        "method",
+                        "source_only",
+                    )
+                ),
+                "sample_weight_min": float(sample_weight.min()),
+                "sample_weight_median": float(sample_weight.median()),
+                "sample_weight_mean": float(sample_weight.mean()),
+                "sample_weight_max": float(sample_weight.max()),
+                "effective_sample_size": float(effective_sample_size),
+                "effective_sample_size_ratio": (effective_sample_size / len(train_frame) if len(train_frame) > 0 else np.nan),
                 **metrics,
             }
         )
@@ -2757,6 +2826,7 @@ def estimate_cif_fob_rates(
             fold_results, predictions_by_year = (
                 _run_temporal_backtest(
                     clean=clean,
+                    prediction_rows=prediction_rows,
                     cfg=cfg,
                     run_spec=run_spec,
                     minimum_factor=minimum_factor,
@@ -2780,15 +2850,19 @@ def estimate_cif_fob_rates(
                 run_spec.run_name,
             )
 
+            full_sample_weight = _training_sample_weight(
+                train_frame=clean,
+                reference_frame=prediction_rows,
+                model_cfg=run_spec.model_cfg,
+                cfg=cfg,
+            )
             fitted = _fit_model(
                 model_name=run_spec.model_name,
                 model_cfg=run_spec.model_cfg,
                 train_frame=clean,
                 predictors=run_spec.predictors,
-                categorical_predictors=(
-                    run_spec.categorical_predictors
-                ),
-                sample_weight=clean["estimation_source_weight"],
+                categorical_predictors=run_spec.categorical_predictors,
+                sample_weight=full_sample_weight,
             )
 
             full_predicted_log = _predict_model(
