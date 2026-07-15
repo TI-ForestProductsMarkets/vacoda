@@ -111,25 +111,33 @@ def _quoted_identifier(value: str) -> str:
     return '"' + value.replace('"', '""') + '"'
 
 
-def _safe_model_prefix(model_name: str) -> str:
-    """Return a stable column prefix for a configured model name."""
-    aliases = {
-        "hist_gradient_boosting": "hgb",
-        "hist_gradient_boosting_squared": "hgb_sq",
-        "hist_gradient_boosting_weighted": "hgb_wgt",
-        "hist_gradient_boosting_squared_level": "hgb_sq_lvl",
-        "hist_gradient_boosting_squared_regularized": "hgb_sq_reg",
-        "log_linear_regression": "ols",
-        "log_linear_regression_smearing": "ols_sm",
-        "xgboost_log_squared": "xgb_log_sq",
-    }
-    return aliases.get(
-        model_name,
-        "".join(
+def _safe_model_prefix(
+    model_name: str,
+    model_cfg: Any,
+) -> str:
+    """Return a stable configured column prefix."""
+
+    configured_prefix = getattr(
+        model_cfg,
+        "output_prefix",
+        None,
+    )
+
+    if configured_prefix is not None:
+        prefix = str(configured_prefix).strip().lower()
+    else:
+        prefix = "".join(
             character if character.isalnum() else "_"
             for character in model_name.lower()
-        ).strip("_"),
-    )
+        ).strip("_")
+
+    if not prefix:
+        raise ValueError(
+            f"Could not resolve a valid output prefix "
+            f"for model {model_name!r}."
+        )
+
+    return prefix
 
 
 def _configured_predictors(cfg: CifFobConfig) -> list[str]:
@@ -1809,7 +1817,6 @@ def _predict_log_linear(
 # Model dispatch
 # ======================================================================
 
-
 def _fit_model(
     *,
     model_name: str,
@@ -1820,13 +1827,15 @@ def _fit_model(
     sample_weight: pd.Series,
 ) -> FittedHGBModel | FittedXGBoostModel | FittedLogLinearModel:
 
-    if model_name in {
-        "hist_gradient_boosting",
-        "hist_gradient_boosting_squared",
-        "hist_gradient_boosting_weighted",
-        "hist_gradient_boosting_squared_level",
-        "hist_gradient_boosting_squared_regularized",
-    }:
+    estimator_type_raw = str(
+        getattr(model_cfg, "estimator_type", "")
+    ).strip().lower()
+
+    estimator_type = {
+        "log_lin": "log_linear",
+    }.get(estimator_type_raw, estimator_type_raw)
+
+    if estimator_type == "hgb":
         return _fit_hgb(
             train_frame=train_frame,
             predictors=predictors,
@@ -1835,7 +1844,7 @@ def _fit_model(
             model_cfg=model_cfg,
         )
 
-    if model_name == "xgboost_log_squared":
+    if estimator_type == "xgb":
         return _fit_xgboost(
             train_frame=train_frame,
             predictors=predictors,
@@ -1844,10 +1853,7 @@ def _fit_model(
             model_cfg=model_cfg,
         )
 
-    if model_name in {
-        "log_linear_regression",
-        "log_linear_regression_smearing",
-    }:
+    if estimator_type == "log_linear":
         return _fit_log_linear(
             train_frame=train_frame,
             predictors=predictors,
@@ -1857,7 +1863,8 @@ def _fit_model(
         )
 
     raise ValueError(
-        f"Unsupported CIF/FOB estimation model: {model_name!r}."
+        f"Unsupported estimator_type {estimator_type!r} "
+        f"for CIF/FOB model {model_name!r}."
     )
 
 
@@ -2773,11 +2780,25 @@ def estimate_cif_fob_rates(
 
     primary_factor_column: str | None = None
     primary_log_column: str | None = None
+    primary_holdout_factor_column: str | None = None
+    primary_holdout_log_column: str | None = None
 
     for run_spec in run_specs:
-        prefix = _safe_model_prefix(
-            run_spec.run_name
+        
+        model_prefix = _safe_model_prefix(
+            model_name=run_spec.model_name,
+            model_cfg=run_spec.model_cfg,
         )
+
+        if run_spec.predictor_set_name is None:
+            prefix = model_prefix
+        else:
+            predictor_set_prefix = "".join(
+                character if character.isalnum() else "_"
+                for character in run_spec.predictor_set_name.lower()
+            ).strip("_")
+
+            prefix = f"{model_prefix}__{predictor_set_prefix}"
 
         log_column = (
             f"{prefix}_predicted_log_cif_fob_factor"
@@ -3006,6 +3027,19 @@ def estimate_cif_fob_rates(
         if run_spec.is_primary:
             primary_log_column = log_column
             primary_factor_column = factor_column
+            primary_holdout_log_column = holdout_log_column
+            primary_holdout_factor_column = holdout_factor_column
+
+        if any(column is None for column in [
+            primary_factor_column,
+            primary_log_column,
+            primary_holdout_factor_column,
+            primary_holdout_log_column,
+        ]
+        ):
+            raise RuntimeError(
+            "Primary model prediction columns were not produced."
+        )
 
     if primary_factor_column is None or primary_log_column is None:
         raise RuntimeError(
@@ -3037,6 +3071,14 @@ def estimate_cif_fob_rates(
 
     data["estimated_cif_fob_factor"] = data[
         primary_factor_column
+    ]
+
+    data["holdout_predicted_log_factor"] = data[
+        primary_holdout_log_column
+    ]
+
+    data["holdout_predicted_factor"] = data[
+        primary_holdout_factor_column
     ]
 
     data["estimated_factor_method"] = np.where(

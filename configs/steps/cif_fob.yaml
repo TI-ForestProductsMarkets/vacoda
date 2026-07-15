@@ -277,6 +277,8 @@ cif_fob:
         candidates:
           hist_gradient_boosting_squared:
             enabled: false
+            estimator_type: hgb
+            output_prefix: hgb_sq
             type: "machine_learning"
             target_transformation: "log"
 
@@ -296,6 +298,8 @@ cif_fob:
 
           hist_gradient_boosting:
             enabled: true
+            estimator_type: hgb
+            output_prefix: hgb
             target_transformation: "log"
             type: "machine_learning"
             loss: "absolute_error"
@@ -313,6 +317,8 @@ cif_fob:
 
           hist_gradient_boosting_weighted:
             enabled: true
+            estimator_type: hgb
+            output_prefix: hgb_wgt
             type: "machine_learning"
             target_transformation: "log"
             loss: "absolute_error"
@@ -329,6 +335,8 @@ cif_fob:
 
           hist_gradient_boosting_squared_level:
             enabled: false
+            estimator_type: hgb
+            output_prefix: hgb_sq_lvl
             type: "machine_learning"
             target_transformation: "none"
             categorical_predictors:
@@ -347,6 +355,8 @@ cif_fob:
 
           hist_gradient_boosting_squared_regularized:
             enabled: false
+            estimator_type: hgb
+            output_prefix: hgb_sq_reg
             type: "machine_learning"
             target_transformation: "log"
             categorical_predictors:
@@ -365,6 +375,8 @@ cif_fob:
         
           xgboost_log_squared:
             enabled: false
+            estimator_type: xgb
+            output_prefix: xgb_log_sq
             type: "machine_learning"
             target_transformation: "log"
             categorical_predictors:
@@ -398,6 +410,8 @@ cif_fob:
 
           log_linear_regression:
             enabled: true
+            estimator_type: log_lin
+            output_prefix: ols
             type: "statistical"
 
             target:
@@ -421,6 +435,8 @@ cif_fob:
 
           log_linear_regression_smearing:
             enabled: false
+            estimator_type: log_linear
+            output_prefix: ols_sm
             type: "statistical"
 
             target:

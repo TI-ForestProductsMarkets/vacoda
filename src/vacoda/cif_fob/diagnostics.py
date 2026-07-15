@@ -24,12 +24,8 @@ def build_primary_holdout_diagnostics(
     """
     estimated_rates_path = Path(estimated_rates_path)
 
-    predicted_col = (
-        f"{primary_run_name}_holdout_predicted_factor"
-    )
-    predicted_log_col = (
-        f"{primary_run_name}_holdout_predicted_log_factor"
-    )
+    predicted_col = "holdout_predicted_factor"
+    predicted_log_col = "holdout_predicted_log_factor"
 
     q = f"""
     SELECT
@@ -41,16 +37,28 @@ def build_primary_holdout_diagnostics(
         factor_source,
 
         observed_cif_fob_factor,
-        LOG(observed_cif_fob_factor) AS log_observed_cif_fob_factor,
+        LOG(observed_cif_fob_factor)
+            AS log_observed_cif_fob_factor,
 
-        {predicted_col} AS predicted_cif_fob_factor,
-        {predicted_log_col} AS predicted_log_cif_fob_factor,
+        {predicted_col}
+            AS predicted_cif_fob_factor,
 
-        ABS({predicted_col} - observed_cif_fob_factor)
-            / NULLIF(observed_cif_fob_factor, 0) AS ape,
+        {predicted_log_col}
+            AS predicted_log_cif_fob_factor,
 
-        ABS({predicted_log_col} - LOG(observed_cif_fob_factor))
-            AS absolute_log_error,
+        ABS(
+            {predicted_col}
+            - observed_cif_fob_factor
+        )
+        / NULLIF(
+            observed_cif_fob_factor,
+            0
+        ) AS ape,
+
+        ABS(
+            {predicted_log_col}
+            - LOG(observed_cif_fob_factor)
+        ) AS absolute_log_error,
 
         estimation_evidence_value,
         import_direct_covered_primary_value,

@@ -9,7 +9,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
-from vacoda.visualization.labels import (
+from vacoda.cif_fob.display import (
     short_algorithm_name,
     short_predictor_set_name,
     split_estimation_run_name,

@@ -373,6 +373,12 @@ def _require_str_list(value: Any, *, key: str) -> list[str]:
     return [require_str(item, key=key) for item in value]
 
 
+def _require_output_prefix(*, value: Any, key: str) -> str:
+    """Return a normalized, SQL-safe model output prefix."""
+    prefix = require_str(value, key=key).strip().lower()
+    return prefix
+
+
 @dataclass(frozen=True)
 class CifFobFeatureInputConfig:
     stage: str | None
@@ -1080,6 +1086,8 @@ class CifFobModelBaseConfig:
     name: str
     enabled: bool
     type: str
+    estimator_type: str
+    output_prefix: str
     categorical_predictors: tuple[str, ...]
 
 @dataclass(frozen=True)
@@ -1117,6 +1125,8 @@ class CifFobHistGradientBoostingConfig:
     name: str
     enabled: bool
     type: Literal["machine_learning"]
+    estimator_type: str
+    output_prefix: str
     categorical_predictors: tuple[str, ...]
 
     loss: str
@@ -1136,6 +1146,14 @@ class CifFobHistGradientBoostingConfig:
         name: str,
         cfg: dict[str, Any],
     ) -> "CifFobHistGradientBoostingConfig":
+        estimator_type = require_str(
+            cfg.get("estimator_type"),
+            key=(
+                "cif_fob.method.estimation.models."
+                f"candidates.{name}.estimator_type"
+            ),
+        ).strip().lower()
+
         max_bins = require_int(
             cfg.get("max_bins"),
             key=f"cif_fob.method.estimation.models.candidates.{name}.max_bins",
@@ -1182,6 +1200,14 @@ class CifFobHistGradientBoostingConfig:
                 key=f"cif_fob.method.estimation.models.candidates.{name}.enabled",
             ),
             type="machine_learning",
+            estimator_type=estimator_type,
+            output_prefix=_require_output_prefix(
+                value=cfg.get("output_prefix"),
+                key=(
+                    "cif_fob.method.estimation.models."
+                    f"candidates.{name}.output_prefix"
+                ),
+            ),
             categorical_predictors=tuple(
                 _require_str_list(
                     cfg.get("categorical_predictors", []),
@@ -1250,6 +1276,8 @@ class CifFobLogLinearRegressionConfig:
     name: str
     enabled: bool
     type: Literal["statistical"]
+    estimator_type: str
+    output_prefix: str
     categorical_predictors: tuple[str, ...]
 
     target_transformation: str
@@ -1264,6 +1292,14 @@ class CifFobLogLinearRegressionConfig:
         name: str,
         cfg: dict[str, Any],
     ) -> "CifFobLogLinearRegressionConfig":
+        estimator_type = require_str(
+            cfg.get("estimator_type"),
+            key=(
+                "cif_fob.method.estimation.models."
+                f"candidates.{name}.estimator_type"
+            ),
+        ).strip().lower()
+
         target_cfg = require_dict(
             cfg.get("target"),
             key=(
@@ -1327,6 +1363,14 @@ class CifFobLogLinearRegressionConfig:
                 key=f"cif_fob.method.estimation.models.candidates.{name}.enabled",
             ),
             type="statistical",
+            estimator_type=estimator_type,
+            output_prefix=_require_output_prefix(
+                value=cfg.get("output_prefix"),
+                key=(
+                    "cif_fob.method.estimation.models."
+                    f"candidates.{name}.output_prefix"
+                ),
+            ),
             categorical_predictors=tuple(
                 _require_str_list(
                     cfg.get("categorical_predictors"),
@@ -1367,6 +1411,8 @@ class CifFobXGBoostConfig:
     name: str
     enabled: bool
     type: Literal["machine_learning"]
+    estimator_type: str
+    output_prefix: str
     categorical_predictors: tuple[str, ...]
 
     target_transformation: str
@@ -1395,6 +1441,14 @@ class CifFobXGBoostConfig:
         name: str,
         cfg: dict[str, Any],
     ) -> "CifFobXGBoostConfig":
+        estimator_type = require_str(
+            cfg.get("estimator_type"),
+            key=(
+                "cif_fob.method.estimation.models."
+                f"candidates.{name}.estimator_type"
+            ),
+        ).strip().lower()
+
         target_transformation = require_str(
             cfg.get("target_transformation"),
             key=(
@@ -1416,6 +1470,14 @@ class CifFobXGBoostConfig:
                 key=f"cif_fob.method.estimation.models.candidates.{name}.enabled",
             ),
             type="machine_learning",
+            estimator_type=estimator_type,
+            output_prefix=_require_output_prefix(
+                value=cfg.get("output_prefix"),
+                key=(
+                    "cif_fob.method.estimation.models."
+                    f"candidates.{name}.output_prefix"
+                ),
+            ),
             categorical_predictors=tuple(
                 _require_str_list(
                     cfg.get("categorical_predictors"),

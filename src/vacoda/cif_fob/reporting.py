@@ -48,10 +48,11 @@ from vacoda.visualization.relationships import (
     plot_observed_vs_predicted_with_tolerance_bands
 ) 
 from vacoda.visualization.audits import plot_representation_ratio_bars
-from vacoda.cif_fob.audit_bands import (
+from vacoda.cif_fob.display import (
     DISTANCE_BAND_ORDER,
     VALUE_BAND_ORDER,
     PRODUCT_MEDIAN_THRESHOLD_BINS,
+
 )
 
 
@@ -2392,6 +2393,30 @@ def write_cif_fob_decision_report(
     ).max()
     )
 
+    models_cfg = cfg.method.estimation.models
+
+    baseline_model_cfg = models_cfg.get_candidate(
+        "hist_gradient_boosting"
+    )
+
+    weighted_model_cfg = models_cfg.get_candidate(
+        "hist_gradient_boosting_weighted"
+    )
+
+    predictor_set_name = "model_5_full_history"
+
+    baseline_prediction_column = (
+        f"{baseline_model_cfg.output_prefix}"
+        f"__{predictor_set_name}"
+        "_holdout_predicted_factor"
+    )
+
+    weighted_prediction_column = (
+        f"{weighted_model_cfg.output_prefix}"
+        f"__{predictor_set_name}"
+        "_holdout_predicted_factor"
+    )
+
     value_band_comparison, value_band_comparison_long = (
         _inspect_value_band_model_comparison(
             path=estimated_rates_path,
@@ -2403,14 +2428,8 @@ def write_cif_fob_decision_report(
                 .value_band
                 .boundaries_usd
             ),
-            baseline_prediction_column=(
-                "hist_gradient_boosting__model_5_full_history_"
-                "holdout_predicted_factor"
-            ),
-            weighted_prediction_column=(
-                "hist_gradient_boosting_weighted__model_5_full_history_"
-                "holdout_predicted_factor"
-            ),
+            baseline_prediction_column=baseline_prediction_column,
+            weighted_prediction_column=weighted_prediction_column,
         )
     )
 
