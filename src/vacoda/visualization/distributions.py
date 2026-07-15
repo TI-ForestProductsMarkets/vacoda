@@ -14,6 +14,7 @@ from vacoda.visualization.labels import (
     short_predictor_set_name,
     split_estimation_run_name,
     )
+from collections.abc import Sequence
 
 from vacoda.utils.diagnostics import compute_data_coverage
 
@@ -239,6 +240,7 @@ def plot_model_error_by_group(
 
     return fig, ax, grouped
 
+
 def plot_grouped_error_bars(
     frame: pd.DataFrame,
     *,
@@ -252,6 +254,7 @@ def plot_grouped_error_bars(
     y_label: str = "Group",
     higher_is_worse: bool = True,
     sort_by_error: bool = True,
+    group_order: Sequence[str] | None = None,
 ):
     """
     Plot median model error by group.
@@ -269,11 +272,19 @@ def plot_grouped_error_bars(
     ----------
     sort_by_error:
         If True, sort groups by median error.
-        If False, preserve the existing group order. This is useful for
-        naturally ordered bands such as distance or value bins.
+
+    group_order:
+        Optional explicit display order for naturally ordered groups such as
+        value bands or distance bands. When supplied, it takes precedence over
+        sort_by_error.
     """
-    required = {group_column, error_column}
+    required = {
+        group_column,
+        error_column,
+    }
+
     missing = required - set(frame.columns)
+
     if missing:
         raise ValueError(
             "Input frame is missing required columns: "
@@ -281,13 +292,23 @@ def plot_grouped_error_bars(
         )
 
     data = frame.copy()
+
+    data[group_column] = (
+        data[group_column]
+        .astype("string")
+        .str.strip()
+    )
+
     data[error_column] = pd.to_numeric(
         data[error_column],
         errors="coerce",
     )
 
     data = data.dropna(
-        subset=[group_column, error_column]
+        subset=[
+            group_column,
+            error_column,
+        ]
     )
 
     if data.empty:
@@ -306,11 +327,14 @@ def plot_grouped_error_bars(
             n_observations=(error_column, "size"),
             median_error=(error_column, "median"),
             mean_error=(error_column, "mean"),
-            p90_error=(error_column, lambda x: x.quantile(0.90)),
+            p90_error=(
+                error_column,
+                lambda values: values.quantile(0.90),
+            ),
         )
     )
 
-    grouped = grouped[
+    grouped = grouped.loc[
         grouped["n_observations"] >= int(min_observations)
     ].copy()
 
@@ -319,7 +343,7 @@ def plot_grouped_error_bars(
             "No groups satisfy the minimum observation requirement."
         )
 
-    # APE is usually stored as a fraction, so convert to percent.
+    # APE is normally stored as a fraction, so convert it to percent.
     if "ape" in error_column.lower():
         grouped["median_error_display"] = (
             grouped["median_error"] * 100.0
@@ -335,16 +359,81 @@ def plot_grouped_error_bars(
         grouped["mean_error_display"] = grouped["mean_error"]
         grouped["p90_error_display"] = grouped["p90_error"]
 
-    if sort_by_error:
+    if group_order is not None:
+        normalized_group_order = tuple(
+            str(group).strip()
+            for group in group_order
+        )
+
+        if len(set(normalized_group_order)) != len(normalized_group_order):
+            raise ValueError(
+                "group_order contains duplicate labels."
+            )
+
+        actual_groups = set(
+            grouped[group_column]
+            .dropna()
+            .astype(str)
+        )
+
+        expected_groups = set(normalized_group_order)
+
+        unexpected_groups = sorted(
+            actual_groups - expected_groups
+        )
+
+        if unexpected_groups:
+            raise ValueError(
+                f"Unexpected labels for {group_column!r}: "
+                + ", ".join(
+                    repr(group)
+                    for group in unexpected_groups
+                )
+                + ". The data labels and group_order must match exactly."
+            )
+
+        order_lookup = {
+            group: position
+            for position, group in enumerate(normalized_group_order)
+        }
+
+        grouped["_group_sort_order"] = (
+            grouped[group_column]
+            .astype(str)
+            .map(order_lookup)
+        )
+
+        grouped = (
+            grouped
+            .sort_values(
+                "_group_sort_order",
+                ascending=True,
+                kind="stable",
+            )
+            .drop(columns="_group_sort_order")
+        )
+
+    elif sort_by_error:
         grouped = grouped.sort_values(
             "median_error_display",
             ascending=not higher_is_worse,
+            kind="stable",
         )
 
     if top_n is not None:
-        grouped = grouped.head(int(top_n)).copy()
+        top_n = int(top_n)
 
-    grouped[group_column] = grouped[group_column].astype(str)
+        if top_n <= 0:
+            raise ValueError(
+                "top_n must be greater than zero when provided."
+            )
+
+        grouped = grouped.head(top_n).copy()
+
+    grouped[group_column] = (
+        grouped[group_column]
+        .astype(str)
+    )
 
     fig_height = max(
         4.5,
@@ -363,14 +452,17 @@ def plot_grouped_error_bars(
     )
 
     ax.set_yticks(y_positions)
+
     ax.set_yticklabels(
         grouped[group_column].tolist()
     )
+
     ax.invert_yaxis()
 
     ax.set_xlabel(x_label)
     ax.set_ylabel(y_label)
     ax.set_title(title)
+
     ax.grid(
         axis="x",
         alpha=0.25,
@@ -392,142 +484,6 @@ def plot_grouped_error_bars(
     fig.tight_layout()
 
     return fig, ax, grouped
-
-def plot_grouped_error_bars_deprecated(
-    frame: pd.DataFrame,
-    *,
-    group_column: str,
-    error_column: str = "ape",
-    count_column: str | None = None,
-    min_observations: int = 100,
-    top_n: int | None = 20,
-    title: str = "Model error by group",
-    x_label: str = "Median APE (%)",
-    y_label: str = "Group",
-    higher_is_worse: bool = True,
-):
-    """
-    Plot median model error by group.
-
-    Intended for heterogeneity diagnostics:
-      - product group
-      - factor band
-      - value band
-      - distance band
-      - route type
-
-    Expects one row per holdout prediction.
-    """
-    required = {group_column, error_column}
-    missing = required - set(frame.columns)
-    if missing:
-        raise ValueError(
-            "Input frame is missing required columns: "
-            + ", ".join(sorted(missing))
-        )
-
-    data = frame.copy()
-    data[error_column] = pd.to_numeric(
-        data[error_column],
-        errors="coerce",
-    )
-
-    data = data.dropna(
-        subset=[group_column, error_column]
-    )
-
-    if data.empty:
-        raise ValueError(
-            "No data available for grouped error plot."
-        )
-
-    grouped = (
-        data
-        .groupby(group_column, as_index=False)
-        .agg(
-            n_observations=(error_column, "size"),
-            median_error=(error_column, "median"),
-            mean_error=(error_column, "mean"),
-            p90_error=(error_column, lambda x: x.quantile(0.90)),
-        )
-    )
-
-    grouped = grouped[
-        grouped["n_observations"] >= int(min_observations)
-    ].copy()
-
-    if grouped.empty:
-        raise ValueError(
-            "No groups satisfy the minimum observation requirement."
-        )
-
-    # APE is usually stored as a fraction, so convert to percent.
-    if "ape" in error_column.lower():
-        grouped["median_error_display"] = grouped["median_error"] * 100.0
-        grouped["mean_error_display"] = grouped["mean_error"] * 100.0
-        grouped["p90_error_display"] = grouped["p90_error"] * 100.0
-    else:
-        grouped["median_error_display"] = grouped["median_error"]
-        grouped["mean_error_display"] = grouped["mean_error"]
-        grouped["p90_error_display"] = grouped["p90_error"]
-
-    grouped = grouped.sort_values(
-        "median_error_display",
-        ascending=not higher_is_worse,
-    )
-
-    if top_n is not None:
-        grouped = grouped.head(int(top_n)).copy()
-
-    grouped[group_column] = grouped[group_column].astype(str)
-
-    fig_height = max(
-        4.5,
-        0.34 * len(grouped) + 1.5,
-    )
-
-    fig, ax = plt.subplots(
-        figsize=(10.5, fig_height)
-    )
-
-    y_positions = np.arange(len(grouped))
-
-    ax.barh(
-        y_positions,
-        grouped["median_error_display"].to_numpy(dtype=float),
-    )
-
-    ax.set_yticks(y_positions)
-    ax.set_yticklabels(
-        grouped[group_column].tolist()
-    )
-    ax.invert_yaxis()
-
-    ax.set_xlabel(x_label)
-    ax.set_ylabel(y_label)
-    ax.set_title(title)
-    ax.grid(
-        axis="x",
-        alpha=0.25,
-    )
-
-    for y_position, value, n_obs in zip(
-        y_positions,
-        grouped["median_error_display"],
-        grouped["n_observations"],
-    ):
-        ax.text(
-            value,
-            y_position,
-            f"  {value:.2f}%  n={int(n_obs):,}",
-            va="center",
-            fontsize=8,
-        )
-
-    fig.tight_layout()
-
-    return fig, ax, grouped
-
 
 def plot_model_metric_ranking(
     summary: pd.DataFrame,
@@ -929,7 +885,7 @@ def plot_nebula_boxplot(
     ax1.axvspan(q1, q3, alpha=0.15, label="IQR, middle 50%")
     ax1.scatter(x_points, y_points, s=2, alpha=0.04)
 
-    ax1.axvline(1.0, linestyle="--", linewidth=1, label="Factor = 1")
+    ax1.axvline(1.0, linestyle="--", linewidth=1, label="Factor = 1", color="grey")
     ax1.axvline(median, linestyle="-", linewidth=1.8, label=f"Median = {median:.3f}")
     ax1.axvline(
         upper_15_iqr,
@@ -941,6 +897,7 @@ def plot_nebula_boxplot(
         upper_25_iqr,
         linestyle="-.",
         linewidth=1.3,
+        color="orange",
         label=f"Q3 + 2.5×IQR = {upper_25_iqr:.3f}",
     )
 
@@ -957,10 +914,13 @@ def plot_nebula_boxplot(
         vert=False,
         showfliers=True,
         widths=0.55,
+        medianprops={
+            "color": "tab:blue",
+            "linewidth": 1.8,},
     )
 
     ax2.axvspan(q1, q3, alpha=0.15)
-    ax2.axvline(1.0, linestyle="--", linewidth=1)
+    ax2.axvline(1.0, linestyle="--", linewidth=1, color="grey")
     ax2.axvline(median, linestyle="-", linewidth=1.8)
 
     ax2.set_yticks([])

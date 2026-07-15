@@ -31,7 +31,14 @@ import duckdb
 import numpy as np
 import pandas as pd
 from vacoda.cif_fob.prepare_input import valid_output
-from vacoda.visualization.audits import  DISTANCE_BAND_ORDER
+from vacoda.cif_fob.audit_bands import (
+    DISTANCE_BAND_BINS,
+    DISTANCE_BAND_ORDER,
+    VALUE_BAND_BINS,
+    VALUE_BAND_ORDER,
+    CIFFOB_FACTOR_BINS,
+    CIFFOB_FACTOR_LABELS,
+)
 
 REQUIRED_TRAINING_EVIDENCE_AUDIT_COLUMNS = {
     "dimension",
@@ -454,23 +461,10 @@ def _add_audit_bands(
 
     data["value_band"] = pd.cut(
         evidence_value,
-        bins=[
-            0,
-            10_000,
-            100_000,
-            1_000_000,
-            10_000_000,
-            np.inf,
-        ],
-        labels=[
-            "<10k",
-            "10k-100k",
-            "100k-1M",
-            "1M-10M",
-            ">10M",
-        ],
+        bins=list(VALUE_BAND_BINS),
+        labels=list(VALUE_BAND_ORDER),
         include_lowest=True,
-    )
+        )
 
     data["value_band"] = (
         data["value_band"]
@@ -484,14 +478,7 @@ def _add_audit_bands(
 
     data["distance_band"] = pd.cut(
         distance_km,
-        bins=[
-            0,
-            1_000,
-            3_000,
-            7_000,
-            12_000,
-            np.inf,
-        ],
+        bins=list(DISTANCE_BAND_BINS),
         labels=list(DISTANCE_BAND_ORDER),
         include_lowest=True,
     )
@@ -507,23 +494,8 @@ def _add_audit_bands(
             data["observed_cif_fob_factor"],
             errors="coerce",
         ),
-        bins=[
-            1.0,
-            1.05,
-            1.10,
-            1.20,
-            1.50,
-            2.00,
-            3.00,
-        ],
-        labels=[
-            "1.00-1.05",
-            "1.05-1.10",
-            "1.10-1.20",
-            "1.20-1.50",
-            "1.50-2.00",
-            "2.00-3.00",
-        ],
+        bins=list(CIFFOB_FACTOR_BINS),
+        labels=list(CIFFOB_FACTOR_LABELS),
         include_lowest=True,
     )
 

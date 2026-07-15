@@ -152,6 +152,9 @@ cif_fob:
       path: "macroeconomic/prepared"
       filename: "annual_oil_prices.parquet"
 
+    # Build the product unit-value feature from the same HS6 product in prior years;
+    # require enough prior observations, then fall back to the same-year HS4 median
+    # and finally the same-year global median.
     product:
       group_digits: 4
       median_unit_value:

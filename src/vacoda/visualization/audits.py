@@ -9,14 +9,8 @@ from __future__ import annotations
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from collections.abc import Sequence
 
-DISTANCE_BAND_ORDER: tuple[str, ...] = (
-    "<1k km",
-    "1k–3k km",
-    "3k–7k km",
-    "7k–12k km",
-    ">12k km",
-)
 
 def plot_representation_ratio_bars(
     audit: pd.DataFrame,
@@ -32,7 +26,7 @@ def plot_representation_ratio_bars(
     x_label: str = "Representation ratio",
     y_label: str = "Group",
     sort_by_ratio: bool = True,
-    group_order: list[str] | None = None,
+    group_order: Sequence[str] | None = None,
 ):
     """
     Plot representation ratio for one audit dimension.
@@ -101,6 +95,7 @@ def plot_representation_ratio_bars(
         plot_data[group_column] = (
             plot_data[group_column]
             .astype("string")
+            .str.strip()
         )
 
         order_lookup = {

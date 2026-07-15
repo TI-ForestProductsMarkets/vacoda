@@ -48,15 +48,10 @@ from vacoda.visualization.relationships import (
     plot_observed_vs_predicted_with_tolerance_bands
 ) 
 from vacoda.visualization.audits import plot_representation_ratio_bars
-from vacoda.cif_fob.training_evidence_audit import DISTANCE_BAND_ORDER
-
-VALUE_BAND_ORDER = [
-    "<10k",
-    "10k–100k",
-    "100k–1M",
-    "1M–10M",
-    ">10M",
-]
+from vacoda.cif_fob.audit_bands import (
+    DISTANCE_BAND_ORDER,
+    VALUE_BAND_ORDER,
+)
 
 
 # ======================================================================
@@ -969,7 +964,49 @@ def _inspect_training_features(
 
     return result
 
+def _inspect_product_median_unit_value_sources(
+    *,
+    path: Path,
+    threads: int,
+) -> pd.DataFrame:
+    """Summarize product median unit-value fallback-source usage."""
 
+    con = duckdb.connect()
+
+    try:
+        con.execute(f"SET threads = {int(threads)}")
+
+        sources = con.execute(
+            """
+            SELECT
+                CAST(product_median_unit_value_source AS VARCHAR) AS source,
+                COUNT(*) AS rows,
+                100.0 * COUNT(*) / SUM(COUNT(*)) OVER () AS share_percent
+
+            FROM read_parquet(?)
+
+            WHERE product_median_unit_value_source IS NOT NULL
+
+            GROUP BY 1
+            ORDER BY rows DESC
+            """,
+            [str(path)],
+        ).df()
+
+    finally:
+        con.close()
+
+    labels = {
+        "lagged_product": "Same HS6, earlier years",
+        "product_group_year": "Same year, HS4 group",
+        "global_year": "Same year, global fallback",
+    }
+
+    sources["Source"] = sources["source"].map(labels).fillna(sources["source"])
+    sources["Rows"] = sources["rows"]
+    sources["Share"] = sources["share_percent"]
+
+    return sources[["Source", "Rows", "Share"]]
 
 def _inspect_direct_predictor_failures(
     *,
@@ -1517,7 +1554,7 @@ def _write_training_evidence_audit_figures(
         title="Training-evidence representation by evidence-value band",
         x_label="Clean-training representation ratio",
         y_label="Evidence-value band",
-        sort_by_ratio=True,
+        group_order=VALUE_BAND_ORDER,
     )
 
     path = (
@@ -1636,6 +1673,8 @@ def _write_primary_diagnostics_figures(
         title="Primary-model error by evidence-value band",
         x_label="Median APE (%)",
         y_label="Evidence-value band",
+        group_order=VALUE_BAND_ORDER,
+
     )
     path = figure_dir / f"{target_prefix}_cif_fob_error_by_value_band.png"
     fig.savefig(path, dpi=180, bbox_inches="tight")
@@ -1652,7 +1691,7 @@ def _write_primary_diagnostics_figures(
         title="Primary-model error by route-distance band",
         x_label="Median APE (%)",
         y_label="Distance band",
-        sort_by_error=False
+        group_order=DISTANCE_BAND_ORDER
     )
     path = figure_dir / f"{target_prefix}_cif_fob_error_by_distance_band.png"
     fig.savefig(path, dpi=180, bbox_inches="tight")
@@ -2015,6 +2054,11 @@ def write_cif_fob_decision_report(
     feature_metrics = _inspect_training_features(
         path=training_features_path,
         threads=cfg.engine.threads,
+    )
+    product_unit_value_sources = (_inspect_product_median_unit_value_sources(
+        path=training_features_path,
+        threads=cfg.engine.threads,
+    )
     )
     direct_predictor_failures = _inspect_direct_predictor_failures(
         path=training_features_path,
@@ -3553,6 +3597,24 @@ def write_cif_fob_decision_report(
             formatters={
                 "Rows found": _fmt_int,
                 "Coverage": _fmt_percent_value,
+            },
+        ),
+        "",
+        "#### Product median unit-value source",
+        "",
+        (
+            f"The lagged-product median is used only when at least "
+            f"{cfg.features.product.median_unit_value.minimum_observations} "
+            f"historical observations are available; otherwise the fallback "
+            f"hierarchy is applied."
+        ),
+        "",
+        _markdown_table(
+            product_unit_value_sources,
+            columns=["Source", "Rows", "Share"],
+            formatters={
+                "Rows": _fmt_int,
+                "Share": lambda value: _fmt_percent_value(value, digits=5),
             },
         ),
         "",
