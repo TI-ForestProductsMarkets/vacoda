@@ -51,6 +51,7 @@ from vacoda.visualization.audits import plot_representation_ratio_bars
 from vacoda.cif_fob.audit_bands import (
     DISTANCE_BAND_ORDER,
     VALUE_BAND_ORDER,
+    PRODUCT_MEDIAN_THRESHOLD_BINS,
 )
 
 
@@ -722,6 +723,197 @@ def _build_population_journey_table(
 # Artifact inspection
 # ======================================================================
 
+def _inspect_product_median_threshold_sensitivity(
+    *,
+    path: Path,
+    threads: int,
+    thresholds: tuple[int, ...] = (5, 10, 20, 30, 50),
+) -> pd.DataFrame:
+    """
+    Show how the product-median fallback hierarchy would change under
+    alternative minimum-observation thresholds.
+
+    This does not rebuild the feature artifact. It applies alternative
+    thresholds to the candidate medians and observation counts already
+    retained in training_features.parquet.
+    """
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Training-feature artifact not found: {path}"
+        )
+
+    normalized_thresholds = tuple(
+        sorted(
+            {
+                int(threshold)
+                for threshold in thresholds
+                if int(threshold) > 0
+            }
+        )
+    )
+
+    if not normalized_thresholds:
+        raise ValueError(
+            "At least one positive threshold must be supplied."
+        )
+
+    values_sql = ", ".join(
+        f"({threshold})"
+        for threshold in normalized_thresholds
+    )
+
+    con = duckdb.connect()
+
+    try:
+        con.execute(f"SET threads = {int(threads)}")
+
+        result = con.execute(
+            f"""
+            WITH thresholds(minimum_observations) AS (
+                VALUES {values_sql}
+            ),
+
+            candidates AS (
+                SELECT
+                    lagged_product_median_unit_value,
+                    lagged_product_observations,
+
+                    product_group_year_median_unit_value,
+                    product_group_year_observations,
+
+                    global_year_median_unit_value,
+                    global_year_observations
+
+                FROM read_parquet(?)
+            ),
+
+            resolved AS (
+                SELECT
+                    t.minimum_observations,
+
+                    CASE
+                        WHEN
+                            c.lagged_product_observations
+                                >= t.minimum_observations
+                            AND c.lagged_product_median_unit_value
+                                IS NOT NULL
+                            THEN 'lagged_product'
+
+                        WHEN
+                            c.product_group_year_observations
+                                >= t.minimum_observations
+                            AND c.product_group_year_median_unit_value
+                                IS NOT NULL
+                            THEN 'product_group_year'
+
+                        WHEN
+                            c.global_year_observations
+                                >= t.minimum_observations
+                            AND c.global_year_median_unit_value
+                                IS NOT NULL
+                            THEN 'global_year'
+
+                        ELSE 'missing'
+                    END AS source
+
+                FROM candidates AS c
+                CROSS JOIN thresholds AS t
+            ),
+
+            summarized AS (
+                SELECT
+                    minimum_observations,
+                    source,
+                    COUNT(*) AS rows
+
+                FROM resolved
+
+                GROUP BY
+                    minimum_observations,
+                    source
+            ),
+
+            totals AS (
+                SELECT
+                    minimum_observations,
+                    SUM(rows) AS total_rows
+
+                FROM summarized
+
+                GROUP BY minimum_observations
+            )
+
+            SELECT
+                s.minimum_observations,
+                s.source,
+                s.rows,
+                100.0 * s.rows / t.total_rows AS share_percent
+
+            FROM summarized AS s
+
+            INNER JOIN totals AS t
+                USING (minimum_observations)
+
+            ORDER BY
+                s.minimum_observations,
+                s.source
+            """,
+            [str(path)],
+        ).df()
+
+    finally:
+        con.close()
+
+    source_labels = {
+        "lagged_product": "Same HS6, earlier years",
+        "product_group_year": "Same year, HS4 fallback",
+        "global_year": "Same year, global fallback",
+        "missing": "No median available",
+    }
+
+    result["source_label"] = (
+        result["source"]
+        .map(source_labels)
+        .fillna(result["source"])
+    )
+
+    shares = (
+        result
+        .pivot(
+            index="minimum_observations",
+            columns="source_label",
+            values="share_percent",
+        )
+        .fillna(0.0)
+        .reset_index()
+        .rename(
+            columns={
+                "minimum_observations": "Minimum observations",
+                "Same HS6, earlier years": "HS6 share",
+                "Same year, HS4 fallback": "HS4 fallback share",
+                "Same year, global fallback": "Global fallback share",
+                "No median available": "Missing share",
+            }
+        )
+    )
+
+    expected_columns = [
+        "Minimum observations",
+        "HS6 share",
+        "HS4 fallback share",
+        "Global fallback share",
+        "Missing share",
+    ]
+
+    for column in expected_columns:
+        if column not in shares.columns:
+            shares[column] = 0.0
+
+    return (
+        shares[expected_columns]
+        .sort_values("Minimum observations")
+        .reset_index(drop=True)
+    )
 
 def _inspect_training_features(
     *,
@@ -2050,6 +2242,25 @@ def write_cif_fob_decision_report(
             "Transition type": "Type",
         }
     )
+
+    ## Get product-median threshold sensitivity metrics for the configured thresholds
+    product_median_threshold_sensitivity = _inspect_product_median_threshold_sensitivity(
+            path=training_features_path,
+            threads=cfg.engine.threads,
+            thresholds=PRODUCT_MEDIAN_THRESHOLD_BINS
+        )
+    
+    configured_product_minimum = int(cfg.features.product.median_unit_value.minimum_observations)
+    product_median_threshold_sensitivity["Setting"] = product_median_threshold_sensitivity[
+                                "Minimum observations"
+                            ].eq(configured_product_minimum).map(
+                                {
+                                    True: "Configured",
+                                    False: "",
+                                }
+                            )
+
+
 
     feature_metrics = _inspect_training_features(
         path=training_features_path,
@@ -3626,6 +3837,54 @@ def write_cif_fob_decision_report(
             f"larger than the clean training population "
             f"({_fmt_int(rate_metrics['n_clean_estimation_observations'])})."
         ),
+        "",
+        "#### Product-median minimum-observation sensitivity",
+        "",
+        (
+            "The minimum-observation threshold controls the trade-off between "
+            "retaining HS6-specific historical information and falling back to "
+            "broader HS4 or global medians."
+        ),
+        "",
+        _markdown_table(
+            product_median_threshold_sensitivity,
+            columns=[
+                "Minimum observations",
+                "Setting",
+                "HS6 share",
+                "HS4 fallback share",
+                "Global fallback share",
+                "Missing share",
+            ],
+            formatters={
+                "Minimum observations": _fmt_int,
+                "HS6 share": lambda value: _fmt_percent_value(
+                    value,
+                    digits=2,
+                ),
+                "HS4 fallback share": lambda value: _fmt_percent_value(
+                    value,
+                    digits=2,
+                ),
+                "Global fallback share": lambda value: _fmt_percent_value(
+                    value,
+                    digits=4,
+                ),
+                "Missing share": lambda value: _fmt_percent_value(
+                    value,
+                    digits=4,
+                ),
+            },
+        ),
+        "",
+        (
+            f"The configured threshold is "
+            f"**{configured_product_minimum} observations**. "
+            "A lower threshold preserves more HS6-specific medians but accepts "
+            "estimates based on fewer observations; a higher threshold increases "
+            "fallback to broader product groups."
+        ),
+
         "",
         (
             f"The downstream prediction population is a separate branch "

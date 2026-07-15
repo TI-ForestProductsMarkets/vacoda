@@ -8,6 +8,14 @@ from __future__ import annotations
 
 import numpy as np
 
+PRODUCT_MEDIAN_THRESHOLD_BINS: tuple[float, ...] = (
+    5,
+    10,
+    20,
+    30,
+    40,
+    50,
+)
 
 VALUE_BAND_BINS: tuple[float, ...] = (
     0,
