@@ -19,6 +19,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+import json
+import platform
+
+import joblib
+import sklearn
 
 import duckdb
 import numpy as np
@@ -314,6 +319,7 @@ def _resolve_run_specs(
     return run_specs
 
 
+
 def _enabled_model_configs(
     cfg: CifFobConfig,
 ) -> tuple[str, dict[str, Any]]:
@@ -347,10 +353,113 @@ def _enabled_model_configs(
 
     return primary, enabled
 
+def _write_model_artifact(
+    *,
+    fitted_model: (
+        FittedHGBModel
+        | FittedXGBoostModel
+        | FittedLogLinearModel
+    ),
+    output_path: Path,
+) -> None:
+    """Serialize one fitted production model atomically."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    temporary_path = output_path.with_suffix(
+        output_path.suffix + ".tmp"
+    )
+
+    joblib.dump(
+        fitted_model,
+        temporary_path,
+        compress=3,
+    )
+
+    temporary_path.replace(output_path)
+
+
+
+def _upper_limit_run_directory(
+    maximum_factor: float,
+) -> str:
+    formatted = f"{maximum_factor:.3f}".replace(".", "p")
+    return f"cif_fob_upper_limit_{formatted}"
+
+def _cif_fob_run_directory(
+    *,
+    cfg: CifFobConfig,
+    maximum_cif_fob_factor: float,
+) -> Path:
+    return (
+        cfg.output_dir()
+        / "cif_fob_runs"
+        / _upper_limit_run_directory(
+            maximum_cif_fob_factor
+        )
+    )
+
+
+def _write_model_metadata(
+    *,
+    output_path: Path,
+    run_spec: EstimationRunSpec,
+    fitted_model: (
+        FittedHGBModel
+        | FittedXGBoostModel
+        | FittedLogLinearModel
+    ),
+    training_rows: int,
+    prediction_rows: int,
+    minimum_training_year: int,
+    maximum_training_year: int,
+    minimum_factor: float,
+    maximum_factor: float,
+) -> None:
+    """Write human-readable metadata for one fitted model."""
+    metadata = {
+        "schema_version": 1,
+        "run_name": run_spec.run_name,
+        "model_name": run_spec.model_name,
+        "predictor_set_name": run_spec.predictor_set_name,
+        "is_primary": bool(run_spec.is_primary),
+        "fitted_model_class": type(fitted_model).__name__,
+        "estimator_class": type(
+            fitted_model.estimator
+            if hasattr(fitted_model, "estimator")
+            else fitted_model.result
+        ).__name__,
+        "predictors": list(run_spec.predictors),
+        "categorical_predictors": list(
+            run_spec.categorical_predictors
+        ),
+        "training_rows": int(training_rows),
+        "prediction_rows": int(prediction_rows),
+        "minimum_training_year": int(minimum_training_year),
+        "maximum_training_year": int(maximum_training_year),
+        "minimum_factor": float(minimum_factor),
+        "maximum_factor": float(maximum_factor),
+        "python_version": platform.python_version(),
+        "sklearn_version": sklearn.__version__,
+    }
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    temporary_path = output_path.with_suffix(
+        output_path.suffix + ".tmp"
+    )
+
+    temporary_path.write_text(
+        json.dumps(metadata, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+    temporary_path.replace(output_path)
+
 def _estimation_run_checkpoint_dir(
     *,
     cfg: CifFobConfig,
     run_name: str,
+    maximum_factor: float,
 ) -> Path:
     """Return checkpoint directory for one algorithm × predictor-set run."""
     if "__" in run_name:
@@ -359,28 +468,36 @@ def _estimation_run_checkpoint_dir(
         model_algorithm = run_name
         predictor_set_name = "global_predictors"
 
+    upper_limit_directory = _cif_fob_run_directory(
+        cfg=cfg,
+        maximum_cif_fob_factor=maximum_factor
+    )
+
     return (
         cfg.output_dir()
-        / "model_runs"
+        / upper_limit_directory
+        / cfg.method.estimation.models.model_checkpoints.subdir
         / model_algorithm
         / predictor_set_name
     )
-
 
 def _estimation_run_checkpoint_paths(
     *,
     cfg: CifFobConfig,
     run_name: str,
+    maximum_factor: float,
 ) -> dict[str, Path]:
-    """Return all checkpoint paths for one estimation run."""
     checkpoint_dir = _estimation_run_checkpoint_dir(
         cfg=cfg,
         run_name=run_name,
+        maximum_factor=maximum_factor,
     )
 
     return {
         "folds": checkpoint_dir / "temporal_folds.parquet",
         "predictions": checkpoint_dir / "predictions.parquet",
+        "model": checkpoint_dir / "model.joblib",
+        "metadata": checkpoint_dir / "metadata.json",
     }
 
 
@@ -388,11 +505,13 @@ def _run_checkpoint_complete(
     *,
     cfg: CifFobConfig,
     run_name: str,
+    maximum_factor: float
 ) -> bool:
     """Return whether all required checkpoint files exist."""
     paths = _estimation_run_checkpoint_paths(
         cfg=cfg,
         run_name=run_name,
+        maximum_factor=maximum_factor,
     )
 
     return all(
@@ -401,18 +520,43 @@ def _run_checkpoint_complete(
     )
 
 
-def _write_run_checkpoint(
+def _read_fitted_model(
     *,
     cfg: CifFobConfig,
     run_name: str,
+    maximum_factor: float
+):
+    paths = _estimation_run_checkpoint_paths(
+        cfg=cfg,
+        run_name=run_name,
+        maximum_factor=maximum_factor,
+    )
+    return joblib.load(paths["model"])
+
+def _write_run_checkpoint(
+    *,
+    cfg: CifFobConfig,
+    run_spec: EstimationRunSpec,
+    fitted_model: (
+        FittedHGBModel
+        | FittedXGBoostModel
+        | FittedLogLinearModel
+    ),
     fold_results: pd.DataFrame,
     predictions: pd.DataFrame,
+    training_rows: int,
+    prediction_rows: int,
+    minimum_training_year: int,
+    maximum_training_year: int,
+    minimum_factor: float,
+    maximum_factor: float,
     threads: int,
 ) -> None:
     """Write one completed estimation-run checkpoint."""
     paths = _estimation_run_checkpoint_paths(
         cfg=cfg,
-        run_name=run_name,
+        run_name=run_spec.run_name,
+        maximum_factor=maximum_factor,
     )
 
     for path in paths.values():
@@ -433,17 +577,36 @@ def _write_run_checkpoint(
         threads=threads,
     )
 
+    _write_model_artifact(
+        fitted_model=fitted_model,
+        output_path=paths["model"],
+    )
+
+    _write_model_metadata(
+        output_path=paths["metadata"],
+        run_spec=run_spec,
+        fitted_model=fitted_model,
+        training_rows=training_rows,
+        prediction_rows=prediction_rows,
+        minimum_training_year=minimum_training_year,
+        maximum_training_year=maximum_training_year,
+        minimum_factor=minimum_factor,
+        maximum_factor=maximum_factor,
+    )
+
 
 def _read_run_checkpoint(
     *,
     cfg: CifFobConfig,
     run_name: str,
     threads: int,
+    maximum_factor: float,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Read one completed estimation-run checkpoint."""
     paths = _estimation_run_checkpoint_paths(
         cfg=cfg,
         run_name=run_name,
+        maximum_factor=maximum_factor,
     )
 
     con = duckdb.connect()
@@ -2391,39 +2554,50 @@ def _write_dataframe(
     finally:
         con.close()
 
-
 def _write_validation_outputs(
     *,
     cfg: CifFobConfig,
+    run_dir: Path,
     fold_results: pd.DataFrame,
     summary: pd.DataFrame,
-) -> None:
-    """Write configured temporal-validation CSV products."""
+) -> tuple[Path | None, Path | None]:
+    """Write temporal-validation CSV products inside the CIF/FOB run directory."""
+    fold_path: Path | None = None
+    summary_path: Path | None = None
+
     if cfg.products.temporal_validation_folds.enable:
-        fold_path = cfg.product_path(
-            "temporal_validation_folds"
+        fold_path = (
+            run_dir
+            / cfg.product_path("temporal_validation_folds").name
         )
+
         fold_path.parent.mkdir(
             parents=True,
             exist_ok=True,
         )
+
         fold_results.to_csv(
             fold_path,
             index=False,
         )
 
     if cfg.products.temporal_validation_summary.enable:
-        summary_path = cfg.product_path(
-            "temporal_validation_summary"
+        summary_path = (
+            run_dir
+            / cfg.product_path("temporal_validation_summary").name
         )
+
         summary_path.parent.mkdir(
             parents=True,
             exist_ok=True,
         )
+
         summary.to_csv(
             summary_path,
             index=False,
         )
+
+    return fold_path, summary_path
 
 
 # ======================================================================
@@ -2447,21 +2621,10 @@ def estimate_cif_fob_rates(
     separately, so completed model runs can be reused if a later run or
     final assembly fails.
     """
-    output_path = cfg.product_path("estimated_rates")
 
     if not input_path.exists():
         raise FileNotFoundError(
             f"CIF/FOB training-features Parquet not found: {input_path}"
-        )
-
-    if not force and valid_output(output_path):
-        logger.info(
-            "REUSE — CIF/FOB estimated rates already exist: %s",
-            output_path,
-        )
-        return _inspect_existing_estimated_rates(
-            output_path=output_path,
-            threads=cfg.engine.threads,
         )
 
     estimation_cfg = cfg.method.estimation
@@ -2498,7 +2661,6 @@ def estimate_cif_fob_rates(
 
     logger.info("Estimating and comparing CIF/FOB rates.")
     logger.info("  Input: %s", input_path)
-    logger.info("  Output: %s", output_path)
     logger.info("  Predictor union: %s", ", ".join(predictors))
     logger.info(
         "  Predictor sets: %s",
@@ -2598,6 +2760,27 @@ def estimate_cif_fob_rates(
         )
 
     maximum_factor = float(maximum_factor_metrics["maximum_factor"])
+
+    run_dir = _cif_fob_run_directory(
+        cfg=cfg,
+        maximum_cif_fob_factor=maximum_factor,
+    )
+
+    output_path = (
+        run_dir
+        / cfg.product_path("estimated_rates").name
+    )
+
+    if not force and valid_output(output_path):
+        logger.info(
+            "REUSE — CIF/FOB estimated rates already exist: %s",
+            output_path,
+        )
+
+        return _inspect_existing_estimated_rates(
+            output_path=output_path,
+            threads=cfg.engine.threads,
+        )
 
     logger.info(
         "  Direct positive factors above resolved maximum: %s "
@@ -2823,6 +3006,7 @@ def estimate_cif_fob_rates(
             and _run_checkpoint_complete(
                 cfg=cfg,
                 run_name=run_spec.run_name,
+                maximum_factor=maximum_factor
             )
         ):
             logger.info(
@@ -2835,6 +3019,7 @@ def estimate_cif_fob_rates(
                     cfg=cfg,
                     run_name=run_spec.run_name,
                     threads=cfg.engine.threads,
+                    maximum_factor=maximum_factor
                 )
             )
 
@@ -2912,9 +3097,16 @@ def estimate_cif_fob_rates(
 
             _write_run_checkpoint(
                 cfg=cfg,
-                run_name=run_spec.run_name,
+                run_spec=run_spec,
+                fitted_model=fitted,
                 fold_results=fold_results,
                 predictions=prediction_checkpoint,
+                training_rows=len(clean),
+                prediction_rows=len(prediction_rows),
+                minimum_training_year=int(clean["year"].min()),
+                maximum_training_year=int(clean["year"].max()),
+                minimum_factor=minimum_factor,
+                maximum_factor=maximum_factor,
                 threads=cfg.engine.threads,
             )
 
@@ -3030,14 +3222,15 @@ def estimate_cif_fob_rates(
             primary_holdout_log_column = holdout_log_column
             primary_holdout_factor_column = holdout_factor_column
 
-        if any(column is None for column in [
+
+    if any(column is None for column in [
             primary_factor_column,
             primary_log_column,
             primary_holdout_factor_column,
             primary_holdout_log_column,
         ]
         ):
-            raise RuntimeError(
+        raise RuntimeError(
             "Primary model prediction columns were not produced."
         )
 
@@ -3055,8 +3248,12 @@ def estimate_cif_fob_rates(
         fold_results
     )
 
-    _write_validation_outputs(
+    (
+        temporal_validation_folds_path,
+        temporal_validation_summary_path,
+    ) = _write_validation_outputs(
         cfg=cfg,
+        run_dir=run_dir,
         fold_results=fold_results,
         summary=validation_summary,
     )
@@ -3314,11 +3511,11 @@ def estimate_cif_fob_rates(
     )
     logger.info(
         "  Temporal validation folds: %s",
-        cfg.product_path("temporal_validation_folds"),
+        temporal_validation_folds_path,
     )
     logger.info(
         "  Temporal validation summary: %s",
-        cfg.product_path("temporal_validation_summary"),
+        temporal_validation_summary_path,
     )
     logger.info("  Output: %s", output_path)
 
@@ -3373,14 +3570,10 @@ def estimate_cif_fob_rates(
             len(fold_results)
         ),
         "temporal_validation_summary_path": (
-            cfg.product_path(
-                "temporal_validation_summary"
-            )
+            temporal_validation_summary_path
         ),
         "temporal_validation_folds_path": (
-            cfg.product_path(
-                "temporal_validation_folds"
-            )
+            temporal_validation_folds_path
         ),
         "latest_primary_holdout_metrics": (
             latest_primary_metrics

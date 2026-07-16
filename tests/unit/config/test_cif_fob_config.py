@@ -81,3 +81,24 @@ def test_cif_fob_config_keeps_output_prefix_as_configured() -> None:
         ].output_prefix
         == "hgb-prefix"
     )
+
+
+def test_cif_fob_config_parses_model_checkpoints_subdir() -> None:
+    raw = copy.deepcopy(load_cif_fob_config())
+
+    raw["cif_fob"]["method"]["estimation"]["models"][
+        "model_checkpoints"
+    ] = {"subdir": "model_checkpoints"}
+
+    scope, engine = _pipeline_context()
+
+    cfg = CifFobConfig.from_dict(
+        raw,
+        scope=scope,
+        engine=engine,
+    )
+
+    assert (
+        cfg.method.estimation.models.model_checkpoints.subdir
+        == "model_checkpoints"
+    )

@@ -206,10 +206,11 @@ def run_cif_fob_workflow(
         path=cfg.product_path("estimated_rates"),
     )
     
-    diagnostics_result = _artifact_result(
-        path_key="diagnostics_path",
-        path=cfg.product_path("diagnostics"),
-    )
+    diagnostics_result: dict[str, Any] = {
+        "status": "skipped",
+        "diagnostics_path": None,
+        "output_path": None,
+    }
 
     report_result: dict[str, Any] = {
         "status": "disabled" if not cfg.artifacts.enable else "skipped",
@@ -455,14 +456,23 @@ def run_cif_fob_workflow(
                     title=WORKFLOW_STEPS[STEP-1],
                 )
 
-                estimated_rates_path  = _require_artifact(
-                                            result=estimated_rates_result,
-                                            path_key="estimated_rates_path",
-                                            consumer_step="Diagnostics step",
-                                            producer_product="estimated-rates Parquet",
-                                        )
+                estimated_rates_path = _require_artifact(
+                    result=estimated_rates_result,
+                    path_key="estimated_rates_path",
+                    consumer_step="Diagnostics step",
+                    producer_product="estimated-rates Parquet",
+                )
 
-                primary_estimation_name = _resolve_primary_estimation_name(estimated_rates_result=estimated_rates_result,)
+                run_dir = estimated_rates_path.parent
+
+                diagnostics_output_path = (
+                    run_dir
+                    / cfg.product_path("diagnostics").name
+                )
+
+                primary_estimation_name = _resolve_primary_estimation_name(
+                    estimated_rates_result=estimated_rates_result,
+                )
 
                 if not primary_estimation_name:
                     logger.warning(
@@ -472,18 +482,16 @@ def run_cif_fob_workflow(
                         WORKFLOW_STEPS[STEP - 1],
                     )
                     diagnostics_result = {
-                        "status": "skipped",
-                        "diagnostics_path": None,
-                        "output_path": None,
-                        "reason": (
-                            "Missing 'primary_estimation_run' and "
-                            "'primary_model_name' in estimated_rates_result."
-                        ),
-                    }
+                                "status": "skipped",
+                                "diagnostics_path": None,
+                                "output_path": None,
+                                "reason": "Missing primary estimation run metadata.",
+                            }
+                                                                
                 else:
                     diagnostics_result = write_primary_holdout_diagnostics(
                                             estimated_rates_path=estimated_rates_path,
-                                            output_path=cfg.product_path("diagnostics"),
+                                            output_path=diagnostics_output_path,
                                             primary_run_name=primary_estimation_name,
                                             )
 

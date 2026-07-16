@@ -1601,25 +1601,6 @@ def _load_validation_artifacts(
 
     return summary, folds
 
-
-def _resolve_cif_fob_figure_dir(
-    *,
-    cfg: CifFobConfig,
-) -> Path:
-    """Resolve CIF/FOB figure directory under output/figures."""
-    figure_dir = (
-        get_figure_dir()
-        / "cif_fob"
-        / f"target_{cfg.scope.target_hs.lower()}"
-    )
-
-    figure_dir.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    return figure_dir
-
 def _save_cif_fob_figure(
     *,
     fig,
@@ -2080,6 +2061,30 @@ def _best_model(
     return str(summary.loc[index, "model_name"])
 
 
+def _resolve_cif_fob_figure_dir(
+    *,
+    cfg: CifFobConfig,
+    run_data_dir: Path,
+) -> Path:
+    """Resolve the figure directory matching one CIF/FOB run."""
+
+    run_name = run_data_dir.name
+
+    figure_dir = (
+        get_figure_dir()
+        / "cif_fob"
+        / f"target_{cfg.scope.target_hs.lower()}"
+        / "cif_fob_runs"
+        / run_name
+    )
+
+    figure_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    return figure_dir
+
 def _primary_decision_text(
     *,
     primary_model: str,
@@ -2211,8 +2216,16 @@ def write_cif_fob_decision_report(
         }
 
     training_features_path = training_features_result.get("training_features_path")
-    estimated_rates_path = estimated_rates_result.get("estimated_rates_path")
+    estimated_rates_path = Path(
+        estimated_rates_result["estimated_rates_path"]
+    )
 
+    run_data_dir = estimated_rates_path.parent
+
+    figure_dir = _resolve_cif_fob_figure_dir(
+        cfg=cfg,
+        run_data_dir=run_data_dir,
+    )
     if not isinstance(training_features_path, Path):
         training_features_path = cfg.product_path(
             "training_features"
@@ -2223,11 +2236,30 @@ def write_cif_fob_decision_report(
             "estimated_rates"
         )
 
-    summary_path = cfg.product_path(
-        "temporal_validation_summary"
+    estimated_rates_path = Path(
+        estimated_rates_result["estimated_rates_path"]
     )
-    folds_path = cfg.product_path(
-        "temporal_validation_folds"
+
+    run_data_dir = estimated_rates_path.parent
+
+    summary_path = Path(
+        estimated_rates_result.get(
+            "temporal_validation_summary_path",
+            run_data_dir
+            / cfg.product_path(
+                "temporal_validation_summary"
+            ).name,
+        )
+    )
+
+    folds_path = Path(
+        estimated_rates_result.get(
+            "temporal_validation_folds_path",
+            run_data_dir
+            / cfg.product_path(
+                "temporal_validation_folds"
+            ).name,
+        )
     )
 
     population_metrics = _inspect_population_journey(
@@ -2298,7 +2330,8 @@ def write_cif_fob_decision_report(
         )
     )
 
-    figure_dir = _resolve_cif_fob_figure_dir(cfg=cfg,)
+    figure_dir = _resolve_cif_fob_figure_dir(cfg=cfg,
+                    run_data_dir=run_data_dir)
     figure_paths: dict[str, Path] = {}
 
     ## Write Diaognostics Figures for the primary model if available

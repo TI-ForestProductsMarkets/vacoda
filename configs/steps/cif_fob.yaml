@@ -273,10 +273,12 @@ cif_fob:
 
       models:
         primary: "hist_gradient_boosting"
+        model_checkpoints:
+          subdir: model_checkpoints
 
         candidates:
           hist_gradient_boosting_squared:
-            enabled: false
+            enabled: true
             estimator_type: hgb
             output_prefix: hgb_sq
             type: "machine_learning"
@@ -334,7 +336,7 @@ cif_fob:
               method: "value_band_weighting"
 
           hist_gradient_boosting_squared_level:
-            enabled: false
+            enabled: true
             estimator_type: hgb
             output_prefix: hgb_sq_lvl
             type: "machine_learning"
@@ -354,7 +356,7 @@ cif_fob:
               method: "source_only"
 
           hist_gradient_boosting_squared_regularized:
-            enabled: false
+            enabled: true
             estimator_type: hgb
             output_prefix: hgb_sq_reg
             type: "machine_learning"
@@ -407,7 +409,6 @@ cif_fob:
             sample_weighting:
               method: "source_only"
 
-
           log_linear_regression:
             enabled: true
             estimator_type: log_lin
@@ -434,7 +435,7 @@ cif_fob:
               - hs4_product_group
 
           log_linear_regression_smearing:
-            enabled: false
+            enabled: true
             estimator_type: log_linear
             output_prefix: ols_sm
             type: "statistical"

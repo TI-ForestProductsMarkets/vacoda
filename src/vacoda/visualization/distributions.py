@@ -562,6 +562,13 @@ def plot_model_metric_ranking(
         short_predictor_set_name
     )
 
+    plot_data["model_number"] = (
+        plot_data["predictor_set_label"]
+        .astype(str)
+        .str.extract(r"M(\d+)", expand=False)
+        .astype(int)
+    )
+
     plot_data["display_label"] = (
         plot_data["algorithm_label"]
         + " / "
@@ -570,8 +577,7 @@ def plot_model_metric_ranking(
 
     if primary_run_name is not None:
         plot_data["is_primary"] = (
-            plot_data["model_name"].astype(str)
-            == str(primary_run_name)
+            plot_data["model_name"].astype(str) == str(primary_run_name)
         )
         plot_data.loc[
             plot_data["is_primary"],
@@ -617,6 +623,11 @@ def plot_model_metric_ranking(
             metric,
             ascending=not higher_is_better,
         )
+
+    plot_data = plot_data.sort_values(
+        ["model_number", "algorithm_label"],
+        ascending=[True, True],
+    )
 
     fig_height = max(
         4.5,

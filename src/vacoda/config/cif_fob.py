@@ -1608,11 +1608,38 @@ CifFobCandidateModelConfig = (
     | CifFobLogLinearRegressionConfig
 )
 
+
+@dataclass(frozen=True)
+class CifFobModelCheckpointsConfig:
+    subdir: str
+
+    @classmethod
+    def from_dict(
+        cls,
+        cfg: dict[str, Any],
+        *,
+        key: str,
+    ) -> "CifFobModelCheckpointsConfig":
+        subdir = require_str(
+            cfg.get("subdir"),
+            key=f"{key}.subdir",
+        ).strip()
+
+        if not subdir:
+            raise ValueError(
+                f"{key}.subdir must not be empty"
+            )
+
+        return cls(
+            subdir=subdir,
+        )
+
 @dataclass(frozen=True)
 class CifFobModelsConfig:
     """Registry of configured CIF/FOB estimation model candidates."""
 
     primary: str
+    model_checkpoints: CifFobModelCheckpointsConfig
     candidates: dict[str, CifFobCandidateModelConfig]
 
     @classmethod
@@ -1687,6 +1714,19 @@ class CifFobModelsConfig:
 
         return cls(
             primary=primary,
+            model_checkpoints=CifFobModelCheckpointsConfig.from_dict(
+                require_dict(
+                    cfg.get("model_checkpoints"),
+                    key=(
+                        "cif_fob.method.estimation.models."
+                        "model_checkpoints"
+                    ),
+                ),
+                key=(
+                    "cif_fob.method.estimation.models."
+                    "model_checkpoints"
+                ),
+            ),
             candidates=candidates,
         )
 
