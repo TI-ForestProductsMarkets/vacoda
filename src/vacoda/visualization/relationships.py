@@ -752,16 +752,19 @@ def plot_corrected_trade_comparison(
         label=coverage_label,
     )
 
-    ax1.set_xlabel(x_label)
-    ax1.set_ylabel(coverage_label)
+    ax1.set_xlabel(x_label,)
+    ax1.set_ylabel(coverage_label, color="tab:blue")
     ax1.set_xticks(x)
+    ax1.tick_params(axis="y", labelcolor="tab:blue")
     ax1.set_xticklabels(
         labels,
         rotation=rotate_xticks,
         ha="right" if rotate_xticks else "center",
     )
     ax1.grid(axis="y", alpha=0.25)
+    ax1.spines["left"].set_color("tab:blue")
 
+    ## Create a second y-axis for the reduction line plot
     ax2 = ax1.twinx()
     line = ax2.plot(
         x,
@@ -774,7 +777,9 @@ def plot_corrected_trade_comparison(
         label=reduction_label,
     )
 
-    ax2.set_ylabel(reduction_label)
+    ax2.set_ylabel(reduction_label, color="crimson")
+    ax2.tick_params(axis="y", labelcolor="crimson")
+    ax2.spines["right"].set_color("crimson")
 
     ax1.set_title(title)
 
