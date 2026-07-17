@@ -686,6 +686,106 @@ def plot_central_vs_tail_tradeoff(
 
     return fig, ax, plot_data
 
+def plot_corrected_trade_comparison(
+    *,
+    frame: pd.DataFrame,
+    category_column: str,
+    coverage_column: str,
+    reduction_column: str,
+    title: str,
+    x_label: str,
+    coverage_label: str = "Correction coverage (%)",
+    reduction_label: str = "Value reduction (%)",
+    figsize: tuple[float, float] = (10, 5.5),
+    rotate_xticks: int = 0,
+) -> tuple[Figure, Axes]:
+    """
+    Plot correction coverage and value reduction together.
+
+    Bars show correction coverage on the left axis.
+    A line shows value reduction on the right axis.
+    """
+    required_columns = {
+        category_column,
+        coverage_column,
+        reduction_column,
+    }
+    missing_columns = required_columns - set(frame.columns)
+
+    if missing_columns:
+        raise RuntimeError(
+            "Corrected-trade comparison plot is missing columns: "
+            + ", ".join(sorted(missing_columns))
+        )
+
+    plot_data = frame.copy()
+
+    plot_data[coverage_column] = pd.to_numeric(
+        plot_data[coverage_column],
+        errors="coerce",
+    )
+    plot_data[reduction_column] = pd.to_numeric(
+        plot_data[reduction_column],
+        errors="coerce",
+    )
+
+    plot_data = plot_data.loc[
+        plot_data[category_column].notna()
+        & plot_data[coverage_column].notna()
+        & plot_data[reduction_column].notna()
+    ].copy()
+
+    if plot_data.empty:
+        raise RuntimeError(
+            "No valid rows available for corrected-trade comparison plot."
+        )
+
+    labels = plot_data[category_column].astype(str).tolist()
+    x = np.arange(len(plot_data))
+
+    fig, ax1 = plt.subplots(figsize=figsize)
+
+    bars = ax1.bar(
+        x,
+        plot_data[coverage_column].to_numpy(dtype=float),
+        alpha=0.8,
+        label=coverage_label,
+    )
+
+    ax1.set_xlabel(x_label)
+    ax1.set_ylabel(coverage_label)
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(
+        labels,
+        rotation=rotate_xticks,
+        ha="right" if rotate_xticks else "center",
+    )
+    ax1.grid(axis="y", alpha=0.25)
+
+    ax2 = ax1.twinx()
+    line = ax2.plot(
+        x,
+        plot_data[reduction_column].to_numpy(dtype=float),
+        marker="o",
+        linewidth=2.0,
+        color="crimson",
+        markerfacecolor="crimson",
+        markeredgecolor="darkred",
+        label=reduction_label,
+    )
+
+    ax2.set_ylabel(reduction_label)
+
+    ax1.set_title(title)
+
+    handles = [bars, line[0]]
+    labels = [coverage_label, reduction_label]
+    ax1.legend(handles, labels, loc="upper right", frameon=True)
+
+    fig.tight_layout()
+
+    return fig, ax1
+
 def plot_temporal_validation_metric(
     folds: pd.DataFrame,
     *,

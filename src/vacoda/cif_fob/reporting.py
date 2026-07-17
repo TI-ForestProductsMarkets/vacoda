@@ -45,7 +45,8 @@ from vacoda.visualization.relationships import (
     plot_central_vs_tail_tradeoff,
     plot_observed_vs_predicted_density,
     plot_temporal_validation_metric,
-    plot_observed_vs_predicted_with_tolerance_bands
+    plot_observed_vs_predicted_with_tolerance_bands,
+    plot_corrected_trade_comparison
 ) 
 from vacoda.visualization.audits import plot_representation_ratio_bars
 from vacoda.cif_fob.display import (
@@ -2375,11 +2376,12 @@ def _prepare_corrected_trade_report(
     )
 
     figure_paths = _write_corrected_trade_figures(
-        cfg=cfg,
-        corrected_trade_by_year=by_year,
-        figure_dir=figure_dir,
-        logger=logger,
-    )
+            cfg=cfg,
+            corrected_trade_by_year=by_year,
+            corrected_trade_by_value_band=by_value_band,
+            figure_dir=figure_dir,
+            logger=logger,
+        )
 
     return {
         "path": corrected_trade_path,
@@ -2473,98 +2475,106 @@ def _write_corrected_trade_figures(
     *,
     cfg: CifFobConfig,
     corrected_trade_by_year: pd.DataFrame,
+    corrected_trade_by_value_band: pd.DataFrame,
     figure_dir: Path,
     logger,
 ) -> dict[str, Path]:
     """
     Write figures describing the applied CIF/FOB correction.
     """
-    if corrected_trade_by_year.empty:
-        logger.warning(
-            "No annual corrected-trade rows are available "
-            "for plotting."
-        )
-        return {}
-
-    required_columns = {
-        "Year",
-        "Value reduction",
-    }
-
-    missing_columns = sorted(
-        required_columns
-        - set(corrected_trade_by_year.columns)
-    )
-
-    if missing_columns:
-        raise RuntimeError(
-            "Annual corrected-trade summary is missing "
-            "plotting columns: "
-            + ", ".join(missing_columns)
-        )
-
-    plot_data = corrected_trade_by_year.copy()
-
-    plot_data["Year"] = pd.to_numeric(
-        plot_data["Year"],
-        errors="coerce",
-    )
-
-    plot_data["Value reduction"] = pd.to_numeric(
-        plot_data["Value reduction"],
-        errors="coerce",
-    )
-
-    plot_data = plot_data.loc[
-        plot_data["Year"].notna()
-        & plot_data["Value reduction"].notna()
-    ].sort_values("Year")
-
-    if plot_data.empty:
-        logger.warning(
-            "No finite annual corrected-trade values are "
-            "available for plotting."
-        )
-        return {}
-
-    fig, ax = plt.subplots(
-        figsize=(10, 5.5)
-    )
-
-    ax.bar(
-        plot_data["Year"].astype(int).astype(str),
-        plot_data["Value reduction"],
-    )
-
-    ax.set_title(
-        "Estimated CIF/FOB value reduction by year"
-    )
-
-    ax.set_xlabel(
-        "Year"
-    )
-
-    ax.set_ylabel(
-        "Value reduction (%)"
-    )
-
-    ax.grid(
-        axis="y",
-        alpha=0.25,
-    )
-
     figure_paths: dict[str, Path] = {}
 
-    _save_cif_fob_figure(
-        fig=fig,
-        root_dir=figure_dir,
-        category="corrected_trade",
-        target_hs=cfg.scope.target_hs,
-        stem="corrected_trade_value_reduction_by_year",
-        figure_paths=figure_paths,
-        key="corrected_trade_value_reduction_by_year",
-        logger=logger,
-    )
+    # -------------------------------------------------
+    # 1. By year: coverage vs value reduction
+    # -------------------------------------------------
+    if not corrected_trade_by_year.empty:
+        by_year = corrected_trade_by_year.copy()
+
+        by_year["Year"] = pd.to_numeric(
+            by_year["Year"],
+            errors="coerce",
+        )
+
+        by_year = by_year.loc[
+            by_year["Year"].notna()
+        ].sort_values("Year")
+
+        by_year["Year"] = by_year["Year"].astype(int).astype(str)
+
+        fig, _ = plot_corrected_trade_comparison(
+            frame=by_year,
+            category_column="Year",
+            coverage_column="Correction coverage",
+            reduction_column="Value reduction",
+            title=(
+                "Applied CIF/FOB correction by year: "
+                "coverage versus value reduction"
+            ),
+            x_label="Year",
+            rotate_xticks=0,
+        )
+
+        _save_cif_fob_figure(
+            fig=fig,
+            root_dir=figure_dir,
+            category="corrected_trade",
+            target_hs=cfg.scope.target_hs,
+            stem="corrected_trade_by_year_comparison",
+            figure_paths=figure_paths,
+            key="corrected_trade_by_year_comparison",
+            logger=logger,
+        )
+    else:
+        logger.warning(
+            "No annual corrected-trade summary is available for plotting."
+        )
+
+    # -------------------------------------------------
+    # 2. By evidence-value band: coverage vs reduction
+    # -------------------------------------------------
+    if not corrected_trade_by_value_band.empty:
+        by_value_band = corrected_trade_by_value_band.copy()
+
+        if "Evidence-value band" in by_value_band.columns:
+            by_value_band["Evidence-value band"] = pd.Categorical(
+                by_value_band["Evidence-value band"],
+                categories=VALUE_BAND_ORDER,
+                ordered=True,
+            )
+            by_value_band = by_value_band.sort_values(
+                "Evidence-value band"
+            )
+            by_value_band["Evidence-value band"] = (
+                by_value_band["Evidence-value band"].astype(str)
+            )
+
+        fig, _ = plot_corrected_trade_comparison(
+            frame=by_value_band,
+            category_column="Evidence-value band",
+            coverage_column="Correction coverage",
+            reduction_column="Value reduction",
+            title=(
+                "Applied CIF/FOB correction by evidence-value band: "
+                "coverage versus value reduction"
+            ),
+            x_label="Evidence-value band",
+            rotate_xticks=0,
+        )
+
+        _save_cif_fob_figure(
+            fig=fig,
+            root_dir=figure_dir,
+            category="corrected_trade",
+            target_hs=cfg.scope.target_hs,
+            stem="corrected_trade_by_value_band_comparison",
+            figure_paths=figure_paths,
+            key="corrected_trade_by_value_band_comparison",
+            logger=logger,
+        )
+    else:
+        logger.warning(
+            "No value-band corrected-trade summary is available for plotting."
+        )
 
     return figure_paths
 
@@ -3365,6 +3375,14 @@ def write_cif_fob_decision_report(
             )
 
     figure_paths.update(corrected_trade_report["figure_paths"])
+
+    corrected_trade_year_figure = figure_paths.get(
+        "corrected_trade_by_year_comparison"
+    )
+
+    corrected_trade_value_band_figure = figure_paths.get(
+        "corrected_trade_by_value_band_comparison"
+    )
 
     ## Write Diaognostics Figures for the primary model if available
     diagnostics_status = (
@@ -5154,9 +5172,14 @@ def write_cif_fob_decision_report(
         "",
         "### 10.3 Application by year",
         "",
-        corrected_trade_report[
-            "by_year_markdown"
-        ],
+        corrected_trade_report["by_year_markdown"],
+        "",
+        (
+            "![Applied CIF/FOB correction by year]"
+            f"({corrected_trade_year_figure})"
+            if corrected_trade_year_figure is not None
+            else "_Figure not available._"
+        ),
         "",
         (
             "![Estimated CIF/FOB value reduction by year]"
@@ -5167,9 +5190,14 @@ def write_cif_fob_decision_report(
         "",
         "### 10.4 Application by evidence-value band",
         "",
-        corrected_trade_report[
-            "by_value_band_markdown"
-        ],
+        corrected_trade_report["by_value_band_markdown"],
+        "",
+        (
+            "![Applied CIF/FOB correction by evidence-value band]"
+            f"({corrected_trade_value_band_figure})"
+            if corrected_trade_value_band_figure is not None
+            else "_Figure not available._"
+        ),
         "",
         "### 10.5 Prediction-interval calibration",
         "",
