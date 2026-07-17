@@ -725,7 +725,7 @@ class CifFobMaximumFactorRuleConfig:
             key="cif_fob.method.estimation.maximum_factor_rule.method",
         ).strip().lower()
 
-        if method != "robust_adaptive_cap":
+        if method not in [ "fixed_cap", "iqr_cap", "robust_adaptive_cap",]:
             raise ValueError(
                 "Unsupported cif_fob maximum_factor_rule.method: "
                 f"{method!r}."
@@ -1960,7 +1960,7 @@ class CifFobEstimationConfig:
     @property
     def maximum_factor(self) -> float:
         """Return the effective upper cap implied by maximum_factor_rule."""
-        return self.maximum_factor_rule.domain_cap
+        return self.maximum_factor_rule.fixed_value
 
     def get_predictor_set(
         self,

@@ -230,6 +230,41 @@ def _all_predictors_for_validation(
     return duplicates_removed
 
 
+def _prediction_columns_by_run(
+    run_specs: list[EstimationRunSpec],
+) -> dict[str, dict[str, str]]:
+    """Return prediction-column names for every estimation run."""
+    result: dict[str, dict[str, str]] = {}
+
+    for spec in run_specs:
+        model_prefix = _safe_model_prefix(
+            spec.model_name,
+            spec.model_cfg,
+        )
+
+        column_prefix = (
+            model_prefix
+            if spec.predictor_set_name is None
+            else f"{model_prefix}__{spec.predictor_set_name}"
+        )
+
+        result[spec.run_name] = {
+            "full_predicted_factor": (
+                f"{column_prefix}_full_predicted_factor"
+            ),
+            "full_predicted_log_factor": (
+                f"{column_prefix}_full_predicted_log_factor"
+            ),
+            "holdout_predicted_factor": (
+                f"{column_prefix}_holdout_predicted_factor"
+            ),
+            "holdout_predicted_log_factor": (
+                f"{column_prefix}_holdout_predicted_log_factor"
+            ),
+        }
+
+    return result
+
 def _resolve_run_specs(
     *,
     cfg: CifFobConfig,
@@ -881,6 +916,7 @@ def _evidence_value(frame: pd.DataFrame) -> pd.Series:
         dtype="float64",
     )
 
+
 def _resolve_maximum_factor(
     *,
     data: pd.DataFrame,
@@ -890,21 +926,60 @@ def _resolve_maximum_factor(
     """
     Resolve the effective upper CIF/FOB factor bound.
 
-    Current rule:
+    Supported methods
+    -----------------
+    fixed
+        maximum_factor = fixed_value
 
-        min(domain_cap, max(Q3 + k×IQR, P99))
+    iqr_cap
+        maximum_factor = Q3 + iqr_multiplier * IQR
 
-    The distribution is calculated from positive selected direct factors,
-    before applying the final upper-bound filter.
+    robust_adaptive_cap
+        maximum_factor = min(
+            fixed_value,
+            max(
+                Q3 + iqr_multiplier * IQR,
+                percentile quantile,
+            ),
+        )
+
+    Distribution-based limits are calculated from positive,
+    model-eligible, directly observed CIF/FOB factors before applying
+    the final upper-bound filter.
     """
     rule = cfg.method.estimation.maximum_factor_rule
-
     method = str(rule.method).strip().lower()
 
-    if method != "robust_adaptive_cap":
+    supported_methods = {
+        "fixed_cap",
+        "iqr_cap",
+        "robust_adaptive_cap",
+    }
+
+    if method not in supported_methods:
         raise ValueError(
-            "Unsupported maximum_factor_rule.method: "
-            f"{method!r}."
+            "Unsupported maximum_factor_rule.method "
+            f"{method!r}. Supported methods: "
+            + ", ".join(sorted(supported_methods))
+        )
+
+    fixed_value = float(rule.fixed_value)
+    iqr_multiplier = float(rule.iqr_multiplier)
+    percentile = float(rule.percentile)
+
+    if fixed_value <= 0:
+        raise ValueError(
+            "maximum_factor_rule.fixed_value must be positive."
+        )
+
+    if iqr_multiplier < 0:
+        raise ValueError(
+            "maximum_factor_rule.iqr_multiplier must be non-negative."
+        )
+
+    if not 0 < percentile < 1:
+        raise ValueError(
+            "maximum_factor_rule.percentile must be between 0 and 1."
         )
 
     observed_factor = pd.to_numeric(
@@ -933,42 +1008,38 @@ def _resolve_maximum_factor(
 
     if direct_positive.empty:
         raise RuntimeError(
-            "Cannot resolve adaptive maximum CIF/FOB factor: "
+            "Cannot resolve maximum CIF/FOB factor: "
             "no positive selected direct factors are available."
         )
 
-    q1 = float(
-        direct_positive.quantile(0.25)
-    )
-    median = float(
-        direct_positive.quantile(0.50)
-    )
-    q3 = float(
-        direct_positive.quantile(0.75)
-    )
+    q1 = float(direct_positive.quantile(0.25))
+    median = float(direct_positive.quantile(0.50))
+    q3 = float(direct_positive.quantile(0.75))
     iqr = q3 - q1
 
-    iqr_limit = q3 + float(rule.iqr_multiplier) * iqr
+    iqr_limit = q3 + iqr_multiplier * iqr
 
     percentile_limit = float(
-        direct_positive.quantile(
-            float(rule.percentile)
+        direct_positive.quantile(percentile)
+    )
+
+    if method == "fixed_cap":
+        statistical_limit = None
+        maximum_factor = fixed_value
+
+    elif method == "iqr_cap":
+        statistical_limit = iqr_limit
+        maximum_factor = iqr_limit
+
+    else:  # robust_adaptive_cap
+        statistical_limit = max(
+            iqr_limit,
+            percentile_limit,
         )
-    )
-
-    statistical_limit = max(
-        iqr_limit,
-        percentile_limit,
-    )
-
-    domain_cap = float(
-        rule.domain_cap
-    )
-
-    maximum_factor = min(
-        domain_cap,
-        statistical_limit,
-    )
+        maximum_factor = min(
+            fixed_value,
+            statistical_limit,
+        )
 
     if maximum_factor < minimum_factor:
         raise RuntimeError(
@@ -982,23 +1053,31 @@ def _resolve_maximum_factor(
         "method": method,
         "minimum_factor": float(minimum_factor),
         "maximum_factor": float(maximum_factor),
-        "domain_cap": domain_cap,
+        "fixed_value": fixed_value,
         "q1": q1,
         "median": median,
         "q3": q3,
         "iqr": iqr,
-        "iqr_multiplier": float(rule.iqr_multiplier),
+        "iqr_multiplier": iqr_multiplier,
         "iqr_limit": float(iqr_limit),
-        "percentile": float(rule.percentile),
+        "percentile": percentile,
         "percentile_limit": percentile_limit,
-        "statistical_limit": float(statistical_limit),
-        "n_direct_positive_factors": int(len(direct_positive)),
+        "statistical_limit": (
+            float(statistical_limit)
+            if statistical_limit is not None
+            else None
+        ),
+        "n_direct_positive_factors": int(
+            len(direct_positive)
+        ),
         "n_direct_factors_above_maximum": int(
             direct_positive.gt(maximum_factor).sum()
         ),
         "share_direct_factors_above_maximum_percent": (
             100.0
-            * float(direct_positive.gt(maximum_factor).mean())
+            * float(
+                direct_positive.gt(maximum_factor).mean()
+            )
         ),
     }
 
@@ -2372,6 +2451,7 @@ def _summarise_backtests(
 
 def _inspect_existing_estimated_rates(
     *,
+    cfg: CifFobConfig,
     output_path: Path,
     threads: int,
 ) -> dict[str, Any]:
@@ -2477,6 +2557,23 @@ def _inspect_existing_estimated_rates(
         else 0.0
     )
 
+    primary_model_name_cfg, model_configs = (
+        _enabled_model_configs(cfg)
+    )
+
+    predictor_sets = _configured_predictor_sets(cfg)
+
+    run_specs = _resolve_run_specs(
+        cfg=cfg,
+        model_configs=model_configs,
+        predictor_sets=predictor_sets,
+        primary_model_name=primary_model_name_cfg,
+    )
+
+    prediction_columns_by_run = _prediction_columns_by_run(
+        run_specs
+    )
+
     return {
         "status": "reused",
         "audit_passed": True,
@@ -2485,6 +2582,16 @@ def _inspect_existing_estimated_rates(
         ),
         "output_path": output_path,
         "estimated_rates_path": output_path,
+        "enabled_models": list(model_configs),
+
+        "enabled_estimation_runs": [
+            spec.run_name
+            for spec in run_specs
+        ],
+
+        "prediction_columns_by_run": prediction_columns_by_run,
+
+        "predictor_sets": list(predictor_sets),
 
         # Critical metadata needed downstream.
         "primary_model_name": primary_model_name,
@@ -2778,6 +2885,7 @@ def estimate_cif_fob_rates(
         )
 
         return _inspect_existing_estimated_rates(
+            cfg =cfg,
             output_path=output_path,
             threads=cfg.engine.threads,
         )
@@ -2814,7 +2922,7 @@ def estimate_cif_fob_rates(
         maximum_factor_metrics["iqr_limit"],
         100.0 * maximum_factor_metrics["percentile"],
         maximum_factor_metrics["percentile_limit"],
-        maximum_factor_metrics["domain_cap"],
+        maximum_factor_metrics["fixed_value"],
         maximum_factor_metrics["maximum_factor"],
     )
 
@@ -3291,7 +3399,7 @@ def estimate_cif_fob_rates(
     data["estimation_minimum_factor"] = minimum_factor
     data["estimation_maximum_factor"] = maximum_factor
     data["maximum_factor_rule_method"] = maximum_factor_metrics["method"]
-    data["maximum_factor_domain_cap"] = maximum_factor_metrics["domain_cap"]
+    data["maximum_factor_fixed_value"] = maximum_factor_metrics["fixed_value"]
     data["maximum_factor_q1"] = maximum_factor_metrics["q1"]
     data["maximum_factor_median"] = maximum_factor_metrics["median"]
     data["maximum_factor_q3"] = maximum_factor_metrics["q3"]
@@ -3532,6 +3640,10 @@ def estimate_cif_fob_rates(
     if not latest_primary_row.empty:
         latest_primary_metrics = latest_primary_row.iloc[0].to_dict()
 
+    prediction_columns_by_run = _prediction_columns_by_run(
+        run_specs
+        )
+
     return {
         "status": "completed",
         "audit_passed": True,
@@ -3550,6 +3662,7 @@ def estimate_cif_fob_rates(
             spec.run_name
             for spec in run_specs
         ],
+        "prediction_columns_by_run": prediction_columns_by_run,
         "predictor_sets": list(predictor_sets),
         "n_output_rows": n_output_rows,
         "n_clean_estimation_observations": (

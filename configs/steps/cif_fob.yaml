@@ -178,8 +178,8 @@ cif_fob:
       maximum_factor_rule:
         # Supported methods:
         #
-        # fixed
-        #   maximum_factor = fixed_value
+        # fixed_cap
+        #   maximum_factor = fixed_cap
         #
         # iqr_cap
         #   maximum_factor = Q3 + iqr_multiplier * IQR
@@ -191,8 +191,6 @@ cif_fob:
         fixed_value: 3.0
         iqr_multiplier: 2.5
         percentile: 0.99
-        domain_cap: 3.0
-        maximum_factor_rule: 
 
       exclude_proxy_weights: true
 
@@ -291,7 +289,7 @@ cif_fob:
 
         candidates:
           hist_gradient_boosting_squared:
-            enabled: true
+            enabled: false
             estimator_type: hgb
             output_prefix: hgb_sq
             type: "machine_learning"
@@ -331,7 +329,7 @@ cif_fob:
               method: "source_only"
 
           hist_gradient_boosting_weighted:
-            enabled: true
+            enabled: false
             estimator_type: hgb
             output_prefix: hgb_wgt
             type: "machine_learning"
@@ -349,7 +347,7 @@ cif_fob:
               method: "value_band_weighting"
 
           hist_gradient_boosting_squared_level:
-            enabled: true
+            enabled: false
             estimator_type: hgb
             output_prefix: hgb_sq_lvl
             type: "machine_learning"
@@ -369,7 +367,7 @@ cif_fob:
               method: "source_only"
 
           hist_gradient_boosting_squared_regularized:
-            enabled: true
+            enabled: false
             estimator_type: hgb
             output_prefix: hgb_sq_reg
             type: "machine_learning"
@@ -448,7 +446,7 @@ cif_fob:
               - hs4_product_group
 
           log_linear_regression_smearing:
-            enabled: true
+            enabled: false
             estimator_type: log_linear
             output_prefix: ols_sm
             type: "statistical"

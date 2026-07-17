@@ -207,24 +207,55 @@ def _inspect_value_band_model_comparison(
     threads: int,
     holdout_year: int,
     boundaries: tuple[int, ...],
-    baseline_prediction_column: str,
-    weighted_prediction_column: str,
+    prediction_columns_by_run: dict[str, dict[str, str]],
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Compare baseline and value-band-weighted HGB predictions within
-    evidence-value bands for the latest temporal holdout.
+    Compare all completed estimation runs within evidence-value bands
+    for the latest temporal holdout.
+
+    Parameters
+    ----------
+    prediction_columns_by_run
+        Mapping returned by estimate_rates.py. Each key is a concrete
+        estimation run and each value contains its prediction-column names.
 
     Returns
     -------
     summary
-        One row per evidence-value band.
+        One row per estimation run and evidence-value band.
+
     long_frame
         Row-level model errors for plotting.
     """
+    path = Path(path)
 
     if not path.exists():
         raise FileNotFoundError(
             f"Estimated-rate artifact not found: {path}"
+        )
+
+    if not prediction_columns_by_run:
+        raise RuntimeError(
+            "No estimation-run prediction-column mapping was supplied "
+            "for model comparison."
+        )
+
+    prediction_columns: dict[str, str] = {}
+
+    for run_name, columns in prediction_columns_by_run.items():
+        holdout_column = columns.get(
+            "holdout_predicted_factor"
+        )
+
+        if holdout_column:
+            prediction_columns[str(run_name)] = str(
+                holdout_column
+            )
+
+    if not prediction_columns:
+        raise RuntimeError(
+            "The prediction-column mapping contains no "
+            "'holdout_predicted_factor' columns."
         )
 
     con = duckdb.connect()
@@ -246,23 +277,50 @@ def _inspect_value_band_model_comparison(
             ).fetchall()
         }
 
-        required_columns = {
+        required_base_columns = {
             "year",
             "clean_estimation_eligible",
             "estimation_evidence_value",
             "observed_cif_fob_factor",
-            baseline_prediction_column,
-            weighted_prediction_column,
         }
 
-        missing = sorted(required_columns - available_columns)
+        missing_base_columns = sorted(
+            required_base_columns - available_columns
+        )
 
-        if missing:
+        if missing_base_columns:
             raise RuntimeError(
-                "Estimated-rate artifact is missing model-comparison "
-                "columns: "
-                + ", ".join(missing)
+                "Estimated-rate artifact is missing required "
+                "model-comparison columns: "
+                + ", ".join(missing_base_columns)
             )
+
+        missing_prediction_columns = {
+            run_name: column
+            for run_name, column in prediction_columns.items()
+            if column not in available_columns
+        }
+
+        if missing_prediction_columns:
+            details = ", ".join(
+                f"{run_name}: {column}"
+                for run_name, column
+                in missing_prediction_columns.items()
+            )
+
+            raise RuntimeError(
+                "Estimated-rate artifact is missing prediction "
+                "columns for completed estimation runs: "
+                + details
+            )
+
+        prediction_select_sql = ",\n".join(
+            (
+                f"{_quote_identifier(column)} "
+                f"AS {_quote_identifier(run_name)}"
+            )
+            for run_name, column in prediction_columns.items()
+        )
 
         comparison = con.execute(
             f"""
@@ -270,20 +328,14 @@ def _inspect_value_band_model_comparison(
                 year,
                 estimation_evidence_value,
                 observed_cif_fob_factor,
-                {_quote_identifier(baseline_prediction_column)}
-                    AS baseline_predicted_factor,
-                {_quote_identifier(weighted_prediction_column)}
-                    AS weighted_predicted_factor
+                {prediction_select_sql}
 
             FROM read_parquet(?)
 
             WHERE year = ?
               AND clean_estimation_eligible
               AND observed_cif_fob_factor IS NOT NULL
-              AND {_quote_identifier(baseline_prediction_column)}
-                    IS NOT NULL
-              AND {_quote_identifier(weighted_prediction_column)}
-                    IS NOT NULL
+              AND observed_cif_fob_factor > 0
             """,
             [
                 str(path),
@@ -296,109 +348,82 @@ def _inspect_value_band_model_comparison(
 
     if comparison.empty:
         raise RuntimeError(
-            "No common latest-holdout observations are available for "
-            "the baseline-versus-weighted HGB comparison."
+            "No latest-holdout observations are available for "
+            "model comparison."
         )
 
-    comparison["value_band"] = _assign_evidence_value_band(
-        comparison["estimation_evidence_value"],
-        boundaries=boundaries,
+    comparison["value_band"] = (
+        _assign_evidence_value_band(
+            comparison["estimation_evidence_value"],
+            boundaries=boundaries,
+        )
     )
 
-    observed = pd.to_numeric(
-        comparison["observed_cif_fob_factor"],
+    long_frame = comparison.melt(
+        id_vars=[
+            "year",
+            "estimation_evidence_value",
+            "observed_cif_fob_factor",
+            "value_band",
+        ],
+        value_vars=list(prediction_columns),
+        var_name="model_name",
+        value_name="predicted_factor",
+    )
+
+    long_frame["observed_cif_fob_factor"] = (
+        pd.to_numeric(
+            long_frame["observed_cif_fob_factor"],
+            errors="coerce",
+        )
+    )
+
+    long_frame["predicted_factor"] = pd.to_numeric(
+        long_frame["predicted_factor"],
         errors="coerce",
     )
 
-    comparison["baseline_ape"] = (
+    long_frame["ape"] = (
         (
-            pd.to_numeric(
-                comparison["baseline_predicted_factor"],
-                errors="coerce",
-            )
-            - observed
+            long_frame["predicted_factor"]
+            - long_frame["observed_cif_fob_factor"]
         ).abs()
-        / observed
+        / long_frame["observed_cif_fob_factor"]
     )
 
-    comparison["weighted_ape"] = (
-        (
-            pd.to_numeric(
-                comparison["weighted_predicted_factor"],
-                errors="coerce",
-            )
-            - observed
-        ).abs()
-        / observed
-    )
-
-    comparison = comparison.loc[
-        comparison["value_band"].notna()
-        & np.isfinite(comparison["baseline_ape"])
-        & np.isfinite(comparison["weighted_ape"])
+    long_frame = long_frame.loc[
+        long_frame["value_band"].notna()
+        & long_frame["observed_cif_fob_factor"].gt(0)
+        & np.isfinite(long_frame["predicted_factor"])
+        & np.isfinite(long_frame["ape"])
     ].copy()
 
+    if long_frame.empty:
+        raise RuntimeError(
+            "No finite latest-holdout predictions are available "
+            "for model comparison."
+        )
+
     summary = (
-        comparison
+        long_frame
         .groupby(
-            "value_band",
+            [
+                "model_name",
+                "value_band",
+            ],
             observed=False,
             sort=False,
         )
         .agg(
-            observations=("observed_cif_fob_factor", "size"),
-            baseline_median_ape=("baseline_ape", "median"),
-            weighted_median_ape=("weighted_ape", "median"),
-            baseline_mean_ape=("baseline_ape", "mean"),
-            weighted_mean_ape=("weighted_ape", "mean"),
-            baseline_p90_ape=(
-                "baseline_ape",
-                lambda values: values.quantile(0.90),
-            ),
-            weighted_p90_ape=(
-                "weighted_ape",
+            observations=("ape", "size"),
+            median_ape=("ape", "median"),
+            mean_ape=("ape", "mean"),
+            p90_ape=(
+                "ape",
                 lambda values: values.quantile(0.90),
             ),
         )
         .reset_index()
-    )
-
-    summary["median_ape_change"] = (
-        summary["weighted_median_ape"]
-        - summary["baseline_median_ape"]
-    )
-
-    summary["mean_ape_change"] = (
-        summary["weighted_mean_ape"]
-        - summary["baseline_mean_ape"]
-    )
-
-    summary["p90_ape_change"] = (
-        summary["weighted_p90_ape"]
-        - summary["baseline_p90_ape"]
-    )
-
-    summary["weighted_better_median"] = (
-        summary["median_ape_change"] < 0
-    )
-
-    baseline_long = comparison[
-        ["value_band", "baseline_ape"]
-    ].rename(
-        columns={"baseline_ape": "ape"}
-    )
-    baseline_long["model"] = "HGB baseline"
-
-    weighted_long = comparison[
-        ["value_band", "weighted_ape"]
-    ].rename(
-        columns={"weighted_ape": "ape"}
-    )
-    weighted_long["model"] = "HGB value-band weighted"
-
-    long_frame = pd.concat(
-        [baseline_long, weighted_long],
-        ignore_index=True,
     )
 
     return summary, long_frame
@@ -1787,6 +1812,100 @@ def _write_training_evidence_audit_figures(
 
     return figure_paths
 
+def _write_value_band_model_comparison_figures(
+    *,
+    cfg: CifFobConfig,
+    estimated_rates_path: Path,
+    folds: pd.DataFrame,
+    prediction_columns_by_run: dict[str, dict[str, str]],
+    figure_dir: Path,
+    logger,
+) -> tuple[
+    pd.DataFrame,
+    pd.DataFrame,
+    dict[str, Path],
+]:
+    """
+    Compare all completed estimation runs by evidence-value band
+    and write median-APE and P90-APE figures.
+    """
+    latest_holdout_year = int(
+        pd.to_numeric(
+            folds["validation_year"],
+            errors="coerce",
+        ).max()
+    )
+
+    (
+        comparison_summary,
+        comparison_long,
+    ) = _inspect_value_band_model_comparison(
+        path=estimated_rates_path,
+        threads=cfg.engine.threads,
+        holdout_year=latest_holdout_year,
+        boundaries=(
+            cfg.method.estimation
+            .representation_weighting
+            .value_band
+            .boundaries_usd
+        ),
+        prediction_columns_by_run=prediction_columns_by_run,
+    )
+
+    figure_paths: dict[str, Path] = {}
+
+    fig, _, _ = plot_model_error_by_group(
+        comparison_long,
+        group_column="value_band",
+        model_column="model_name",
+        error_column="ape",
+        aggregation="median",
+        group_order=VALUE_BAND_ORDER,
+        title="Model comparison by evidence-value band",
+        x_label="Evidence-value band",
+        y_label="Median APE (%)",
+    )
+
+    _save_cif_fob_figure(
+        fig=fig,
+        root_dir=figure_dir,
+        category="model_comparison",
+        target_hs=cfg.scope.target_hs,
+        stem="model_comparison_by_value_band_median_ape",
+        figure_paths=figure_paths,
+        key="model_comparison_by_value_band_median_ape",
+        logger=logger,
+    )
+
+    fig, _, _ = plot_model_error_by_group(
+        comparison_long,
+        group_column="value_band",
+        model_column="model_name",
+        error_column="ape",
+        aggregation="p90",
+        group_order=VALUE_BAND_ORDER,
+        title="Model comparison by evidence-value band",
+        x_label="Evidence-value band",
+        y_label="90th percentile APE (%)",
+    )
+
+    _save_cif_fob_figure(
+        fig=fig,
+        root_dir=figure_dir,
+        category="model_comparison",
+        target_hs=cfg.scope.target_hs,
+        stem="model_comparison_by_value_band_p90_ape",
+        figure_paths=figure_paths,
+        key="model_comparison_by_value_band_p90_ape",
+        logger=logger,
+    )
+
+    return (
+        comparison_summary,
+        comparison_long,
+        figure_paths,
+    )
+
 
 def _write_primary_diagnostics_figures(
     *,
@@ -2426,98 +2545,32 @@ def write_cif_fob_decision_report(
     ).max()
     )
 
-    models_cfg = cfg.method.estimation.models
-
-    baseline_model_cfg = models_cfg.get_candidate(
-        "hist_gradient_boosting"
+    prediction_columns_by_run = estimated_rates_result.get(
+        "prediction_columns_by_run",
+        {},
     )
 
-    weighted_model_cfg = models_cfg.get_candidate(
-        "hist_gradient_boosting_weighted"
-    )
-
-    predictor_set_name = "model_5_full_history"
-
-    baseline_prediction_column = (
-        f"{baseline_model_cfg.output_prefix}"
-        f"__{predictor_set_name}"
-        "_holdout_predicted_factor"
-    )
-
-    weighted_prediction_column = (
-        f"{weighted_model_cfg.output_prefix}"
-        f"__{predictor_set_name}"
-        "_holdout_predicted_factor"
-    )
-
-    value_band_comparison, value_band_comparison_long = (
-        _inspect_value_band_model_comparison(
-            path=estimated_rates_path,
-            threads=cfg.engine.threads,
-            holdout_year=latest_holdout_year,
-            boundaries=(
-                cfg.method.estimation
-                .representation_weighting
-                .value_band
-                .boundaries_usd
-            ),
-            baseline_prediction_column=baseline_prediction_column,
-            weighted_prediction_column=weighted_prediction_column,
+    if not prediction_columns_by_run:
+        raise RuntimeError(
+            "estimated_rates_result does not contain "
+            "'prediction_columns_by_run'."
         )
-    )
 
-    ## Plot the comparison of baseline versus value-band-weighted HGB by evidence-value band
-    fig, _, _ = plot_model_error_by_group(
-        value_band_comparison_long,
-        group_column="value_band",
-        model_column="model",
-        error_column="ape",
-        aggregation="median",
-        group_order=VALUE_BAND_ORDER,
-        title=(
-            "Baseline versus value-band-weighted HGB "
-            "by evidence-value band"
-        ),
-        x_label="Evidence-value band",
-        y_label="Median APE (%)",
-    )
-
-    _save_cif_fob_figure(
-        fig=fig,
-        root_dir=figure_dir,
-        category="model_comparison",
-        target_hs=cfg.scope.target_hs,
-        stem="hgb_weighting_comparison_by_value_MAE",
-        figure_paths=figure_paths,
-        key="hgb_weighting_comparison_by_value_MAE",
+    (
+    value_band_comparison,
+    value_band_comparison_long,
+    value_band_figure_paths,
+    ) = _write_value_band_model_comparison_figures(
+        cfg=cfg,
+        estimated_rates_path=estimated_rates_path,
+        folds=folds,
+        prediction_columns_by_run=prediction_columns_by_run,
+        figure_dir=figure_dir,
         logger=logger,
     )
 
-   ## Plot the comparison of baseline versus value-band-weighted HGB by evidence-value band
-    fig, _, _ = plot_model_error_by_group(
-        value_band_comparison_long,
-        group_column="value_band",
-        model_column="model",
-        error_column="ape",
-        aggregation="p90",
-        group_order=VALUE_BAND_ORDER,
-        title=(
-            "Baseline versus value-band-weighted HGB "
-            "by evidence-value band"
-        ),
-        x_label="Evidence-value band",
-        y_label="90th percentile APE (%)",
-    )
-
-    _save_cif_fob_figure(
-        fig=fig,
-        root_dir=figure_dir,
-        category="model_comparison",
-        target_hs=cfg.scope.target_hs,
-        stem="hgb_weighting_comparison_by_value_P90",
-        figure_paths=figure_paths,
-        key="hgb_weighting_comparison_by_value_P90",
-        logger=logger,
+    figure_paths.update(
+        value_band_figure_paths
     )
 
     #############################################################################
