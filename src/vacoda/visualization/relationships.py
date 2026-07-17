@@ -72,6 +72,8 @@ def plot_observed_vs_predicted_with_tolerance_bands(
     min_count: int = 3,
     lower_quantile: float = 0.001,
     upper_quantile: float = 0.995,
+    display_lower: float | None = None,
+    display_upper: float | None = None,
     show_density: bool = True,
     show_band_coverage: bool = True,
     ax: Axes | None = None,
@@ -150,11 +152,24 @@ def plot_observed_vs_predicted_with_tolerance_bands(
         [observed, predicted]
     )
 
-    lower_limit = float(
+    quantile_lower = float(
         np.quantile(combined, lower_quantile)
     )
-    upper_limit = float(
+
+    quantile_upper = float(
         np.quantile(combined, upper_quantile)
+    )
+
+    lower_limit = (
+        float(display_lower)
+        if display_lower is not None
+        else quantile_lower
+    )
+
+    upper_limit = (
+        float(display_upper)
+        if display_upper is not None
+        else quantile_upper
     )
 
     if lower_limit >= upper_limit:
@@ -179,7 +194,7 @@ def plot_observed_vs_predicted_with_tolerance_bands(
 
     if ax is None:
         fig, ax = plt.subplots(
-            figsize=(8.5, 7.5)
+            figsize=(8.5, 7.0)
         )
     else:
         fig = ax.figure
@@ -194,20 +209,26 @@ def plot_observed_vs_predicted_with_tolerance_bands(
             0.20: {
                 "facecolor": "#c9dfef",
                 "edgecolor": "#4f9ed1",
-                "alpha": 0.55,
+                "alpha": 0.10,
                 "linestyle": ":",
             },
             0.10: {
                 "facecolor": "#f6d6bd",
                 "edgecolor": "#e9892d",
-                "alpha": 0.55,
+                "alpha": 0.12,
                 "linestyle": "--",
             },
             0.05: {
                 "facecolor": "#c6dfc1",
                 "edgecolor": "#4e9a4a",
-                "alpha": 0.55,
+                "alpha": 0.15,
                 "linestyle": "-",
+            },
+            0.02: {
+                "facecolor": "#eadcf2",
+                "edgecolor": "#8f63a8",
+                "alpha": 0.20,
+                "linestyle": "-.",
             },
         }
     # Draw widest band first.

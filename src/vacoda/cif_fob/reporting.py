@@ -2797,7 +2797,12 @@ def write_cif_fob_decision_report(
             primary_density_frame,
             observed_column="observed_cif_fob_factor",
             predicted_column="predicted_cif_fob_factor",
-            tolerance_bands=(0.05, 0.10, 0.20),
+            tolerance_bands=(0.02, 0.05, 0.10, 0.20),
+            lower_quantile = 0.001,
+            upper_quantile = 0.995,
+            display_lower=1.0,
+            display_upper=1.95,
+
         )
         _save_cif_fob_figure(
             fig=fig,
