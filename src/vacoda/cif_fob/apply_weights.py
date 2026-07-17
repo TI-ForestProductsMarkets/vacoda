@@ -95,35 +95,436 @@ def _write_parquet(frame: pd.DataFrame, output_path: Path, threads: int) -> None
     temporary_path.replace(output_path)
 
 
-def _inspect_existing_output(output_path: Path, threads: int) -> dict[str, Any]:
+def _audit_corrected_trade_output(
+    *,
+    output_path: Path,
+    expected_input_rows: int | None,
+    coverage_levels: tuple[float, ...],
+    threads: int,
+) -> dict[str, Any]:
+    """
+    Audit the corrected CIF/FOB trade artifact.
+
+    This function calculates audit metrics only. It does not decide whether
+    the artifact is valid; validation is handled separately.
+    """
     con = duckdb.connect()
+
     try:
-        con.execute(f"SET threads = {int(threads)}")
+        con.execute(
+            f"SET threads = {int(threads)}"
+        )
+
+        columns = _read_columns(
+            con,
+            output_path,
+        )
+
+        required_output_columns = {
+            "year",
+            "exporter_iso",
+            "importer_iso",
+            "target_cmd",
+            "prediction_eligible",
+            "estimated_cif_fob_factor",
+            "cif_fob_factor_applied",
+            "import_value_cif",
+            "import_value_fob_corrected",
+            "cif_fob_correction_applied",
+        }
+
+        for level in coverage_levels:
+            suffix = _coverage_suffix(level)
+
+            required_output_columns.update(
+                {
+                    f"cif_fob_factor_pi{suffix}_lower",
+                    f"cif_fob_factor_pi{suffix}_upper",
+                    f"import_value_fob_corrected_pi{suffix}_lower",
+                    f"import_value_fob_corrected_pi{suffix}_upper",
+                }
+            )
+
+        missing_columns = sorted(
+            required_output_columns - columns
+        )
+
+        if missing_columns:
+            raise RuntimeError(
+                "Corrected-trade output is missing required columns: "
+                + ", ".join(missing_columns)
+            )
+
+        interval_failure_expressions = []
+
+        for level in coverage_levels:
+            suffix = _coverage_suffix(level)
+
+            interval_failure_expressions.append(
+                f"""
+                (
+                    cif_fob_correction_applied
+                    AND (
+                           cif_fob_factor_pi{suffix}_lower IS NULL
+                        OR cif_fob_factor_pi{suffix}_upper IS NULL
+                        OR cif_fob_factor_pi{suffix}_lower <= 0
+                        OR cif_fob_factor_pi{suffix}_upper <= 0
+                        OR cif_fob_factor_pi{suffix}_lower
+                           > cif_fob_factor_applied
+                        OR cif_fob_factor_applied
+                           > cif_fob_factor_pi{suffix}_upper
+                        OR import_value_fob_corrected_pi{suffix}_lower
+                           > import_value_fob_corrected
+                        OR import_value_fob_corrected
+                           > import_value_fob_corrected_pi{suffix}_upper
+                    )
+                )
+                """
+            )
+
+        interval_failure_sql = " OR ".join(
+            interval_failure_expressions
+        )
+
         row = con.execute(
-            """
+            f"""
+            WITH duplicate_keys AS (
+                SELECT
+                    year,
+                    exporter_iso,
+                    importer_iso,
+                    target_cmd,
+                    COUNT(*) AS n_rows
+                FROM read_parquet(?)
+                GROUP BY
+                    year,
+                    exporter_iso,
+                    importer_iso,
+                    target_cmd
+                HAVING COUNT(*) > 1
+            )
             SELECT
-                COUNT(*),
-                COUNT(*) FILTER (WHERE cif_fob_correction_applied),
-                SUM(import_value_cif) FILTER (WHERE cif_fob_correction_applied),
-                SUM(import_value_fob_corrected) FILTER (WHERE cif_fob_correction_applied)
+                COUNT(*) AS n_rows,
+
+                (
+                    SELECT COUNT(*)
+                    FROM duplicate_keys
+                ) AS n_duplicate_keys,
+
+                COUNT(*) FILTER (
+                    WHERE prediction_eligible
+                ) AS n_prediction_eligible,
+
+                COUNT(*) FILTER (
+                    WHERE cif_fob_correction_applied
+                ) AS n_corrected_rows,
+
+                COUNT(*) FILTER (
+                    WHERE prediction_eligible
+                      AND import_value_cif IS NOT NULL
+                      AND import_value_cif >= 0
+                      AND estimated_cif_fob_factor IS NOT NULL
+                      AND estimated_cif_fob_factor > 0
+                      AND NOT cif_fob_correction_applied
+                ) AS n_eligible_not_corrected,
+
+                COUNT(*) FILTER (
+                    WHERE NOT prediction_eligible
+                      AND cif_fob_correction_applied
+                ) AS n_ineligible_corrected,
+
+                COUNT(*) FILTER (
+                    WHERE cif_fob_correction_applied
+                      AND (
+                            cif_fob_factor_applied IS NULL
+                         OR cif_fob_factor_applied <= 0
+                         OR import_value_fob_corrected IS NULL
+                         OR import_value_fob_corrected < 0
+                      )
+                ) AS n_invalid_corrected_rows,
+
+                COUNT(*) FILTER (
+                    WHERE NOT cif_fob_correction_applied
+                      AND (
+                            cif_fob_factor_applied IS NOT NULL
+                         OR import_value_fob_corrected IS NOT NULL
+                      )
+                ) AS n_values_when_not_applied,
+
+                COUNT(*) FILTER (
+                    WHERE cif_fob_correction_applied
+                      AND ABS(
+                            import_value_fob_corrected
+                            - import_value_cif
+                              / cif_fob_factor_applied
+                      ) > GREATEST(
+                            1e-8,
+                            ABS(import_value_fob_corrected) * 1e-10
+                      )
+                ) AS n_formula_failures,
+
+                COUNT(*) FILTER (
+                    WHERE cif_fob_correction_applied
+                      AND cif_fob_factor_applied >= 1
+                      AND import_value_fob_corrected
+                          > import_value_cif
+                ) AS n_direction_failures,
+
+                COUNT(*) FILTER (
+                    WHERE {interval_failure_sql}
+                ) AS n_interval_failures,
+
+                SUM(import_value_cif) FILTER (
+                    WHERE cif_fob_correction_applied
+                ) AS original_import_cif_value,
+
+                SUM(import_value_fob_corrected) FILTER (
+                    WHERE cif_fob_correction_applied
+                ) AS corrected_import_fob_value,
+
+                MEDIAN(cif_fob_factor_applied) FILTER (
+                    WHERE cif_fob_correction_applied
+                ) AS median_factor_applied,
+
+                QUANTILE_CONT(
+                    cif_fob_factor_applied,
+                    0.05
+                ) FILTER (
+                    WHERE cif_fob_correction_applied
+                ) AS factor_p05,
+
+                QUANTILE_CONT(
+                    cif_fob_factor_applied,
+                    0.95
+                ) FILTER (
+                    WHERE cif_fob_correction_applied
+                ) AS factor_p95,
+
+                MEDIAN(
+                    1.0
+                    - import_value_fob_corrected
+                      / NULLIF(import_value_cif, 0)
+                ) FILTER (
+                    WHERE cif_fob_correction_applied
+                      AND import_value_cif > 0
+                ) AS median_correction_fraction
+
             FROM read_parquet(?)
             """,
-            [str(output_path)],
+            [
+                str(output_path),
+                str(output_path),
+            ],
         ).fetchone()
+
     finally:
         con.close()
+
     if row is None:
-        raise RuntimeError(f"Could not inspect corrected output: {output_path}")
+        raise RuntimeError(
+            "Could not audit corrected CIF/FOB output."
+        )
+
+    (
+        n_rows,
+        n_duplicate_keys,
+        n_prediction_eligible,
+        n_corrected_rows,
+        n_eligible_not_corrected,
+        n_ineligible_corrected,
+        n_invalid_corrected_rows,
+        n_values_when_not_applied,
+        n_formula_failures,
+        n_direction_failures,
+        n_interval_failures,
+        original_import_cif_value,
+        corrected_import_fob_value,
+        median_factor_applied,
+        factor_p05,
+        factor_p95,
+        median_correction_fraction,
+    ) = row
+
+    n_rows = int(n_rows or 0)
+    n_corrected_rows = int(n_corrected_rows or 0)
+
+    correction_coverage_percent = (
+        100.0 * n_corrected_rows / n_rows
+        if n_rows > 0
+        else 0.0
+    )
+
+    total_cif_fob_reduction = None
+    total_cif_fob_reduction_percent = None
+
+    if (
+        original_import_cif_value is not None
+        and corrected_import_fob_value is not None
+    ):
+        total_cif_fob_reduction = (
+            original_import_cif_value
+            - corrected_import_fob_value
+        )
+
+        if original_import_cif_value > 0:
+            total_cif_fob_reduction_percent = (
+                100.0
+                * total_cif_fob_reduction
+                / original_import_cif_value
+            )
+
     return {
-        "status": "reused",
-        "output_path": output_path,
-        "corrected_trade_path": output_path,
-        "n_rows": int(row[0] or 0),
-        "n_corrected_rows": int(row[1] or 0),
-        "original_import_cif_value": row[2],
-        "corrected_import_fob_value": row[3],
+        "expected_input_rows": expected_input_rows,
+        "n_rows": n_rows,
+        "n_duplicate_keys": int(n_duplicate_keys or 0),
+        "n_prediction_eligible": int(
+            n_prediction_eligible or 0
+        ),
+        "n_corrected_rows": n_corrected_rows,
+        "n_eligible_not_corrected": int(
+            n_eligible_not_corrected or 0
+        ),
+        "n_ineligible_corrected": int(
+            n_ineligible_corrected or 0
+        ),
+        "n_invalid_corrected_rows": int(
+            n_invalid_corrected_rows or 0
+        ),
+        "n_values_when_not_applied": int(
+            n_values_when_not_applied or 0
+        ),
+        "n_formula_failures": int(
+            n_formula_failures or 0
+        ),
+        "n_direction_failures": int(
+            n_direction_failures or 0
+        ),
+        "n_interval_failures": int(
+            n_interval_failures or 0
+        ),
+        "correction_coverage_percent": (
+            correction_coverage_percent
+        ),
+        "original_import_cif_value": (
+            original_import_cif_value
+        ),
+        "corrected_import_fob_value": (
+            corrected_import_fob_value
+        ),
+        "total_cif_fob_reduction": (
+            total_cif_fob_reduction
+        ),
+        "total_cif_fob_reduction_percent": (
+            total_cif_fob_reduction_percent
+        ),
+        "median_factor_applied": median_factor_applied,
+        "factor_p05": factor_p05,
+        "factor_p95": factor_p95,
+        "median_correction_fraction": (
+            median_correction_fraction
+        ),
     }
 
+
+def _inspect_existing_output(
+    *,
+    output_path: Path,
+    coverage_levels: tuple[float, ...],
+    threads: int,
+) -> dict[str, Any]:
+    """Audit and return a previously written corrected-trade artifact."""
+
+    audit = _audit_corrected_trade_output(
+        output_path=output_path,
+        expected_input_rows=None,
+        coverage_levels=coverage_levels,
+        threads=threads,
+    )
+
+    _validate_corrected_trade_audit(
+        audit
+    )
+
+    return {
+        "status": "reused",
+        "audit_passed": True,
+        "ready_for_trade_sync": (
+            audit["n_corrected_rows"] > 0
+        ),
+        "output_path": output_path,
+        "corrected_trade_path": output_path,
+        **audit,
+    }
+
+def _validate_corrected_trade_audit(
+    audit: dict[str, Any],
+) -> bool:
+    """Validate the corrected-trade audit and return whether it passed."""
+
+    expected_input_rows = audit.get(
+        "expected_input_rows"
+    )
+
+    if (
+        expected_input_rows is not None
+        and audit["n_rows"] != expected_input_rows
+    ):
+        raise RuntimeError(
+            "Corrected-trade row count does not match its input: "
+            f"output={audit['n_rows']:,}, "
+            f"input={expected_input_rows:,}."
+        )
+
+    failure_metrics = {
+        "duplicate bilateral keys": audit[
+            "n_duplicate_keys"
+        ],
+        "eligible rows not corrected": audit[
+            "n_eligible_not_corrected"
+        ],
+        "ineligible rows corrected": audit[
+            "n_ineligible_corrected"
+        ],
+        "invalid corrected rows": audit[
+            "n_invalid_corrected_rows"
+        ],
+        "values present when correction was not applied": audit[
+            "n_values_when_not_applied"
+        ],
+        "correction-formula failures": audit[
+            "n_formula_failures"
+        ],
+        "correction-direction failures": audit[
+            "n_direction_failures"
+        ],
+        "prediction-interval failures": audit[
+            "n_interval_failures"
+        ],
+    }
+
+    failures = {
+        name: count
+        for name, count in failure_metrics.items()
+        if int(count) > 0
+    }
+
+    if failures:
+        details = "; ".join(
+            f"{name}={count:,}"
+            for name, count in failures.items()
+        )
+
+        raise RuntimeError(
+            "Corrected CIF/FOB trade audit failed: "
+            + details
+        )
+
+    if audit["n_corrected_rows"] <= 0:
+        raise RuntimeError(
+            "Corrected CIF/FOB output contains no corrected rows."
+        )
+
+    return True
 
 def apply_cif_fob_weights(
     *,
@@ -148,12 +549,17 @@ def apply_cif_fob_weights(
     if not estimated_rates_path.exists():
         raise FileNotFoundError(f"Estimated-rates artifact not found: {estimated_rates_path}")
 
+    levels = _normalize_coverage_levels(coverage_levels)
+
+
     if valid_output(output_path):
         if logger is not None:
             logger.info("REUSE — Corrected CIF/FOB trade already exists: %s", output_path)
-        return _inspect_existing_output(output_path, cfg.engine.threads)
-
-    levels = _normalize_coverage_levels(coverage_levels)
+        return _inspect_existing_output(
+                    output_path=output_path,
+                    coverage_levels=levels,
+                    threads=cfg.engine.threads,
+                )
 
     con = duckdb.connect()
     try:
@@ -227,65 +633,67 @@ def apply_cif_fob_weights(
 
     _write_parquet(data, output_path, cfg.engine.threads)
 
-    con = duckdb.connect()
-    try:
-        con.execute(f"SET threads = {int(cfg.engine.threads)}")
-        audit = con.execute(
-            """
-            SELECT
-                COUNT(*),
-                COUNT(*) FILTER (WHERE cif_fob_correction_applied),
-                COUNT(*) FILTER (
-                    WHERE cif_fob_correction_applied
-                      AND (
-                            cif_fob_factor_applied IS NULL
-                         OR cif_fob_factor_applied <= 0
-                         OR import_value_fob_corrected IS NULL
-                         OR import_value_fob_corrected < 0
-                      )
-                ),
-                SUM(import_value_cif) FILTER (WHERE cif_fob_correction_applied),
-                SUM(import_value_fob_corrected) FILTER (WHERE cif_fob_correction_applied)
-            FROM read_parquet(?)
-            """,
-            [str(output_path)],
-        ).fetchone()
-    finally:
-        con.close()
+    audit = _audit_corrected_trade_output(
+        output_path=output_path,
+        expected_input_rows=len(data),
+        coverage_levels=levels,
+        threads=cfg.engine.threads,
+    )
 
-    if audit is None:
-        raise RuntimeError("Could not audit corrected CIF/FOB output.")
-    if int(audit[0] or 0) != len(data):
-        raise RuntimeError("Corrected output row count does not match input.")
-    if int(audit[2] or 0) > 0:
-        raise RuntimeError(f"Corrected output contains {int(audit[2]):,} invalid rows.")
+    audit_passed = _validate_corrected_trade_audit(
+        audit
+    )
+
+    ready_for_trade_sync = (
+        audit_passed
+        and audit["n_corrected_rows"] > 0
+    )
 
     if logger is not None:
-        logger.info("Applied primary CIF/FOB factors.")
-        logger.info("  Primary model: %s", primary_model_name)
-        logger.info("  Corrected rows: %s", int(audit[1] or 0))
-        logger.info("  Calibration rows: %s", calibration_rows)
+        logger.info(
+            "Applied primary CIF/FOB factors."
+        )
+        logger.info(
+            "  Primary model: %s",
+            primary_model_name,
+        )
+        logger.info(
+            "  Corrected rows: %s",
+            audit["n_corrected_rows"],
+        )
+        logger.info(
+            "  Correction coverage: %.2f%%",
+            audit["correction_coverage_percent"],
+        )
+        logger.info(
+            "  Calibration rows: %s",
+            calibration_rows,
+        )
+
         for level in levels:
             logger.info(
                 "  PI %.0f%% absolute-log-error quantile: %.6f",
                 100.0 * level,
                 quantiles[level],
             )
-        logger.info("  Output: %s", output_path)
+
+        logger.info(
+            "  Output: %s",
+            output_path,
+        )
 
     return {
         "status": "completed",
-        "audit_passed": True,
+        "audit_passed": audit_passed,
+        "ready_for_trade_sync": ready_for_trade_sync,
         "output_path": output_path,
         "corrected_trade_path": output_path,
         "primary_model_name": primary_model_name,
         "coverage_levels": list(levels),
         "calibration_rows": calibration_rows,
         "calibration_log_error_quantiles": {
-            _coverage_suffix(level): quantiles[level] for level in levels
+            _coverage_suffix(level): quantiles[level]
+            for level in levels
         },
-        "n_rows": int(audit[0] or 0),
-        "n_corrected_rows": int(audit[1] or 0),
-        "original_import_cif_value": audit[3],
-        "corrected_import_fob_value": audit[4],
+        **audit,
     }

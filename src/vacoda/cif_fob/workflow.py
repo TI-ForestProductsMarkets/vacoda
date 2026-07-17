@@ -574,6 +574,7 @@ def run_cif_fob_workflow(
                     estimated_rates_result=estimated_rates_result,
                     diagnostics_result=diagnostics_result,
                     training_evidence_audit_result=training_evidence_audit_result,
+                    corrected_trade_result=corrected_trade_result,
                     logger=logger,
                 )
             else:
@@ -602,6 +603,7 @@ def run_cif_fob_workflow(
 
     for result, path_key in [
         (diagnostics_result, "diagnostics_path"),
+        (corrected_trade_result, "corrected_trade_path"),
         (estimated_rates_result, "estimated_rates_path"),
         (training_features_result, "training_features_path"),
         (training_sample_result, "training_sample_path"),
@@ -653,6 +655,13 @@ def run_cif_fob_workflow(
         ),
         "latest_decision_report_path": report_result.get(
             "latest_report_path"
+        ),
+        "corrected_trade_path": corrected_trade_result.get(
+            "corrected_trade_path"
+        ),
+        "ready_for_trade_sync": corrected_trade_result.get(
+            "ready_for_trade_sync",
+            False,
         ),
         "products_enabled": {
             "prepared_input": cfg.products.prepared_input.enable,

@@ -1595,6 +1595,807 @@ def _inspect_estimated_rates(
     return result
 
 
+def _inspect_corrected_trade(
+    *,
+    path: Path,
+    threads: int,
+    value_band_boundaries: tuple[int, ...],
+) -> dict[str, Any]:
+    """
+    Inspect the applied CIF/FOB correction for reporting.
+
+    This function produces descriptive summaries only. Validation of the
+    corrected-trade artifact remains the responsibility of apply_weights.py.
+    """
+    path = Path(path)
+
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Corrected-trade artifact not found: {path}"
+        )
+
+    con = duckdb.connect()
+
+    try:
+        con.execute(
+            f"SET threads = {int(threads)}"
+        )
+
+        available_columns = {
+            str(row[0])
+            for row in con.execute(
+                """
+                DESCRIBE
+                SELECT *
+                FROM read_parquet(?)
+                """,
+                [str(path)],
+            ).fetchall()
+        }
+
+        required_columns = {
+            "year",
+            "estimation_evidence_value",
+            "cif_fob_correction_applied",
+            "cif_fob_factor_applied",
+            "import_value_cif",
+            "import_value_fob_corrected",
+            "cif_fob_uncertainty_calibration_rows",
+            "cif_fob_factor_pi80_log_error_quantile",
+            "cif_fob_factor_pi80_relative_width",
+            "import_value_fob_corrected_pi80_lower",
+            "import_value_fob_corrected_pi80_upper",
+            "cif_fob_factor_pi90_log_error_quantile",
+            "cif_fob_factor_pi90_relative_width",
+            "import_value_fob_corrected_pi90_lower",
+            "import_value_fob_corrected_pi90_upper",
+        }
+
+        missing_columns = sorted(
+            required_columns - available_columns
+        )
+
+        if missing_columns:
+            raise RuntimeError(
+                "Corrected-trade artifact is missing reporting columns: "
+                + ", ".join(missing_columns)
+            )
+
+        overall_row = con.execute(
+            """
+            SELECT
+                COUNT(*) AS n_rows,
+
+                COUNT(*) FILTER (
+                    WHERE cif_fob_correction_applied
+                ) AS n_corrected_rows,
+
+                COUNT(*) FILTER (
+                    WHERE NOT cif_fob_correction_applied
+                ) AS n_uncorrected_rows,
+
+                SUM(import_value_cif) FILTER (
+                    WHERE cif_fob_correction_applied
+                ) AS original_import_cif_value,
+
+                SUM(import_value_fob_corrected) FILTER (
+                    WHERE cif_fob_correction_applied
+                ) AS corrected_import_fob_value,
+
+                MEDIAN(cif_fob_factor_applied) FILTER (
+                    WHERE cif_fob_correction_applied
+                ) AS median_factor_applied,
+
+                QUANTILE_CONT(
+                    cif_fob_factor_applied,
+                    0.05
+                ) FILTER (
+                    WHERE cif_fob_correction_applied
+                ) AS factor_p05,
+
+                QUANTILE_CONT(
+                    cif_fob_factor_applied,
+                    0.95
+                ) FILTER (
+                    WHERE cif_fob_correction_applied
+                ) AS factor_p95,
+
+                MEDIAN(
+                    1.0 - 1.0 / cif_fob_factor_applied
+                ) FILTER (
+                    WHERE cif_fob_correction_applied
+                      AND cif_fob_factor_applied > 0
+                ) AS median_correction_fraction
+
+            FROM read_parquet(?)
+            """,
+            [str(path)],
+        ).fetchone()
+
+        by_year = con.execute(
+            """
+            SELECT
+                year AS "Year",
+
+                COUNT(*) AS "Rows",
+
+                COUNT(*) FILTER (
+                    WHERE cif_fob_correction_applied
+                ) AS "Corrected rows",
+
+                100.0
+                * COUNT(*) FILTER (
+                    WHERE cif_fob_correction_applied
+                )
+                / NULLIF(COUNT(*), 0)
+                    AS "Correction coverage",
+
+                SUM(import_value_cif) FILTER (
+                    WHERE cif_fob_correction_applied
+                ) AS "Original CIF value",
+
+                SUM(import_value_fob_corrected) FILTER (
+                    WHERE cif_fob_correction_applied
+                ) AS "Corrected FOB value",
+
+                100.0 * (
+                    1.0
+                    - SUM(import_value_fob_corrected) FILTER (
+                        WHERE cif_fob_correction_applied
+                    )
+                    / NULLIF(
+                        SUM(import_value_cif) FILTER (
+                            WHERE cif_fob_correction_applied
+                        ),
+                        0
+                    )
+                ) AS "Value reduction",
+
+                MEDIAN(cif_fob_factor_applied) FILTER (
+                    WHERE cif_fob_correction_applied
+                ) AS "Median factor",
+
+                MEDIAN(
+                    1.0 - 1.0 / cif_fob_factor_applied
+                ) FILTER (
+                    WHERE cif_fob_correction_applied
+                      AND cif_fob_factor_applied > 0
+                ) AS "Median correction"
+
+            FROM read_parquet(?)
+
+            GROUP BY year
+            ORDER BY year
+            """,
+            [str(path)],
+        ).df()
+
+        value_band_data = con.execute(
+            """
+            SELECT
+                estimation_evidence_value,
+                cif_fob_correction_applied,
+                import_value_cif,
+                import_value_fob_corrected,
+                cif_fob_factor_applied
+
+            FROM read_parquet(?)
+            """,
+            [str(path)],
+        ).df()
+
+        uncertainty_rows: list[dict[str, Any]] = []
+
+        for suffix, level in [
+            ("80", 0.80),
+            ("90", 0.90),
+        ]:
+            uncertainty_row = con.execute(
+                f"""
+                SELECT
+                    MAX(
+                        cif_fob_uncertainty_calibration_rows
+                    ) AS calibration_rows,
+
+                    MAX(
+                        cif_fob_factor_pi{suffix}_log_error_quantile
+                    ) AS log_error_quantile,
+
+                    MEDIAN(
+                        cif_fob_factor_pi{suffix}_relative_width
+                    ) FILTER (
+                        WHERE cif_fob_correction_applied
+                    ) AS median_factor_relative_width,
+
+                    MEDIAN(
+                        (
+                            import_value_fob_corrected_pi{suffix}_upper
+                            - import_value_fob_corrected_pi{suffix}_lower
+                        )
+                        / NULLIF(
+                            import_value_fob_corrected,
+                            0
+                        )
+                    ) FILTER (
+                        WHERE cif_fob_correction_applied
+                          AND import_value_fob_corrected > 0
+                    ) AS median_corrected_value_relative_width
+
+                FROM read_parquet(?)
+                """,
+                [str(path)],
+            ).fetchone()
+
+            if uncertainty_row is None:
+                raise RuntimeError(
+                    "Could not inspect corrected-trade uncertainty "
+                    f"summary for the {suffix}% interval."
+                )
+
+            uncertainty_rows.append(
+                {
+                    "Prediction interval": f"{level:.0%}",
+                    "Calibration rows": uncertainty_row[0],
+                    "Log-error quantile": uncertainty_row[1],
+                    "Median factor interval width": uncertainty_row[2],
+                    "Median corrected-value interval width": (
+                        uncertainty_row[3]
+                    ),
+                }
+            )
+
+    finally:
+        con.close()
+
+    if overall_row is None:
+        raise RuntimeError(
+            f"Could not inspect corrected-trade artifact: {path}"
+        )
+
+    (
+        n_rows,
+        n_corrected_rows,
+        n_uncorrected_rows,
+        original_import_cif_value,
+        corrected_import_fob_value,
+        median_factor_applied,
+        factor_p05,
+        factor_p95,
+        median_correction_fraction,
+    ) = overall_row
+
+    n_rows = int(n_rows or 0)
+    n_corrected_rows = int(n_corrected_rows or 0)
+    n_uncorrected_rows = int(n_uncorrected_rows or 0)
+
+    correction_coverage_percent = (
+        100.0 * n_corrected_rows / n_rows
+        if n_rows > 0
+        else 0.0
+    )
+
+    total_cif_fob_reduction = None
+    total_cif_fob_reduction_percent = None
+
+    if (
+        original_import_cif_value is not None
+        and corrected_import_fob_value is not None
+    ):
+        total_cif_fob_reduction = (
+            original_import_cif_value
+            - corrected_import_fob_value
+        )
+
+        if original_import_cif_value > 0:
+            total_cif_fob_reduction_percent = (
+                100.0
+                * total_cif_fob_reduction
+                / original_import_cif_value
+            )
+
+    value_band_data["Evidence-value band"] = (
+        _assign_evidence_value_band(
+            value_band_data["estimation_evidence_value"],
+            boundaries=value_band_boundaries,
+        )
+    )
+
+    value_band_data["cif_fob_correction_applied"] = (
+        value_band_data["cif_fob_correction_applied"]
+        .fillna(False)
+        .astype(bool)
+    )
+
+    value_band_data["import_value_cif"] = pd.to_numeric(
+        value_band_data["import_value_cif"],
+        errors="coerce",
+    )
+
+    value_band_data["import_value_fob_corrected"] = pd.to_numeric(
+        value_band_data["import_value_fob_corrected"],
+        errors="coerce",
+    )
+
+    value_band_data["cif_fob_factor_applied"] = pd.to_numeric(
+        value_band_data["cif_fob_factor_applied"],
+        errors="coerce",
+    )
+
+    value_band_rows: list[dict[str, Any]] = []
+
+    for value_band in VALUE_BAND_ORDER:
+        group = value_band_data.loc[
+            value_band_data["Evidence-value band"] == value_band
+        ]
+
+        corrected = group.loc[
+            group["cif_fob_correction_applied"]
+        ]
+
+        group_rows = int(len(group))
+        corrected_rows = int(len(corrected))
+
+        original_value = corrected[
+            "import_value_cif"
+        ].sum(min_count=1)
+
+        corrected_value = corrected[
+            "import_value_fob_corrected"
+        ].sum(min_count=1)
+
+        value_reduction_percent = None
+
+        if (
+            pd.notna(original_value)
+            and original_value > 0
+            and pd.notna(corrected_value)
+        ):
+            value_reduction_percent = (
+                100.0
+                * (original_value - corrected_value)
+                / original_value
+            )
+
+        valid_factors = corrected[
+            "cif_fob_factor_applied"
+        ].loc[
+            corrected["cif_fob_factor_applied"].gt(0)
+        ]
+
+        median_factor = (
+            valid_factors.median()
+            if not valid_factors.empty
+            else None
+        )
+
+        median_correction_fraction_band = (
+            (
+                1.0 - 1.0 / valid_factors
+            ).median()
+            if not valid_factors.empty
+            else None
+        )
+
+        value_band_rows.append(
+            {
+                "Evidence-value band": value_band,
+                "Rows": group_rows,
+                "Corrected rows": corrected_rows,
+                "Correction coverage": (
+                    100.0 * corrected_rows / group_rows
+                    if group_rows > 0
+                    else 0.0
+                ),
+                "Original CIF value": original_value,
+                "Corrected FOB value": corrected_value,
+                "Value reduction": value_reduction_percent,
+                "Median factor": median_factor,
+                "Median correction": (
+                    median_correction_fraction_band
+                ),
+            }
+        )
+
+    by_value_band = pd.DataFrame(
+        value_band_rows
+    )
+
+    uncertainty = pd.DataFrame(
+        uncertainty_rows
+    )
+
+    overall = {
+        "n_rows": n_rows,
+        "n_corrected_rows": n_corrected_rows,
+        "n_uncorrected_rows": n_uncorrected_rows,
+        "correction_coverage_percent": (
+            correction_coverage_percent
+        ),
+        "original_import_cif_value": (
+            original_import_cif_value
+        ),
+        "corrected_import_fob_value": (
+            corrected_import_fob_value
+        ),
+        "total_cif_fob_reduction": (
+            total_cif_fob_reduction
+        ),
+        "total_cif_fob_reduction_percent": (
+            total_cif_fob_reduction_percent
+        ),
+        "median_factor_applied": median_factor_applied,
+        "factor_p05": factor_p05,
+        "factor_p95": factor_p95,
+        "median_correction_fraction": (
+            median_correction_fraction
+        ),
+    }
+
+    return {
+        "overall": overall,
+        "by_year": by_year,
+        "by_value_band": by_value_band,
+        "uncertainty": uncertainty,
+    }
+
+
+def _prepare_corrected_trade_report(
+    *,
+    cfg: CifFobConfig,
+    corrected_trade_result: dict[str, Any],
+    figure_dir: Path,
+    logger,
+) -> dict[str, Any]:
+    """
+    Inspect corrected trade, prepare report tables, and write its figures.
+
+    The application audit itself remains owned by apply_weights.py.
+    This function only prepares human-readable reporting material.
+    """
+    corrected_trade_path = corrected_trade_result.get(
+        "corrected_trade_path"
+    )
+
+    if corrected_trade_path is None:
+        raise RuntimeError(
+            "Corrected-trade reporting requires "
+            "'corrected_trade_path' in corrected_trade_result."
+        )
+
+    corrected_trade_path = Path(
+        corrected_trade_path
+    )
+
+    if not corrected_trade_path.exists():
+        raise FileNotFoundError(
+            "Corrected-trade artifact not found: "
+            f"{corrected_trade_path}"
+        )
+
+    inspection = _inspect_corrected_trade(
+        path=corrected_trade_path,
+        threads=cfg.engine.threads,
+        value_band_boundaries=(
+            cfg.method.estimation
+            .representation_weighting
+            .value_band
+            .boundaries_usd
+        ),
+    )
+
+    overall = inspection["overall"]
+    by_year = inspection["by_year"]
+    by_value_band = inspection["by_value_band"]
+    uncertainty = inspection["uncertainty"]
+
+    audit_table = pd.DataFrame(
+        [
+            {
+                "Audit check": "Application audit passed",
+                "Result": (
+                    "Yes"
+                    if corrected_trade_result.get(
+                        "audit_passed",
+                        False,
+                    )
+                    else "No"
+                ),
+            },
+            {
+                "Audit check": "Ready for trade sync",
+                "Result": (
+                    "Yes"
+                    if corrected_trade_result.get(
+                        "ready_for_trade_sync",
+                        False,
+                    )
+                    else "No"
+                ),
+            },
+            {
+                "Audit check": "Duplicate bilateral keys",
+                "Result": _fmt_int(
+                    corrected_trade_result.get(
+                        "n_duplicate_keys"
+                    )
+                ),
+            },
+            {
+                "Audit check": "Eligible rows not corrected",
+                "Result": _fmt_int(
+                    corrected_trade_result.get(
+                        "n_eligible_not_corrected"
+                    )
+                ),
+            },
+            {
+                "Audit check": "Ineligible rows corrected",
+                "Result": _fmt_int(
+                    corrected_trade_result.get(
+                        "n_ineligible_corrected"
+                    )
+                ),
+            },
+            {
+                "Audit check": "Invalid corrected rows",
+                "Result": _fmt_int(
+                    corrected_trade_result.get(
+                        "n_invalid_corrected_rows"
+                    )
+                ),
+            },
+            {
+                "Audit check": "Formula failures",
+                "Result": _fmt_int(
+                    corrected_trade_result.get(
+                        "n_formula_failures"
+                    )
+                ),
+            },
+            {
+                "Audit check": "Interval failures",
+                "Result": _fmt_int(
+                    corrected_trade_result.get(
+                        "n_interval_failures"
+                    )
+                ),
+            },
+        ]
+    )
+
+    summary_table = pd.DataFrame(
+        [
+            {
+                "Metric": "Output rows",
+                "Value": _fmt_int(
+                    overall["n_rows"]
+                ),
+            },
+            {
+                "Metric": "Corrected rows",
+                "Value": _fmt_int(
+                    overall["n_corrected_rows"]
+                ),
+            },
+            {
+                "Metric": "Uncorrected rows",
+                "Value": _fmt_int(
+                    overall["n_uncorrected_rows"]
+                ),
+            },
+            {
+                "Metric": "Correction coverage",
+                "Value": _fmt_percent_value(
+                    overall[
+                        "correction_coverage_percent"
+                    ]
+                ),
+            },
+            {
+                "Metric": "Original CIF import value",
+                "Value": _fmt_float(
+                    overall[
+                        "original_import_cif_value"
+                    ],
+                    digits=2,
+                ),
+            },
+            {
+                "Metric": "Corrected FOB-equivalent value",
+                "Value": _fmt_float(
+                    overall[
+                        "corrected_import_fob_value"
+                    ],
+                    digits=2,
+                ),
+            },
+            {
+                "Metric": "Estimated value reduction",
+                "Value": _fmt_float(
+                    overall[
+                        "total_cif_fob_reduction"
+                    ],
+                    digits=2,
+                ),
+            },
+            {
+                "Metric": "Estimated value reduction share",
+                "Value": _fmt_percent_value(
+                    overall[
+                        "total_cif_fob_reduction_percent"
+                    ]
+                ),
+            },
+            {
+                "Metric": "Median applied factor",
+                "Value": _fmt_float(
+                    overall[
+                        "median_factor_applied"
+                    ]
+                ),
+            },
+            {
+                "Metric": "Applied factor P05",
+                "Value": _fmt_float(
+                    overall["factor_p05"]
+                ),
+            },
+            {
+                "Metric": "Applied factor P95",
+                "Value": _fmt_float(
+                    overall["factor_p95"]
+                ),
+            },
+            {
+                "Metric": "Median row-level correction",
+                "Value": _fmt_fraction_percent(
+                    overall[
+                        "median_correction_fraction"
+                    ]
+                ),
+            },
+        ]
+    )
+
+    audit_markdown = _markdown_table(
+        audit_table,
+        columns=[
+            "Audit check",
+            "Result",
+        ],
+    )
+
+    summary_markdown = _markdown_table(
+        summary_table,
+        columns=[
+            "Metric",
+            "Value",
+        ],
+    )
+
+    by_year_markdown = _markdown_table(
+        by_year,
+        columns=[
+            "Year",
+            "Rows",
+            "Corrected rows",
+            "Correction coverage",
+            "Original CIF value",
+            "Corrected FOB value",
+            "Value reduction",
+            "Median factor",
+            "Median correction",
+        ],
+        formatters={
+            "Year": _fmt_int,
+            "Rows": _fmt_int,
+            "Corrected rows": _fmt_int,
+            "Correction coverage": _fmt_percent_value,
+            "Original CIF value": (
+                lambda value: _fmt_float(
+                    value,
+                    digits=2,
+                )
+            ),
+            "Corrected FOB value": (
+                lambda value: _fmt_float(
+                    value,
+                    digits=2,
+                )
+            ),
+            "Value reduction": _fmt_percent_value,
+            "Median factor": _fmt_float,
+            "Median correction": (
+                _fmt_fraction_percent
+            ),
+        },
+    )
+
+    by_value_band_markdown = _markdown_table(
+        by_value_band,
+        columns=[
+            "Evidence-value band",
+            "Rows",
+            "Corrected rows",
+            "Correction coverage",
+            "Original CIF value",
+            "Corrected FOB value",
+            "Value reduction",
+            "Median factor",
+            "Median correction",
+        ],
+        formatters={
+            "Rows": _fmt_int,
+            "Corrected rows": _fmt_int,
+            "Correction coverage": _fmt_percent_value,
+            "Original CIF value": (
+                lambda value: _fmt_float(
+                    value,
+                    digits=2,
+                )
+            ),
+            "Corrected FOB value": (
+                lambda value: _fmt_float(
+                    value,
+                    digits=2,
+                )
+            ),
+            "Value reduction": _fmt_percent_value,
+            "Median factor": _fmt_float,
+            "Median correction": (
+                _fmt_fraction_percent
+            ),
+        },
+    )
+
+    uncertainty_markdown = _markdown_table(
+        uncertainty,
+        columns=[
+            "Prediction interval",
+            "Calibration rows",
+            "Log-error quantile",
+            "Median factor interval width",
+            "Median corrected-value interval width",
+        ],
+        formatters={
+            "Calibration rows": _fmt_int,
+            "Log-error quantile": (
+                lambda value: _fmt_float(
+                    value,
+                    digits=6,
+                )
+            ),
+            "Median factor interval width": (
+                _fmt_fraction_percent
+            ),
+            "Median corrected-value interval width": (
+                _fmt_fraction_percent
+            ),
+        },
+    )
+
+    figure_paths = _write_corrected_trade_figures(
+        cfg=cfg,
+        corrected_trade_by_year=by_year,
+        figure_dir=figure_dir,
+        logger=logger,
+    )
+
+    return {
+        "path": corrected_trade_path,
+        "inspection": inspection,
+        "audit_markdown": audit_markdown,
+        "summary_markdown": summary_markdown,
+        "by_year_markdown": by_year_markdown,
+        "by_value_band_markdown": (
+            by_value_band_markdown
+        ),
+        "uncertainty_markdown": (
+            uncertainty_markdown
+        ),
+        "figure_paths": figure_paths,
+    }
+
 def _load_validation_artifacts(
     *,
     summary_path: Path,
@@ -1667,6 +2468,106 @@ def _save_cif_fob_figure(
         )
 
     return path
+
+def _write_corrected_trade_figures(
+    *,
+    cfg: CifFobConfig,
+    corrected_trade_by_year: pd.DataFrame,
+    figure_dir: Path,
+    logger,
+) -> dict[str, Path]:
+    """
+    Write figures describing the applied CIF/FOB correction.
+    """
+    if corrected_trade_by_year.empty:
+        logger.warning(
+            "No annual corrected-trade rows are available "
+            "for plotting."
+        )
+        return {}
+
+    required_columns = {
+        "Year",
+        "Value reduction",
+    }
+
+    missing_columns = sorted(
+        required_columns
+        - set(corrected_trade_by_year.columns)
+    )
+
+    if missing_columns:
+        raise RuntimeError(
+            "Annual corrected-trade summary is missing "
+            "plotting columns: "
+            + ", ".join(missing_columns)
+        )
+
+    plot_data = corrected_trade_by_year.copy()
+
+    plot_data["Year"] = pd.to_numeric(
+        plot_data["Year"],
+        errors="coerce",
+    )
+
+    plot_data["Value reduction"] = pd.to_numeric(
+        plot_data["Value reduction"],
+        errors="coerce",
+    )
+
+    plot_data = plot_data.loc[
+        plot_data["Year"].notna()
+        & plot_data["Value reduction"].notna()
+    ].sort_values("Year")
+
+    if plot_data.empty:
+        logger.warning(
+            "No finite annual corrected-trade values are "
+            "available for plotting."
+        )
+        return {}
+
+    fig, ax = plt.subplots(
+        figsize=(10, 5.5)
+    )
+
+    ax.bar(
+        plot_data["Year"].astype(int).astype(str),
+        plot_data["Value reduction"],
+    )
+
+    ax.set_title(
+        "Estimated CIF/FOB value reduction by year"
+    )
+
+    ax.set_xlabel(
+        "Year"
+    )
+
+    ax.set_ylabel(
+        "Value reduction (%)"
+    )
+
+    ax.grid(
+        axis="y",
+        alpha=0.25,
+    )
+
+    figure_paths: dict[str, Path] = {}
+
+    _save_cif_fob_figure(
+        fig=fig,
+        root_dir=figure_dir,
+        category="corrected_trade",
+        target_hs=cfg.scope.target_hs,
+        stem="corrected_trade_value_reduction_by_year",
+        figure_paths=figure_paths,
+        key="corrected_trade_value_reduction_by_year",
+        logger=logger,
+    )
+
+    return figure_paths
+
 
 def _write_training_evidence_audit_figures(
     *,
@@ -2322,6 +3223,7 @@ def write_cif_fob_decision_report(
     estimated_rates_result: dict[str, Any],
     diagnostics_result: dict[str, Any] | None = None,
     training_evidence_audit_result: dict[str, Any] | None = None,
+    corrected_trade_result: dict[str, Any],
     logger,
 ) -> dict[str, Any]:
     """
@@ -2335,9 +3237,7 @@ def write_cif_fob_decision_report(
         }
 
     training_features_path = training_features_result.get("training_features_path")
-    estimated_rates_path = Path(
-        estimated_rates_result["estimated_rates_path"]
-    )
+    estimated_rates_path = Path(estimated_rates_result["estimated_rates_path"])
 
     run_data_dir = estimated_rates_path.parent
 
@@ -2452,6 +3352,19 @@ def write_cif_fob_decision_report(
     figure_dir = _resolve_cif_fob_figure_dir(cfg=cfg,
                     run_data_dir=run_data_dir)
     figure_paths: dict[str, Path] = {}
+
+    ## Write Corrected-Trade Figures
+    corrected_trade_figure = figure_paths.get("corrected_trade_value_reduction_by_year") 
+    corrected_trade_report = (
+            _prepare_corrected_trade_report(
+                    cfg=cfg,
+                    corrected_trade_result=corrected_trade_result,
+                    figure_dir=figure_dir,
+                    logger=logger,
+                )
+            )
+
+    figure_paths.update(corrected_trade_report["figure_paths"])
 
     ## Write Diaognostics Figures for the primary model if available
     diagnostics_status = (
@@ -4218,11 +5131,62 @@ def write_cif_fob_decision_report(
             else "_Figure not available._"
         ),
         "",
+        "## 10. Applied CIF/FOB correction",
+        "",
+        (
+            "The primary estimated CIF/FOB factor was applied "
+            "to each eligible import observation. The corrected "
+            "FOB-equivalent trade value is calculated as "
+            "`import_value_cif / cif_fob_factor_applied`."
+        ),
+        "",
+        "### 10.1 Application audit",
+        "",
+        corrected_trade_report[
+            "audit_markdown"
+        ],
+        "",
+        "### 10.2 Overall application summary",
+        "",
+        corrected_trade_report[
+            "summary_markdown"
+        ],
+        "",
+        "### 10.3 Application by year",
+        "",
+        corrected_trade_report[
+            "by_year_markdown"
+        ],
+        "",
+        (
+            "![Estimated CIF/FOB value reduction by year]"
+            f"({corrected_trade_figure})"
+            if corrected_trade_figure is not None
+            else "_Figure not available._"
+        ),
+        "",
+        "### 10.4 Application by evidence-value band",
+        "",
+        corrected_trade_report[
+            "by_value_band_markdown"
+        ],
+        "",
+        "### 10.5 Prediction-interval calibration",
+        "",
+        corrected_trade_report[
+            "uncertainty_markdown"
+        ],
+        "",
+        (
+            "The reported 80% and 90% prediction intervals are "
+            "empirically calibrated from absolute log-factor "
+            "errors in the latest temporal holdout. They represent "
+            "marginal empirical coverage rather than a row-specific "
+            "probability that an individual estimate is correct."
+        ),
         "",
         "",
-        
-        "",
-        "## 10. Decision assessment",
+        "## 11. Decision assessment",
         "",
         _primary_decision_text(
             primary_model=primary_model,
@@ -4242,7 +5206,7 @@ def write_cif_fob_decision_report(
             "workflow report."
         ),
         "",
-        "## 11. Final estimated-rate artifact",
+        "## 12. Final estimated-rate artifact",
         "",
         (
             f"- **Output rows:** "
@@ -4285,41 +5249,6 @@ def write_cif_fob_decision_report(
             f"- **Estimated factor minimum/maximum:** "
             f"{_fmt_float(rate_metrics['minimum_estimated_factor'])} / "
             f"{_fmt_float(rate_metrics['maximum_estimated_factor'])}"
-        ),
-        "",
-        "## 12. Known limitations",
-        "",
-        (
-            "- All tested global estimators should be interpreted as "
-            "conditional point estimators. High observed CIF/FOB factors "
-            "remain harder to reproduce than the central majority."
-        ),
-        (
-            "- Better upper-tail performance in a candidate model does not "
-            "automatically justify global adoption when central and overall "
-            "validation performance deteriorate."
-        ),
-        (
-            "- The current predictors do not directly observe shipment "
-            "mode, shipment size, port routing, temporary freight disruption, "
-            "insurance conditions, or all reporting-quality mechanisms."
-        ),
-        (
-            "- A separate upper-tail audit may be consulted for deeper "
-            "credibility and persistence analysis, but it is not required "
-            "for this workflow report."
-        ),
-        "",
-        "## 13. Downstream readiness",
-        "",
-        (
-            "The estimated-rate artifact is ready for the CIF/FOB "
-            "application step."
-            if int(rate_metrics["n_with_estimated_factor"] or 0) > 0
-            else (
-                "The estimated-rate artifact contains no usable estimated "
-                "factors and is not ready for downstream application."
-            )
         ),
         "",
     ]

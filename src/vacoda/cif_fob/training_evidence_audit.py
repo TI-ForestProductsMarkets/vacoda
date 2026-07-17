@@ -31,7 +31,7 @@ import duckdb
 import numpy as np
 import pandas as pd
 from vacoda.cif_fob.prepare_input import valid_output
-from vacoda.cif_fob.audit_bands import (
+from vacoda.cif_fob.display import (
     DISTANCE_BAND_BINS,
     DISTANCE_BAND_ORDER,
     VALUE_BAND_BINS,
