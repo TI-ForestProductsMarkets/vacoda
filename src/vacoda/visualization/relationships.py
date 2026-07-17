@@ -209,25 +209,25 @@ def plot_observed_vs_predicted_with_tolerance_bands(
             0.20: {
                 "facecolor": "#c9dfef",
                 "edgecolor": "#4f9ed1",
-                "alpha": 0.10,
+                "alpha": 0.40,
                 "linestyle": ":",
             },
             0.10: {
                 "facecolor": "#f6d6bd",
                 "edgecolor": "#e9892d",
-                "alpha": 0.12,
+                "alpha": 0.40,
                 "linestyle": "--",
             },
             0.05: {
                 "facecolor": "#c6dfc1",
                 "edgecolor": "#4e9a4a",
-                "alpha": 0.15,
+                "alpha": 0.40,
                 "linestyle": "-",
             },
             0.02: {
                 "facecolor": "#eadcf2",
                 "edgecolor": "#8f63a8",
-                "alpha": 0.20,
+                "alpha": 0.40,
                 "linestyle": "-.",
             },
         }

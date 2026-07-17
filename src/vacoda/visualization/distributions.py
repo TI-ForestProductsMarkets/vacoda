@@ -819,6 +819,7 @@ def plot_nebula_boxplot(
     lower_display=0.0,
     max_points=250_000,
     random_seed=42,
+    x_label = "Observed CIF/FOB factor",
     title="Distribution of usable direct CIF/FOB factors",
 ):
     """
@@ -936,7 +937,7 @@ def plot_nebula_boxplot(
 
     ax2.set_yticks([])
     ax2.set_ylabel("Boxplot")
-    ax2.set_xlabel("Observed CIF/FOB factor")
+    ax2.set_xlabel(x_label)
     ax2.set_xlim(lower_display, upper_display)
 
     plt.tight_layout()

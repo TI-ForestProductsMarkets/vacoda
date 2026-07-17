@@ -6,8 +6,8 @@ Write the human-readable CIF/FOB decision report.
 The normal CIF/FOB workflow owns this report. The separate upper-tail audit
 script remains separate and is not invoked or read here.
 
-The report summarizes all normal workflow evidence available before the
-CIF/FOB correction is applied:
+The report summarizes decision-relevant evidence from the normal CIF/FOB
+workflow, including the applied correction and readiness for trade sync:
 - scope and configured references;
 - explicit direct/mirror factor selection and training-sample funnel;
 - predictor configuration and feature coverage;
@@ -16,6 +16,7 @@ CIF/FOB correction is applied:
 - upper-tail validation metrics already produced by estimate_rates.py;
 - primary-model decision;
 - final estimated-rate coverage;
+- corrected-trade audit, coverage, value impact, and uncertainty;
 - limitations and downstream readiness.
 """
 
@@ -44,10 +45,10 @@ from vacoda.visualization.distributions import (
 from vacoda.visualization.relationships import (
     plot_central_vs_tail_tradeoff,
     plot_observed_vs_predicted_density,
-    plot_temporal_validation_metric,
     plot_observed_vs_predicted_with_tolerance_bands,
-    plot_corrected_trade_comparison
-) 
+    plot_temporal_validation_metric,
+    plot_corrected_trade_comparison,
+)
 from vacoda.visualization.audits import plot_representation_ratio_bars
 from vacoda.cif_fob.display import (
     DISTANCE_BAND_ORDER,
@@ -749,6 +750,54 @@ def _build_population_journey_table(
 # ======================================================================
 # Artifact inspection
 # ======================================================================
+
+def _load_corrected_trade_factor_distribution_data(
+    *,
+    path: Path,
+    threads: int,
+) -> pd.DataFrame:
+    """
+    Load positive applied CIF/FOB factors from corrected trade
+    for distribution diagnostics.
+    """
+    path = Path(path)
+
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Corrected-trade artifact not found: {path}"
+        )
+
+    con = duckdb.connect()
+
+    try:
+        con.execute(
+            f"SET threads = {int(threads)}"
+        )
+
+        df = con.execute(
+            """
+            SELECT
+                cif_fob_factor_applied
+
+            FROM read_parquet(?)
+
+            WHERE cif_fob_correction_applied
+              AND cif_fob_factor_applied IS NOT NULL
+              AND cif_fob_factor_applied > 0
+            """,
+            [str(path)],
+        ).df()
+
+    finally:
+        con.close()
+
+    if df.empty:
+        raise RuntimeError(
+            "No positive applied CIF/FOB factors available "
+            "for corrected-trade nebula plot."
+        )
+
+    return df
 
 def _inspect_product_median_threshold_sensitivity(
     *,
@@ -2377,6 +2426,7 @@ def _prepare_corrected_trade_report(
 
     figure_paths = _write_corrected_trade_figures(
             cfg=cfg,
+            corrected_trade_path=corrected_trade_path,
             corrected_trade_by_year=by_year,
             corrected_trade_by_value_band=by_value_band,
             figure_dir=figure_dir,
@@ -2471,9 +2521,276 @@ def _save_cif_fob_figure(
 
     return path
 
+def _write_primary_observed_predicted_figures(
+    *,
+    cfg: CifFobConfig,
+    diagnostics_result: dict[str, Any],
+    figure_dir: Path,
+    logger,
+) -> dict[str, Path]:
+    """
+    Write observed-versus-predicted figures from the primary holdout.
+
+    These are standalone model-comparison artifacts and are not embedded
+    individually in the decision report.
+    """
+    diagnostics_path = diagnostics_result.get(
+        "diagnostics_path"
+    )
+
+    if diagnostics_path is None:
+        logger.warning(
+            "Diagnostics result does not contain diagnostics_path."
+        )
+        return {}
+
+    diagnostics_path = Path(
+        diagnostics_path
+    )
+
+    if not diagnostics_path.exists():
+        logger.warning(
+            "Diagnostics artifact not found: %s",
+            diagnostics_path,
+        )
+        return {}
+
+    diagnostics = pd.read_parquet(
+        diagnostics_path
+    )
+
+    if diagnostics.empty:
+        logger.warning(
+            "Diagnostics artifact is empty: %s",
+            diagnostics_path,
+        )
+        return {}
+
+    required_columns = {
+        "observed_cif_fob_factor",
+        "predicted_cif_fob_factor",
+    }
+
+    missing_columns = sorted(
+        required_columns - set(diagnostics.columns)
+    )
+
+    if missing_columns:
+        raise RuntimeError(
+            "Diagnostics artifact is missing required "
+            "observed/predicted columns: "
+            + ", ".join(missing_columns)
+        )
+
+    figure_paths: dict[str, Path] = {}
+
+    # Observed-versus-predicted density
+    fig, _ = plot_observed_vs_predicted_density(
+        diagnostics,
+        observed_column="observed_cif_fob_factor",
+        predicted_column="predicted_cif_fob_factor",
+        title=(
+            "Primary model: observed vs predicted "
+            "CIF/FOB factor density"
+        ),
+    )
+
+    _save_cif_fob_figure(
+        fig=fig,
+        root_dir=figure_dir,
+        category="model_comparison",
+        target_hs=cfg.scope.target_hs,
+        stem="cif_fob_observed_vs_predicted_density",
+        figure_paths=figure_paths,
+        key="observed_vs_predicted_density",
+        logger=logger,
+    )
+
+    # Observed-versus-predicted tolerance bands
+    fig, _ = plot_observed_vs_predicted_with_tolerance_bands(
+        diagnostics,
+        observed_column="observed_cif_fob_factor",
+        predicted_column="predicted_cif_fob_factor",
+        tolerance_bands=(0.02, 0.05, 0.10, 0.20),
+        lower_quantile=0.001,
+        upper_quantile=0.995,
+        display_lower=1.0,
+        display_upper=1.95,
+    )
+
+    _save_cif_fob_figure(
+        fig=fig,
+        root_dir=figure_dir,
+        category="model_comparison",
+        target_hs=cfg.scope.target_hs,
+        stem="cif_fob_observed_vs_predicted_tolerance_bands",
+        figure_paths=figure_paths,
+        key="observed_vs_predicted_tolerance_bands",
+        logger=logger,
+    )
+
+    logger.info(
+        "Primary observed-versus-predicted figures written: %s",
+        len(figure_paths),
+    )
+
+    return figure_paths
+
+def _write_primary_diagnostics_figures(
+    *,
+    cfg: CifFobConfig,
+    diagnostics_result: dict[str, Any],
+    figure_dir: Path,
+    logger,
+) -> dict[str, Path]:
+    """
+    Write detailed primary-model holdout diagnostics.
+
+    These figures are saved as standalone run artifacts. They are not
+    embedded individually in the decision report.
+    """
+    diagnostics_path = diagnostics_result.get(
+        "diagnostics_path"
+    )
+
+    if diagnostics_path is None:
+        logger.warning(
+            "Diagnostics result does not contain diagnostics_path."
+        )
+        return {}
+
+    diagnostics_path = Path(
+        diagnostics_path
+    )
+
+    if not diagnostics_path.exists():
+        logger.warning(
+            "Diagnostics artifact not found: %s",
+            diagnostics_path,
+        )
+        return {}
+
+    diagnostics = pd.read_parquet(
+        diagnostics_path
+    )
+
+    if diagnostics.empty:
+        logger.warning(
+            "Diagnostics artifact is empty: %s",
+            diagnostics_path,
+        )
+        return {}
+
+    figure_paths: dict[str, Path] = {}
+
+    # Error by observed factor band
+    fig, _, _ = plot_grouped_error_bars(
+        diagnostics,
+        group_column="observed_factor_band",
+        error_column="ape",
+        min_observations=100,
+        top_n=None,
+        title=(
+            "Primary-model error by observed "
+            "CIF/FOB factor band"
+        ),
+        x_label="Median APE (%)",
+        y_label="Observed factor band",
+    )
+
+    _save_cif_fob_figure(
+        fig=fig,
+        root_dir=figure_dir,
+        category="holdout_diagnostics",
+        target_hs=cfg.scope.target_hs,
+        stem="cif_fob_error_by_observed_factor_band",
+        figure_paths=figure_paths,
+        key="error_by_observed_factor_band",
+        logger=logger,
+    )
+
+    # Error by evidence-value band
+    fig, _, _ = plot_grouped_error_bars(
+        diagnostics,
+        group_column="value_band",
+        error_column="ape",
+        min_observations=100,
+        top_n=None,
+        title="Primary-model error by evidence-value band",
+        x_label="Median APE (%)",
+        y_label="Evidence-value band",
+        group_order=VALUE_BAND_ORDER,
+    )
+
+    _save_cif_fob_figure(
+        fig=fig,
+        root_dir=figure_dir,
+        category="holdout_diagnostics",
+        target_hs=cfg.scope.target_hs,
+        stem="cif_fob_error_by_value_band",
+        figure_paths=figure_paths,
+        key="error_by_value_band",
+        logger=logger,
+    )
+
+    # Error by route-distance band
+    fig, _, _ = plot_grouped_error_bars(
+        diagnostics,
+        group_column="distance_band",
+        error_column="ape",
+        min_observations=100,
+        top_n=None,
+        title="Primary-model error by route-distance band",
+        x_label="Median APE (%)",
+        y_label="Distance band",
+        group_order=DISTANCE_BAND_ORDER,
+    )
+
+    _save_cif_fob_figure(
+        fig=fig,
+        root_dir=figure_dir,
+        category="holdout_diagnostics",
+        target_hs=cfg.scope.target_hs,
+        stem="cif_fob_error_by_distance_band",
+        figure_paths=figure_paths,
+        key="error_by_distance_band",
+        logger=logger,
+    )
+
+    # Error by HS4 product group
+    fig, _, _ = plot_grouped_error_bars(
+        diagnostics,
+        group_column="hs4_product_group",
+        error_column="ape",
+        min_observations=300,
+        top_n=20,
+        title="Primary-model error by HS4 product group",
+        x_label="Median APE (%)",
+        y_label="HS4 product group",
+    )
+
+    _save_cif_fob_figure(
+        fig=fig,
+        root_dir=figure_dir,
+        category="holdout_diagnostics",
+        target_hs=cfg.scope.target_hs,
+        stem="cif_fob_error_by_hs4_product_group",
+        figure_paths=figure_paths,
+        key="error_by_hs4_product_group",
+        logger=logger,
+    )
+
+    logger.info(
+        "Primary-model holdout diagnostic figures written: %s",
+        len(figure_paths),
+    )
+
+    return figure_paths
+
 def _write_corrected_trade_figures(
     *,
     cfg: CifFobConfig,
+    corrected_trade_path: Path,
     corrected_trade_by_year: pd.DataFrame,
     corrected_trade_by_value_band: pd.DataFrame,
     figure_dir: Path,
@@ -2574,6 +2891,49 @@ def _write_corrected_trade_figures(
     else:
         logger.warning(
             "No value-band corrected-trade summary is available for plotting."
+        )
+
+
+    # -------------------------------------------------
+    # 3. Nebula plot of applied CIF/FOB factors
+    # -------------------------------------------------
+    try:
+        corrected_factor_distribution_df = (
+            _load_corrected_trade_factor_distribution_data(
+                path=corrected_trade_path,
+                threads=cfg.engine.threads,
+            )
+        )
+
+        fig, _, _ = plot_nebula_boxplot(
+            corrected_factor_distribution_df,
+            factor_col="cif_fob_factor_applied",
+            upper_display=float(
+                cfg.method.estimation.maximum_factor_rule.fixed_value
+            ),
+            lower_display=0.0,
+            x_label= "Applied CIF/FOB factor",
+            title=(
+                "Distribution of applied CIF/FOB factors "
+                "in corrected trade"
+            ),
+        )
+
+        _save_cif_fob_figure(
+            fig=fig,
+            root_dir=figure_dir,
+            category="corrected_trade",
+            target_hs=cfg.scope.target_hs,
+            stem="corrected_trade_factor_distribution",
+            figure_paths=figure_paths,
+            key="corrected_trade_factor_distribution",
+            logger=logger,
+        )
+
+    except Exception as exc:
+        logger.warning(
+            "Could not write corrected-trade factor-distribution figure: %s",
+            exc,
         )
 
     return figure_paths
@@ -2817,113 +3177,6 @@ def _write_value_band_model_comparison_figures(
         figure_paths,
     )
 
-
-def _write_primary_diagnostics_figures(
-    *,
-    cfg: CifFobConfig,
-    diagnostics_result: dict[str, Any],
-    figure_dir: Path,
-    logger,
-) -> dict[str, Path]:
-    """Write primary-model heterogeneity diagnostic figures."""
-    diagnostics_path = diagnostics_result.get("diagnostics_path")
-    figure_dir.mkdir(parents=True, exist_ok=True)
-
-    if not isinstance(diagnostics_path, Path):
-        diagnostics_path = Path(str(diagnostics_path))
-
-    if not diagnostics_path.exists():
-        logger.warning(
-            "Diagnostics artifact not found: %s",
-            diagnostics_path,
-        )
-        return {}
-
-    diagnostics = pd.read_parquet(diagnostics_path)
-
-    if diagnostics.empty:
-        logger.warning(
-            "Diagnostics artifact is empty: %s",
-            diagnostics_path,
-        )
-        return {}
-
-    target_prefix = cfg.scope.target_hs.lower()
-    figure_paths: dict[str, Path] = {}
-
-    ## Diagnostic error by observed factor band
-    fig, _, _ = plot_grouped_error_bars(
-        diagnostics,
-        group_column="observed_factor_band",
-        error_column="ape",
-        min_observations=100,
-        top_n=None,
-        title="Primary-model error by observed CIF/FOB factor band",
-        x_label="Median APE (%)",
-        y_label="Observed factor band",
-    )
-    path = figure_dir / f"{target_prefix}_cif_fob_error_by_observed_factor_band.png"
-    fig.savefig(path, dpi=180, bbox_inches="tight")
-    plt.close(fig)
-    figure_paths["error_by_observed_factor_band"] = path
-
-    ## Diagnostic error by evidence-value band
-    fig, _, _ = plot_grouped_error_bars(
-        diagnostics,
-        group_column="value_band",
-        error_column="ape",
-        min_observations=100,
-        top_n=None,
-        title="Primary-model error by evidence-value band",
-        x_label="Median APE (%)",
-        y_label="Evidence-value band",
-        group_order=VALUE_BAND_ORDER,
-
-    )
-    path = figure_dir / f"{target_prefix}_cif_fob_error_by_value_band.png"
-    fig.savefig(path, dpi=180, bbox_inches="tight")
-    plt.close(fig)
-    figure_paths["error_by_value_band"] = path
-
-    ## Diagnostic error by route-distance band
-    fig, _, _ = plot_grouped_error_bars(
-        diagnostics,
-        group_column="distance_band",
-        error_column="ape",
-        min_observations=100,
-        top_n=None,
-        title="Primary-model error by route-distance band",
-        x_label="Median APE (%)",
-        y_label="Distance band",
-        group_order=DISTANCE_BAND_ORDER
-    )
-    path = figure_dir / f"{target_prefix}_cif_fob_error_by_distance_band.png"
-    fig.savefig(path, dpi=180, bbox_inches="tight")
-    plt.close(fig)
-    figure_paths["error_by_distance_band"] = path
-
-    ## Diagnostic error by HS4 product group
-    fig, _, _ = plot_grouped_error_bars(
-        diagnostics,
-        group_column="hs4_product_group",
-        error_column="ape",
-        min_observations=300,
-        top_n=20,
-        title="Primary-model error by HS4 product group",
-        x_label="Median APE (%)",
-        y_label="HS4 product group",
-    )
-    path = figure_dir / f"{target_prefix}_cif_fob_error_by_hs4_product_group.png"
-    fig.savefig(path, dpi=180, bbox_inches="tight")
-    plt.close(fig)
-    figure_paths["error_by_hs4_product_group"] = path
-
-    logger.info(
-        "Primary-model diagnostics figures written: %s",
-        len(figure_paths),
-    )
-
-    return figure_paths
 
 def _load_direct_factor_distribution_data(
     *,
@@ -3220,6 +3473,150 @@ def _tail_tradeoff_text(
     )
 
 
+
+
+def _build_primary_diagnostics_section(
+    *,
+    diagnostics_result: dict[str, Any] | None,
+) -> list[str]:
+    """Build a compact diagnostics summary without embedding detailed plots."""
+    status = (
+        diagnostics_result.get("status")
+        if diagnostics_result is not None
+        else None
+    )
+
+    if status not in {"completed", "reused"}:
+        return [
+            "## 9. Primary-model diagnostics",
+            "",
+            "_Primary-model diagnostics were not available._",
+            "",
+        ]
+
+    return [
+        "## 9. Primary-model diagnostics",
+        "",
+        (
+            "The diagnostics summarize performance on the latest temporal "
+            "holdout. Detailed heterogeneity artifacts are retained separately "
+            "and are not reproduced in this decision report."
+        ),
+        "",
+        (
+            f"- **Diagnostics rows:** "
+            f"{_fmt_int(diagnostics_result.get('n_rows'))}"
+        ),
+        (
+            f"- **Diagnostics years:** "
+            f"{diagnostics_result.get('year_min')}-"
+            f"{diagnostics_result.get('year_max')}"
+        ),
+        (
+            f"- **Median APE:** "
+            f"{_fmt_fraction_percent(diagnostics_result.get('median_ape'))}"
+        ),
+        (
+            f"- **Mean APE:** "
+            f"{_fmt_fraction_percent(diagnostics_result.get('mean_ape'))}"
+        ),
+        (
+            f"- **P90 APE:** "
+            f"{_fmt_fraction_percent(diagnostics_result.get('p90_ape'))}"
+        ),
+        "",
+    ]
+
+
+def _build_corrected_trade_section(
+    *,
+    corrected_trade_report: dict[str, Any],
+    year_figure: Path | None,
+    value_band_figure: Path | None,
+) -> list[str]:
+    """Build the applied-correction section from prepared reporting material."""
+    lines = [
+        "## 10. Applied CIF/FOB correction",
+        "",
+        (
+            "The primary estimated CIF/FOB factor was applied to each "
+            "eligible import observation. The corrected FOB-equivalent value "
+            "is calculated as "
+            "`import_value_cif / cif_fob_factor_applied`."
+        ),
+        "",
+        "### 10.1 Application audit",
+        "",
+        corrected_trade_report["audit_markdown"],
+        "",
+        "### 10.2 Overall application summary",
+        "",
+        corrected_trade_report["summary_markdown"],
+        "",
+        "### 10.3 Application by year",
+        "",
+        corrected_trade_report["by_year_markdown"],
+        "",
+    ]
+
+    if year_figure is not None:
+        lines.extend(
+            [
+                (
+                    "![Applied CIF/FOB correction by year]"
+                    f"({year_figure})"
+                ),
+                "",
+            ]
+        )
+
+    lines.extend(
+        [
+            "### 10.4 Application by evidence-value band",
+            "",
+            (
+                "This breakdown includes only rows with a non-missing "
+                "`estimation_evidence_value`. It is therefore not a partition "
+                "of the full corrected-trade population. Correction coverage "
+                "and value reduction measure different quantities: the former "
+                "is a row share, while the latter is a value-weighted change."
+            ),
+            "",
+            corrected_trade_report["by_value_band_markdown"],
+            "",
+        ]
+    )
+
+    if value_band_figure is not None:
+        lines.extend(
+            [
+                (
+                    "![Applied CIF/FOB correction by evidence-value band]"
+                    f"({value_band_figure})"
+                ),
+                "",
+            ]
+        )
+
+    lines.extend(
+        [
+            "### 10.5 Prediction-interval calibration",
+            "",
+            corrected_trade_report["uncertainty_markdown"],
+            "",
+            (
+                "The 80% and 90% intervals are calibrated from absolute "
+                "log-factor errors in the latest temporal holdout. They "
+                "represent marginal empirical coverage rather than a "
+                "row-specific probability that an estimate is correct."
+            ),
+            "",
+        ]
+    )
+
+    return lines
+
+
 # ======================================================================
 # Report writer
 # ======================================================================
@@ -3363,8 +3760,47 @@ def write_cif_fob_decision_report(
                     run_data_dir=run_data_dir)
     figure_paths: dict[str, Path] = {}
 
-    ## Write Corrected-Trade Figures
-    corrected_trade_figure = figure_paths.get("corrected_trade_value_reduction_by_year") 
+    # Prepare Hold-out diagnostic material and figures.
+    diagnostics_status = (
+        diagnostics_result.get("status")
+        if diagnostics_result is not None
+        else None
+    )
+
+    if diagnostics_status in {
+        "completed",
+        "reused",
+    }:
+        logger.info(
+            "PLOTS — Writing primary-model holdout "
+            "diagnostic figures (status=%s)",
+            diagnostics_status,
+        )
+)
+        figure_paths.update(
+            _write_primary_diagnostics_figures(
+                cfg=cfg,
+                diagnostics_result=diagnostics_result,
+                figure_dir=figure_dir,
+                logger=logger,
+            )
+        )
+        figure_paths.update(
+            _write_primary_observed_predicted_figures(
+                cfg=cfg,
+                diagnostics_result=diagnostics_result,
+                figure_dir=figure_dir,
+                logger=logger,
+            )
+        )
+    else:
+        logger.info(
+            "PLOTS — Skipping primary-model holdout "
+            "diagnostic figures (status=%s)",
+            diagnostics_status or "no result",
+        )
+
+    # Prepare corrected-trade report material and figures.
     corrected_trade_report = (
             _prepare_corrected_trade_report(
                     cfg=cfg,
@@ -3384,61 +3820,7 @@ def write_cif_fob_decision_report(
         "corrected_trade_by_value_band_comparison"
     )
 
-    ## Write Diaognostics Figures for the primary model if available
-    diagnostics_status = (
-        diagnostics_result.get("status")
-        if diagnostics_result is not None
-        else None
-    )
-
-    if diagnostics_status in {"completed", "reused"}:
-        logger.info(
-            "PLOTS — Writing primary-model diagnostic figures "
-            "(status=%s)",
-            diagnostics_status,
-        )
-
-        figure_paths.update(
-            _write_primary_diagnostics_figures(
-                cfg=cfg,
-                diagnostics_result=diagnostics_result,
-                figure_dir=figure_dir / "holdout_diagnostics",
-                logger=logger,
-            )
-        )
-    else:
-        logger.info(
-            "PLOTS — Skipping primary-model diagnostic figures "
-            "(status=%s)",
-            diagnostics_status or "no result",
-        )
-
-    primary_density_frame: pd.DataFrame | None = None
-
-    if diagnostics_status in {"completed", "reused"}:
-        diagnostics_path = diagnostics_result.get("diagnostics_path")
-
-        if not isinstance(diagnostics_path, Path):
-            diagnostics_path = Path(str(diagnostics_path))
-
-        if diagnostics_path.exists():
-            primary_density_frame = pd.read_parquet(diagnostics_path)
-
-            if primary_density_frame.empty:
-                logger.warning(
-                    "Primary-model diagnostics artifact is empty; "
-                    "skipping observed-vs-predicted density plot: %s",
-                    diagnostics_path,
-                )
-                primary_density_frame = None
-        else:
-            logger.warning(
-                "Primary-model diagnostics artifact missing; "
-                "skipping observed-vs-predicted density plot: %s",
-                diagnostics_path,
-            )
-
-    ## Write Training-Evidence Audit Figures if available
+    # Write training-evidence audit figures when available.
     training_evidence_status = (
         training_evidence_audit_result.get("status")
         if training_evidence_audit_result is not None
@@ -3468,7 +3850,7 @@ def write_cif_fob_decision_report(
         )
 
     
-    ## Write Value-Band Comparison Figures
+    # Write value-band model-comparison figures.
     latest_holdout_year = int(
     pd.to_numeric(
         folds["validation_year"],
@@ -3694,62 +4076,6 @@ def write_cif_fob_decision_report(
         key="observed_vs_predicted_p95",
         logger=logger
     )
-
-    ## 8. Plot density of observed vs predicted factors for the primary model
-    if primary_density_frame is not None:
-        fig, _ = plot_observed_vs_predicted_density(
-            primary_density_frame,
-            observed_column="observed_cif_fob_factor",
-            predicted_column="predicted_cif_fob_factor",
-            title=(
-                "Primary model: observed vs predicted "
-                "CIF/FOB factor density"
-            ),
-        )
-        _save_cif_fob_figure(
-            fig=fig,
-            root_dir=figure_dir,
-            category="model_comparison",
-            target_hs=cfg.scope.target_hs,
-            stem="cif_fob_observed_vs_predicted_density",
-            figure_paths=figure_paths,
-            key="observed_vs_predicted_density",
-            logger=logger,
-        )
-    else:
-        logger.info(
-            "PLOTS — Skipping observed-vs-predicted density figure "
-            "because primary diagnostics data is unavailable."
-        )
-
-    ## 9.
-    if primary_density_frame is not None: 
-        fig, _ = plot_observed_vs_predicted_with_tolerance_bands(
-            primary_density_frame,
-            observed_column="observed_cif_fob_factor",
-            predicted_column="predicted_cif_fob_factor",
-            tolerance_bands=(0.02, 0.05, 0.10, 0.20),
-            lower_quantile = 0.001,
-            upper_quantile = 0.995,
-            display_lower=1.0,
-            display_upper=1.95,
-
-        )
-        _save_cif_fob_figure(
-            fig=fig,
-            root_dir=figure_dir,
-            category="model_comparison",
-            target_hs=cfg.scope.target_hs,
-            stem="cif_fob_observed_vs_predicted_tolerance_bands",
-            figure_paths=figure_paths,
-            key="observed_vs_predicted_tolerance_bands",
-            logger=logger,
-        )
-    else:
-        logger.info(
-            "PLOTS — Skipping observed-vs-predicted tolerance-bands figure "
-            "because primary diagnostics data is unavailable."
-        )
 
     #####################################################################################
 
@@ -4484,6 +4810,16 @@ def write_cif_fob_decision_report(
     )
 
 
+    primary_diagnostics_section = _build_primary_diagnostics_section(
+        diagnostics_result=diagnostics_result,
+    )
+
+    corrected_trade_section = _build_corrected_trade_section(
+        corrected_trade_report=corrected_trade_report,
+        year_figure=corrected_trade_year_figure,
+        value_band_figure=corrected_trade_value_band_figure,
+    )
+
     lines = [
         f"# VACODA CIF/FOB Decision Report — {cfg.scope.target_hs}",
         "",
@@ -5060,160 +5396,8 @@ def write_cif_fob_decision_report(
             formatters=fold_formatters,
         ),
         "",
-        "## 9. Primary-model heterogeneity diagnostics",
-        "",
-        (
-            "The diagnostics artifact evaluates the selected primary "
-            "model on row-level temporal holdout observations. "
-            "The purpose is to identify where prediction errors are "
-            "concentrated across factor size, trade value, route "
-            "distance, and product group."
-        ),
-        "",
-        f"- **Diagnostics rows:** {diagnostics_result.get('n_rows'):,}",
-        (
-            f"- **Diagnostics years:** "
-            f"{diagnostics_result.get('year_min')}-"
-            f"{diagnostics_result.get('year_max')}"
-        ),
-        (
-            f"- **Median APE:** "
-            f"{100.0 * diagnostics_result.get('median_ape'):.2f}%"
-        ),
-        (
-            f"- **Mean APE:** "
-            f"{100.0 * diagnostics_result.get('mean_ape'):.2f}%"
-        ),
-        (
-            f"- **P90 APE:** "
-            f"{100.0 * diagnostics_result.get('p90_ape'):.2f}%"
-        ),
-        (
-            "These diagnostics are based on the latest temporal holdout "
-            "year only, not the full row-level validation history."
-        ),
-        "### 9.1 Error by observed CIF/FOB factor band",
-        "",
-        (
-            f"![Error by observed CIF/FOB factor band]("
-            f"{figure_paths.get('error_by_observed_factor_band', '')}"
-            f")"
-            if figure_paths.get("error_by_observed_factor_band")
-            else "_Figure not available._"
-        ),
-        "",
-        "### 9.2 Error by evidence-value band",
-        "",
-        (
-            f"![Error by evidence-value band]("
-            f"{figure_paths.get('error_by_value_band', '')}"
-            f")"
-            if figure_paths.get("error_by_value_band")
-            else "_Figure not available._"
-        ),
-        "",
-        "### 9.3 Error by route-distance band",
-        "",
-        (
-            f"![Error by route-distance band]("
-            f"{figure_paths.get('error_by_distance_band', '')}"
-            f")"
-            if figure_paths.get("error_by_distance_band")
-            else "_Figure not available._"
-        ),
-        "",
-        "### 9.4 Error by HS4 product group",
-        "",
-        (
-            f"![Error by HS4 product group]("
-            f"{figure_paths.get('error_by_hs4_product_group', '')}"
-            f")"
-            if figure_paths.get("error_by_hs4_product_group")
-            else "_Figure not available._"
-        ),
-        "",
-        "### 9.5 Observed vs predicted factor density (primary holdout)",
-        "",
-        (
-            "This density plot is built from the primary-model temporal "
-            "holdout diagnostics rows (direct-source rows with positive "
-            "observed CIF/FOB factor and non-null primary holdout "
-            "predictions)."
-        ),
-        "",
-        (
-            f"![Observed vs predicted CIF/FOB factor density]("
-            f"{figure_paths.get('observed_vs_predicted_density', '')}"
-            f")"
-            if figure_paths.get("observed_vs_predicted_density")
-            else "_Figure not available._"
-        ),
-        "",
-        "## 10. Applied CIF/FOB correction",
-        "",
-        (
-            "The primary estimated CIF/FOB factor was applied "
-            "to each eligible import observation. The corrected "
-            "FOB-equivalent trade value is calculated as "
-            "`import_value_cif / cif_fob_factor_applied`."
-        ),
-        "",
-        "### 10.1 Application audit",
-        "",
-        corrected_trade_report[
-            "audit_markdown"
-        ],
-        "",
-        "### 10.2 Overall application summary",
-        "",
-        corrected_trade_report[
-            "summary_markdown"
-        ],
-        "",
-        "### 10.3 Application by year",
-        "",
-        corrected_trade_report["by_year_markdown"],
-        "",
-        (
-            "![Applied CIF/FOB correction by year]"
-            f"({corrected_trade_year_figure})"
-            if corrected_trade_year_figure is not None
-            else "_Figure not available._"
-        ),
-        "",
-        (
-            "![Estimated CIF/FOB value reduction by year]"
-            f"({corrected_trade_figure})"
-            if corrected_trade_figure is not None
-            else "_Figure not available._"
-        ),
-        "",
-        "### 10.4 Application by evidence-value band",
-        "",
-        corrected_trade_report["by_value_band_markdown"],
-        "",
-        (
-            "![Applied CIF/FOB correction by evidence-value band]"
-            f"({corrected_trade_value_band_figure})"
-            if corrected_trade_value_band_figure is not None
-            else "_Figure not available._"
-        ),
-        "",
-        "### 10.5 Prediction-interval calibration",
-        "",
-        corrected_trade_report[
-            "uncertainty_markdown"
-        ],
-        "",
-        (
-            "The reported 80% and 90% prediction intervals are "
-            "empirically calibrated from absolute log-factor "
-            "errors in the latest temporal holdout. They represent "
-            "marginal empirical coverage rather than a row-specific "
-            "probability that an individual estimate is correct."
-        ),
-        "",
-        "",
+        *primary_diagnostics_section,
+        *corrected_trade_section,
         "## 11. Decision assessment",
         "",
         _primary_decision_text(
