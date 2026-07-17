@@ -18,6 +18,98 @@ def file_sha256(path: Path) -> str:
 
     return h.hexdigest()
 
+def _remove_nested_key(
+    value: dict[str, Any],
+    key_path: tuple[str, ...],
+) -> None:
+    """
+    Remove one nested key from a dictionary if it exists.
+
+    Example:
+        ("engine", "threads")
+    """
+    current: Any = value
+
+    for key in key_path[:-1]:
+        if not isinstance(current, dict):
+            return
+
+        current = current.get(key)
+
+        if current is None:
+            return
+
+    if isinstance(current, dict):
+        current.pop(key_path[-1], None)
+
+
+def _jsonable_config(
+    config: Any,
+) -> dict[str, Any]:
+    """
+    Convert a parsed configuration object into JSON-compatible data.
+    """
+    if hasattr(config, "model_dump"):
+        result = config.model_dump(
+            mode="json",
+        )
+    elif isinstance(config, dict):
+        result = json.loads(
+            json.dumps(
+                config,
+                default=str,
+            )
+        )
+    else:
+        raise TypeError(
+            "Semantic fingerprinting requires a Pydantic model "
+            "or dictionary."
+        )
+
+    if not isinstance(result, dict):
+        raise TypeError(
+            "Resolved configuration must serialize to a dictionary."
+        )
+
+    return result
+
+
+def semantic_config_fingerprint(
+    *,
+    config: Any,
+    excluded_paths: tuple[tuple[str, ...], ...] = (),
+) -> dict[str, Any]:
+    """
+    Fingerprint the parsed meaning of a configuration.
+
+    YAML comments, spacing, key order and formatting do not affect this
+    fingerprint. Explicitly excluded runtime-only keys are removed before
+    hashing.
+    """
+    normalized = _jsonable_config(
+        config
+    )
+
+    for key_path in excluded_paths:
+        _remove_nested_key(
+            normalized,
+            key_path,
+        )
+
+    canonical_text = json.dumps(
+        normalized,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+
+    return {
+        "sha256": sha256_text(canonical_text),
+        "excluded_paths": [
+            ".".join(path)
+            for path in excluded_paths
+        ],
+    }
 
 def sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -193,7 +285,7 @@ def write_checkpoint(
     )
 
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "step_name": step_name,
         "run_id": run_id,
         "completed_at": datetime.now().isoformat(timespec="seconds"),
@@ -247,8 +339,24 @@ def validate_checkpoint(
         if checkpoint.get("ready_value") is not True:
             return False, "checkpoint ready value is not true"
 
-    if checkpoint.get("config") != current_config:
-        return False, "config fingerprint changed"
+    if checkpoint.get("schema_version") != 2:
+        return (
+            False,
+            "checkpoint schema version changed",
+        )
+
+    config_matches, config_reason = (
+        _config_fingerprints_match(
+            checkpoint_config=checkpoint.get(
+                "config",
+                {},
+            ),
+            current_config=current_config,
+        )
+    )
+
+    if not config_matches:
+        return False, config_reason
 
     if checkpoint.get("input") != current_input:
         return False, "input fingerprint changed"
@@ -291,3 +399,62 @@ def validate_checkpoint(
         return False, "checkpoint audit had failed rows"
 
     return True, "valid checkpoint"
+
+def _config_fingerprints_match(
+    *,
+    checkpoint_config: dict[str, Any],
+    current_config: dict[str, Any],
+) -> tuple[bool, str]:
+    """
+    Compare semantic configuration fingerprints.
+
+    Raw file hashes remain provenance metadata and do not control reuse.
+    """
+    checkpoint_step = checkpoint_config.get(
+        "step_config",
+        {}
+    )
+    current_step = current_config.get(
+        "step_config",
+        {}
+    )
+
+    checkpoint_semantic = checkpoint_step.get(
+        "semantic_sha256"
+    )
+    current_semantic = current_step.get(
+        "semantic_sha256"
+    )
+
+    if checkpoint_semantic is None:
+        return (
+            False,
+            "checkpoint predates semantic config fingerprinting",
+        )
+
+    if current_semantic is None:
+        return (
+            False,
+            "current semantic config fingerprint is missing",
+        )
+
+    if checkpoint_semantic != current_semantic:
+        return (
+            False,
+            "semantic config fingerprint changed",
+        )
+
+    checkpoint_scope = checkpoint_config.get(
+        "pipeline_scope"
+    )
+    current_scope = current_config.get(
+        "pipeline_scope"
+    )
+
+    if checkpoint_scope != current_scope:
+        return (
+            False,
+            "pipeline scope changed",
+        )
+
+    return True, ""

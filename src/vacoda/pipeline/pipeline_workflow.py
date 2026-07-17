@@ -1,5 +1,6 @@
 """
-vacoda.pipeline.pipeline
+vacoda.pipeline.pipeline_workflow
+-----------------------------
 
 VACODA master pipeline implementation.
 """
@@ -25,6 +26,7 @@ from vacoda.hs_sync.workflow import run_hs_sync_workflow
 from vacoda.pipeline.checkpoint import (
     checkpoint_path,
     config_fingerprint,
+    semantic_config_fingerprint,
     file_list_fingerprint,
     file_manifest_fingerprint,
     load_checkpoint,
@@ -258,9 +260,12 @@ def _build_staging_plan(
     return StepPlan(
         step_name=step_name,
         config_path=config_path,
-        config_fingerprint=_step_config_fingerprint(config_path=config_path, 
-                                                    pipeline_cfg=pipeline_cfg, 
-                                                    include_scope=False),
+        config_fingerprint=_step_config_fingerprint(
+            config_path=config_path,
+            resolved_config=cfg,
+            pipeline_cfg=pipeline_cfg,
+            include_scope=False,
+        ),
         input_fingerprint=file_manifest_fingerprint(
             root=input_dir,
             pattern=input_pattern,
@@ -327,9 +332,12 @@ def _build_hs_sync_plan(
     return StepPlan(
         step_name=step_name,
         config_path=config_path,
-        config_fingerprint=_step_config_fingerprint(config_path=config_path, 
-                                                    pipeline_cfg=pipeline_cfg, 
-                                                    include_scope=True),
+        config_fingerprint=_step_config_fingerprint(
+                                config_path=config_path,
+                                resolved_config=cfg,
+                                pipeline_cfg=pipeline_cfg,
+                                include_scope=True,
+                            ),
         input_fingerprint=input_fp,
         output_path=cfg.apply_output_path(),
         audit_path=cfg.apply_integrity_audit_path(),
@@ -375,10 +383,11 @@ def _build_cif_fob_plan(
         step_name=step_name,
         config_path=config_path,
         config_fingerprint=_step_config_fingerprint(
-            config_path=config_path,
-            pipeline_cfg=pipeline_cfg,
-            include_scope=True,
-        ),
+                    config_path=config_path,
+                    resolved_config=cfg,
+                    pipeline_cfg=pipeline_cfg,
+                    include_scope=True,
+                ),
         input_fingerprint=input_fp,
         output_path=output_path,
         audit_path=audit_path,
@@ -390,6 +399,50 @@ def _build_cif_fob_plan(
     )
 
 def _step_config_fingerprint(
+    *,
+    config_path: Path,
+    resolved_config: Any,
+    pipeline_cfg: PipelineConfig,
+    include_scope: bool,
+) -> dict[str, Any]:
+    """
+    Build raw and semantic fingerprints for one pipeline step.
+
+    The raw file hash is retained for provenance. Reuse validation uses
+    the semantic hash, which excludes execution-only thread count.
+    """
+    raw = config_fingerprint(
+        config_path
+    )
+
+    semantic = semantic_config_fingerprint(
+        config=resolved_config,
+        excluded_paths=(
+            ("engine", "threads"),
+        ),
+    )
+
+    out: dict[str, Any] = {
+        "step_config": {
+            "path": raw["path"],
+            "raw_sha256": raw["sha256"],
+            "semantic_sha256": semantic["sha256"],
+            "semantic_excluded_paths": semantic[
+                "excluded_paths"
+            ],
+        },
+    }
+
+    if include_scope:
+        out["pipeline_scope"] = {
+            "target_hs": pipeline_cfg.scope.target_hs,
+            "min_year": pipeline_cfg.scope.min_year,
+            "max_year": pipeline_cfg.scope.max_year,
+        }
+
+    return out
+
+def _step_config_fingerprint_deprecated(
     *,
     config_path: Path,
     pipeline_cfg: PipelineConfig,
