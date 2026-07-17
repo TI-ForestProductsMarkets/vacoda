@@ -3776,7 +3776,7 @@ def write_cif_fob_decision_report(
             "diagnostic figures (status=%s)",
             diagnostics_status,
         )
-)
+
         figure_paths.update(
             _write_primary_diagnostics_figures(
                 cfg=cfg,
