@@ -711,7 +711,7 @@ class CifFobMaximumFactorRuleConfig:
     method: str
     iqr_multiplier: float
     percentile: float
-    domain_cap: float
+    fixed_value: float
 
     @classmethod
     def from_dict(
@@ -750,11 +750,11 @@ class CifFobMaximumFactorRuleConfig:
                 min_value=0.0,
                 max_value=1.0,
             ),
-            domain_cap=require_float(
-                cfg.get("domain_cap"),
+            fixed_value=require_float(
+                cfg.get("fixed_value"),
                 key=(
                     "cif_fob.method.estimation."
-                    "maximum_factor_rule.domain_cap"
+                    "maximum_factor_rule.fixed_value"
                 ),
                 min_value=minimum_factor,
             ),

@@ -175,12 +175,25 @@ cif_fob:
       minimum_evidence_value_usd: 0.0
       minimum_factor: 1.0
 
-      ## upper-limit on cif/fob:  min(domain_cap, max(Q3 + 2.5×IQR, P99))
-      maximum_factor_rule: 
-        method: robust_adaptive_cap
+      maximum_factor_rule:
+        # Supported methods:
+        #
+        # fixed
+        #   maximum_factor = fixed_value
+        #
+        # iqr_cap
+        #   maximum_factor = Q3 + iqr_multiplier * IQR
+        #
+        # robust_adaptive_cap
+        #   maximum_factor = min(fixed_value, max(Q3 + iqr_multiplier * IQR, p99))
+        #
+        method: iqr_cap
+        fixed_value: 3.0
         iqr_multiplier: 2.5
-        percentile: 0.99 
+        percentile: 0.99
         domain_cap: 3.0
+        maximum_factor_rule: 
+
       exclude_proxy_weights: true
 
       ## Weighting on Value and Representation for the training sample.
