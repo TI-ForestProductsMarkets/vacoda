@@ -224,9 +224,7 @@ def build_training_sample(
         target_cmd
     """
 
-    output_path = cfg.product_path(
-        "training_sample"
-    )
+    output_path = cfg.product_path("training_sample")
 
     if not input_path.exists():
         raise FileNotFoundError(

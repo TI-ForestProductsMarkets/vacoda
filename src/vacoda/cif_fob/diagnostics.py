@@ -10,7 +10,40 @@ from typing import Any
 import duckdb
 import numpy as np
 import pandas as pd
+from vacoda.config.cif_fob import CifFobConfig
 
+
+def _read_primary_run_name(
+    *,
+    estimated_rates_path: Path,
+) -> str:
+    con = duckdb.connect()
+
+    try:
+        row = con.execute(
+            """
+            SELECT DISTINCT primary_estimation_run
+            FROM read_parquet(?)
+            WHERE primary_estimation_run IS NOT NULL
+            """,
+            [str(estimated_rates_path)],
+        ).fetchall()
+    finally:
+        con.close()
+
+    values = [
+        str(item[0]).strip()
+        for item in row
+        if item[0] is not None
+    ]
+
+    if len(values) != 1:
+        raise RuntimeError(
+            "Estimated-rates artifact must contain exactly one "
+            f"primary estimation run; found {values!r}."
+        )
+
+    return values[0]
 
 def build_primary_holdout_diagnostics(
     *,
@@ -227,19 +260,26 @@ def add_diagnostic_bands(
 
 def write_primary_holdout_diagnostics(
     *,
+    cfg: CifFobConfig,
     estimated_rates_path: Path,
-    output_path: Path,
-    primary_run_name: str,
 ) -> dict[str, Any]:
     """
     Build and write primary-model holdout diagnostics.
     """
+    primary_run_name = _read_primary_run_name(
+        estimated_rates_path=estimated_rates_path,
+    )
+
     diagnostics = build_primary_holdout_diagnostics(
         estimated_rates_path=estimated_rates_path,
         primary_run_name=primary_run_name,
     )
 
-    output_path = Path(output_path)
+    output_path = (
+        estimated_rates_path.parent
+        / cfg.product_path("diagnostics").name
+    )
+
     output_path.parent.mkdir(
         parents=True,
         exist_ok=True,

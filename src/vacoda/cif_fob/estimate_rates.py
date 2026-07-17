@@ -2873,10 +2873,7 @@ def estimate_cif_fob_rates(
         maximum_cif_fob_factor=maximum_factor,
     )
 
-    output_path = (
-        run_dir
-        / cfg.product_path("estimated_rates").name
-    )
+    output_path = run_dir / cfg.product_path("estimated_rates").name
 
     if not force and valid_output(output_path):
         logger.info(

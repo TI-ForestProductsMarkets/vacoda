@@ -25,6 +25,7 @@ from vacoda.cif_fob.training_features import build_training_features
 from vacoda.cif_fob.training_evidence_audit import write_training_evidence_audit
 from vacoda.cif_fob.training_sample import build_training_sample
 from vacoda.cif_fob.diagnostics import write_primary_holdout_diagnostics
+from vacoda.cif_fob.apply_weights import apply_cif_fob_weights
 from vacoda.config.cif_fob import CifFobConfig
 from vacoda.utils.display import get_symbols
 from vacoda.utils.logger import get_logger
@@ -39,6 +40,7 @@ WORKFLOW_STEPS = [
     "Audit CIF/FOB training evidence",
     "Estimate CIF/FOB correction rates",
     "Build CIF/FOB diagnostics",
+    "Apply CIF/FOB corrections to trade data",
     "Write CIF/FOB decision report",
 ]
 
@@ -277,11 +279,11 @@ def run_cif_fob_workflow(
                 )
 
                 mirror_result = build_mirror_pairs(
-                cfg=cfg,
-                input_path=prepared_input_path,
-                force=force,
-                logger=logger,
-            )
+                                    cfg=cfg,
+                                    input_path=prepared_input_path,
+                                    force=force,
+                                    logger=logger,
+                                )
             else:
                 logger.info(
                         "%s SKIP — %s (disabled in config)",
@@ -304,11 +306,11 @@ def run_cif_fob_workflow(
                 )
 
                 mirror_pairs_path = _require_artifact(
-                    result=mirror_result,
-                    path_key="mirror_pairs_path",
-                    consumer_step="Training-sample step",
-                    producer_product="mirror-pairs Parquet",
-                )
+                        result=mirror_result,
+                        path_key="mirror_pairs_path",
+                        consumer_step="Training-sample step",
+                        producer_product="mirror-pairs Parquet",
+                    )
 
                 training_sample_result = build_training_sample(
                     cfg=cfg,
@@ -418,24 +420,24 @@ def run_cif_fob_workflow(
         with timed_step(logger, STEP, WORKFLOW_STEPS[STEP-1], total_steps=TOTAL_WORKFLOW_STEPS):
             if cfg.products.estimated_rates.enable:
                 _log_step_header(
-                logger=logger,
-                symbol=build,
-                title=WORKFLOW_STEPS[STEP-1],
-                )
+                    logger=logger,
+                    symbol=build,
+                    title=WORKFLOW_STEPS[STEP-1],
+                    )
 
                 training_features_path = _require_artifact(
-                    result=training_features_result,
-                    path_key="training_features_path",
-                    consumer_step="Rate-estimation step",
-                    producer_product="training-features Parquet",
-                )
+                        result=training_features_result,
+                        path_key="training_features_path",
+                        consumer_step="Rate-estimation step",
+                        producer_product="training-features Parquet",
+                    )
                 
                 estimated_rates_result = estimate_cif_fob_rates(
-                    cfg=cfg,
-                    input_path=training_features_path,
-                    force=force,
-                    logger=logger,
-                )
+                        cfg=cfg,
+                        input_path=training_features_path,
+                        force=force,
+                        logger=logger,
+                    )
             else:
                 logger.info(
                     "%s SKIP — %s (disabled in config)",
@@ -457,52 +459,24 @@ def run_cif_fob_workflow(
                 )
 
                 estimated_rates_path = _require_artifact(
-                    result=estimated_rates_result,
-                    path_key="estimated_rates_path",
-                    consumer_step="Diagnostics step",
-                    producer_product="estimated-rates Parquet",
-                )
-
-                run_dir = estimated_rates_path.parent
-
-                diagnostics_output_path = (
-                    run_dir
-                    / cfg.product_path("diagnostics").name
-                )
-
-                primary_estimation_name = _resolve_primary_estimation_name(
-                    estimated_rates_result=estimated_rates_result,
-                )
-
-                if not primary_estimation_name:
-                    logger.warning(
-                        "%s SKIP — %s (missing primary run metadata in "
-                        "estimated_rates_result)",
-                        warn,
-                        WORKFLOW_STEPS[STEP - 1],
+                        result=estimated_rates_result,
+                        path_key="estimated_rates_path",
+                        consumer_step="Diagnostics step",
+                        producer_product="estimated-rates Parquet",
                     )
-                    diagnostics_result = {
-                                "status": "skipped",
-                                "diagnostics_path": None,
-                                "output_path": None,
-                                "reason": "Missing primary estimation run metadata.",
-                            }
-                                                                
-                else:
-                    diagnostics_result = write_primary_holdout_diagnostics(
+
+                diagnostics_result = write_primary_holdout_diagnostics(
+                                            cfg=cfg,
                                             estimated_rates_path=estimated_rates_path,
-                                            output_path=diagnostics_output_path,
-                                            primary_run_name=primary_estimation_name,
-                                            )
+                                        )
 
-
-                    logger.info(
+                logger.info(
                         "%s CIF/FOB diagnostics written: %s",
                         ok,
                         diagnostics_result["diagnostics_path"],
                     )
 
-                    logger.info(
+                logger.info(
                         "Diagnostics rows: %s; years: %s-%s; "
                         "median APE: %.4f; mean APE: %.4f; P90 APE: %.4f",
                         diagnostics_result["n_rows"],
@@ -521,8 +495,46 @@ def run_cif_fob_workflow(
                 )
             STEP += 1
 
+        #=================================================================
+        # STEP 8 — Apply CIF/FOB corrections to trade data
+        #=================================================================
+        with timed_step(logger, STEP, WORKFLOW_STEPS[STEP-1], total_steps=TOTAL_WORKFLOW_STEPS):
+            if cfg.products.corrected_trade.enable:
+                _log_step_header(
+                    logger=logger,
+                    symbol=build,
+                    title=WORKFLOW_STEPS[STEP-1],
+                )
+
+                estimated_rates_path = _require_artifact(
+                    result=estimated_rates_result,
+                    path_key="estimated_rates_path",
+                    consumer_step="Trade-correction step",
+                    producer_product="estimated-rates Parquet",
+                )
+
+                corrected_trade_result = apply_cif_fob_weights(
+                    cfg=cfg,
+                    estimated_rates_path=estimated_rates_path,
+                    logger=logger,
+                )
+
+                # Placeholder for the trade-correction step
+                logger.info(
+                        "%s Corrected CIF/FOB trade written: %s",
+                        ok,
+                        corrected_trade_result["output_path"],
+                    )
+            else:
+                logger.info(
+                    "%s SKIP — %s (disabled in config)",
+                    warn,
+                    WORKFLOW_STEPS[STEP-1],
+                )
+            STEP += 1
+
         # ==================================================================
-        # STEP 8 — Write human-readable decision report
+        # STEP 9 — Write human-readable decision report
         # ==================================================================
 
         with timed_step(logger, STEP, WORKFLOW_STEPS[STEP-1], total_steps=TOTAL_WORKFLOW_STEPS):
@@ -661,6 +673,7 @@ def run_cif_fob_workflow(
             "training_evidence_audit": training_evidence_audit_result,
             "estimated_rates": estimated_rates_result,
             "diagnostics": diagnostics_result,
+            "corrected_trade": corrected_trade_result,
             "decision_report": report_result,
         },
     }
