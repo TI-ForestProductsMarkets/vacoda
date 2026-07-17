@@ -16,6 +16,17 @@ import pandas as pd
 from vacoda.config.cif_fob import CifFobConfig
 from vacoda.cif_fob.prepare_input import valid_output
 
+_CORRECTED_TRADE_FAILURE_METRICS = {
+    "duplicate_bilateral_keys": "n_duplicate_keys",
+    "eligible_rows_not_corrected": "n_eligible_not_corrected",
+    "ineligible_rows_corrected": "n_ineligible_corrected",
+    "invalid_corrected_rows": "n_invalid_corrected_rows",
+    "values_when_not_applied": "n_values_when_not_applied",
+    "formula_failures": "n_formula_failures",
+    "direction_failures": "n_direction_failures",
+    "prediction_interval_failures": "n_interval_failures",
+}
+
 _REQUIRED_COLUMNS = {
     "year", "exporter_iso", "importer_iso", "target_cmd",
     "prediction_eligible", "primary_model_name", "primary_estimation_run",
@@ -28,6 +39,17 @@ _REQUIRED_COLUMNS = {
 def _sql_literal(value: str | Path) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
+def _corrected_trade_audit_path(
+    output_path: Path,
+) -> Path:
+    """
+    Return the persistent audit path belonging to corrected trade.
+    """
+    output_path = Path(output_path)
+
+    return output_path.with_suffix(
+        ".audit.csv"
+    )
 
 def _read_columns(con: duckdb.DuckDBPyConnection, path: Path) -> set[str]:
     rows = con.execute(
@@ -94,6 +116,162 @@ def _write_parquet(frame: pd.DataFrame, output_path: Path, threads: int) -> None
         con.close()
     temporary_path.replace(output_path)
 
+
+def _build_corrected_trade_audit_frame(
+    *,
+    audit: dict[str, Any],
+) -> pd.DataFrame:
+    """
+    Convert corrected-trade audit metrics into a persistent audit table.
+
+    One row represents one independently evaluated integrity check.
+    """
+    rows: list[dict[str, Any]] = []
+
+    expected_input_rows = audit.get(
+        "expected_input_rows"
+    )
+    observed_rows = int(
+        audit.get("n_rows") or 0
+    )
+
+    row_count_passed = (
+        expected_input_rows is None
+        or observed_rows == int(expected_input_rows)
+    )
+
+    rows.append(
+        {
+            "check_name": "row_count_matches_input",
+            "status": (
+                "pass"
+                if row_count_passed
+                else "fail"
+            ),
+            "observed_value": observed_rows,
+            "expected_value": expected_input_rows,
+            "details": (
+                "Row-count comparison was not required for "
+                "a reused artifact."
+                if expected_input_rows is None
+                else (
+                    "Corrected-trade rows must equal "
+                    "estimated-rate input rows."
+                )
+            ),
+        }
+    )
+
+    for check_name, metric_name in (
+        _CORRECTED_TRADE_FAILURE_METRICS.items()
+    ):
+        count = int(
+            audit.get(metric_name) or 0
+        )
+
+        rows.append(
+            {
+                "check_name": check_name,
+                "status": (
+                    "pass"
+                    if count == 0
+                    else "fail"
+                ),
+                "observed_value": count,
+                "expected_value": 0,
+                "details": metric_name,
+            }
+        )
+
+    corrected_rows = int(
+        audit.get("n_corrected_rows") or 0
+    )
+
+    rows.append(
+        {
+            "check_name": "corrected_rows_present",
+            "status": (
+                "pass"
+                if corrected_rows > 0
+                else "fail"
+            ),
+            "observed_value": corrected_rows,
+            "expected_value": "> 0",
+            "details": (
+                "At least one row must receive a "
+                "CIF/FOB correction."
+            ),
+        }
+    )
+
+    n_failed = sum(
+        row["status"] == "fail"
+        for row in rows
+    )
+
+    rows.append(
+        {
+            "check_name": "ready_for_trade_sync",
+            "status": (
+                "pass"
+                if n_failed == 0
+                else "fail"
+            ),
+            "observed_value": n_failed == 0,
+            "expected_value": True,
+            "details": (
+                "All corrected-trade integrity checks "
+                "must pass."
+            ),
+        }
+    )
+
+    return pd.DataFrame(rows)
+
+def _write_corrected_trade_audit(
+    *,
+    audit: dict[str, Any],
+    audit_path: Path,
+) -> dict[str, Any]:
+    """
+    Persist corrected-trade integrity checks atomically.
+    """
+    audit_path = Path(audit_path)
+
+    audit_path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    frame = _build_corrected_trade_audit_frame(
+        audit=audit,
+    )
+
+    temporary_path = audit_path.with_suffix(
+        audit_path.suffix + ".tmp"
+    )
+
+    frame.to_csv(
+        temporary_path,
+        index=False,
+    )
+
+    temporary_path.replace(
+        audit_path
+    )
+
+    failed = frame.loc[
+        frame["status"].eq("fail")
+        & frame["check_name"].ne(
+            "ready_for_trade_sync"
+        )
+    ]
+
+    return {
+        "audit_path": audit_path,
+        "n_audit_rows": int(len(frame)),
+        "n_failed_audit_rows": int(len(failed)),
+    }
 
 def _audit_corrected_trade_output(
     *,
@@ -425,8 +603,68 @@ def _audit_corrected_trade_output(
         ),
     }
 
-
 def _inspect_existing_output(
+    *,
+    output_path: Path,
+    audit_path: Path,
+    coverage_levels: tuple[float, ...],
+    threads: int,
+) -> dict[str, Any]:
+    """
+    Audit and return a previously written corrected-trade artifact.
+
+    Reused outputs pass through the same audit and readiness contract
+    as newly created outputs.
+    """
+    audit = _audit_corrected_trade_output(
+        output_path=output_path,
+        expected_input_rows=None,
+        coverage_levels=coverage_levels,
+        threads=threads,
+    )
+
+    audit_file_result = (
+        _write_corrected_trade_audit(
+            audit=audit,
+            audit_path=audit_path,
+        )
+    )
+
+    audit_passed = (
+        _validate_corrected_trade_audit(
+            audit
+        )
+    )
+
+    ready_for_trade_sync = (
+        audit_passed
+        and audit["n_corrected_rows"] > 0
+        and audit_file_result[
+            "n_failed_audit_rows"
+        ] == 0
+    )
+
+    return {
+        "status": "reused",
+        "audit_passed": audit_passed,
+        "ready_for_next_step": ready_for_trade_sync,
+        "ready_for_trade_sync": ready_for_trade_sync,
+        "output_path": output_path,
+        "audit_path": audit_path,
+        "corrected_trade_path": output_path,
+        "corrected_trade_audit_path": audit_path,
+        "final_parquet": output_path,
+        "final_audit": audit_path,
+        "n_failed_audit_rows": audit_file_result[
+            "n_failed_audit_rows"
+        ],
+        "n_audit_rows": audit_file_result[
+            "n_audit_rows"
+        ],
+        **audit,
+    }
+
+def _inspect_existing_output_deprecated(
     *,
     output_path: Path,
     coverage_levels: tuple[float, ...],
@@ -546,6 +784,7 @@ def apply_cif_fob_weights(
         exist_ok=True,
     )
 
+    audit_path = _corrected_trade_audit_path(output_path)
     if not estimated_rates_path.exists():
         raise FileNotFoundError(f"Estimated-rates artifact not found: {estimated_rates_path}")
 
@@ -556,10 +795,11 @@ def apply_cif_fob_weights(
         if logger is not None:
             logger.info("REUSE — Corrected CIF/FOB trade already exists: %s", output_path)
         return _inspect_existing_output(
-                    output_path=output_path,
-                    coverage_levels=levels,
-                    threads=cfg.engine.threads,
-                )
+                output_path=output_path,
+                audit_path=audit_path,
+                coverage_levels=levels,
+                threads=cfg.engine.threads,
+            )
 
     con = duckdb.connect()
     try:
@@ -640,13 +880,25 @@ def apply_cif_fob_weights(
         threads=cfg.engine.threads,
     )
 
-    audit_passed = _validate_corrected_trade_audit(
-        audit
+    audit_file_result = (
+        _write_corrected_trade_audit(
+            audit=audit,
+            audit_path=audit_path,
+        )
+    )
+
+    audit_passed = (
+        _validate_corrected_trade_audit(
+            audit
+        )
     )
 
     ready_for_trade_sync = (
         audit_passed
         and audit["n_corrected_rows"] > 0
+        and audit_file_result[
+            "n_failed_audit_rows"
+        ] == 0
     )
 
     if logger is not None:
@@ -681,13 +933,35 @@ def apply_cif_fob_weights(
             "  Output: %s",
             output_path,
         )
+        logger.info(
+            "  Audit: %s",
+            audit_path,
+        )
+
+        logger.info(
+            "  Failed audit rows: %s",
+            audit_file_result[
+                "n_failed_audit_rows"
+            ],
+        )
 
     return {
         "status": "completed",
         "audit_passed": audit_passed,
+        "ready_for_next_step": ready_for_trade_sync,
         "ready_for_trade_sync": ready_for_trade_sync,
         "output_path": output_path,
+        "audit_path": audit_path,
         "corrected_trade_path": output_path,
+        "corrected_trade_audit_path": audit_path,
+        "final_parquet": output_path,
+        "final_audit": audit_path,
+        "n_failed_audit_rows": audit_file_result[
+            "n_failed_audit_rows"
+        ],
+        "n_audit_rows": audit_file_result[
+            "n_audit_rows"
+        ],
         "primary_model_name": primary_model_name,
         "coverage_levels": list(levels),
         "calibration_rows": calibration_rows,

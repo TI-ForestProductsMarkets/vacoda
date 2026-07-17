@@ -25,7 +25,7 @@ from vacoda.cif_fob.training_features import build_training_features
 from vacoda.cif_fob.training_evidence_audit import write_training_evidence_audit
 from vacoda.cif_fob.training_sample import build_training_sample
 from vacoda.cif_fob.diagnostics import write_primary_holdout_diagnostics
-from vacoda.cif_fob.apply_weights import apply_cif_fob_weights
+from vacoda.cif_fob.apply_rates import apply_cif_fob_weights
 from vacoda.config.cif_fob import CifFobConfig
 from vacoda.utils.display import get_symbols
 from vacoda.utils.logger import get_logger
