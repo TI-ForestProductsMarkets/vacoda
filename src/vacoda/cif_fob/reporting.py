@@ -41,6 +41,7 @@ from vacoda.visualization.distributions import (
     plot_observed_vs_predicted_p95,
     plot_grouped_error_bars,
     plot_model_error_by_group,
+    plot_cif_fob_corrected_agreement_bands
 )
 from vacoda.visualization.relationships import (
     plot_central_vs_tail_tradeoff,
@@ -2089,6 +2090,461 @@ def _inspect_corrected_trade(
     }
 
 
+
+def _inspect_trade_sync_readiness(
+    *,
+    path: Path,
+    threads: int,
+) -> dict[str, Any]:
+    """
+    Inspect the corrected CIF/FOB artifact as the input to Trade Sync.
+
+    A usable report is positive, finite, and non-missing. The audit keeps
+    structural presence separate from usable-value availability and measures
+    the residual exporter/importer disagreement before and after CIF/FOB
+    correction.
+    """
+    path = Path(path)
+
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Corrected-trade artifact not found: {path}"
+        )
+
+    con = duckdb.connect()
+
+    try:
+        con.execute(f"SET threads = {int(threads)}")
+
+        available_columns = {
+            str(row[0])
+            for row in con.execute(
+                """
+                DESCRIBE
+                SELECT *
+                FROM read_parquet(?)
+                """,
+                [str(path)],
+            ).fetchall()
+        }
+
+        required_columns = {
+            "year",
+            "export_value_fob",
+            "import_value_cif",
+            "import_value_fob_corrected",
+        }
+
+        missing_columns = sorted(
+            required_columns - available_columns
+        )
+
+        if missing_columns:
+            raise RuntimeError(
+                "Corrected-trade artifact is missing Trade Sync "
+                "readiness columns: "
+                + ", ".join(missing_columns)
+            )
+
+        parquet_path_sql = str(path).replace("'", "''")
+
+        # DuckDB does not allow prepared parameters inside CREATE VIEW.
+        # Embed the safely escaped path literal for this DDL statement.
+        con.execute(
+            f"""
+            CREATE OR REPLACE TEMP VIEW trade_sync_input AS
+            SELECT
+                *,
+                export_value_fob IS NOT NULL
+                    AND isfinite(export_value_fob)
+                    AND export_value_fob > 0
+                    AS has_export_fob,
+
+                import_value_cif IS NOT NULL
+                    AND isfinite(import_value_cif)
+                    AND import_value_cif > 0
+                    AS has_import_cif,
+
+                import_value_fob_corrected IS NOT NULL
+                    AND isfinite(import_value_fob_corrected)
+                    AND import_value_fob_corrected > 0
+                    AS has_import_fob_corrected
+
+            FROM read_parquet('{parquet_path_sql}')
+            """
+        )
+
+        availability = con.execute(
+            """
+            SELECT
+                CASE
+                    WHEN has_export_fob
+                         AND has_import_fob_corrected
+                        THEN 'Both exporter and corrected importer'
+                    WHEN has_export_fob
+                         AND NOT has_import_fob_corrected
+                        THEN 'Exporter only'
+                    WHEN NOT has_export_fob
+                         AND has_import_fob_corrected
+                        THEN 'Corrected importer only'
+                    ELSE 'Neither usable'
+                END AS "Trade Sync status",
+
+                COUNT(*) AS "Rows",
+
+                100.0 * COUNT(*)
+                    / SUM(COUNT(*)) OVER ()
+                    AS "Share"
+
+            FROM trade_sync_input
+
+            GROUP BY 1
+
+            ORDER BY
+                CASE "Trade Sync status"
+                    WHEN 'Both exporter and corrected importer' THEN 1
+                    WHEN 'Corrected importer only' THEN 2
+                    WHEN 'Exporter only' THEN 3
+                    ELSE 4
+                END
+            """
+        ).df()
+
+        coverage_row = con.execute(
+            """
+            SELECT
+                COUNT(*) AS total_rows,
+
+                COUNT(*) FILTER (
+                    WHERE has_export_fob
+                ) AS rows_with_export_fob,
+
+                COUNT(*) FILTER (
+                    WHERE has_import_cif
+                ) AS rows_with_import_cif,
+
+                COUNT(*) FILTER (
+                    WHERE has_import_fob_corrected
+                ) AS rows_with_corrected_import_fob,
+
+                COUNT(*) FILTER (
+                    WHERE has_export_fob
+                      AND has_import_cif
+                ) AS original_usable_mirror_pairs,
+
+                COUNT(*) FILTER (
+                    WHERE has_export_fob
+                      AND has_import_fob_corrected
+                ) AS usable_trade_sync_pairs,
+
+                COUNT(*) FILTER (
+                    WHERE has_import_cif
+                      AND NOT has_import_fob_corrected
+                ) AS imports_present_not_corrected
+
+            FROM trade_sync_input
+            """
+        ).fetchone()
+
+        agreement_row = con.execute(
+            """
+            WITH paired AS (
+                SELECT
+                    ABS(
+                        LN(import_value_cif / export_value_fob)
+                    ) AS absolute_log_gap_before,
+
+                    ABS(
+                        LN(
+                            import_value_fob_corrected
+                            / export_value_fob
+                        )
+                    ) AS absolute_log_gap_after,
+
+                    GREATEST(
+                        import_value_cif,
+                        export_value_fob
+                    ) / LEAST(
+                        import_value_cif,
+                        export_value_fob
+                    ) AS factor_gap_before,
+
+                    GREATEST(
+                        import_value_fob_corrected,
+                        export_value_fob
+                    ) / LEAST(
+                        import_value_fob_corrected,
+                        export_value_fob
+                    ) AS factor_gap_after
+
+                FROM trade_sync_input
+
+                WHERE has_export_fob
+                  AND has_import_cif
+                  AND has_import_fob_corrected
+            )
+
+            SELECT
+                COUNT(*) AS paired_rows,
+
+                MEDIAN(factor_gap_before)
+                    AS median_factor_gap_before,
+
+                MEDIAN(factor_gap_after)
+                    AS median_factor_gap_after,
+
+                QUANTILE_CONT(factor_gap_before, 0.90)
+                    AS p90_factor_gap_before,
+
+                QUANTILE_CONT(factor_gap_after, 0.90)
+                    AS p90_factor_gap_after,
+
+                MEDIAN(absolute_log_gap_before)
+                    AS median_absolute_log_gap_before,
+
+                MEDIAN(absolute_log_gap_after)
+                    AS median_absolute_log_gap_after,
+
+                COUNT(*) FILTER (
+                    WHERE absolute_log_gap_after
+                        < absolute_log_gap_before
+                ) AS rows_improved,
+
+                COUNT(*) FILTER (
+                    WHERE absolute_log_gap_after
+                        = absolute_log_gap_before
+                ) AS rows_unchanged,
+
+                COUNT(*) FILTER (
+                    WHERE absolute_log_gap_after
+                        > absolute_log_gap_before
+                ) AS rows_worsened
+
+            FROM paired
+            """
+        ).fetchone()
+
+        agreement_bands = con.execute(
+            """
+            WITH paired AS (
+                SELECT
+                    GREATEST(
+                        import_value_fob_corrected,
+                        export_value_fob
+                    ) / LEAST(
+                        import_value_fob_corrected,
+                        export_value_fob
+                    ) AS factor_gap
+
+                FROM trade_sync_input
+
+                WHERE has_export_fob
+                  AND has_import_fob_corrected
+            ),
+
+            banded AS (
+                SELECT
+                    CASE
+                        WHEN factor_gap <= 1.05 THEN 'Within 5%'
+                        WHEN factor_gap <= 1.10 THEN '5–10%'
+                        WHEN factor_gap <= 1.25 THEN '10–25%'
+                        WHEN factor_gap <= 1.50 THEN '25–50%'
+                        WHEN factor_gap <= 2.00 THEN '50–100%'
+                        ELSE 'More than factor 2'
+                    END AS agreement_band
+
+                FROM paired
+            )
+
+            SELECT
+                agreement_band AS "Agreement band",
+                COUNT(*) AS "Rows",
+                100.0 * COUNT(*)
+                    / SUM(COUNT(*)) OVER ()
+                    AS "Share"
+
+            FROM banded
+
+            GROUP BY agreement_band
+
+            ORDER BY
+                CASE agreement_band
+                    WHEN 'Within 5%' THEN 1
+                    WHEN '5–10%' THEN 2
+                    WHEN '10–25%' THEN 3
+                    WHEN '25–50%' THEN 4
+                    WHEN '50–100%' THEN 5
+                    ELSE 6
+                END
+            """
+        ).df()
+
+        by_year = con.execute(
+            """
+            SELECT
+                year AS "Year",
+                COUNT(*) AS "Rows",
+
+                COUNT(*) FILTER (
+                    WHERE has_export_fob
+                      AND has_import_fob_corrected
+                ) AS "Both reports",
+
+                COUNT(*) FILTER (
+                    WHERE has_export_fob
+                      AND NOT has_import_fob_corrected
+                ) AS "Exporter only",
+
+                COUNT(*) FILTER (
+                    WHERE NOT has_export_fob
+                      AND has_import_fob_corrected
+                ) AS "Corrected importer only",
+
+                COUNT(*) FILTER (
+                    WHERE NOT has_export_fob
+                      AND NOT has_import_fob_corrected
+                ) AS "Neither usable",
+
+                100.0 * COUNT(*) FILTER (
+                    WHERE has_export_fob
+                      AND has_import_fob_corrected
+                ) / NULLIF(COUNT(*), 0)
+                    AS "Both-reports share"
+
+            FROM trade_sync_input
+
+            GROUP BY year
+            ORDER BY year
+            """
+        ).df()
+
+    finally:
+        con.close()
+
+    if coverage_row is None or agreement_row is None:
+        raise RuntimeError(
+            "Could not inspect Trade Sync readiness."
+        )
+
+    coverage_names = [
+        "total_rows",
+        "rows_with_export_fob",
+        "rows_with_import_cif",
+        "rows_with_corrected_import_fob",
+        "original_usable_mirror_pairs",
+        "usable_trade_sync_pairs",
+        "imports_present_not_corrected",
+    ]
+    coverage = dict(
+        zip(coverage_names, coverage_row, strict=True)
+    )
+
+    agreement_names = [
+        "paired_rows",
+        "median_factor_gap_before",
+        "median_factor_gap_after",
+        "p90_factor_gap_before",
+        "p90_factor_gap_after",
+        "median_absolute_log_gap_before",
+        "median_absolute_log_gap_after",
+        "rows_improved",
+        "rows_unchanged",
+        "rows_worsened",
+    ]
+    agreement = dict(
+        zip(agreement_names, agreement_row, strict=True)
+    )
+
+    paired_rows = int(agreement["paired_rows"] or 0)
+    agreement["percent_improved"] = (
+        100.0
+        * int(agreement["rows_improved"] or 0)
+        / paired_rows
+        if paired_rows
+        else 0.0
+    )
+    agreement["percent_unchanged"] = (
+        100.0
+        * int(agreement["rows_unchanged"] or 0)
+        / paired_rows
+        if paired_rows
+        else 0.0
+    )
+    agreement["percent_worsened"] = (
+        100.0
+        * int(agreement["rows_worsened"] or 0)
+        / paired_rows
+        if paired_rows
+        else 0.0
+    )
+
+    agreement_summary = pd.DataFrame(
+        [
+            {
+                "Metric": "Paired rows evaluated",
+                "Before correction": agreement["paired_rows"],
+                "After correction": agreement["paired_rows"],
+            },
+            {
+                "Metric": "Median exporter/importer factor gap",
+                "Before correction": (
+                    agreement["median_factor_gap_before"]
+                ),
+                "After correction": (
+                    agreement["median_factor_gap_after"]
+                ),
+            },
+            {
+                "Metric": "P90 exporter/importer factor gap",
+                "Before correction": (
+                    agreement["p90_factor_gap_before"]
+                ),
+                "After correction": (
+                    agreement["p90_factor_gap_after"]
+                ),
+            },
+            {
+                "Metric": "Median absolute log gap",
+                "Before correction": (
+                    agreement["median_absolute_log_gap_before"]
+                ),
+                "After correction": (
+                    agreement["median_absolute_log_gap_after"]
+                ),
+            },
+        ]
+    )
+
+    change_summary = pd.DataFrame(
+        [
+            {
+                "Outcome": "Improved",
+                "Rows": agreement["rows_improved"],
+                "Share": agreement["percent_improved"],
+            },
+            {
+                "Outcome": "Unchanged",
+                "Rows": agreement["rows_unchanged"],
+                "Share": agreement["percent_unchanged"],
+            },
+            {
+                "Outcome": "Worsened",
+                "Rows": agreement["rows_worsened"],
+                "Share": agreement["percent_worsened"],
+            },
+        ]
+    )
+
+    return {
+        "availability": availability,
+        "coverage": coverage,
+        "agreement": agreement,
+        "agreement_summary": agreement_summary,
+        "change_summary": change_summary,
+        "agreement_bands": agreement_bands,
+        "by_year": by_year,
+    }
+
 def _prepare_corrected_trade_report(
     *,
     cfg: CifFobConfig,
@@ -2137,6 +2593,11 @@ def _prepare_corrected_trade_report(
     by_year = inspection["by_year"]
     by_value_band = inspection["by_value_band"]
     uncertainty = inspection["uncertainty"]
+
+    trade_sync_readiness = _inspect_trade_sync_readiness(
+        path=corrected_trade_path,
+        threads=cfg.engine.threads,
+    )
 
     audit_table = pd.DataFrame(
         [
@@ -2424,11 +2885,152 @@ def _prepare_corrected_trade_report(
         },
     )
 
+    trade_sync_availability_markdown = _markdown_table(
+        trade_sync_readiness["availability"],
+        columns=[
+            "Trade Sync status",
+            "Rows",
+            "Share",
+        ],
+        formatters={
+            "Rows": _fmt_int,
+            "Share": _fmt_percent_value,
+        },
+    )
+
+    coverage = trade_sync_readiness["coverage"]
+    trade_sync_coverage_table = pd.DataFrame(
+        [
+            {
+                "Metric": "Total bilateral rows",
+                "Rows": coverage["total_rows"],
+            },
+            {
+                "Metric": "Rows with usable exporter FOB value",
+                "Rows": coverage["rows_with_export_fob"],
+            },
+            {
+                "Metric": "Rows with usable importer CIF value",
+                "Rows": coverage["rows_with_import_cif"],
+            },
+            {
+                "Metric": "Rows with usable corrected importer FOB value",
+                "Rows": coverage[
+                    "rows_with_corrected_import_fob"
+                ],
+            },
+            {
+                "Metric": "Original usable mirror pairs",
+                "Rows": coverage[
+                    "original_usable_mirror_pairs"
+                ],
+            },
+            {
+                "Metric": "Usable Trade Sync pairs",
+                "Rows": coverage[
+                    "usable_trade_sync_pairs"
+                ],
+            },
+            {
+                "Metric": "Importer reports present but not corrected",
+                "Rows": coverage[
+                    "imports_present_not_corrected"
+                ],
+            },
+        ]
+    )
+
+    trade_sync_coverage_markdown = _markdown_table(
+        trade_sync_coverage_table,
+        columns=[
+            "Metric",
+            "Rows",
+        ],
+        formatters={
+            "Rows": _fmt_int,
+        },
+    )
+
+    trade_sync_agreement_markdown = _markdown_table(
+        trade_sync_readiness["agreement_summary"],
+        columns=[
+            "Metric",
+            "Before correction",
+            "After correction",
+        ],
+        formatters={
+            "Before correction": (
+                lambda value: (
+                    _fmt_int(value)
+                    if float(value).is_integer()
+                    else _fmt_float(value, digits=6)
+                )
+            ),
+            "After correction": (
+                lambda value: (
+                    _fmt_int(value)
+                    if float(value).is_integer()
+                    else _fmt_float(value, digits=6)
+                )
+            ),
+        },
+    )
+
+    trade_sync_change_markdown = _markdown_table(
+        trade_sync_readiness["change_summary"],
+        columns=[
+            "Outcome",
+            "Rows",
+            "Share",
+        ],
+        formatters={
+            "Rows": _fmt_int,
+            "Share": _fmt_percent_value,
+        },
+    )
+
+    trade_sync_bands_markdown = _markdown_table(
+        trade_sync_readiness["agreement_bands"],
+        columns=[
+            "Agreement band",
+            "Rows",
+            "Share",
+        ],
+        formatters={
+            "Rows": _fmt_int,
+            "Share": _fmt_percent_value,
+        },
+    )
+
+    trade_sync_by_year_markdown = _markdown_table(
+        trade_sync_readiness["by_year"],
+        columns=[
+            "Year",
+            "Rows",
+            "Both reports",
+            "Exporter only",
+            "Corrected importer only",
+            "Neither usable",
+            "Both-reports share",
+        ],
+        formatters={
+            "Year": _fmt_int,
+            "Rows": _fmt_int,
+            "Both reports": _fmt_int,
+            "Exporter only": _fmt_int,
+            "Corrected importer only": _fmt_int,
+            "Neither usable": _fmt_int,
+            "Both-reports share": _fmt_percent_value,
+        },
+    )
+
     figure_paths = _write_corrected_trade_figures(
+
             cfg=cfg,
             corrected_trade_path=corrected_trade_path,
             corrected_trade_by_year=by_year,
             corrected_trade_by_value_band=by_value_band,
+            corrected_trade_agreement_bands=trade_sync_readiness["agreement_bands"],
             figure_dir=figure_dir,
             logger=logger,
         )
@@ -2444,6 +3046,25 @@ def _prepare_corrected_trade_report(
         ),
         "uncertainty_markdown": (
             uncertainty_markdown
+        ),
+        "trade_sync_readiness": trade_sync_readiness,
+        "trade_sync_availability_markdown": (
+            trade_sync_availability_markdown
+        ),
+        "trade_sync_coverage_markdown": (
+            trade_sync_coverage_markdown
+        ),
+        "trade_sync_agreement_markdown": (
+            trade_sync_agreement_markdown
+        ),
+        "trade_sync_change_markdown": (
+            trade_sync_change_markdown
+        ),
+        "trade_sync_bands_markdown": (
+            trade_sync_bands_markdown
+        ),
+        "trade_sync_by_year_markdown": (
+            trade_sync_by_year_markdown
         ),
         "figure_paths": figure_paths,
     }
@@ -2793,6 +3414,7 @@ def _write_corrected_trade_figures(
     corrected_trade_path: Path,
     corrected_trade_by_year: pd.DataFrame,
     corrected_trade_by_value_band: pd.DataFrame,
+    corrected_trade_agreement_bands: pd.DataFrame | None,
     figure_dir: Path,
     logger,
 ) -> dict[str, Path]:
@@ -2891,6 +3513,47 @@ def _write_corrected_trade_figures(
     else:
         logger.warning(
             "No value-band corrected-trade summary is available for plotting."
+        )
+
+
+    # -------------------------------------------------
+    # 3. Trade-sync agreement bands after CIF/FOB correction
+    # -------------------------------------------------
+    if (
+        corrected_trade_agreement_bands is not None
+        and not corrected_trade_agreement_bands.empty
+    ):
+        agreement_band_plot_frame = (
+            corrected_trade_agreement_bands.rename(
+                columns={
+                    "Agreement band": "agreement_band",
+                    "Rows": "rows",
+                    "Share": "percent",
+                }
+            )
+        )
+
+        fig, _ = plot_cif_fob_corrected_agreement_bands(
+            agreement_band_plot_frame,
+            title=(
+                "Residual exporter/importer disagreement after "
+                "CIF/FOB correction"
+            ),
+        )
+
+        _save_cif_fob_figure(
+            fig=fig,
+            root_dir=figure_dir,
+            category="corrected_trade",
+            target_hs=cfg.scope.target_hs,
+            stem="trade_sync_agreement_bands",
+            figure_paths=figure_paths,
+            key="trade_sync_agreement_bands",
+            logger=logger,
+        )
+    else:
+        logger.warning(
+            "No trade-sync agreement-band summary is available for plotting."
         )
 
 
@@ -3541,8 +4204,18 @@ def _build_corrected_trade_section(
         (
             "The primary estimated CIF/FOB factor was applied to each "
             "eligible import observation. The corrected FOB-equivalent value "
-            "is calculated as "
-            "`import_value_cif / cif_fob_factor_applied`."
+            "is calculated as:\n\n"
+            r"""
+                \[
+                V^{\mathrm{import,FOB\text{-}corrected}}_{ijpt}
+                =
+                \frac{
+                V^{\mathrm{import,CIF}}_{ijpt}
+                }{
+                F^{\mathrm{CIF/FOB}}_{ijpt}
+                }
+                \]
+                """.strip()
         ),
         "",
         "### 10.1 Application audit",
@@ -3609,6 +4282,88 @@ def _build_corrected_trade_section(
                 "log-factor errors in the latest temporal holdout. They "
                 "represent marginal empirical coverage rather than a "
                 "row-specific probability that an estimate is correct."
+            ),
+            "",
+            "### 10.6 Trade Sync readiness and residual mirror disagreement",
+            "",
+            (
+                "For downstream Trade Sync, a usable report is defined as a "
+                "positive, finite value. Structural report presence is therefore "
+                "kept separate from usable-value availability."
+            ),
+            "",
+            "#### Post-correction bilateral availability",
+            "",
+            corrected_trade_report[
+                "trade_sync_availability_markdown"
+            ],
+            "",
+            "#### Structural and usable-value coverage",
+            "",
+            corrected_trade_report[
+                "trade_sync_coverage_markdown"
+            ],
+            "",
+            "#### Exporter/importer agreement before and after correction",
+            "",
+            corrected_trade_report[
+                "trade_sync_agreement_markdown"
+            ],
+            "",
+            corrected_trade_report[
+                "trade_sync_change_markdown"
+            ],
+            "",
+            (
+                "CIF/FOB correction places importer-reported values on an "
+                "FOB-equivalent valuation basis. The before/after "
+                "comparison therefore measures how much bilateral disagreement "
+                "remains."
+            ),
+            "",
+            "The bilateral value-disagreement factor is defined as:",
+            "",
+            "$$",
+            r"D_{ijpt}",
+            r"=",
+            r"\frac{",
+            r"\max\left(",
+            r"V^{\mathrm{export,FOB}}_{ijpt},",
+            r"V^{\mathrm{import,FOB\text{-}corrected}}_{ijpt}",
+            r"\right)",
+            r"}{",
+            r"\min\left(",
+            r"V^{\mathrm{export,FOB}}_{ijpt},",
+            r"V^{\mathrm{import,FOB\text{-}corrected}}_{ijpt}",
+            r"\right)",
+            r"}",
+            "$$",
+            "",
+            (
+                "where $D_{ijpt} \\geq 1$. A value of $D_{ijpt}=1$ indicates "
+                "perfect agreement, while $D_{ijpt}=2$ means that one reported "
+                "bilateral trade value is twice the other. The maximum is "
+                "always in the numerator and the minimum is always in the "
+                "denominator, so the disagreement factor cannot fall below 1."
+            ),
+            "",
+            "#### Residual agreement bands after correction",
+            "",
+            corrected_trade_report[
+                "trade_sync_bands_markdown"
+            ],
+            "",
+            "#### Trade Sync availability by year",
+            "",
+            corrected_trade_report[
+                "trade_sync_by_year_markdown"
+            ],
+            "",
+            (
+                "A low both-report share in the latest year may reflect "
+                "incomplete reporting rather than failure of the CIF/FOB "
+                "correction. Downstream Trade Sync should preserve the year "
+                "dimension when estimating reporter reliability."
             ),
             "",
         ]

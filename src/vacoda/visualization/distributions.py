@@ -959,6 +959,107 @@ def plot_nebula_boxplot(
     return fig, axes, stats
 
 
+
+def plot_cif_fob_corrected_agreement_bands(
+    frame: pd.DataFrame,
+    *,
+    title: str = (
+        "Residual exporter/importer disagreement after CIF/FOB correction"
+    ),
+):
+    required = {"agreement_band", "rows", "percent"}
+    missing = required - set(frame.columns)
+    if missing:
+        raise RuntimeError(
+            "Agreement-band frame is missing columns: "
+            + ", ".join(sorted(missing))
+        )
+
+    plot_frame = frame.copy()
+
+    # Normalize raw labels
+    normalized = (
+        plot_frame["agreement_band"]
+        .astype(str)
+        .str.strip()
+        .str.replace("–", "-", regex=False)
+        .str.lower()
+    )
+
+    label_map = {
+        "within 5%": "Within 5%",
+        "5-10%": "5–10%",
+        "10-25%": "10–25%",
+        "25-50%": "25–50%",
+        "50-100%": "50–100%",
+        "more than factor 2": "More than factor 2",
+    }
+
+    plot_frame["agreement_band"] = normalized.map(label_map)
+
+    # Safety check
+    if plot_frame["agreement_band"].isna().any():
+        bad = frame.loc[
+            plot_frame["agreement_band"].isna(),
+            "agreement_band",
+        ].unique()
+        raise RuntimeError(
+            "Unexpected agreement-band labels: "
+            + ", ".join(map(str, bad))
+        )
+
+    order = [
+        "Within 5%",
+        "5–10%",
+        "10–25%",
+        "25–50%",
+        "50–100%",
+        "More than factor 2",
+    ]
+
+    plot_frame["agreement_band"] = pd.Categorical(
+        plot_frame["agreement_band"],
+        categories=order,
+        ordered=True,
+    )
+
+    plot_frame = plot_frame.sort_values("agreement_band")
+
+    fig, ax = plt.subplots(figsize=(9, 5.5))
+
+    y = np.arange(len(plot_frame))
+    bars = ax.barh(
+        y,
+        plot_frame["percent"].astype(float),
+        alpha=0.85,
+    )
+
+    ax.set_yticks(y)
+    ax.set_yticklabels(plot_frame["agreement_band"].astype(str))
+    ax.set_xlabel("Share of usable paired rows (%)")
+    ax.set_ylabel("Value-disagreement band")
+    ax.set_title(title)
+    ax.grid(axis="x", alpha=0.3)
+    ax.set_axisbelow(True)
+
+    for bar, (_, row) in zip(bars, plot_frame.iterrows(), strict=False):
+        width = float(row["percent"])
+        rows = int(row["rows"])
+        ax.text(
+            width + 0.5,
+            bar.get_y() + bar.get_height() / 2,
+            f"{width:.2f}% ({rows:,})",
+            va="center",
+            fontsize=9,
+        )
+
+    xmax = max(60, plot_frame["percent"].max() * 1.18)
+    ax.set_xlim(0, xmax)
+
+    fig.tight_layout()
+    return fig, ax
+
+
 def plot_data_coverage_pie(df: pd.DataFrame, cols: list, indicator="absence"):
     stats = compute_data_coverage(df, cols, indicator=indicator)
 
