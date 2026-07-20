@@ -16,7 +16,7 @@ Supported estimators
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
 from typing import Any
 import json
@@ -50,7 +50,17 @@ else:
 
 from vacoda.config.cif_fob import CifFobConfig
 from vacoda.cif_fob.prepare_input import valid_output
-
+from vacoda.cif_fob.artifact_manifest import (
+    file_stat_fingerprint,
+    json_safe,
+    manifest_path_for,
+    read_manifest,
+    semantic_fingerprint,
+    validate_manifest,
+    write_manifest,
+)
+ESTIMATION_CACHE_VERSION = 1
+MODEL_CHECKPOINT_SCHEMA_VERSION = 2
 
 # ======================================================================
 # Small containers
@@ -433,6 +443,146 @@ def _cif_fob_run_directory(
         )
     )
 
+def _model_config_payload(
+    model_cfg: Any,
+) -> dict[str, Any]:
+    """Return the complete semantic configuration of one model."""
+    if is_dataclass(model_cfg):
+        value = asdict(model_cfg)
+    elif hasattr(model_cfg, "__dict__"):
+        value = {
+            key: item
+            for key, item in vars(model_cfg).items()
+            if not key.startswith("_")
+        }
+    else:
+        raise TypeError(
+            "Model configuration must be a dataclass or expose "
+            "__dict__."
+        )
+
+    return json_safe(value)
+
+
+def _common_estimation_payload(
+    *,
+    cfg: CifFobConfig,
+    input_path: Path,
+    minimum_factor: float,
+    maximum_factor: float,
+    validation_years: list[int],
+    latest_holdout_year: int,
+) -> dict[str, Any]:
+    """
+    Return settings shared by all model runs.
+
+    The enabled-model collection is deliberately not included here.
+    Adding one model must not invalidate otherwise unchanged model
+    checkpoints.
+    """
+    estimation_cfg = cfg.method.estimation
+
+    return {
+        "cache_version": ESTIMATION_CACHE_VERSION,
+
+        "input": file_stat_fingerprint(
+            input_path
+        ),
+        "scope": {
+            "target_hs": cfg.scope.target_hs,
+            "min_year": int(cfg.scope.min_year),
+            "max_year": int(cfg.scope.max_year),
+        },
+        "sample_definition": {
+            "minimum_evidence_value_usd": float(
+                estimation_cfg.minimum_evidence_value_usd
+            ),
+            "minimum_factor": float(minimum_factor),
+            "maximum_factor": float(maximum_factor),
+            "exclude_proxy_weights": bool(
+                estimation_cfg.exclude_proxy_weights
+            ),
+            "training_factor_sources": list(
+                estimation_cfg.training_factor_sources
+            ),
+            "source_weights": json_safe(
+                estimation_cfg.source_weights
+            ),
+            "representation_weighting": json_safe(
+                estimation_cfg.representation_weighting
+            ),
+        },
+        "validation": {
+            "strategy": (
+                estimation_cfg.validation.strategy
+            ),
+            "latest_holdout_year": int(
+                latest_holdout_year
+            ),
+            "validation_years": [
+                int(year)
+                for year in validation_years
+            ],
+            "temporal_backtest": json_safe(
+                estimation_cfg.validation.temporal_backtest
+            ),
+        },
+    }
+
+
+def _model_run_semantic_payload(
+    *,
+    run_spec: EstimationRunSpec,
+    common_payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Return the complete semantic identity of one estimation run."""
+    return {
+        "artifact": "cif_fob_model_checkpoint",
+        "common": common_payload,
+        "run": {
+            "run_name": run_spec.run_name,
+            "model_name": run_spec.model_name,
+            "predictor_set_name": run_spec.predictor_set_name,
+            "predictors": list(run_spec.predictors),
+            "categorical_predictors": list(run_spec.categorical_predictors),
+            "model_config": _model_config_payload(run_spec.model_cfg),
+        },
+    }
+
+
+def _aggregate_estimated_rates_payload(
+    *,
+    input_path: Path,
+    common_payload: dict[str, Any],
+    run_specs: list[EstimationRunSpec],
+    model_run_fingerprints: dict[str, str],
+    primary_run_name: str,
+) -> dict[str, Any]:
+    """Return the semantic identity of estimated_rates.parquet."""
+    return {
+        "artifact": "cif_fob_estimated_rates",
+        "cache_version": ESTIMATION_CACHE_VERSION,
+        "input": file_stat_fingerprint(
+            input_path
+        ),
+        "common": common_payload,
+        "primary_estimation_run": primary_run_name,
+        "enabled_estimation_runs": [
+            spec.run_name
+            for spec in run_specs
+        ],
+        "model_run_fingerprints": {
+            spec.run_name: model_run_fingerprints[
+                spec.run_name
+            ]
+            for spec in run_specs
+        },
+        "prediction_columns_by_run": (
+            _prediction_columns_by_run(
+                run_specs
+            )
+        ),
+    }
 
 def _write_model_metadata(
     *,
@@ -449,10 +599,13 @@ def _write_model_metadata(
     maximum_training_year: int,
     minimum_factor: float,
     maximum_factor: float,
+    semantic_payload: dict[str, Any],
 ) -> None:
     """Write human-readable metadata for one fitted model."""
     metadata = {
-        "schema_version": 1,
+        "schema_version": MODEL_CHECKPOINT_SCHEMA_VERSION,
+        "semantic_fingerprint": semantic_fingerprint(semantic_payload),
+        "semantic_payload": json_safe(semantic_payload),
         "run_name": run_spec.run_name,
         "model_name": run_spec.model_name,
         "predictor_set_name": run_spec.predictor_set_name,
@@ -536,23 +689,89 @@ def _estimation_run_checkpoint_paths(
     }
 
 
-def _run_checkpoint_complete(
+
+def _normalized_model_payload(
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Normalize model-checkpoint payloads for backward-compatible reuse.
+
+    Older metadata may contain implementation_sha256 inside the shared
+    payload. That field tracked every edit to estimate_rates.py, including
+    logging and formatting changes, and therefore invalidated otherwise
+    unchanged fitted models. It is ignored when comparing checkpoints.
+    """
+    normalized = json_safe(payload)
+
+    if not isinstance(normalized, dict):
+        return {}
+
+    common = normalized.get("common")
+
+    if isinstance(common, dict):
+        common.pop("implementation_sha256", None)
+
+    return normalized
+
+
+
+def _run_checkpoint_reusable(
     *,
     cfg: CifFobConfig,
     run_name: str,
-    maximum_factor: float
-) -> bool:
-    """Return whether all required checkpoint files exist."""
+    maximum_factor: float,
+    expected_semantic_payload: dict[str, Any],
+) -> tuple[bool, str]:
+    """
+    Return whether a model checkpoint matches current semantics.
+    """
     paths = _estimation_run_checkpoint_paths(
         cfg=cfg,
         run_name=run_name,
         maximum_factor=maximum_factor,
     )
 
-    return all(
-        valid_output(path)
-        for path in paths.values()
+    for name, path in paths.items():
+        if not valid_output(path):
+            return (
+                False,
+                f"checkpoint artifact missing or empty: {name}",
+            )
+
+    metadata = read_manifest(
+        paths["metadata"]
     )
+
+    if metadata is None:
+        return False, "model metadata is missing or invalid"
+
+    if (
+        metadata.get("schema_version")
+        != MODEL_CHECKPOINT_SCHEMA_VERSION
+    ):
+        return False, "model metadata schema version changed"
+
+    stored_payload = metadata.get(
+        "semantic_payload"
+    )
+
+    if not isinstance(stored_payload, dict):
+        return False, "model semantic payload is missing"
+
+    stored_normalized = _normalized_model_payload(
+        stored_payload
+    )
+    expected_normalized = _normalized_model_payload(
+        expected_semantic_payload
+    )
+
+    if (
+        semantic_fingerprint(stored_normalized)
+        != semantic_fingerprint(expected_normalized)
+    ):
+        return False, "model semantic fingerprint changed"
+
+    return True, "model semantic fingerprint matches"
 
 
 def _read_fitted_model(
@@ -585,6 +804,7 @@ def _write_run_checkpoint(
     maximum_training_year: int,
     minimum_factor: float,
     maximum_factor: float,
+    semantic_payload: dict[str, Any],
     threads: int,
 ) -> None:
     """Write one completed estimation-run checkpoint."""
@@ -627,6 +847,7 @@ def _write_run_checkpoint(
         maximum_training_year=maximum_training_year,
         minimum_factor=minimum_factor,
         maximum_factor=maximum_factor,
+        semantic_payload=semantic_payload,
     )
 
 
@@ -2625,25 +2846,37 @@ def _inspect_existing_estimated_rates(
 # ======================================================================
 # Output helpers
 # ======================================================================
-
-
 def _write_dataframe(
     *,
     frame: pd.DataFrame,
     output_path: Path,
     threads: int,
 ) -> None:
-    """Write a DataFrame through DuckDB using ZSTD Parquet."""
+    """Write a DataFrame atomically through DuckDB using ZSTD."""
+    output_path = Path(output_path)
+
     output_path.parent.mkdir(
         parents=True,
         exist_ok=True,
     )
 
+    temporary_path = output_path.with_suffix(
+        output_path.suffix + ".tmp"
+    )
+
+    if temporary_path.exists():
+        temporary_path.unlink()
+
     con = duckdb.connect()
 
     try:
-        con.execute(f"SET threads = {int(threads)}")
-        con.register("output_df", frame)
+        con.execute(
+            f"SET threads = {int(threads)}"
+        )
+        con.register(
+            "output_df",
+            frame,
+        )
 
         con.execute(
             f"""
@@ -2651,7 +2884,7 @@ def _write_dataframe(
                 SELECT *
                 FROM output_df
             )
-            TO {_sql_literal(output_path)}
+            TO {_sql_literal(temporary_path)}
             (
                 FORMAT PARQUET,
                 COMPRESSION ZSTD
@@ -2660,6 +2893,10 @@ def _write_dataframe(
         )
     finally:
         con.close()
+
+    temporary_path.replace(
+        output_path
+    )
 
 def _write_validation_outputs(
     *,
@@ -2875,18 +3112,6 @@ def estimate_cif_fob_rates(
 
     output_path = run_dir / cfg.product_path("estimated_rates").name
 
-    if not force and valid_output(output_path):
-        logger.info(
-            "REUSE — CIF/FOB estimated rates already exist: %s",
-            output_path,
-        )
-
-        return _inspect_existing_estimated_rates(
-            cfg =cfg,
-            output_path=output_path,
-            threads=cfg.engine.threads,
-        )
-
     logger.info(
         "  Direct positive factors above resolved maximum: %s "
         "(%.4f%%)",
@@ -3050,9 +3275,138 @@ def estimate_cif_fob_rates(
         data["prediction_eligible"]
     ].copy()
 
+
+    common_estimation_payload = (
+        _common_estimation_payload(
+            cfg=cfg,
+            input_path=input_path,
+            minimum_factor=minimum_factor,
+            maximum_factor=maximum_factor,
+            validation_years=validation_years,
+            latest_holdout_year=latest_holdout_year,
+        )
+    )
+
+    run_semantic_payloads = {
+        run_spec.run_name: (
+            _model_run_semantic_payload(
+                run_spec=run_spec,
+                common_payload=common_estimation_payload,
+            )
+        )
+        for run_spec in run_specs
+    }
+
+    model_run_fingerprints = {
+        run_name: semantic_fingerprint(payload)
+        for run_name, payload
+        in run_semantic_payloads.items()
+    }
+
+    aggregate_semantic_payload = (
+        _aggregate_estimated_rates_payload(
+            input_path=input_path,
+            common_payload=common_estimation_payload,
+            run_specs=run_specs,
+            model_run_fingerprints=(
+                model_run_fingerprints
+            ),
+            primary_run_name=primary_run_name,
+        )
+    )
+
+    estimated_rates_manifest_path = (
+        manifest_path_for(output_path)
+    )
+
     if prediction_rows.empty:
         raise RuntimeError(
             "No rows have complete predictors for final estimation."
+        )
+
+    common_estimation_payload = (
+            _common_estimation_payload(
+                cfg=cfg,
+                input_path=input_path,
+                minimum_factor=minimum_factor,
+                maximum_factor=maximum_factor,
+                validation_years=validation_years,
+                latest_holdout_year=latest_holdout_year,
+            )
+        )
+
+    run_semantic_payloads = {
+        run_spec.run_name: (
+            _model_run_semantic_payload(
+                run_spec=run_spec,
+                common_payload=common_estimation_payload,
+            )
+        )
+        for run_spec in run_specs
+    }
+
+    model_run_fingerprints = {
+        run_name: semantic_fingerprint(payload)
+        for run_name, payload
+        in run_semantic_payloads.items()
+    }
+
+    aggregate_semantic_payload = (
+        _aggregate_estimated_rates_payload(
+            input_path=input_path,
+            common_payload=common_estimation_payload,
+            run_specs=run_specs,
+            model_run_fingerprints=(
+                model_run_fingerprints
+            ),
+            primary_run_name=primary_run_name,
+        )
+    )
+
+    estimated_rates_manifest_path = (
+        manifest_path_for(output_path)
+    )
+
+    if not force:
+        aggregate_reusable, aggregate_reason = (
+            validate_manifest(
+                artifact_path=output_path,
+                manifest_path=(
+                    estimated_rates_manifest_path
+                ),
+                expected_payload=(
+                    aggregate_semantic_payload
+                ),
+            )
+        )
+
+        if aggregate_reusable:
+            logger.info(
+                "REUSE — CIF/FOB estimated rates manifest "
+                "matches: %s",
+                output_path,
+            )
+
+            result = _inspect_existing_estimated_rates(
+                cfg=cfg,
+                output_path=output_path,
+                threads=cfg.engine.threads,
+            )
+
+            result["manifest_path"] = (
+                estimated_rates_manifest_path
+            )
+            result["semantic_fingerprint"] = (
+                semantic_fingerprint(
+                    aggregate_semantic_payload
+                )
+            )
+
+            return result
+
+        logger.info(
+            "REBUILD — CIF/FOB estimated rates: %s",
+            aggregate_reason,
         )
 
     # ==================================================================
@@ -3106,17 +3460,33 @@ def estimate_cif_fob_rates(
         data[holdout_log_column] = np.nan
         data[holdout_factor_column] = np.nan
 
-        if (
-            not force
-            and _run_checkpoint_complete(
+        run_semantic_payload = (
+            run_semantic_payloads[
+                run_spec.run_name
+            ]
+        )
+
+        checkpoint_reusable = False
+        checkpoint_reason = "force=True"
+
+        if not force:
+            (
+                checkpoint_reusable,
+                checkpoint_reason,
+            ) = _run_checkpoint_reusable(
                 cfg=cfg,
                 run_name=run_spec.run_name,
-                maximum_factor=maximum_factor
+                maximum_factor=maximum_factor,
+                expected_semantic_payload=(
+                    run_semantic_payload
+                ),
             )
-        ):
+
+        if checkpoint_reusable:
             logger.info(
-                "  REUSE estimation run checkpoint: %s",
+                "  REUSE estimation run checkpoint: %s (%s)",
                 run_spec.run_name,
+                checkpoint_reason,
             )
 
             fold_results, prediction_checkpoint = (
@@ -3130,8 +3500,10 @@ def estimate_cif_fob_rates(
 
         else:
             logger.info(
-                "  RUN estimation checkpoint: %s",
+                "  BUILD estimation run checkpoint: %s "
+                "(%s)",
                 run_spec.run_name,
+                checkpoint_reason,
             )
 
             fold_results, predictions_by_year = (
@@ -3212,6 +3584,7 @@ def estimate_cif_fob_rates(
                 maximum_training_year=int(clean["year"].max()),
                 minimum_factor=minimum_factor,
                 maximum_factor=maximum_factor,
+                semantic_payload=run_semantic_payload,
                 threads=cfg.engine.threads,
             )
 
@@ -3585,6 +3958,28 @@ def estimate_cif_fob_rates(
         else 0.0
     )
 
+    estimated_rates_manifest = write_manifest(
+        manifest_path=estimated_rates_manifest_path,
+        artifact_name="cif_fob_estimated_rates",
+        semantic_payload=aggregate_semantic_payload,
+        artifact_path=output_path,
+        extra={
+            "primary_estimation_run": (
+                primary_run_name
+            ),
+            "enabled_estimation_runs": [
+                spec.run_name
+                for spec in run_specs
+            ],
+            "model_run_fingerprints": (
+                model_run_fingerprints
+            ),
+            "minimum_factor": minimum_factor,
+            "maximum_factor": maximum_factor,
+            "holdout_year": latest_holdout_year,
+        },
+    )
+
     logger.info("CIF/FOB rates estimated and compared.")
     logger.info("  Primary model: %s", primary_model_name)
     logger.info("  Primary estimation run: %s", primary_run_name)
@@ -3649,6 +4044,7 @@ def estimate_cif_fob_rates(
         ),
         "output_path": output_path,
         "estimated_rates_path": output_path,
+        
         "primary_model_name": primary_model_name,
         "primary_estimation_run": primary_run_name,
         "minimum_factor": minimum_factor,
@@ -3687,6 +4083,16 @@ def estimate_cif_fob_rates(
         ),
         "latest_primary_holdout_metrics": (
             latest_primary_metrics
+        ),
+
+        "manifest_path": estimated_rates_manifest_path,
+        "semantic_fingerprint": (
+            estimated_rates_manifest[
+                "semantic_fingerprint"
+            ]
+        ),
+        "model_run_fingerprints": (
+            model_run_fingerprints
         ),
     }
 

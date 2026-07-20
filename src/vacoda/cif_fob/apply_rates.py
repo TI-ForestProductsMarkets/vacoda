@@ -15,6 +15,16 @@ import pandas as pd
 
 from vacoda.config.cif_fob import CifFobConfig
 from vacoda.cif_fob.prepare_input import valid_output
+from vacoda.cif_fob.artifact_manifest import (
+    file_content_sha256,
+    file_stat_fingerprint,
+    manifest_path_for,
+    semantic_fingerprint,
+    validate_manifest,
+    write_manifest,
+)
+
+CORRECTED_TRADE_CACHE_VERSION = 1
 
 _CORRECTED_TRADE_FAILURE_METRICS = {
     "duplicate_bilateral_keys": "n_duplicate_keys",
@@ -38,6 +48,56 @@ _REQUIRED_COLUMNS = {
 
 def _sql_literal(value: str | Path) -> str:
     return "'" + str(value).replace("'", "''") + "'"
+
+def _diagnostics_result(
+    *,
+    diagnostics: pd.DataFrame,
+    output_path: Path,
+    primary_run_name: str,
+    status: str,
+    manifest_path: Path,
+    semantic_fingerprint_value: str,
+) -> dict[str, Any]:
+    return {
+        "status": status,
+        "diagnostics_path": output_path,
+        "output_path": output_path,
+        "manifest_path": manifest_path,
+        "semantic_fingerprint": (
+            semantic_fingerprint_value
+        ),
+        "primary_run_name": primary_run_name,
+        "n_rows": int(len(diagnostics)),
+        "year_min": (
+            int(diagnostics["year"].min())
+            if not diagnostics.empty
+            else None
+        ),
+        "year_max": (
+            int(diagnostics["year"].max())
+            if not diagnostics.empty
+            else None
+        ),
+        "median_ape": (
+            float(diagnostics["ape"].median())
+            if not diagnostics.empty
+            else None
+        ),
+        "mean_ape": (
+            float(diagnostics["ape"].mean())
+            if not diagnostics.empty
+            else None
+        ),
+        "p90_ape": (
+            float(
+                diagnostics["ape"].quantile(
+                    0.90
+                )
+            )
+            if not diagnostics.empty
+            else None
+        ),
+    }
 
 def _corrected_trade_audit_path(
     output_path: Path,
@@ -769,6 +829,7 @@ def apply_cif_fob_weights(
     cfg: CifFobConfig,
     estimated_rates_path: Path,
     coverage_levels: Sequence[float] = (0.80, 0.90),
+    force: bool = False,
     logger,
 ) -> dict[str, Any]:
     """Apply the primary HGB factor and add 80%/90% prediction intervals."""
@@ -789,17 +850,74 @@ def apply_cif_fob_weights(
         raise FileNotFoundError(f"Estimated-rates artifact not found: {estimated_rates_path}")
 
     levels = _normalize_coverage_levels(coverage_levels)
+    manifest_path = manifest_path_for(
+        output_path
+    )
 
-
-    if valid_output(output_path):
-        if logger is not None:
-            logger.info("REUSE — Corrected CIF/FOB trade already exists: %s", output_path)
-        return _inspect_existing_output(
-                output_path=output_path,
-                audit_path=audit_path,
-                coverage_levels=levels,
-                threads=cfg.engine.threads,
+    semantic_payload = {
+        "artifact": "cif_fob_corrected_trade",
+        "cache_version": (
+            CORRECTED_TRADE_CACHE_VERSION
+        ),
+        "implementation_sha256": (
+            file_content_sha256(
+                Path(__file__)
             )
+        ),
+        "estimated_rates": (
+            file_stat_fingerprint(
+                estimated_rates_path
+            )
+        ),
+        "coverage_levels": list(levels),
+        "target_hs": cfg.scope.target_hs,
+        "year_range": {
+            "min_year": int(cfg.scope.min_year),
+            "max_year": int(cfg.scope.max_year),
+        },
+    }
+
+    if not force:
+        reusable, reason = validate_manifest(
+            artifact_path=output_path,
+            manifest_path=manifest_path,
+            expected_payload=semantic_payload,
+        )
+    else:
+        reusable = False
+        reason = "Force rebuild requested"
+
+    if reusable:
+        if logger is not None:
+            logger.info(
+                "REUSE — Corrected CIF/FOB trade "
+                "manifest matches: %s",
+                output_path,
+            )
+
+        result = _inspect_existing_output(
+            output_path=output_path,
+            audit_path=audit_path,
+            coverage_levels=levels,
+            threads=cfg.engine.threads,
+        )
+
+        result["manifest_path"] = (
+            manifest_path
+        )
+        result["semantic_fingerprint"] = (
+            semantic_fingerprint(
+                semantic_payload
+            )
+        )
+
+        return result
+
+    if logger is not None:
+        logger.info(
+            "REBUILD — Corrected CIF/FOB trade: %s",
+            reason,
+        )
 
     con = duckdb.connect()
     try:
@@ -901,6 +1019,21 @@ def apply_cif_fob_weights(
         ] == 0
     )
 
+    manifest = write_manifest(
+            manifest_path=manifest_path,
+            artifact_name="cif_fob_corrected_trade",
+            semantic_payload=semantic_payload,
+            artifact_path=output_path,
+            extra={
+                "audit_path": audit_path,
+                "coverage_levels": list(levels),
+                "n_rows": audit["n_rows"],
+                "n_corrected_rows": (
+                    audit["n_corrected_rows"]
+                ),
+            },
+        )
+
     if logger is not None:
         logger.info(
             "Applied primary CIF/FOB factors."
@@ -952,6 +1085,11 @@ def apply_cif_fob_weights(
         "ready_for_trade_sync": ready_for_trade_sync,
         "output_path": output_path,
         "audit_path": audit_path,
+
+        "manifest_path": manifest_path,
+        "semantic_fingerprint": (
+            manifest["semantic_fingerprint"]
+        ),
         "corrected_trade_path": output_path,
         "corrected_trade_audit_path": audit_path,
         "final_parquet": output_path,

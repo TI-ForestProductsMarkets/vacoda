@@ -11,7 +11,67 @@ import duckdb
 import numpy as np
 import pandas as pd
 from vacoda.config.cif_fob import CifFobConfig
+from vacoda.cif_fob.artifact_manifest import (
+    file_content_sha256,
+    file_stat_fingerprint,
+    manifest_path_for,
+    semantic_fingerprint,
+    validate_manifest,
+    write_manifest,
+)
 
+DIAGNOSTICS_CACHE_VERSION = 1
+
+
+def _diagnostics_result(
+    *,
+    diagnostics: pd.DataFrame,
+    output_path: Path,
+    primary_run_name: str,
+    status: str,
+    manifest_path: Path,
+    semantic_fingerprint_value: str,
+) -> dict[str, Any]:
+    return {
+        "status": status,
+        "diagnostics_path": output_path,
+        "output_path": output_path,
+        "manifest_path": manifest_path,
+        "semantic_fingerprint": (
+            semantic_fingerprint_value
+        ),
+        "primary_run_name": primary_run_name,
+        "n_rows": int(len(diagnostics)),
+        "year_min": (
+            int(diagnostics["year"].min())
+            if not diagnostics.empty
+            else None
+        ),
+        "year_max": (
+            int(diagnostics["year"].max())
+            if not diagnostics.empty
+            else None
+        ),
+        "median_ape": (
+            float(diagnostics["ape"].median())
+            if not diagnostics.empty
+            else None
+        ),
+        "mean_ape": (
+            float(diagnostics["ape"].mean())
+            if not diagnostics.empty
+            else None
+        ),
+        "p90_ape": (
+            float(
+                diagnostics["ape"].quantile(
+                    0.90
+                )
+            )
+            if not diagnostics.empty
+            else None
+        ),
+    }
 
 def _read_primary_run_name(
     *,
@@ -262,6 +322,8 @@ def write_primary_holdout_diagnostics(
     *,
     cfg: CifFobConfig,
     estimated_rates_path: Path,
+    force: bool = False,
+    logger=None,
 ) -> dict[str, Any]:
     """
     Build and write primary-model holdout diagnostics.
@@ -285,45 +347,155 @@ def write_primary_holdout_diagnostics(
         exist_ok=True,
     )
 
+    manifest_path = manifest_path_for(
+        output_path
+    )
+
+    semantic_payload = {
+        "artifact": "cif_fob_primary_holdout_diagnostics",
+        "cache_version": DIAGNOSTICS_CACHE_VERSION,
+        "implementation_sha256": (
+            file_content_sha256(
+                Path(__file__)
+            )
+        ),
+        "estimated_rates": (
+            file_stat_fingerprint(
+                estimated_rates_path
+            )
+        ),
+        "diagnostic_definition": {
+            "direct_only": True,
+            "clean_estimation_only": True,
+            "temporal_holdout_only": True,
+            "observed_factor_bands": [
+                1.0,
+                1.05,
+                1.10,
+                1.20,
+                1.50,
+                2.00,
+                3.00,
+            ],
+            "distance_bands": [
+                0,
+                1_000,
+                3_000,
+                7_000,
+                12_000,
+                "Infinity",
+            ],
+            "value_bands": [
+                0,
+                10_000,
+                100_000,
+                1_000_000,
+                10_000_000,
+                "Infinity",
+            ],
+        },
+    }
+
+    if not force:
+        reusable, reason = validate_manifest(
+            artifact_path=output_path,
+            manifest_path=manifest_path,
+            expected_payload=semantic_payload,
+        )
+
+        if reusable:
+            if logger is not None:
+                logger.info(
+                    "REUSE — CIF/FOB diagnostics manifest "
+                    "matches: %s",
+                    output_path,
+                )
+
+            diagnostics = pd.read_parquet(
+                output_path
+            )
+
+            return _diagnostics_result(
+                diagnostics=diagnostics,
+                output_path=output_path,
+                primary_run_name=(
+                    _read_primary_run_name(
+                        estimated_rates_path=(
+                            estimated_rates_path
+                        )
+                    )
+                ),
+                status="reused",
+                manifest_path=manifest_path,
+                semantic_fingerprint_value=(
+                    semantic_fingerprint(
+                        semantic_payload
+                    )
+                ),
+            )
+
+        if logger is not None:
+            logger.info(
+                "REBUILD — CIF/FOB diagnostics: %s",
+                reason,
+            )
+
+    if reusable:
+        if logger is not None:
+            logger.info(
+                "REUSE — CIF/FOB diagnostics manifest "
+                "matches: %s",
+                output_path,
+            )
+
+        diagnostics = pd.read_parquet(
+            output_path
+        )
+
+        return _diagnostics_result(
+            diagnostics=diagnostics,
+            output_path=output_path,
+            primary_run_name=(
+                _read_primary_run_name(
+                    estimated_rates_path=(
+                        estimated_rates_path
+                    )
+                )
+            ),
+            status="reused",
+            manifest_path=manifest_path,
+            semantic_fingerprint_value=(
+                semantic_fingerprint(
+                    semantic_payload
+                )
+            ),
+        )
+
     diagnostics.to_parquet(
         output_path,
         index=False,
     )
 
-    return {
-        "status": "completed",
-        "diagnostics_path": output_path,
-        "output_path": output_path,
-        "primary_run_name": primary_run_name,
-        "n_rows": len(diagnostics),
-        "year_min": (
-            int(diagnostics["year"].min())
-            if "year" in diagnostics.columns
-            and not diagnostics.empty
-            else None
+    manifest = write_manifest(
+        manifest_path=manifest_path,
+        artifact_name=(
+            "cif_fob_primary_holdout_diagnostics"
         ),
-        "year_max": (
-            int(diagnostics["year"].max())
-            if "year" in diagnostics.columns
-            and not diagnostics.empty
-            else None
+        semantic_payload=semantic_payload,
+        artifact_path=output_path,
+        extra={
+            "primary_run_name": primary_run_name,
+            "n_rows": int(len(diagnostics)),
+        },
+    )
+
+    return _diagnostics_result(
+        diagnostics=diagnostics,
+        output_path=output_path,
+        primary_run_name=primary_run_name,
+        status="completed",
+        manifest_path=manifest_path,
+        semantic_fingerprint_value=(
+            manifest["semantic_fingerprint"]
         ),
-        "median_ape": (
-            float(diagnostics["ape"].median())
-            if "ape" in diagnostics.columns
-            and not diagnostics.empty
-            else None
-        ),
-        "mean_ape": (
-            float(diagnostics["ape"].mean())
-            if "ape" in diagnostics.columns
-            and not diagnostics.empty
-            else None
-        ),
-        "p90_ape": (
-            float(diagnostics["ape"].quantile(0.90))
-            if "ape" in diagnostics.columns
-            and not diagnostics.empty
-            else None
-        ),
-    }
+    )

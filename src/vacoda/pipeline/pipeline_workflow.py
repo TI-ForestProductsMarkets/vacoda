@@ -117,6 +117,24 @@ def _build_step_decisions(
                 )
 
                 if reusable:
+                    output_path = checkpoint.get("output", {}).get("path")
+                    audit_path = checkpoint.get("audit", {}).get("path")
+
+                    if isinstance(output_path, str) and output_path:
+                        plan = StepPlan(
+                            step_name=plan.step_name,
+                            config_path=plan.config_path,
+                            config_fingerprint=plan.config_fingerprint,
+                            input_fingerprint=plan.input_fingerprint,
+                            output_path=Path(output_path),
+                            audit_path=(
+                                Path(audit_path)
+                                if isinstance(audit_path, str) and audit_path
+                                else plan.audit_path
+                            ),
+                            runner=plan.runner,
+                        )
+
                     action = "skip"
                     reason = "valid checkpoint exists"
                 else:

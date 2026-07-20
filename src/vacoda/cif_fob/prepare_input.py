@@ -101,7 +101,10 @@ def prepare_cif_fob_input(
 
         return {
             "status": "reused",
+            "output_path": output_path,
             "prepared_input_path": output_path,
+            "audit_passed": True,
+            "ready_for_mirror_pairs": True,
         }
 
     output_path.parent.mkdir(

@@ -481,6 +481,8 @@ def run_cif_fob_workflow(
                 diagnostics_result = write_primary_holdout_diagnostics(
                                             cfg=cfg,
                                             estimated_rates_path=estimated_rates_path,
+                                            force=force,
+                                            logger=logger,
                                         )
 
                 logger.info(
@@ -529,6 +531,7 @@ def run_cif_fob_workflow(
                 corrected_trade_result = apply_cif_fob_weights(
                     cfg=cfg,
                     estimated_rates_path=estimated_rates_path,
+                    force=force,
                     logger=logger,
                 )
 
@@ -598,11 +601,6 @@ def run_cif_fob_workflow(
                 )
             STEP += 1
 
-    # ------------------------------------------------------------------
-    # The latest output is an orchestration detail only. Readiness and
-    # audit decisions remain inside the individual step results.
-    # ------------------------------------------------------------------
-
     final_parquet = corrected_trade_result.get(
         "corrected_trade_path"
     ) or corrected_trade_result.get(
@@ -645,26 +643,20 @@ def run_cif_fob_workflow(
                 "but the corrected-trade audit does not exist."
             )
 
-    latest_output_path: Path | None = None
-
-    for result, path_key in [
-        (diagnostics_result, "diagnostics_path"),
-        (corrected_trade_result, "corrected_trade_path"),
-        (estimated_rates_result, "estimated_rates_path"),
-        (training_features_result, "training_features_path"),
-        (training_sample_result, "training_sample_path"),
-        (mirror_result, "mirror_pairs_path"),
-        (prepared_result, "prepared_input_path"),
-    ]:
-        candidate = result.get(path_key)
-
-        if isinstance(candidate, Path) and candidate.exists():
-            latest_output_path = candidate
-            break
-
     logger.info("=" * 72)
     logger.info("%s CIF/FOB workflow finished.", info)
-    logger.info("Latest data output: %s", latest_output_path)
+    logger.info(
+        "Final corrected-trade output: %s",
+        final_parquet,
+    )
+    logger.info(
+        "Final corrected-trade audit: %s",
+        final_audit,
+    )
+    logger.info(
+        "Ready for Trade Sync: %s",
+        ready_for_trade_sync,
+    )
     logger.info(
         "Decision report: %s",
         report_result.get("report_path"),

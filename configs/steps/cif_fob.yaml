@@ -347,7 +347,7 @@ cif_fob:
               method: "value_band_weighting"
 
           hist_gradient_boosting_squared_level:
-            enabled: false
+            enabled: true
             estimator_type: hgb
             output_prefix: hgb_sq_lvl
             type: "machine_learning"
@@ -446,7 +446,7 @@ cif_fob:
               - hs4_product_group
 
           log_linear_regression_smearing:
-            enabled: false
+            enabled: true
             estimator_type: log_linear
             output_prefix: ols_sm
             type: "statistical"
