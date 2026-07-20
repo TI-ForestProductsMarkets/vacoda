@@ -376,7 +376,7 @@ def _build_cif_fob_plan(
         )
     }
 
-    output_path = cfg.product_path("estimated_rates")
+    output_path = cfg.product_path("corrected_trade")
     audit_path = output_path.with_suffix(".audit.csv")
 
     return StepPlan(
@@ -399,6 +399,67 @@ def _build_cif_fob_plan(
     )
 
 def _step_config_fingerprint(
+    *,
+    config_path: Path,
+    resolved_config: Any,
+    pipeline_cfg: PipelineConfig,
+    include_scope: bool,
+) -> dict[str, Any]:
+    """
+    Build raw and semantic fingerprints for one pipeline step.
+
+    The raw YAML hash is retained for provenance.
+
+    Checkpoint reuse is controlled by:
+      - the semantic hash of the resolved step configuration;
+      - the separately recorded pipeline scope, when applicable.
+
+    Execution-only thread count is excluded because it does not change
+    the produced scientific result. Scope is excluded from the semantic
+    hash when it is recorded separately.
+    """
+    raw = config_fingerprint(
+        config_path
+    )
+
+    excluded_paths: list[tuple[str, ...]] = [
+        ("engine", "threads"),
+    ]
+
+    if include_scope:
+        excluded_paths.append(
+            ("scope",)
+        )
+
+    semantic = semantic_config_fingerprint(
+        config=resolved_config,
+        excluded_paths=tuple(
+            excluded_paths
+        ),
+    )
+
+    out: dict[str, Any] = {
+        "step_config": {
+            "path": raw["path"],
+            "raw_sha256": raw["sha256"],
+            "semantic_sha256": semantic["sha256"],
+            "semantic_excluded_paths": semantic[
+                "excluded_paths"
+            ],
+        },
+    }
+
+    if include_scope:
+        out["pipeline_scope"] = {
+            "target_hs": pipeline_cfg.scope.target_hs,
+            "min_year": pipeline_cfg.scope.min_year,
+            "max_year": pipeline_cfg.scope.max_year,
+        }
+
+    return out
+
+
+def _step_config_fingerprint_dep(
     *,
     config_path: Path,
     resolved_config: Any,

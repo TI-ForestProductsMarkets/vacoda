@@ -5,6 +5,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from dataclasses import asdict, is_dataclass
 
 import pandas as pd
 
@@ -17,6 +18,38 @@ def file_sha256(path: Path) -> str:
             h.update(chunk)
 
     return h.hexdigest()
+
+def _to_json_safe(
+    value: Any,
+) -> Any:
+    """
+    Recursively convert checkpoint values into JSON-safe objects.
+    """
+    if isinstance(value, Path):
+        return str(value)
+
+    if isinstance(value, dict):
+        return {
+            str(key): _to_json_safe(item)
+            for key, item in value.items()
+        }
+
+    if isinstance(value, (list, tuple, set)):
+        return [
+            _to_json_safe(item)
+            for item in value
+        ]
+
+    if isinstance(value, datetime):
+        return value.isoformat()
+
+    if hasattr(value, "item"):
+        try:
+            return value.item()
+        except (ValueError, TypeError):
+            pass
+
+    return value
 
 def _remove_nested_key(
     value: dict[str, Any],
@@ -42,8 +75,58 @@ def _remove_nested_key(
     if isinstance(current, dict):
         current.pop(key_path[-1], None)
 
-
 def _jsonable_config(
+    config: Any,
+) -> dict[str, Any]:
+    """
+    Convert a resolved configuration object into JSON-compatible data.
+
+    Supports:
+      - Pydantic models;
+      - dataclasses;
+      - dictionaries;
+      - regular objects exposing public attributes.
+    """
+    if hasattr(config, "model_dump"):
+        raw = config.model_dump(
+            mode="json",
+        )
+
+    elif is_dataclass(config):
+        raw = asdict(config)
+
+    elif isinstance(config, dict):
+        raw = config
+
+    elif hasattr(config, "__dict__"):
+        raw = {
+            key: value
+            for key, value in vars(config).items()
+            if not key.startswith("_")
+        }
+
+    else:
+        raise TypeError(
+            "Semantic fingerprinting requires a Pydantic model, "
+            "dataclass, dictionary, or object with public attributes. "
+            f"Received {type(config).__name__!r}."
+        )
+
+    result = json.loads(
+        json.dumps(
+            raw,
+            default=str,
+        )
+    )
+
+    if not isinstance(result, dict):
+        raise TypeError(
+            "Resolved configuration must serialize to a dictionary."
+        )
+
+    return result
+
+def _jsonable_config_deprecated(
     config: Any,
 ) -> dict[str, Any]:
     """
@@ -239,10 +322,27 @@ def audit_summary(
         n_failed = -1
 
     ready_status = None
-    if ready_check is not None and "check" in audit.columns and "status" in audit.columns:
-        ready_rows = audit.loc[audit["check"] == ready_check]
+
+    check_column = None
+
+    if "check" in audit.columns:
+        check_column = "check"
+    elif "check_name" in audit.columns:
+        check_column = "check_name"
+
+    if (
+        ready_check is not None
+        and check_column is not None
+        and "status" in audit.columns
+    ):
+        ready_rows = audit.loc[
+            audit[check_column] == ready_check
+        ]
+
         if not ready_rows.empty:
-            ready_status = str(ready_rows["status"].iloc[-1])
+            ready_status = str(
+                ready_rows["status"].iloc[-1]
+            )
 
     return {
         "exists": True,
@@ -299,14 +399,12 @@ def write_checkpoint(
             **audit_fp,
             **audit_info,
         },
-        "result": {
-            key: str(value) if isinstance(value, Path) else value
-            for key, value in result.items()
-        },
+        "result":result,
     }
 
     path.write_text(
-        json.dumps(payload, indent=2),
+        json.dumps(_to_json_safe(payload), 
+                    indent=2),
         encoding="utf-8",
     )
 
@@ -329,6 +427,8 @@ def validate_checkpoint(
     current_config: dict[str, Any],
     current_input: dict[str, Any],
 ) -> tuple[bool, str]:
+    
+
     if checkpoint.get("status") not in expected_status:
         return False, "checkpoint status is not acceptable"
 
@@ -390,6 +490,14 @@ def validate_checkpoint(
         audit_path=audit_path,
         ready_check=required_ready_flag,
     )
+
+    if (
+        required_ready_flag is not None
+        and current_audit_summary.get(
+            "ready_check_status"
+        ) not in {None, "pass"}
+    ):
+        return False, "current audit readiness check did not pass"
 
     if current_audit_summary.get("n_failed_audit_rows") != 0:
         return False, "current audit has failed rows"

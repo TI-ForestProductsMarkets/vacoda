@@ -329,7 +329,7 @@ cif_fob:
               method: "source_only"
 
           hist_gradient_boosting_weighted:
-            enabled: false
+            enabled: true
             estimator_type: hgb
             output_prefix: hgb_wgt
             type: "machine_learning"

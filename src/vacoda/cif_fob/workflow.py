@@ -220,6 +220,19 @@ def run_cif_fob_workflow(
         "latest_report_path": None,
     }
 
+    corrected_trade_result: dict[str, Any] = {
+            "status": (
+                "skipped"
+                if cfg.products.corrected_trade.enable
+                else "disabled"
+            ),
+            "output_path": None,
+            "audit_path": None,
+            "corrected_trade_path": None,
+            "corrected_trade_audit_path": None,
+            "ready_for_trade_sync": False,
+        }
+
     with timed_workflow(logger, "CIF/FOB workflow"):
         STEP =1
         # ==================================================================
@@ -585,19 +598,52 @@ def run_cif_fob_workflow(
                 )
             STEP += 1
 
-
-    # Trade correction is not wired into this workflow yet.
-    if cfg.products.corrected_trade.enable:
-        logger.warning(
-            "%s corrected_trade is enabled, but the trade-correction "
-            "step has not yet been connected to this workflow.",
-            warn,
-        )
-
     # ------------------------------------------------------------------
     # The latest output is an orchestration detail only. Readiness and
     # audit decisions remain inside the individual step results.
     # ------------------------------------------------------------------
+
+    final_parquet = corrected_trade_result.get(
+        "corrected_trade_path"
+    ) or corrected_trade_result.get(
+        "output_path"
+    )
+
+    final_audit = corrected_trade_result.get(
+        "corrected_trade_audit_path"
+    ) or corrected_trade_result.get(
+        "audit_path"
+    )
+
+    if final_parquet is not None:
+        final_parquet = Path(
+            final_parquet
+        )
+
+    if final_audit is not None:
+        final_audit = Path(
+            final_audit
+        )
+
+    ready_for_trade_sync = bool(
+            corrected_trade_result.get(
+                "ready_for_trade_sync",
+                False,
+            )
+        )
+    
+    if ready_for_trade_sync:
+        if final_parquet is None or not final_parquet.exists():
+            raise RuntimeError(
+                "CIF/FOB correction reported ready_for_trade_sync=True, "
+                "but the corrected-trade Parquet does not exist."
+            )
+
+        if final_audit is None or not final_audit.exists():
+            raise RuntimeError(
+                "CIF/FOB correction reported ready_for_trade_sync=True, "
+                "but the corrected-trade audit does not exist."
+            )
 
     latest_output_path: Path | None = None
 
@@ -628,7 +674,17 @@ def run_cif_fob_workflow(
     return {
         "status": "completed",
         "run_id": run_id,
-        "output_path": latest_output_path,
+        "ready_for_next_step": ready_for_trade_sync,
+        "ready_for_trade_sync": ready_for_trade_sync,
+
+        "output_path": final_parquet,
+        "audit_path": final_audit,
+        "corrected_trade_path": final_parquet,
+        "corrected_trade_audit_path": final_audit,
+        
+        "n_failed_audit_rows": corrected_trade_result.get(
+            "n_failed_audit_rows"
+        ),
         "prepared_input_path": prepared_result.get(
             "prepared_input_path"
         ),
@@ -656,13 +712,7 @@ def run_cif_fob_workflow(
         "latest_decision_report_path": report_result.get(
             "latest_report_path"
         ),
-        "corrected_trade_path": corrected_trade_result.get(
-            "corrected_trade_path"
-        ),
-        "ready_for_trade_sync": corrected_trade_result.get(
-            "ready_for_trade_sync",
-            False,
-        ),
+
         "products_enabled": {
             "prepared_input": cfg.products.prepared_input.enable,
             "mirror_pairs": cfg.products.mirror_pairs.enable,
