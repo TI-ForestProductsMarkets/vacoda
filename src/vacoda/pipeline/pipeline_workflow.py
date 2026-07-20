@@ -15,11 +15,13 @@ from typing import Any, Callable
 
 import pandas as pd
 
+from vacoda.config.trade_sync import TradeSyncConfig
 from vacoda.config.cif_fob import CifFobConfig
 from vacoda.config.dataset import DatasetConfig
 from vacoda.config.hs_sync import HsSyncConfig
 from vacoda.config.paths import resolve_log_path
 from vacoda.config.pipeline import PipelineConfig
+from vacoda.trade_sync.workflow import run_trade_sync_workflow
 from vacoda.cif_fob.workflow import run_cif_fob_workflow
 from vacoda.dataset.staging import build_comtrade_staging_dataset
 from vacoda.hs_sync.workflow import run_hs_sync_workflow
@@ -81,8 +83,7 @@ def _build_step_decisions(
     *,
     cfg: PipelineConfig,
     checkpoint_dir: Path,
-    logger,
-) -> list[StepDecision]:
+    logger,) -> list[StepDecision]:
     decisions: list[StepDecision] = []
 
     for step_name, step_cfg in cfg.enabled_steps():
@@ -256,6 +257,24 @@ def _run_cif_fob_step(
         logger=get_logger("PIPELINE.CIF_FOB"),
     )
 
+def _run_trade_sync_step(
+    *,
+    config_path: Path,
+    pipeline_cfg: PipelineConfig,
+    run_id: str,
+) -> dict[str, Any]:
+    cfg = TradeSyncConfig.from_yaml(
+        config_path,
+        scope=pipeline_cfg.scope,
+        engine=pipeline_cfg.engine,
+    )
+
+    return run_trade_sync_workflow(
+        cfg=cfg,
+        run_id=run_id,
+        logger=get_logger("PIPELINE.TRADE_SYNC"),
+    )
+
 
 def _build_staging_plan(
     *,
@@ -416,6 +435,54 @@ def _build_cif_fob_plan(
         ),
     )
 
+def _build_trade_sync_plan(
+    *,
+    step_name: str,
+    config_path: Path,
+    pipeline_cfg: PipelineConfig,
+) -> StepPlan:
+    cfg = TradeSyncConfig.from_yaml(
+        config_path,
+        scope=pipeline_cfg.scope,
+        engine=pipeline_cfg.engine,
+    )
+
+    input_path = cfg.input_path()
+
+    input_fp = {
+        "trade_sync_input": file_list_fingerprint(
+            paths=[input_path],
+            label="trade_sync_required_input",
+        )
+    }
+
+    output_path = cfg.product_path(
+        "reconciled_trade"
+    )
+    audit_path = cfg.product_path(
+        "reconciliation_audit"
+    )
+
+    return StepPlan(
+        step_name=step_name,
+        config_path=config_path,
+        config_fingerprint=_step_config_fingerprint(
+            config_path=config_path,
+            resolved_config=cfg,
+            pipeline_cfg=pipeline_cfg,
+            include_scope=True,
+        ),
+        input_fingerprint=input_fp,
+        output_path=output_path,
+        audit_path=audit_path,
+        runner=lambda run_id: _run_trade_sync_step(
+            config_path=config_path,
+            pipeline_cfg=pipeline_cfg,
+            run_id=run_id,
+        ),
+    )
+
+
 def _step_config_fingerprint(
     *,
     config_path: Path,
@@ -563,6 +630,13 @@ def _build_step_plan(
 
     if step_name == "cif_fob":
         return _build_cif_fob_plan(
+            step_name=step_name,
+            config_path=config_path,
+            pipeline_cfg=pipeline_cfg,
+        )
+    
+    if step_name == "trade_sync":
+        return _build_trade_sync_plan(
             step_name=step_name,
             config_path=config_path,
             pipeline_cfg=pipeline_cfg,

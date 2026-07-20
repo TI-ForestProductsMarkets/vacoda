@@ -9,7 +9,7 @@ trade_sync:
 
   input:
     stage: "interim"
-    subdir: "cif_fob/target_{target_hs_lower}"
+    subdir: "cif_fob/target_{target_hs_lower}/cif_fob_runs/cif_fob_upper_limit_1p457"
     filename: "comtrade_target_{target_hs_lower}_cif_fob_corrected.parquet"
     format: "parquet"
 
