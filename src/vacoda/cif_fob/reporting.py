@@ -3535,6 +3535,8 @@ def _write_corrected_trade_figures(
 
         fig, _ = plot_cif_fob_corrected_agreement_bands(
             agreement_band_plot_frame,
+            x_label="Value-disagreement band",
+            y_label="Residual bilateral value disagreement after CIF/FOB correction",
             title=(
                 "Residual exporter/importer disagreement after "
                 "CIF/FOB correction"

@@ -963,6 +963,8 @@ def plot_nebula_boxplot(
 def plot_cif_fob_corrected_agreement_bands(
     frame: pd.DataFrame,
     *,
+    x_label: str = "Share of usable paired rows (%)",
+    y_label: str = "Value-disagreement band",
     title: str = (
         "Residual exporter/importer disagreement after CIF/FOB correction"
     ),
@@ -1036,8 +1038,8 @@ def plot_cif_fob_corrected_agreement_bands(
 
     ax.set_yticks(y)
     ax.set_yticklabels(plot_frame["agreement_band"].astype(str))
-    ax.set_xlabel("Share of usable paired rows (%)")
-    ax.set_ylabel("Value-disagreement band")
+    ax.set_xlabel(x_label)
+    ax.set_ylabel(y_label)
     ax.set_title(title)
     ax.grid(axis="x", alpha=0.3)
     ax.set_axisbelow(True)
