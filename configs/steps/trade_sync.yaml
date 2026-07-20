@@ -1,0 +1,142 @@
+# configs/steps/trade_sync.yaml
+# Configuration for bilateral trade reconciliation after CIF/FOB correction.
+
+trade_sync:
+
+  # --------------------------------------------------------------------
+  # Input
+  # --------------------------------------------------------------------
+
+  input:
+    stage: "interim"
+    subdir: "cif_fob/target_{target_hs_lower}"
+    filename: "comtrade_target_{target_hs_lower}_cif_fob_corrected.parquet"
+    format: "parquet"
+
+  # --------------------------------------------------------------------
+  # Output
+  # --------------------------------------------------------------------
+
+  output:
+    stage: "interim"
+    subdir: "trade_sync/target_{target_hs_lower}_trade_sync_corrected"
+    format: "parquet"
+
+  # --------------------------------------------------------------------
+  # Products
+  # --------------------------------------------------------------------
+
+  products:
+
+    prepared_input:
+      enable: true
+      filename: "target_{target_hs_lower}_trade_sync_prepared.parquet"
+
+    bilateral_pairs:
+      enable: true
+      filename: "target_{target_hs_lower}_trade_sync_bilateral_pairs.parquet"
+
+    reconciled_trade:
+      enable: true
+      filename: "comtrade_target_{target_hs_lower}_trade_synced.parquet"
+
+    reconciliation_audit:
+      enable: true
+      filename: "target_{target_hs_lower}_trade_sync_audit.csv"
+
+    diagnostics:
+      enable: true
+      filename: "target_{target_hs_lower}_trade_sync_diagnostics.parquet"
+
+  # --------------------------------------------------------------------
+  # Method
+  # --------------------------------------------------------------------
+
+  method:
+
+    flows:
+      import: "M"
+      export: "X"
+
+    reconciliation:
+
+      # Possible examples:
+      #   weighted_mean
+      #   geometric_mean
+      #   reliability_weighted
+      method: "reliability_weighted"
+
+      require_positive_values: true
+
+      minimum_value_usd: 0.0
+
+      # Preserve a unilateral observation when no usable mirror exists.
+      retain_unmatched_flows: true
+
+      # Do not change observations where both sides already agree closely.
+      agreement_tolerance:
+        enabled: true
+        relative_difference: 0.05
+
+      source_weights:
+        exporter_reported: 1.0
+        importer_reported: 1.0
+        exporter_estimated: 0.75
+        importer_estimated: 0.75
+
+      bounds:
+        minimum_reconciled_value: 0.0
+
+    validation:
+
+      duplicate_keys:
+        fail_on_duplicates: true
+
+      value_preservation:
+        enabled: true
+        relative_tolerance: 1.0e-10
+
+      bilateral_consistency:
+        enabled: true
+        maximum_relative_gap: 0.05
+
+  # --------------------------------------------------------------------
+  # Diagnostics
+  # --------------------------------------------------------------------
+
+  diagnostics:
+
+    value_bands_usd:
+      - 10000
+      - 100000
+      - 1000000
+      - 10000000
+
+    reconciliation_statuses:
+      - "bilateral_reconciled"
+      - "import_only"
+      - "export_only"
+      - "already_aligned"
+      - "not_eligible"
+
+  # --------------------------------------------------------------------
+  # Logging
+  # --------------------------------------------------------------------
+
+  logging:
+    level: "DEBUG"
+    subdir: "logs/trade_sync"
+    file: "LOG_TRADE_SYNC_TARGET_{target_hs_lower}.log"
+    timestamp: true
+
+  # --------------------------------------------------------------------
+  # Decision report
+  # --------------------------------------------------------------------
+
+  decision_report:
+    enable: true
+    kind: "reports"
+    subdir: "trade_sync/target_{target_hs_lower}"
+    filename: "target_{target_hs_lower}_trade_sync_decision_report"
+    timestamp: true
+    write_latest: true
