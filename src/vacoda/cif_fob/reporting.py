@@ -1568,6 +1568,54 @@ def _inspect_estimated_rates(
             [str(path)],
         ).fetchone()
 
+        training_factor_direction = con.execute(
+            """
+            SELECT
+                CASE
+                    WHEN observed_cif_fob_factor > 1.000001
+                        THEN 'CIF above FOB'
+                    WHEN observed_cif_fob_factor < 0.999999
+                        THEN 'CIF below FOB'
+                    ELSE 'Approximately equal'
+                END AS "Direction",
+
+                COUNT(*) AS "Rows",
+
+                100.0 * COUNT(*) / SUM(COUNT(*)) OVER ()
+                    AS "Share",
+
+                MEDIAN(observed_cif_fob_factor)
+                    AS "Median factor",
+
+                QUANTILE_CONT(
+                    observed_cif_fob_factor,
+                    0.10
+                ) AS "Factor P10",
+
+                QUANTILE_CONT(
+                    observed_cif_fob_factor,
+                    0.90
+                ) AS "Factor P90"
+
+            FROM read_parquet(?)
+
+            WHERE clean_estimation_eligible
+              AND LOWER(
+                    CAST(factor_source AS VARCHAR)
+                  ) = 'direct'
+
+            GROUP BY "Direction"
+
+            ORDER BY
+                CASE "Direction"
+                    WHEN 'CIF above FOB' THEN 1
+                    WHEN 'Approximately equal' THEN 2
+                    ELSE 3
+                END
+            """,
+            [str(path)],
+        ).df()
+
     finally:
         con.close()
 
@@ -1643,8 +1691,237 @@ def _inspect_estimated_rates(
         }
     )
 
+    result["training_factor_direction"] = (
+            training_factor_direction
+        )
+
     return result
 
+def _inspect_correction_application_reasons(
+    *,
+    corrected_trade_path: Path,
+    training_features_path: Path,
+    threads: int,
+) -> dict[str, pd.DataFrame]:
+    """
+    Explain which bilateral rows received CIF/FOB correction and why
+    correction was unavailable for the remaining rows.
+    """
+
+    for label, path in [
+        ("Corrected-trade artifact", corrected_trade_path),
+        ("Training-feature artifact", training_features_path),
+    ]:
+        if not path.exists():
+            raise FileNotFoundError(
+                f"{label} not found: {path}"
+            )
+
+    con = duckdb.connect()
+
+    try:
+        con.execute(f"SET threads = {int(threads)}")
+
+        application_row = con.execute(
+            """
+            SELECT
+                COUNT(*) AS total_rows,
+
+                COUNT(*) FILTER (
+                    WHERE cif_fob_correction_applied
+                ) AS corrected_rows,
+
+                COUNT(*) FILTER (
+                    WHERE NOT cif_fob_correction_applied
+                      AND import_value_cif IS NULL
+                ) AS no_importer_cif_rows,
+
+                COUNT(*) FILTER (
+                    WHERE NOT cif_fob_correction_applied
+                      AND import_value_cif IS NOT NULL
+                      AND estimated_cif_fob_factor IS NULL
+                ) AS no_estimated_factor_rows
+
+            FROM read_parquet(?)
+            """,
+            [str(corrected_trade_path)],
+        ).fetchone()
+
+        predictor_row = con.execute(
+            """
+            SELECT
+                COUNT(*) AS total_rows,
+
+                COUNT(*) FILTER (
+                    WHERE pair_geography_found
+                ) AS rows_with_pair_geography,
+
+                COUNT(*) FILTER (
+                    WHERE NOT pair_geography_found
+                ) AS rows_without_pair_geography,
+
+                COUNT(*) FILTER (
+                    WHERE initial_predictors_complete
+                ) AS rows_with_complete_initial_predictors,
+
+                COUNT(*) FILTER (
+                    WHERE NOT pair_geography_found
+                      AND import_value_cif IS NOT NULL
+                ) AS importer_rows_without_pair_geography
+
+            FROM read_parquet(?)
+            """,
+            [str(training_features_path)],
+        ).fetchone()
+
+    finally:
+        con.close()
+
+    if application_row is None or predictor_row is None:
+        raise RuntimeError(
+            "Could not inspect CIF/FOB correction application reasons."
+        )
+
+    (
+        total_rows,
+        corrected_rows,
+        no_importer_cif_rows,
+        no_estimated_factor_rows,
+    ) = application_row
+
+    (
+        predictor_total_rows,
+        rows_with_pair_geography,
+        rows_without_pair_geography,
+        rows_with_complete_initial_predictors,
+        importer_rows_without_pair_geography,
+    ) = predictor_row
+
+    if int(total_rows) != int(predictor_total_rows):
+        raise RuntimeError(
+            "Corrected-trade and training-feature artifacts have "
+            "different bilateral row counts."
+        )
+
+    if (
+        int(no_estimated_factor_rows)
+        != int(importer_rows_without_pair_geography)
+    ):
+        raise RuntimeError(
+            "Importer rows without an estimated factor do not match "
+            "importer rows without pair geography."
+        )
+
+    application_outcomes = pd.DataFrame(
+        [
+            {
+                "Application outcome": "Corrected importer CIF value",
+                "Rows": corrected_rows,
+                "Share": 100.0 * corrected_rows / total_rows,
+                "Explanation": (
+                    "Importer CIF value and all predictors were available, "
+                    "so an estimated CIF/FOB factor could be applied."
+                ),
+            },
+            {
+                "Application outcome": (
+                    "Uncorrected rows: no importer CIF value"
+                ),
+                "Rows": no_importer_cif_rows,
+                "Share": 100.0 * no_importer_cif_rows / total_rows,
+                "Explanation": (
+                    "Export-only bilateral group. There is no importer CIF "
+                    "value to convert; the exporter value is already FOB."
+                ),
+            },
+            {
+                "Application outcome": (
+                    "Uncorrected rows: no estimated CIF/FOB factor"
+                ),
+                "Rows": no_estimated_factor_rows,
+                "Share": 100.0 * no_estimated_factor_rows / total_rows,
+                "Explanation": (
+                    "An importer CIF value exists, but pair geography is "
+                    "unavailable, making the initial predictors incomplete."
+                ),
+            },
+        ]
+    )
+
+    rows_without_geography_no_import = (
+        int(rows_without_pair_geography)
+        - int(importer_rows_without_pair_geography)
+    )
+
+    predictor_diagnostic = pd.DataFrame(
+        [
+            {
+                "Prediction coverage path": "Total bilateral rows",
+                "Rows": total_rows,
+                "Share": 100.0,
+                "Interpretation": (
+                    "Full exporter–importer–product–year population."
+                ),
+            },
+            {
+                "Prediction coverage path": (
+                    "├─ Pair geography available"
+                ),
+                "Rows": rows_with_pair_geography,
+                "Share": (
+                    100.0 * rows_with_pair_geography / total_rows
+                ),
+                "Interpretation": (
+                    "Model predictors are complete."
+                ),
+            },
+            {
+                "Prediction coverage path": (
+                    "└─ Pair geography unavailable"
+                ),
+                "Rows": rows_without_pair_geography,
+                "Share": (
+                    100.0 * rows_without_pair_geography / total_rows
+                ),
+                "Interpretation": (
+                    "No model prediction can be generated."
+                ),
+            },
+            {
+                "Prediction coverage path": (
+                    "       ├─ Importer CIF exists"
+                ),
+                "Rows": importer_rows_without_pair_geography,
+                "Share": (
+                    100.0
+                    * importer_rows_without_pair_geography
+                    / total_rows
+                ),
+                "Interpretation": (
+                    "Correction was needed but could not be applied."
+                ),
+            },
+            {
+                "Prediction coverage path": (
+                    "       └─ No importer CIF exists"
+                ),
+                "Rows": rows_without_geography_no_import,
+                "Share": (
+                    100.0
+                    * rows_without_geography_no_import
+                    / total_rows
+                ),
+                "Interpretation": (
+                    "No correction was needed."
+                ),
+            },
+        ]
+    )
+
+    return {
+        "application_outcomes": application_outcomes,
+        "predictor_diagnostic": predictor_diagnostic,
+    }
 
 def _inspect_corrected_trade(
     *,
@@ -2210,6 +2487,70 @@ def _inspect_trade_sync_readiness(
             """
         ).df()
 
+        
+        neither_usable_breakdown = con.execute(
+                """
+                WITH classified AS (
+                    SELECT
+                        CASE
+                            WHEN export_value_fob IS NULL
+                                THEN 'Exporter FOB missing'
+                            WHEN NOT isfinite(export_value_fob)
+                                THEN 'Exporter FOB non-finite'
+                            WHEN export_value_fob <= 0
+                                THEN 'Exporter FOB zero or negative'
+                            ELSE 'Exporter FOB usable'
+                        END AS exporter_reason,
+
+                        CASE
+                            WHEN import_value_cif IS NULL
+                                THEN 'Importer CIF missing'
+                            WHEN NOT isfinite(import_value_cif)
+                                THEN 'Importer CIF non-finite'
+                            WHEN import_value_cif <= 0
+                                THEN 'Importer CIF zero or negative'
+                            WHEN estimated_cif_fob_factor IS NULL
+                                THEN 'No estimated CIF/FOB factor'
+                            WHEN NOT isfinite(estimated_cif_fob_factor)
+                                THEN 'Estimated factor non-finite'
+                            WHEN estimated_cif_fob_factor <= 0
+                                THEN 'Estimated factor zero or negative'
+                            WHEN import_value_fob_corrected IS NULL
+                                THEN 'Corrected importer FOB missing'
+                            WHEN NOT isfinite(import_value_fob_corrected)
+                                THEN 'Corrected importer FOB non-finite'
+                            WHEN import_value_fob_corrected <= 0
+                                THEN 'Corrected importer FOB zero or negative'
+                            ELSE 'Corrected importer FOB usable'
+                        END AS importer_reason
+
+                    FROM trade_sync_input
+                )
+
+                SELECT
+                    exporter_reason || ' + ' || importer_reason
+                        AS "Reason combination",
+
+                    COUNT(*) AS "Rows",
+
+                    100.0 * COUNT(*)
+                        / SUM(COUNT(*)) OVER ()
+                        AS "Share"
+
+                FROM classified
+
+                WHERE exporter_reason <> 'Exporter FOB usable'
+                AND importer_reason <> 'Corrected importer FOB usable'
+
+                GROUP BY
+                    exporter_reason,
+                    importer_reason
+
+                ORDER BY "Rows" DESC
+                """
+            ).df()
+
+
         coverage_row = con.execute(
             """
             SELECT
@@ -2543,6 +2884,7 @@ def _inspect_trade_sync_readiness(
         "change_summary": change_summary,
         "agreement_bands": agreement_bands,
         "by_year": by_year,
+        "neither_usable_breakdown": neither_usable_breakdown,
     }
 
 def _prepare_corrected_trade_report(
@@ -2587,6 +2929,16 @@ def _prepare_corrected_trade_report(
             .value_band
             .boundaries_usd
         ),
+    )
+
+    application_reason_inspection = (
+        _inspect_correction_application_reasons(
+            corrected_trade_path=corrected_trade_path,
+            training_features_path=cfg.product_path(
+                "training_features"
+            ),
+            threads=cfg.engine.threads,
+        )
     )
 
     overall = inspection["overall"]
@@ -2671,6 +3023,7 @@ def _prepare_corrected_trade_report(
                     )
                 ),
             },
+            
         ]
     )
 
@@ -2782,6 +3135,34 @@ def _prepare_corrected_trade_report(
             "Metric",
             "Value",
         ],
+    )
+
+    application_outcomes_markdown = _markdown_table(
+        application_reason_inspection["application_outcomes"],
+        columns=[
+            "Application outcome",
+            "Rows",
+            "Share",
+            "Explanation",
+        ],
+        formatters={
+            "Rows": _fmt_int,
+            "Share": _fmt_percent_value,
+        },
+    )
+
+    predictor_diagnostic_markdown = _markdown_table(
+        application_reason_inspection["predictor_diagnostic"],
+        columns=[
+            "Prediction coverage path",
+            "Rows",
+            "Share",
+            "Interpretation",
+        ],
+        formatters={
+            "Rows": _fmt_int,
+            "Share": _fmt_percent_value,
+        },
     )
 
     by_year_markdown = _markdown_table(
@@ -2951,6 +3332,20 @@ def _prepare_corrected_trade_report(
         },
     )
 
+    neither_usable_breakdown_markdown = _markdown_table(
+        trade_sync_readiness["neither_usable_breakdown"],
+        columns=[
+            "Reason combination",
+            "Rows",
+            "Share",
+        ],
+        formatters={
+            "Rows": _fmt_int,
+            "Share": _fmt_percent_value,
+        },
+    )
+    
+
     trade_sync_agreement_markdown = _markdown_table(
         trade_sync_readiness["agreement_summary"],
         columns=[
@@ -3067,6 +3462,19 @@ def _prepare_corrected_trade_report(
             trade_sync_by_year_markdown
         ),
         "figure_paths": figure_paths,
+
+        "application_outcomes_markdown": (
+            application_outcomes_markdown
+        ),
+        "predictor_diagnostic_markdown": (
+            predictor_diagnostic_markdown
+        ),
+        "trade_sync_total_rows": (
+            trade_sync_readiness["coverage"]["total_rows"]
+        ),
+        "neither_usable_breakdown_markdown": (
+            neither_usable_breakdown_markdown
+        ),
     }
 
 def _load_validation_artifacts(
@@ -4501,6 +4909,22 @@ def _build_corrected_trade_section(
     value_band_figure: Path | None,
 ) -> list[str]:
     """Build the applied-correction section from prepared reporting material."""
+    
+    from textwrap import dedent
+    equation = dedent(
+        r"""
+        $$
+        V^{\mathrm{import,FOB\text{-}corrected}}_{ijpt}
+        =
+        \frac{
+            V^{\mathrm{import,CIF}}_{ijpt}
+        }{
+            F^{\mathrm{CIF/FOB}}_{ijpt}
+        }
+        $$
+        """
+    ).strip()
+    
     lines = [
         "## 10. Applied CIF/FOB correction",
         "",
@@ -4508,18 +4932,9 @@ def _build_corrected_trade_section(
             "The primary estimated CIF/FOB factor was applied to each "
             "eligible import observation. The corrected FOB-equivalent value "
             "is calculated as:\n\n"
-            r"""
-                \[
-                V^{\mathrm{import,FOB\text{-}corrected}}_{ijpt}
-                =
-                \frac{
-                V^{\mathrm{import,CIF}}_{ijpt}
-                }{
-                F^{\mathrm{CIF/FOB}}_{ijpt}
-                }
-                \]
-                """.strip()
         ),
+        "",
+        equation,
         "",
         "### 10.1 Application audit",
         "",
@@ -4528,6 +4943,30 @@ def _build_corrected_trade_section(
         "### 10.2 Overall application summary",
         "",
         corrected_trade_report["summary_markdown"],
+        "",
+        (
+            "The uncorrected population contains two fundamentally different "
+            "cases. Export-only groups have no importer CIF value and therefore "
+            "require no CIF-to-FOB conversion. The remaining importer-containing "
+            "rows could not be corrected because no estimated factor was available."
+        ),
+        "",
+        corrected_trade_report[
+            "application_outcomes_markdown"
+        ],
+        "",
+        "#### Prediction coverage behind the correction",
+        "",
+        (
+            "The following diagnostic explains why an estimated factor was "
+            "unavailable for some importer observations. Pair geography and "
+            "complete initial-predictor coverage are identical, showing that "
+            "missing bilateral geography is the binding limitation."
+        ),
+        "",
+        corrected_trade_report[
+            "predictor_diagnostic_markdown"
+        ],
         "",
         "### 10.3 Application by year",
         "",
@@ -4590,16 +5029,43 @@ def _build_corrected_trade_section(
             "### 10.6 Trade Sync readiness and residual mirror disagreement",
             "",
             (
-                "For downstream Trade Sync, a usable report is defined as a "
+                "For downstream Trade Sync, the full population of "
+                f"{_fmt_int(corrected_trade_report['trade_sync_total_rows'])} "
+                "rows is considered. A usable report is defined as a "
                 "positive, finite value. Structural report presence is therefore "
                 "kept separate from usable-value availability."
             ),
             "",
             "#### Post-correction bilateral availability",
             "",
+            (
+                "The following four mutually exclusive categories partition the full "
+                "population of 5,487,981 bilateral "
+                "`exporter–importer–product–year` rows. A usable value is defined as "
+                "positive, finite, and non-missing."
+            ),
+            "",
             corrected_trade_report[
                 "trade_sync_availability_markdown"
             ],
+            "",
+            "##### Breakdown of rows with neither usable value",
+            "",
+            (
+                "The percentages in the following table are calculated relative to "
+                "the 90,726 rows classified as neither usable, not relative to the "
+                "full bilateral population."
+            ),
+            "",
+            corrected_trade_report[
+                "neither_usable_breakdown_markdown"
+            ],
+            "",
+            (
+                "Almost all neither-usable rows have no exporter FOB value and no "
+                "estimated CIF/FOB factor for the importer side. The remaining seven "
+                "rows are edge cases involving missing, zero, or negative values."
+            ),
             "",
             "#### Structural and usable-value coverage",
             "",
@@ -5606,6 +6072,7 @@ def write_cif_fob_decision_report(
         0.0,
     )
 
+
     direct_candidates = int(
         rate_metrics["n_selected_direct_factors"] or 0
     )
@@ -6159,7 +6626,35 @@ def write_cif_fob_decision_report(
             f"{_fmt_percent_value(rate_metrics['clean_estimation_share_of_candidates_percent'])} "
             f"of the selected-factor candidate pool."
         ),
-
+        "",
+        "#### Direction of observed factors in the final clean training sample",
+        "",
+        (
+            "The table below describes the observed direct CIF/FOB factors in "
+            "the final sample used for model fitting and temporal validation. "
+            "Factors above one indicate that the observed CIF value exceeds the "
+            "corresponding FOB value; factors approximately equal to one indicate "
+            "no measurable CIF uplift."
+        ),
+        "",
+        _markdown_table(
+            rate_metrics["training_factor_direction"],
+            columns=[
+                "Direction",
+                "Rows",
+                "Share",
+                "Median factor",
+                "Factor P10",
+                "Factor P90",
+            ],
+            formatters={
+                "Rows": _fmt_int,
+                "Share": _fmt_percent_value,
+                "Median factor": lambda value: _fmt_float(value, 6),
+                "Factor P10": lambda value: _fmt_float(value, 6),
+                "Factor P90": lambda value: _fmt_float(value, 6),
+            },
+        ),
         "",
         "### 5.4 Direct CIF/FOB factor distribution and upper-bound evidence",
         "",
