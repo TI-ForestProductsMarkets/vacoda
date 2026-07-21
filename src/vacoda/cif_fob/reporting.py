@@ -3748,7 +3748,308 @@ def _write_training_evidence_audit_figures(
 
     return figure_paths
 
+
 def _write_value_band_model_comparison_figures(
+    *,
+    cfg: CifFobConfig,
+    estimated_rates_path: Path,
+    folds: pd.DataFrame,
+    prediction_columns_by_run: dict[str, dict[str, str]],
+    figure_dir: Path,
+    logger,
+) -> tuple[
+    pd.DataFrame,
+    pd.DataFrame,
+    dict[str, Path],
+]:
+    """
+    Compare the configured primary run with its weighted counterpart.
+
+    If no weighted counterpart was completed, return empty comparison
+    material and write no weighting-comparison figures.
+    """
+    latest_holdout_year = int(
+        pd.to_numeric(
+            folds["validation_year"],
+            errors="coerce",
+        ).max()
+    )
+
+    (
+        all_summary,
+        all_long,
+    ) = _inspect_value_band_model_comparison(
+        path=estimated_rates_path,
+        threads=cfg.engine.threads,
+        holdout_year=latest_holdout_year,
+        boundaries=(
+            cfg.method.estimation
+            .representation_weighting
+            .value_band
+            .boundaries_usd
+        ),
+        prediction_columns_by_run=prediction_columns_by_run,
+    )
+
+    figure_paths: dict[str, Path] = {}
+
+    available_runs = {
+        str(value)
+        for value in all_summary["model_name"].dropna().unique()
+    }
+
+    primary_algorithm = str(
+        cfg.method.estimation.models.primary
+    ).strip().lower()
+
+    primary_predictor_set = str(
+        getattr(
+            cfg.method.estimation,
+            "primary_predictor_set",
+            "",
+        )
+        or ""
+    ).strip()
+
+    expected_primary_run = (
+        f"{primary_algorithm}__{primary_predictor_set}"
+        if primary_predictor_set
+        else primary_algorithm
+    )
+
+    if expected_primary_run in available_runs:
+        primary_run = expected_primary_run
+    else:
+        primary_candidates = sorted(
+            run_name
+            for run_name in available_runs
+            if run_name.split("__", 1)[0].lower()
+            == primary_algorithm
+            and (
+                not primary_predictor_set
+                or (
+                    "__" in run_name
+                    and run_name.split("__", 1)[1]
+                    == primary_predictor_set
+                )
+            )
+        )
+
+        if len(primary_candidates) != 1:
+            logger.warning(
+                "Skipping value-band weighting comparison: "
+                "could not uniquely resolve primary run. "
+                "Expected=%s, candidates=%s",
+                expected_primary_run,
+                primary_candidates,
+            )
+
+            return (
+                pd.DataFrame(),
+                pd.DataFrame(),
+                figure_paths,
+            )
+
+        primary_run = primary_candidates[0]
+
+    primary_run_parts = primary_run.split("__", 1)
+    primary_run_predictor_set = (
+        primary_run_parts[1]
+        if len(primary_run_parts) == 2
+        else ""
+    )
+
+    weighted_candidates = sorted(
+        run_name
+        for run_name in available_runs
+        if run_name != primary_run
+        and "weighted" in run_name.split("__", 1)[0].lower()
+        and (
+            not primary_run_predictor_set
+            or (
+                "__" in run_name
+                and run_name.split("__", 1)[1]
+                == primary_run_predictor_set
+            )
+        )
+    )
+
+    if not weighted_candidates:
+        logger.info(
+            "Skipping value-band weighting comparison: "
+            "no weighted counterpart is available for primary run %s.",
+            primary_run,
+        )
+
+        return (
+            pd.DataFrame(),
+            pd.DataFrame(),
+            figure_paths,
+        )
+
+    if len(weighted_candidates) > 1:
+        logger.warning(
+            "Skipping value-band weighting comparison: "
+            "multiple weighted counterparts were found for %s: %s",
+            primary_run,
+            weighted_candidates,
+        )
+
+        return (
+            pd.DataFrame(),
+            pd.DataFrame(),
+            figure_paths,
+        )
+
+    weighted_run = weighted_candidates[0]
+
+    comparison_long = all_long.loc[
+        all_long["model_name"].isin(
+            [primary_run, weighted_run]
+        )
+    ].copy()
+
+    primary_summary = (
+        all_summary.loc[
+            all_summary["model_name"].eq(primary_run),
+            [
+                "value_band",
+                "observations",
+                "median_ape",
+                "p90_ape",
+            ],
+        ]
+        .rename(
+            columns={
+                "observations": "Observations",
+                "median_ape": "Primary median APE",
+                "p90_ape": "Primary P90 APE",
+            }
+        )
+    )
+
+    weighted_summary = (
+        all_summary.loc[
+            all_summary["model_name"].eq(weighted_run),
+            [
+                "value_band",
+                "observations",
+                "median_ape",
+                "p90_ape",
+            ],
+        ]
+        .rename(
+            columns={
+                "observations": "Weighted observations",
+                "median_ape": "Weighted median APE",
+                "p90_ape": "Weighted P90 APE",
+            }
+        )
+    )
+
+    comparison_table = primary_summary.merge(
+        weighted_summary,
+        on="value_band",
+        how="inner",
+        validate="one_to_one",
+    )
+
+    if not (
+        comparison_table["Observations"]
+        == comparison_table["Weighted observations"]
+    ).all():
+        raise RuntimeError(
+            "Primary and weighted models were not evaluated on "
+            "the same observations within every evidence-value band."
+        )
+
+    comparison_table["Change in median APE"] = (
+        comparison_table["Weighted median APE"]
+        - comparison_table["Primary median APE"]
+    )
+
+    comparison_table["Change in P90 APE"] = (
+        comparison_table["Weighted P90 APE"]
+        - comparison_table["Primary P90 APE"]
+    )
+
+    comparison_table["Evidence-value band"] = pd.Categorical(
+        comparison_table["value_band"],
+        categories=VALUE_BAND_ORDER,
+        ordered=True,
+    )
+
+    comparison_table = (
+        comparison_table[
+            [
+                "Evidence-value band",
+                "Observations",
+                "Primary median APE",
+                "Weighted median APE",
+                "Change in median APE",
+                "Primary P90 APE",
+                "Weighted P90 APE",
+                "Change in P90 APE",
+            ]
+        ]
+        .sort_values("Evidence-value band")
+        .reset_index(drop=True)
+    )
+
+    fig, _, _ = plot_model_error_by_group(
+        comparison_long,
+        group_column="value_band",
+        model_column="model_name",
+        error_column="ape",
+        aggregation="median",
+        group_order=VALUE_BAND_ORDER,
+        title="Primary versus weighted model by evidence-value band",
+        x_label="Evidence-value band",
+        y_label="Median APE (%)",
+    )
+
+    _save_cif_fob_figure(
+        fig=fig,
+        root_dir=figure_dir,
+        category="model_comparison",
+        target_hs=cfg.scope.target_hs,
+        stem="primary_weighted_by_value_band_median_ape",
+        figure_paths=figure_paths,
+        key="primary_weighted_by_value_band_median_ape",
+        logger=logger,
+    )
+
+    fig, _, _ = plot_model_error_by_group(
+        comparison_long,
+        group_column="value_band",
+        model_column="model_name",
+        error_column="ape",
+        aggregation="p90",
+        group_order=VALUE_BAND_ORDER,
+        title="Primary versus weighted model by evidence-value band",
+        x_label="Evidence-value band",
+        y_label="90th percentile APE (%)",
+    )
+
+    _save_cif_fob_figure(
+        fig=fig,
+        root_dir=figure_dir,
+        category="model_comparison",
+        target_hs=cfg.scope.target_hs,
+        stem="primary_weighted_by_value_band_p90_ape",
+        figure_paths=figure_paths,
+        key="primary_weighted_by_value_band_p90_ape",
+        logger=logger,
+    )
+
+    return (
+        comparison_table,
+        comparison_long,
+        figure_paths,
+    )
+
+
+def _write_value_band_model_comparison_figures_deprecated(
     *,
     cfg: CifFobConfig,
     estimated_rates_path: Path,
@@ -5365,26 +5666,7 @@ def write_cif_fob_decision_report(
         how="left",
     )
 
-    value_band_comparison_table = (
-        value_band_comparison.rename(
-            columns={
-                "value_band": "Evidence-value band",
-                "observations": "Observations",
-                "baseline_median_ape": (
-                    "Baseline median APE"
-                ),
-                "weighted_median_ape": (
-                    "Weighted median APE"
-                ),
-                "median_ape_change": (
-                    "Change in median APE"
-                ),
-                "baseline_p90_ape": "Baseline P90 APE",
-                "weighted_p90_ape": "Weighted P90 APE",
-                "p90_ape_change": "Change in P90 APE",
-            }
-        )
-    )
+    value_band_comparison_table = value_band_comparison.copy()
 
     primary_folds_table = primary_folds.sort_values(
         "validation_year"
@@ -6223,7 +6505,8 @@ def write_cif_fob_decision_report(
     ]
 
     value_band_section: list[str] = []
-    value_band_section.extend(
+    if not value_band_comparison_table.empty:
+        value_band_section.extend(
         [
             "",
             "### Value-band weighting comparison",
