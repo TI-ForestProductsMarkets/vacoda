@@ -5047,10 +5047,12 @@ def _build_corrected_trade_section(
         corrected_trade_report["summary_markdown"],
         "",
         (
-            "The uncorrected population contains two fundamentally different "
-            "cases. Export-only groups have no importer CIF value and therefore "
-            "require no CIF-to-FOB conversion. The remaining importer-containing "
-            "rows could not be corrected because no estimated factor was available."
+            f"The uncorrected population contains "
+            f"{_fmt_int(corrected_trade_report['inspection']['overall']['n_uncorrected_rows'])} "
+            "rows and consists of two fundamentally different cases. "
+            "Export-only groups have no importer CIF value and therefore require "
+            "no CIF-to-FOB conversion. The remaining importer-containing rows "
+            "could not be corrected because no estimated factor was available."
         ),
         "",
         corrected_trade_report[
