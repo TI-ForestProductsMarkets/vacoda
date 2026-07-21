@@ -2587,6 +2587,90 @@ def _inspect_trade_sync_readiness(
             """
         ).fetchone()
 
+
+        direction_before_after = con.execute(
+            """
+            WITH paired AS (
+                SELECT
+                    import_value_cif,
+                    import_value_fob_corrected,
+                    export_value_fob
+
+                FROM trade_sync_input
+
+                WHERE has_export_fob
+                AND has_import_cif
+                AND has_import_fob_corrected
+            ),
+
+            long_form AS (
+                SELECT
+                    'Before correction' AS stage,
+
+                    CASE
+                        WHEN import_value_cif
+                            > export_value_fob * 1.000001
+                            THEN 'Importer value above exporter FOB'
+
+                        WHEN import_value_cif
+                            < export_value_fob * 0.999999
+                            THEN 'Importer value below exporter FOB'
+
+                        ELSE 'Approximately equal'
+                    END AS direction
+
+                FROM paired
+
+                UNION ALL
+
+                SELECT
+                    'After correction' AS stage,
+
+                    CASE
+                        WHEN import_value_fob_corrected
+                            > export_value_fob * 1.000001
+                            THEN 'Importer value above exporter FOB'
+
+                        WHEN import_value_fob_corrected
+                            < export_value_fob * 0.999999
+                            THEN 'Importer value below exporter FOB'
+
+                        ELSE 'Approximately equal'
+                    END AS direction
+
+                FROM paired
+            )
+
+            SELECT
+                stage AS "Stage",
+                direction AS "Direction",
+                COUNT(*) AS "Rows",
+
+                100.0 * COUNT(*)
+                    / SUM(COUNT(*)) OVER (
+                        PARTITION BY stage
+                    ) AS "Share"
+
+            FROM long_form
+
+            GROUP BY
+                stage,
+                direction
+
+            ORDER BY
+                CASE stage
+                    WHEN 'Before correction' THEN 1
+                    ELSE 2
+                END,
+
+                CASE direction
+                    WHEN 'Importer value above exporter FOB' THEN 1
+                    WHEN 'Approximately equal' THEN 2
+                    ELSE 3
+                END
+            """
+        ).df()
+
         agreement_row = con.execute(
             """
             WITH paired AS (
@@ -2885,6 +2969,7 @@ def _inspect_trade_sync_readiness(
         "agreement_bands": agreement_bands,
         "by_year": by_year,
         "neither_usable_breakdown": neither_usable_breakdown,
+        "direction_before_after": direction_before_after,
     }
 
 def _prepare_corrected_trade_report(
@@ -3346,6 +3431,20 @@ def _prepare_corrected_trade_report(
     )
     
 
+    direction_before_after_markdown = _markdown_table(
+        trade_sync_readiness["direction_before_after"],
+        columns=[
+            "Stage",
+            "Direction",
+            "Rows",
+            "Share",
+        ],
+        formatters={
+            "Rows": _fmt_int,
+            "Share": _fmt_percent_value,
+        },
+    )
+
     trade_sync_agreement_markdown = _markdown_table(
         trade_sync_readiness["agreement_summary"],
         columns=[
@@ -3474,6 +3573,9 @@ def _prepare_corrected_trade_report(
         ),
         "neither_usable_breakdown_markdown": (
             neither_usable_breakdown_markdown
+        ),
+        "direction_before_after_markdown": (
+            direction_before_after_markdown
         ),
     }
 
@@ -5072,6 +5174,27 @@ def _build_corrected_trade_section(
             corrected_trade_report[
                 "trade_sync_coverage_markdown"
             ],
+            "",
+            "#### Importer/exporter value direction before and after correction",
+            "",
+            (
+                "This table compares the importer-reported value with the "
+                "exporter-reported FOB value for the same paired rows before and "
+                "after CIF/FOB correction. Before correction, the importer value is "
+                "the reported CIF value; after correction, it is the estimated "
+                "FOB-equivalent value."
+            ),
+            "",
+            corrected_trade_report[
+                "direction_before_after_markdown"
+            ],
+            "",
+            (
+                "Rows where the importer value was already below the exporter FOB "
+                "value cannot be reconciled through a standard CIF-to-FOB adjustment, "
+                "because applying a factor greater than or equal to one lowers the "
+                "importer value further."
+            ),
             "",
             "#### Exporter/importer agreement before and after correction",
             "",
