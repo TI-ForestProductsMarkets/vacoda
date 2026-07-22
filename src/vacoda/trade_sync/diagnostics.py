@@ -648,7 +648,8 @@ def build_trade_sync_diagnostics(
 
                 CAST(
                     MEDIAN(relative_difference_from_larger) FILTER (
-                        WHERE relative_difference_from_larger IS NOT NULL
+                        WHERE reliability_evidence_case = 'both_positive'
+                            AND relative_difference_from_larger IS NOT NULL
                     )
                     AS DOUBLE
                 ) AS median_relative_difference,

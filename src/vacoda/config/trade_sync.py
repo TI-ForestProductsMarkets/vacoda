@@ -647,7 +647,7 @@ class TradeSyncDiagnosticsConfig:
 
 
 @dataclass(frozen=True)
-class TradeSyncDecisionReportConfig:
+class TradeSyncArtifactsConfig:
     enable: bool
     kind: str
     subdir: str
@@ -659,32 +659,32 @@ class TradeSyncDecisionReportConfig:
     def from_dict(
         cls,
         cfg: dict[str, Any],
-    ) -> "TradeSyncDecisionReportConfig":
+    ) -> "TradeSyncArtifactsConfig":
         return cls(
             enable=require_bool(
                 cfg.get("enable"),
-                key="trade_sync.decision_report.enable",
+                key="trade_sync.artifacts.enable",
             ),
             kind=require_str(
                 cfg.get("kind"),
-                key="trade_sync.decision_report.kind",
+                key="trade_sync.artifacts.kind",
             ).strip().lower(),
             subdir=require_str(
                 cfg.get("subdir"),
-                key="trade_sync.decision_report.subdir",
+                key="trade_sync.artifacts.subdir",
                 allow_empty=True,
             ),
             filename=require_str(
                 cfg.get("filename"),
-                key="trade_sync.decision_report.filename",
+                key="trade_sync.artifacts.filename",
             ),
             timestamp=require_bool(
                 cfg.get("timestamp"),
-                key="trade_sync.decision_report.timestamp",
+                key="trade_sync.artifacts.timestamp",
             ),
             write_latest=require_bool(
                 cfg.get("write_latest"),
-                key="trade_sync.decision_report.write_latest",
+                key="trade_sync.artifacts.write_latest",
             ),
         )
 
@@ -712,7 +712,7 @@ class TradeSyncConfig:
     method: TradeSyncMethodConfig
     diagnostics: TradeSyncDiagnosticsConfig
     logging: TradeSyncLoggingConfig
-    decision_report: TradeSyncDecisionReportConfig
+    artifacts: TradeSyncArtifactsConfig
     scope: PipelineScopeConfig
     engine: PipelineEngineConfig
 
@@ -794,10 +794,10 @@ class TradeSyncConfig:
                     key="trade_sync.logging",
                 )
             ),
-            decision_report=TradeSyncDecisionReportConfig.from_dict(
+            artifacts=TradeSyncArtifactsConfig.from_dict(
                 require_dict(
-                    rendered.get("decision_report"),
-                    key="trade_sync.decision_report",
+                    rendered.get("artifacts"),
+                    key="trade_sync.artifacts",
                 )
             ),
             scope=scope,
@@ -856,8 +856,8 @@ class TradeSyncConfig:
     def log_path(self) -> Path:
         return self.logging.resolve_log_file()
 
-    def decision_report_path(self, run_id: str) -> Path:
-        return self.decision_report.timestamped_path(run_id)
+    def artifacts_path(self, run_id: str) -> Path:
+        return self.artifacts.timestamped_path(run_id)
 
-    def decision_report_latest_path(self) -> Path:
-        return self.decision_report.latest_path()
+    def artifacts_latest_path(self) -> Path:
+        return self.artifacts.latest_path()

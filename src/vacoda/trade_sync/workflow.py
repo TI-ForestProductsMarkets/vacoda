@@ -21,7 +21,7 @@ from vacoda.trade_sync.reliability_evidence import build_trade_sync_reliability_
 from vacoda.trade_sync.country_reliability import estimate_trade_sync_country_reliability
 from vacoda.trade_sync.reconcile import reconcile_trade
 from vacoda.trade_sync.diagnostics import build_trade_sync_diagnostics
-#from vacoda.trade_sync.reporting import   write_trade_sync_decision_report
+from vacoda.trade_sync.reporting import build_trade_sync_report
 
 WORKFLOW_STEPS = [
     "Prepare Trade Sync input",
@@ -414,37 +414,52 @@ def run_trade_sync_workflow(
         }
 
         diagnostics_path = None
-    # # ==================================================================
-    # # Step 8 — Decision report
-    # # ==================================================================
 
-    # if cfg.decision_report.enable:
+    # ==================================================================
+    # Step 8 — Write Trade Sync decision report
+    # ==================================================================
 
-    #     report_result = run_step(
-    #         logger=logger,
-    #         step_number=5,
-    #         total_steps=total_steps,
-    #         title="Write Trade Sync decision report",
-    #         runner=lambda: write_trade_sync_decision_report(
-    #             cfg=cfg,
-    #             run_id=run_id,
-    #             prepared_result=prepared_result,
-    #             pairs_result=pairs_result,
-    #             reconciled_result=reconciled_result,
-    #             diagnostics_result=diagnostics_result,
-    #             logger=logger,
-    #         ),
-    #     )
-    # else:
-    #     logger.info(
-    #         "SKIP — Trade Sync decision report is disabled."
-    #     )
-    #     report_result = {
-    #         "status": "disabled",
-    #         "decision_report_path": None,
-    #     }
+    if cfg.artifacts.enable:
 
-    # workflow_elapsed = perf_counter() - workflow_start
+        report_result = run_step(
+            logger=logger,
+            step_number=8,
+            total_steps=total_steps,
+            title="Write Trade Sync decision report",
+            runner=lambda: build_trade_sync_report(
+                cfg=cfg,
+                reconciled_trade_path=reconciled_path,
+                country_reliability_path=country_reliability_path,
+                reconciliation_audit_path=audit_path,
+                diagnostics_path=diagnostics_path,
+                run_id=run_id,
+                force=force,
+                logger=logger,
+            ),
+        )
+
+        report_path = require_result_path(
+            report_result,
+            "Trade Sync reporting result did not contain "
+            "an expected report path.",
+            "report_path",
+            "output_path",
+        )
+
+    else:
+        logger.info(
+            "SKIP — Trade Sync decision report is disabled."
+        )
+
+        report_result = {
+            "status": "disabled",
+            "report_path": None,
+            "ready_for_processed_export": False,
+        }
+
+        report_path = None
+
+    workflow_elapsed = perf_counter() - workflow_start
 
     # ready_for_weight_sync = (
     #     audit_passed
@@ -518,22 +533,33 @@ def run_trade_sync_workflow(
     # }
 
     return {
-            "status": "completed",
-            "run_id": run_id,
+        "status": "completed",
+        "run_id": run_id,
 
-            "ready_for_processed_export": bool(
-                reliability_evidence_result.get(
-                    "ready_for_country_reliability",
-                    False,
-                )
-            ),
+        "ready_for_processed_export": bool(
+            report_result.get(
+                "ready_for_processed_export",
+                False,
+            )
+        ),
 
-            "output_path": reliability_evidence_path,
-            "prepared_input_path": prepared_path,
-            "bilateral_pairs_path": pairs_path,
-            "reliability_evidence_path": reliability_evidence_path,
+        "output_path": reconciled_path,
+        "report_path": report_path,
 
-            "prepared_result": prepared_result,
-            "pairs_result": pairs_result,
-            "reliability_evidence_result": reliability_evidence_result,
-        }
+        "prepared_input_path": prepared_path,
+        "bilateral_pairs_path": pairs_path,
+        "reliability_evidence_path": reliability_evidence_path,
+        "country_reliability_path": country_reliability_path,
+        "reconciled_trade_path": reconciled_path,
+        "reconciliation_audit_path": audit_path,
+        "diagnostics_path": diagnostics_path,
+
+        "prepared_result": prepared_result,
+        "pairs_result": pairs_result,
+        "reliability_evidence_result": reliability_evidence_result,
+        "country_reliability_result": country_reliability_result,
+        "reconciled_result": reconciled_result,
+        "audit_result": audit_result,
+        "diagnostics_result": diagnostics_result,
+        "report_result": report_result,
+    }

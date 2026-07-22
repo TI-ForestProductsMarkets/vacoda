@@ -110,6 +110,7 @@ cif_fob:
       enable: true
       filename: "comtrade_target_{target_hs_lower}_cif_fob_corrected.parquet"
 
+  ### Decision report
   artifacts:
     enable: true
     kind: "reports"
