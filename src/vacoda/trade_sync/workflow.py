@@ -152,9 +152,9 @@ def run_trade_sync_workflow(
 
         prepared_path = require_result_path(
             prepared_result,
+            "Trade Sync step result did not contain any expected path key",
             "prepared_input_path",
             "output_path",
-            error_message="Trade Sync step result did not contain any expected path key"
         )
     else:
         logger.warning(
@@ -168,208 +168,224 @@ def run_trade_sync_workflow(
         }
         prepared_path = resolved_input_path
 
-    # ==================================================================
-    # Step 2 — Build bilateral import/export pairs
-    # ==================================================================
+    # # ==================================================================
+    # # Step 2 — Build bilateral import/export pairs
+    # # ==================================================================
 
-    if enabled_products["bilateral_pairs"]:
+    # if enabled_products["bilateral_pairs"]:
 
-        pairs_result = run_step(
-            logger=logger,
-            step_number=2,
-            total_steps=total_steps,
-            title="Build Trade Sync bilateral pairs",
-            runner=lambda: build_trade_sync_pairs(
-                cfg=cfg,
-                input_path=prepared_path,
-                force=force,
-                logger=logger,
-            ),
-        )
+    #     pairs_result = run_step(
+    #         logger=logger,
+    #         step_number=2,
+    #         total_steps=total_steps,
+    #         title="Build Trade Sync bilateral pairs",
+    #         runner=lambda: build_trade_sync_pairs(
+    #             cfg=cfg,
+    #             input_path=prepared_path,
+    #             force=force,
+    #             logger=logger,
+    #         ),
+    #     )
 
-        pairs_path = require_result_path(
-            pairs_result,
-            "bilateral_pairs_path",
-            "output_path",
-        )
-    else:
-        raise RuntimeError(
-            "Trade Sync bilateral_pairs must be enabled because "
-            "reconciliation depends on paired import/export evidence."
-        )
+    #     pairs_path = require_result_path(
+    #         pairs_result,
+    #         "bilateral_pairs_path",
+    #         "output_path",
+    #     )
+    # else:
+    #     raise RuntimeError(
+    #         "Trade Sync bilateral_pairs must be enabled because "
+    #         "reconciliation depends on paired import/export evidence."
+    #     )
 
-    # ==================================================================
-    # Step 3 — Reconcile bilateral trade values
-    # ==================================================================
+    # # ==================================================================
+    # # Step 3 — Reconcile bilateral trade values
+    # # ==================================================================
 
-    if enabled_products["reconciled_trade"]:
+    # if enabled_products["reconciled_trade"]:
 
-        reconciled_result = run_step(
-            logger=logger,
-            step_number=3,
-            total_steps=total_steps,
-            title="Reconcile bilateral trade",
-            runner=lambda: reconcile_trade(
-                cfg=cfg,
-                input_path=pairs_path,
-                force=force,
-                logger=logger,
-            ),
-        )
+    #     reconciled_result = run_step(
+    #         logger=logger,
+    #         step_number=3,
+    #         total_steps=total_steps,
+    #         title="Reconcile bilateral trade",
+    #         runner=lambda: reconcile_trade(
+    #             cfg=cfg,
+    #             input_path=pairs_path,
+    #             force=force,
+    #             logger=logger,
+    #         ),
+    #     )
 
-        reconciled_path = require_result_path(
-            reconciled_result,
-            "reconciled_trade_path",
-            "output_path",
-        )
-    else:
-        raise RuntimeError(
-            "Trade Sync reconciled_trade product must be enabled."
-        )
+    #     reconciled_path = require_result_path(
+    #         reconciled_result,
+    #         "reconciled_trade_path",
+    #         "output_path",
+    #     )
+    # else:
+    #     raise RuntimeError(
+    #         "Trade Sync reconciled_trade product must be enabled."
+    #     )
 
-    audit_path = Path(
-        reconciled_result.get(
-            "audit_path",
-            cfg.product_path("reconciliation_audit"),
-        )
-    )
+    # audit_path = Path(
+    #     reconciled_result.get(
+    #         "audit_path",
+    #         cfg.product_path("reconciliation_audit"),
+    #     )
+    # )
 
-    audit_passed = bool(
-        reconciled_result.get("audit_passed", False)
-    )
+    # audit_passed = bool(
+    #     reconciled_result.get("audit_passed", False)
+    # )
 
-    if not audit_passed:
-        raise RuntimeError(
-            "Trade Sync reconciliation audit did not pass."
-        )
+    # if not audit_passed:
+    #     raise RuntimeError(
+    #         "Trade Sync reconciliation audit did not pass."
+    #     )
 
-    # ==================================================================
-    # Step 4 — Build diagnostics
-    # ==================================================================
+    # # ==================================================================
+    # # Step 4 — Build diagnostics
+    # # ==================================================================
 
-    if enabled_products["diagnostics"]:
+    # if enabled_products["diagnostics"]:
 
-        diagnostics_result = run_step(
-            logger=logger,
-            step_number=4,
-            total_steps=total_steps,
-            title="Build Trade Sync diagnostics",
-            runner=lambda: build_trade_sync_diagnostics(
-                cfg=cfg,
-                reconciled_trade_path=reconciled_path,
-                bilateral_pairs_path=pairs_path,
-                force=force,
-                logger=logger,
-            ),
-        )
-    else:
-        logger.info(
-            "SKIP — Trade Sync diagnostics are disabled."
-        )
-        diagnostics_result = {
-            "status": "disabled",
-            "diagnostics_path": None,
-        }
+    #     diagnostics_result = run_step(
+    #         logger=logger,
+    #         step_number=4,
+    #         total_steps=total_steps,
+    #         title="Build Trade Sync diagnostics",
+    #         runner=lambda: build_trade_sync_diagnostics(
+    #             cfg=cfg,
+    #             reconciled_trade_path=reconciled_path,
+    #             bilateral_pairs_path=pairs_path,
+    #             force=force,
+    #             logger=logger,
+    #         ),
+    #     )
+    # else:
+    #     logger.info(
+    #         "SKIP — Trade Sync diagnostics are disabled."
+    #     )
+    #     diagnostics_result = {
+    #         "status": "disabled",
+    #         "diagnostics_path": None,
+    #     }
 
-    # ==================================================================
-    # Step 5 — Decision report
-    # ==================================================================
+    # # ==================================================================
+    # # Step 5 — Decision report
+    # # ==================================================================
 
-    if cfg.decision_report.enable:
+    # if cfg.decision_report.enable:
 
-        report_result = run_step(
-            logger=logger,
-            step_number=5,
-            total_steps=total_steps,
-            title="Write Trade Sync decision report",
-            runner=lambda: write_trade_sync_decision_report(
-                cfg=cfg,
-                run_id=run_id,
-                prepared_result=prepared_result,
-                pairs_result=pairs_result,
-                reconciled_result=reconciled_result,
-                diagnostics_result=diagnostics_result,
-                logger=logger,
-            ),
-        )
-    else:
-        logger.info(
-            "SKIP — Trade Sync decision report is disabled."
-        )
-        report_result = {
-            "status": "disabled",
-            "decision_report_path": None,
-        }
+    #     report_result = run_step(
+    #         logger=logger,
+    #         step_number=5,
+    #         total_steps=total_steps,
+    #         title="Write Trade Sync decision report",
+    #         runner=lambda: write_trade_sync_decision_report(
+    #             cfg=cfg,
+    #             run_id=run_id,
+    #             prepared_result=prepared_result,
+    #             pairs_result=pairs_result,
+    #             reconciled_result=reconciled_result,
+    #             diagnostics_result=diagnostics_result,
+    #             logger=logger,
+    #         ),
+    #     )
+    # else:
+    #     logger.info(
+    #         "SKIP — Trade Sync decision report is disabled."
+    #     )
+    #     report_result = {
+    #         "status": "disabled",
+    #         "decision_report_path": None,
+    #     }
 
-    workflow_elapsed = perf_counter() - workflow_start
+    # workflow_elapsed = perf_counter() - workflow_start
 
-    ready_for_weight_sync = (
-        audit_passed
-        and reconciled_path.is_file()
-        and reconciled_path.stat().st_size > 0
-    )
+    # ready_for_weight_sync = (
+    #     audit_passed
+    #     and reconciled_path.is_file()
+    #     and reconciled_path.stat().st_size > 0
+    # )
 
-    if not ready_for_weight_sync:
-        raise RuntimeError(
-            "Trade Sync finished without a valid reconciled-trade output."
-        )
+    # if not ready_for_weight_sync:
+    #     raise RuntimeError(
+    #         "Trade Sync finished without a valid reconciled-trade output."
+    #     )
 
-    separator(logger)
-    logger.info(
-        "%s Trade Sync workflow finished.",
-        ok,
-    )
-    logger.info(
-        "Final reconciled-trade output: %s",
-        reconciled_path,
-    )
-    logger.info(
-        "Final reconciliation audit: %s",
-        audit_path,
-    )
-    logger.info(
-        "Ready for Weight Sync: %s",
-        ready_for_weight_sync,
-    )
-    logger.info(
-        "Workflow duration: %.2fs",
-        workflow_elapsed,
-    )
+    # separator(logger)
+    # logger.info(
+    #     "%s Trade Sync workflow finished.",
+    #     ok,
+    # )
+    # logger.info(
+    #     "Final reconciled-trade output: %s",
+    #     reconciled_path,
+    # )
+    # logger.info(
+    #     "Final reconciliation audit: %s",
+    #     audit_path,
+    # )
+    # logger.info(
+    #     "Ready for Weight Sync: %s",
+    #     ready_for_weight_sync,
+    # )
+    # logger.info(
+    #     "Workflow duration: %.2fs",
+    #     workflow_elapsed,
+    # )
 
-    decision_report_path = report_result.get(
-        "decision_report_path"
-    )
+    # decision_report_path = report_result.get(
+    #     "decision_report_path"
+    # )
 
-    if decision_report_path:
-        logger.info(
-            "Decision report: %s",
-            decision_report_path,
-        )
+    # if decision_report_path:
+    #     logger.info(
+    #         "Decision report: %s",
+    #         decision_report_path,
+    #     )
 
-    separator(logger)
+    # separator(logger)
+
+    # return {
+    #     "status": "completed",
+    #     "run_id": run_id,
+    #     "audit_passed": audit_passed,
+    #     "ready_for_weight_sync": ready_for_weight_sync,
+    #     "output_path": reconciled_path,
+    #     "reconciled_trade_path": reconciled_path,
+    #     "audit_path": audit_path,
+    #     "reconciliation_audit_path": audit_path,
+    #     "prepared_input_path": prepared_path,
+    #     "bilateral_pairs_path": pairs_path,
+    #     "diagnostics_path": diagnostics_result.get(
+    #         "diagnostics_path"
+    #     ),
+    #     "decision_report_path": decision_report_path,
+    #     "n_failed_audit_rows": reconciled_result.get(
+    #         "n_failed_audit_rows",
+    #         0,
+    #     ),
+    #     "prepared_result": prepared_result,
+    #     "pairs_result": pairs_result,
+    #     "reconciled_result": reconciled_result,
+    #     "diagnostics_result": diagnostics_result,
+    #     "report_result": report_result,
+    # }
 
     return {
-        "status": "completed",
-        "run_id": run_id,
-        "audit_passed": audit_passed,
-        "ready_for_weight_sync": ready_for_weight_sync,
-        "output_path": reconciled_path,
-        "reconciled_trade_path": reconciled_path,
-        "audit_path": audit_path,
-        "reconciliation_audit_path": audit_path,
-        "prepared_input_path": prepared_path,
-        "bilateral_pairs_path": pairs_path,
-        "diagnostics_path": diagnostics_result.get(
-            "diagnostics_path"
-        ),
-        "decision_report_path": decision_report_path,
-        "n_failed_audit_rows": reconciled_result.get(
-            "n_failed_audit_rows",
-            0,
-        ),
-        "prepared_result": prepared_result,
-        "pairs_result": pairs_result,
-        "reconciled_result": reconciled_result,
-        "diagnostics_result": diagnostics_result,
-        "report_result": report_result,
-    }
+            "status": "completed",
+            "run_id": run_id,
+
+            "ready_for_processed_export": bool(
+                prepared_result.get(
+                    "ready_for_bilateral_pairs",
+                    False,
+                )
+            ),
+
+            "output_path": prepared_path,
+            "prepared_input_path": prepared_path,
+            "prepared_result": prepared_result,
+        }

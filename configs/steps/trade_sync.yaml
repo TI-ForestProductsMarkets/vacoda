@@ -19,7 +19,7 @@ trade_sync:
 
   output:
     stage: "interim"
-    subdir: "trade_sync/target_{target_hs_lower}_trade_sync_corrected"
+    subdir: "trade_sync/target_{target_hs_lower}"
     format: "parquet"
 
   # --------------------------------------------------------------------
@@ -30,7 +30,7 @@ trade_sync:
 
     prepared_input:
       enable: true
-      filename: "target_{target_hs_lower}_trade_sync_prepared.parquet"
+      filename: "prepared/comtrade_target_{target_hs_lower}_trade_sync_prepared.parquet"
 
     bilateral_pairs:
       enable: true
