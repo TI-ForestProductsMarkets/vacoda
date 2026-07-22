@@ -62,10 +62,6 @@ trade_sync:
 
   method:
 
-    flows:
-      import: "M"
-      export: "X"
-
     reconciliation:
 
       # Possible examples:
@@ -76,15 +72,8 @@ trade_sync:
 
       require_positive_values: true
 
-      minimum_value_usd: 0.0
-
       # Preserve a unilateral observation when no usable mirror exists.
       retain_unmatched_flows: true
-
-      # Do not change observations where both sides already agree closely.
-      agreement_tolerance:
-        enabled: true
-        relative_difference: 0.05
 
       source_weights:
         exporter_reported: 1.0
@@ -119,6 +108,11 @@ trade_sync:
       - 100000
       - 1000000
       - 10000000
+
+    # Do not change observations where both sides already agree closely.
+    agreement_tolerance:
+      enabled: true
+      relative_difference: 0.05
 
     reconciliation_statuses:
       - "bilateral_reconciled"

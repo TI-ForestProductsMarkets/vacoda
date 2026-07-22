@@ -20,8 +20,8 @@ from vacoda.trade_sync.build_pairs import build_trade_sync_pairs
 from vacoda.trade_sync.reliability_evidence import build_trade_sync_reliability_evidence
 from vacoda.trade_sync.country_reliability import estimate_trade_sync_country_reliability
 from vacoda.trade_sync.reconcile import reconcile_trade
-# from vacoda.trade_sync.diagnostics import build_trade_sync_diagnostics
-# from vacoda.trade_sync.report import   write_trade_sync_decision_report
+from vacoda.trade_sync.diagnostics import build_trade_sync_diagnostics
+#from vacoda.trade_sync.reporting import   write_trade_sync_decision_report
 
 WORKFLOW_STEPS = [
     "Prepare Trade Sync input",
@@ -29,11 +29,43 @@ WORKFLOW_STEPS = [
     "Build Trade Sync reliability evidence",
     "Estimate Trade Sync country reliability",
     "Reconcile trade",
+    "Audit trade reconciliation",
     "Build Trade Sync diagnostics",
     "Write Trade Sync decision report",
 ]
 
 TOTAL_WORKFLOW_STEPS = len(WORKFLOW_STEPS)
+
+def validate_reconciliation_audit(
+    *,
+    reconciled_result: dict,
+    logger,
+) -> dict:
+    """Validate the audit artifact produced during reconciliation."""
+
+    audit_path = require_result_path(
+        reconciled_result,
+        "Trade Sync reconciliation result did not contain "
+        "the reconciliation-audit path.",
+        "reconciliation_audit_path",
+        "audit_path",
+    )
+
+    if not bool(reconciled_result.get("audit_passed", False)):
+        raise RuntimeError(
+            "Trade Sync reconciliation audit did not pass."
+        )
+
+    logger.info("  Audit: %s", audit_path)
+    logger.info("  Audit passed: True")
+
+    return {
+        "status": "completed",
+        "output_path": audit_path,
+        "reconciliation_audit_path": audit_path,
+        "audit_passed": True,
+        "ready_for_diagnostics": True,
+    }
 
 def run_trade_sync_workflow(
     *,
@@ -123,7 +155,7 @@ def run_trade_sync_workflow(
     )
     logger.info(
         "Agreement tolerance enabled: %s",
-        cfg.method.reconciliation.agreement_tolerance.enabled,
+        cfg.diagnostics.agreement_tolerance.enabled,
     )
     logger.info(
         "Enabled products: %s",
@@ -268,6 +300,7 @@ def run_trade_sync_workflow(
     # ==================================================================
 
     if enabled_products["reconciled_trade"]:
+
         reconciled_result = run_step(
             logger=logger,
             step_number=5,
@@ -285,6 +318,8 @@ def run_trade_sync_workflow(
 
         reconciled_path = require_result_path(
             reconciled_result,
+            "Trade Sync reconciliation result did not contain "
+            "an expected output path.",
             "reconciled_trade_path",
             "output_path",
         )
@@ -293,52 +328,94 @@ def run_trade_sync_workflow(
         raise RuntimeError(
             "Trade Sync reconciled_trade product must be enabled."
         )
-    
-    audit_path = require_result_path(
-        reconciled_result,
-        "reconciliation_audit_path",
-        "audit_path",
-    )
 
-    audit_passed = bool(reconciled_result.get("audit_passed", False))
 
-    if not audit_passed:
+    # ==================================================================
+    # Step 6 — Validate reconciliation audit
+    # ==================================================================
+
+    if enabled_products["reconciliation_audit"]:
+
+        audit_path = require_result_path(
+            reconciled_result,
+            "Trade Sync reconciliation result did not contain "
+            "the reconciliation-audit path.",
+            "reconciliation_audit_path",
+            "audit_path",
+        )
+
+        audit_passed = bool(
+            reconciled_result.get("audit_passed", False)
+        )
+
+        if not audit_passed:
+            raise RuntimeError(
+                "Trade Sync reconciliation audit did not pass."
+            )
+
+        logger.info(
+            "VALIDATED — Trade Sync reconciliation audit: %s",
+            audit_path,
+        )
+
+        audit_result = {
+            "status": "completed",
+            "output_path": audit_path,
+            "reconciliation_audit_path": audit_path,
+            "audit_passed": True,
+            "ready_for_diagnostics": True,
+        }
+
+    else:
         raise RuntimeError(
-            "Trade Sync reconciliation audit did not pass."
+            "Trade Sync reconciliation_audit product must be enabled."
         )
 
 
+    # ==================================================================
+    # Step 7 — Build diagnostics
+    # ==================================================================
 
+    if enabled_products["diagnostics"]:
+
+        diagnostics_result = run_step(
+            logger=logger,
+            step_number=7,
+            total_steps=total_steps,
+            title="Build Trade Sync diagnostics",
+            runner=lambda: build_trade_sync_diagnostics(
+                cfg=cfg,
+                reconciled_trade_path=reconciled_path,
+                country_reliability_path=country_reliability_path,
+                reconciliation_audit_path=audit_path,
+                force=force,
+                logger=logger,
+            ),
+        )
+
+        diagnostics_path = require_result_path(
+            diagnostics_result,
+            "Trade Sync diagnostics result did not contain "
+            "an expected path key.",
+            "diagnostics_path",
+            "output_path",
+        )
+
+    else:
+        logger.info(
+            "SKIP — Trade Sync diagnostics are disabled."
+        )
+
+        diagnostics_result = {
+            "status": "disabled",
+            "output_path": None,
+            "diagnostics_path": None,
+            "ready_for_decision_report": False,
+        }
+
+        diagnostics_path = None
     # # ==================================================================
-    # # Step 4 — Build diagnostics
-    # # ==================================================================
-
-    # if enabled_products["diagnostics"]:
-
-    #     diagnostics_result = run_step(
-    #         logger=logger,
-    #         step_number=4,
-    #         total_steps=total_steps,
-    #         title="Build Trade Sync diagnostics",
-    #         runner=lambda: build_trade_sync_diagnostics(
-    #             cfg=cfg,
-    #             reconciled_trade_path=reconciled_path,
-    #             bilateral_pairs_path=pairs_path,
-    #             force=force,
-    #             logger=logger,
-    #         ),
-    #     )
-    # else:
-    #     logger.info(
-    #         "SKIP — Trade Sync diagnostics are disabled."
-    #     )
-    #     diagnostics_result = {
-    #         "status": "disabled",
-    #         "diagnostics_path": None,
-    #     }
-
-    # # ==================================================================
-    # # Step 5 — Decision report
+    # # Step 8 — Decision report
     # # ==================================================================
 
     # if cfg.decision_report.enable:

@@ -274,33 +274,6 @@ class TradeSyncProductsConfig:
 
 
 @dataclass(frozen=True)
-class TradeSyncFlowsConfig:
-    import_code: str
-    export_code: str
-
-    @classmethod
-    def from_dict(cls, cfg: dict[str, Any]) -> "TradeSyncFlowsConfig":
-        import_code = require_str(
-            cfg.get("import"),
-            key="trade_sync.method.flows.import",
-        ).strip()
-        export_code = require_str(
-            cfg.get("export"),
-            key="trade_sync.method.flows.export",
-        ).strip()
-
-        if import_code == export_code:
-            raise ValueError(
-                "Trade Sync import and export flow codes must differ."
-            )
-
-        return cls(
-            import_code=import_code,
-            export_code=export_code,
-        )
-
-
-@dataclass(frozen=True)
 class TradeSyncAgreementToleranceConfig:
     enabled: bool
     relative_difference: float
@@ -416,9 +389,7 @@ class TradeSyncReconciliationConfig:
         "reliability_weighted",
     ]
     require_positive_values: bool
-    minimum_value_usd: float
     retain_unmatched_flows: bool
-    agreement_tolerance: TradeSyncAgreementToleranceConfig
     source_weights: TradeSyncSourceWeightsConfig
     bounds: TradeSyncBoundsConfig
 
@@ -453,31 +424,12 @@ class TradeSyncReconciliationConfig:
                     "require_positive_values"
                 ),
             ),
-            minimum_value_usd=require_float(
-                cfg.get("minimum_value_usd"),
-                key=(
-                    "trade_sync.method.reconciliation."
-                    "minimum_value_usd"
-                ),
-                min_value=0.0,
-            ),
             retain_unmatched_flows=require_bool(
                 cfg.get("retain_unmatched_flows"),
                 key=(
                     "trade_sync.method.reconciliation."
                     "retain_unmatched_flows"
                 ),
-            ),
-            agreement_tolerance=(
-                TradeSyncAgreementToleranceConfig.from_dict(
-                    require_dict(
-                        cfg.get("agreement_tolerance"),
-                        key=(
-                            "trade_sync.method.reconciliation."
-                            "agreement_tolerance"
-                        ),
-                    )
-                )
             ),
             source_weights=TradeSyncSourceWeightsConfig.from_dict(
                 require_dict(
@@ -623,19 +575,12 @@ class TradeSyncValidationConfig:
 
 @dataclass(frozen=True)
 class TradeSyncMethodConfig:
-    flows: TradeSyncFlowsConfig
     reconciliation: TradeSyncReconciliationConfig
     validation: TradeSyncValidationConfig
 
     @classmethod
     def from_dict(cls, cfg: dict[str, Any]) -> "TradeSyncMethodConfig":
         return cls(
-            flows=TradeSyncFlowsConfig.from_dict(
-                require_dict(
-                    cfg.get("flows"),
-                    key="trade_sync.method.flows",
-                )
-            ),
             reconciliation=TradeSyncReconciliationConfig.from_dict(
                 require_dict(
                     cfg.get("reconciliation"),
@@ -654,6 +599,7 @@ class TradeSyncMethodConfig:
 @dataclass(frozen=True)
 class TradeSyncDiagnosticsConfig:
     value_bands_usd: tuple[float, ...]
+    agreement_tolerance: TradeSyncAgreementToleranceConfig
     reconciliation_statuses: tuple[str, ...]
 
     @classmethod
@@ -689,6 +635,12 @@ class TradeSyncDiagnosticsConfig:
                 cfg.get("value_bands_usd"),
                 key="trade_sync.diagnostics.value_bands_usd",
                 min_value=0.0,
+            ),
+            agreement_tolerance=TradeSyncAgreementToleranceConfig.from_dict(
+                require_dict(
+                    cfg.get("agreement_tolerance"),
+                    key="trade_sync.diagnostics.agreement_tolerance",
+                )
             ),
             reconciliation_statuses=statuses,
         )
