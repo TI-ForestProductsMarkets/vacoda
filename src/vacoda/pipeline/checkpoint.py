@@ -300,11 +300,36 @@ def file_manifest_fingerprint(
     }
 
 
+def _read_audit(path: Path) -> pd.DataFrame:
+    """Read a supported pipeline audit artifact."""
+
+    suffix = path.suffix.lower()
+
+    if suffix == ".csv":
+        return pd.read_csv(path)
+
+    if suffix in {".parquet", ".pq"}:
+        return pd.read_parquet(path)
+
+    raise ValueError(
+        "Unsupported audit format "
+        f"{suffix!r} for audit artifact: {path}"
+    )
+
+
 def audit_summary(
     *,
     audit_path: Path,
     ready_check: str | None = None,
 ) -> dict[str, Any]:
+    """
+    Summarize either:
+
+    1. a long audit with `check`/`check_name` and `status`; or
+    2. a wide one-row audit with an explicit `audit_passed` flag or
+       zero-valued failure counters.
+    """
+
     if not audit_path.exists():
         return {
             "exists": False,
@@ -314,39 +339,128 @@ def audit_summary(
             "ready_check_status": None,
         }
 
-    audit = pd.read_csv(audit_path)
+    audit = _read_audit(audit_path)
+
+    ready_status: str | None = None
+
+    # --------------------------------------------------------------
+    # Long-format audit
+    # --------------------------------------------------------------
 
     if "status" in audit.columns:
-        n_failed = int((audit["status"] == "fail").sum())
+        normalized_status = (
+            audit["status"]
+            .astype(str)
+            .str.strip()
+            .str.lower()
+        )
+
+        n_failed = int(
+            normalized_status.isin(
+                {"fail", "failed", "error"}
+            ).sum()
+        )
+
+        check_column: str | None = None
+
+        if "check" in audit.columns:
+            check_column = "check"
+        elif "check_name" in audit.columns:
+            check_column = "check_name"
+
+        if (
+            ready_check is not None
+            and check_column is not None
+        ):
+            ready_rows = audit.loc[
+                audit[check_column].astype(str)
+                == str(ready_check)
+            ]
+
+            if not ready_rows.empty:
+                ready_status = str(
+                    ready_rows["status"].iloc[-1]
+                ).strip().lower()
+
+    # --------------------------------------------------------------
+    # Wide-format audit with explicit pass flag
+    # --------------------------------------------------------------
+
+    elif "audit_passed" in audit.columns:
+        passed = (
+            audit["audit_passed"]
+            .fillna(False)
+            .astype(bool)
+        )
+
+        n_failed = int((~passed).sum())
+
+        if ready_check is not None:
+            ready_status = (
+                "pass"
+                if bool(passed.all())
+                else "fail"
+            )
+
+    # --------------------------------------------------------------
+    # Trade Sync wide audit
+    # --------------------------------------------------------------
+
     else:
-        n_failed = -1
-
-    ready_status = None
-
-    check_column = None
-
-    if "check" in audit.columns:
-        check_column = "check"
-    elif "check_name" in audit.columns:
-        check_column = "check_name"
-
-    if (
-        ready_check is not None
-        and check_column is not None
-        and "status" in audit.columns
-    ):
-        ready_rows = audit.loc[
-            audit[check_column] == ready_check
+        failure_columns = [
+            "n_invalid_reconciled_values",
+            "n_missing_expected_reconciled_values",
+            "n_duplicate_keys",
         ]
 
-        if not ready_rows.empty:
-            ready_status = str(
-                ready_rows["status"].iloc[-1]
+        available_failure_columns = [
+            column
+            for column in failure_columns
+            if column in audit.columns
+        ]
+
+        if len(available_failure_columns) != len(
+            failure_columns
+        ):
+            missing = sorted(
+                set(failure_columns)
+                - set(available_failure_columns)
+            )
+
+            raise RuntimeError(
+                "Wide audit has neither a `status` column nor an "
+                "`audit_passed` column and is missing required "
+                "failure counters: "
+                + ", ".join(missing)
+                + f". Audit: {audit_path}"
+            )
+
+        failure_mask = pd.Series(
+            False,
+            index=audit.index,
+        )
+
+        for column in failure_columns:
+            values = pd.to_numeric(
+                audit[column],
+                errors="coerce",
+            )
+
+            # Missing/non-numeric failure counters must not silently pass.
+            failure_mask |= values.isna() | values.ne(0)
+
+        n_failed = int(failure_mask.sum())
+
+        if ready_check is not None:
+            ready_status = (
+                "pass"
+                if n_failed == 0
+                else "fail"
             )
 
     return {
         "exists": True,
-        "n_rows": len(audit),
+        "n_rows": int(len(audit)),
         "n_failed_audit_rows": n_failed,
         "ready_check": ready_check,
         "ready_check_status": ready_status,

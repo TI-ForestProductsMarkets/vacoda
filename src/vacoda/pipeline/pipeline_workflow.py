@@ -717,9 +717,13 @@ def _result_output_path(result: dict[str, Any], fallback: Path) -> Path:
     return Path(value)
 
 
-def _result_audit_path(result: dict[str, Any], fallback: Path) -> Path:
+def _result_audit_path(
+    result: dict[str, Any],
+    fallback: Path,
+) -> Path:
     value = (
-        result.get("audit_path")
+        result.get("reconciliation_audit_path")
+        or result.get("audit_path")
         or result.get("audit_file")
         or result.get("final_audit")
         or fallback
