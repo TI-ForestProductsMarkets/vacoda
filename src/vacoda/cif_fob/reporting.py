@@ -4792,6 +4792,59 @@ def _rank_models(
     return ranked
 
 
+def _enabled_predictor_set_names(
+    cfg: CifFobConfig,
+) -> set[str]:
+    """Return configured predictor-set names flagged as enabled."""
+    predictor_sets_cfg = getattr(
+        cfg.method.estimation,
+        "predictor_sets",
+        {},
+    )
+
+    if not predictor_sets_cfg:
+        return set()
+
+    return {
+        name
+        for name, predictor_set in predictor_sets_cfg.items()
+        if bool(getattr(predictor_set, "enabled", False))
+    }
+
+
+def _filter_to_enabled_predictor_sets(
+    frame: pd.DataFrame,
+    *,
+    enabled_predictor_sets: set[str],
+) -> pd.DataFrame:
+    """Keep only rows whose predictor set is enabled in config."""
+    if frame.empty or not enabled_predictor_sets:
+        return frame
+
+    filtered = frame.copy()
+
+    if "predictor_set_name" not in filtered.columns:
+        if "model_name" not in filtered.columns:
+            return filtered
+
+        split_parts = (
+            filtered["model_name"]
+            .astype(str)
+            .str.split("__", n=1, expand=True)
+        )
+        filtered["predictor_set_name"] = (
+            split_parts[1]
+            if split_parts.shape[1] > 1
+            else ""
+        )
+
+    mask = filtered["predictor_set_name"].astype(str).isin(
+        enabled_predictor_sets
+    )
+
+    return filtered.loc[mask].copy()
+
+
 def _best_model(
     summary: pd.DataFrame,
     *,
@@ -5392,6 +5445,23 @@ def write_cif_fob_decision_report(
         folds_path=folds_path,
     )
 
+    predictor_sets_cfg = getattr(
+        cfg.method.estimation,
+        "predictor_sets",
+        {},
+    )
+    enabled_predictor_sets = _enabled_predictor_set_names(cfg)
+
+    if predictor_sets_cfg:
+        summary = _filter_to_enabled_predictor_sets(
+            summary,
+            enabled_predictor_sets=enabled_predictor_sets,
+        )
+        folds = _filter_to_enabled_predictor_sets(
+            folds,
+            enabled_predictor_sets=enabled_predictor_sets,
+        )
+
     direct_factor_distribution_df = (
         _load_direct_factor_distribution_data(
             path=training_features_path,
@@ -5876,17 +5946,12 @@ def write_cif_fob_decision_report(
         ]
     )
 
-    predictor_sets_cfg = getattr(
-        cfg.method.estimation,
-        "predictor_sets",
-        {},
-    )
-
     if predictor_sets_cfg:
         predictor_set_rows = pd.DataFrame(
             [
                 {
                     "Predictor set": name,
+                    "Enabled": bool(getattr(predictor_set, "enabled", False)),
                     "Numeric predictors": ", ".join(
                         getattr(predictor_set, "numeric", [])
                     ),
@@ -5907,6 +5972,7 @@ def write_cif_fob_decision_report(
             [
                 {
                     "Predictor set": "global",
+                    "Enabled": True,
                     "Numeric predictors": ", ".join(
                         cfg.method.predictors.all()
                     ),
@@ -5930,6 +5996,10 @@ def write_cif_fob_decision_report(
                 }
             ]
         )
+
+    predictor_set_details_rows = predictor_set_rows.loc[
+        predictor_set_rows["Enabled"].astype(bool)
+    ].copy()
 
     coverage_rows = pd.DataFrame(
         [
@@ -6361,7 +6431,7 @@ def write_cif_fob_decision_report(
 
     predictor_set_detail_lines: list[str] = []
 
-    for _, row in predictor_set_rows.iterrows():
+    for _, row in predictor_set_details_rows.iterrows():
         predictor_set_detail_lines.extend(
             [
                 f"#### `{row['Predictor set']}`",
@@ -6381,6 +6451,12 @@ def write_cif_fob_decision_report(
                 "",
             ]
         )
+
+    if not predictor_set_detail_lines:
+        predictor_set_detail_lines = [
+            "_No enabled predictor sets configured._",
+            "",
+        ]
 
     paired_groups = int(
         population_metrics["n_bilateral_mirror_groups"]
@@ -6507,15 +6583,17 @@ def write_cif_fob_decision_report(
         "## 4. Configured predictor sets",
         "",
         (
-            "The report now distinguishes estimator algorithms from "
-            "predictor sets. This makes the model-comparison grid explicit "
-            "while preserving the previous global-predictor fallback."
+            "The report distinguishes estimator algorithms from predictor "
+            "sets. All configured predictor sets are listed below with "
+            "their enable status; detailed breakdowns in Section 4.1 are "
+            "shown only for enabled predictor sets."
         ),
         "",
         _markdown_table(
             predictor_set_rows,
             columns=[
                 "Predictor set",
+                "Enabled",
                 "Predictor count",
                 "Primary",
                 "Categorical predictors",
