@@ -11,95 +11,27 @@ from __future__ import annotations
 
 from pathlib import Path
 from time import perf_counter
-from typing import Any, Callable
-
+from typing import Any
 from vacoda.config.trade_sync import TradeSyncConfig
 from vacoda.utils.display import get_symbols
-# from vacoda.trade_sync.prepare_input import  prepare_trade_sync_input
+from vacoda.utils.logger import require_result_path, run_step, separator
+from vacoda.trade_sync.prepare_input import  prepare_trade_sync_input
 # from vacoda.trade_sync.build_pairs import build_trade_sync_pairs
 # from vacoda.trade_sync.reconcile import reconcile_trade
 # from vacoda.trade_sync.diagnostics import build_trade_sync_diagnostics
 # from vacoda.trade_sync.report import   write_trade_sync_decision_report
-        
-        
 
-def _separator(logger) -> None:
-    logger.info("=" * 72)
+WORKFLOW_STEPS = [
+    "Prepare Trade Sync input",
+    "Build Trade Sync bilateral pairs",
+    "Reconcile trade",
+    "Build Trade Sync diagnostics",
+    "Write Trade Sync decision report",
+]
 
-
-def _log_step_header(
-    *,
-    logger,
-    step_number: int,
-    total_steps: int,
-    title: str,
-) -> None:
-    _separator(logger)
-    logger.info(
-        "STEP %s/%s — %s",
-        step_number,
-        total_steps,
-        title,
-    )
-    _separator(logger)
-
-
-def _run_step(
-    *,
-    logger,
-    step_number: int,
-    total_steps: int,
-    title: str,
-    runner: Callable[[], dict[str, Any]],
-) -> dict[str, Any]:
-    """Run one workflow step with consistent timing and logging."""
-    _log_step_header(
-        logger=logger,
-        step_number=step_number,
-        total_steps=total_steps,
-        title=title,
-    )
-
-    start = perf_counter()
-    result = runner()
-    elapsed = perf_counter() - start
-
-    logger.info(
-        "DONE — %s (%.2fs)",
-        title,
-        elapsed,
-    )
-
-    return result
-
-
-def _require_result_path(
-    result: dict[str, Any],
-    *keys: str,
-) -> Path:
-    """Return the first available path from a step result."""
-    for key in keys:
-        value = result.get(key)
-        if value:
-            return Path(value)
-
-    raise RuntimeError(
-        "Trade Sync step result did not contain any expected path key: "
-        + ", ".join(keys)
-    )
-
+TOTAL_WORKFLOW_STEPS = len(WORKFLOW_STEPS)
 
 def run_trade_sync_workflow(
-    *,
-    cfg: TradeSyncConfig,
-    run_id: str,
-    logger,
-    force: bool = False,
-    input_path: Path | None = None,
-) -> dict[str, Any]:
-    pass
-
-def run_trade_sync_workflow_deprecated(
     *,
     cfg: TradeSyncConfig,
     run_id: str,
@@ -163,11 +95,11 @@ def run_trade_sync_workflow_deprecated(
     )
 
     enabled_products = cfg.enabled_products()
-    total_steps = 5
+    total_steps = TOTAL_WORKFLOW_STEPS
 
-    _separator(logger)
+    separator(logger)
     logger.info("%s START — Trade Sync workflow", info)
-    _separator(logger)
+    separator(logger)
     logger.info("Run ID: %s", run_id)
     logger.info("Target HS: %s", cfg.scope.target_hs)
     logger.info(
@@ -205,7 +137,7 @@ def run_trade_sync_workflow_deprecated(
 
     if enabled_products["prepared_input"]:
 
-        prepared_result = _run_step(
+        prepared_result = run_step(
             logger=logger,
             step_number=1,
             total_steps=total_steps,
@@ -218,10 +150,11 @@ def run_trade_sync_workflow_deprecated(
             ),
         )
 
-        prepared_path = _require_result_path(
+        prepared_path = require_result_path(
             prepared_result,
             "prepared_input_path",
             "output_path",
+            error_message="Trade Sync step result did not contain any expected path key"
         )
     else:
         logger.warning(
@@ -241,7 +174,7 @@ def run_trade_sync_workflow_deprecated(
 
     if enabled_products["bilateral_pairs"]:
 
-        pairs_result = _run_step(
+        pairs_result = run_step(
             logger=logger,
             step_number=2,
             total_steps=total_steps,
@@ -254,7 +187,7 @@ def run_trade_sync_workflow_deprecated(
             ),
         )
 
-        pairs_path = _require_result_path(
+        pairs_path = require_result_path(
             pairs_result,
             "bilateral_pairs_path",
             "output_path",
@@ -271,7 +204,7 @@ def run_trade_sync_workflow_deprecated(
 
     if enabled_products["reconciled_trade"]:
 
-        reconciled_result = _run_step(
+        reconciled_result = run_step(
             logger=logger,
             step_number=3,
             total_steps=total_steps,
@@ -284,7 +217,7 @@ def run_trade_sync_workflow_deprecated(
             ),
         )
 
-        reconciled_path = _require_result_path(
+        reconciled_path = require_result_path(
             reconciled_result,
             "reconciled_trade_path",
             "output_path",
@@ -316,7 +249,7 @@ def run_trade_sync_workflow_deprecated(
 
     if enabled_products["diagnostics"]:
 
-        diagnostics_result = _run_step(
+        diagnostics_result = run_step(
             logger=logger,
             step_number=4,
             total_steps=total_steps,
@@ -344,7 +277,7 @@ def run_trade_sync_workflow_deprecated(
 
     if cfg.decision_report.enable:
 
-        report_result = _run_step(
+        report_result = run_step(
             logger=logger,
             step_number=5,
             total_steps=total_steps,
@@ -381,7 +314,7 @@ def run_trade_sync_workflow_deprecated(
             "Trade Sync finished without a valid reconciled-trade output."
         )
 
-    _separator(logger)
+    separator(logger)
     logger.info(
         "%s Trade Sync workflow finished.",
         ok,
@@ -413,7 +346,7 @@ def run_trade_sync_workflow_deprecated(
             decision_report_path,
         )
 
-    _separator(logger)
+    separator(logger)
 
     return {
         "status": "completed",
