@@ -16,7 +16,7 @@ from vacoda.config.trade_sync import TradeSyncConfig
 from vacoda.utils.display import get_symbols
 from vacoda.utils.logger import require_result_path, run_step, separator
 from vacoda.trade_sync.prepare_input import  prepare_trade_sync_input
-# from vacoda.trade_sync.build_pairs import build_trade_sync_pairs
+from vacoda.trade_sync.build_pairs import build_trade_sync_pairs
 # from vacoda.trade_sync.reconcile import reconcile_trade
 # from vacoda.trade_sync.diagnostics import build_trade_sync_diagnostics
 # from vacoda.trade_sync.report import   write_trade_sync_decision_report
@@ -168,35 +168,36 @@ def run_trade_sync_workflow(
         }
         prepared_path = resolved_input_path
 
-    # # ==================================================================
-    # # Step 2 — Build bilateral import/export pairs
-    # # ==================================================================
+    # ==================================================================
+    # Step 2 — Build bilateral import/export pairs
+    # ==================================================================
 
-    # if enabled_products["bilateral_pairs"]:
+    if enabled_products["bilateral_pairs"]:
 
-    #     pairs_result = run_step(
-    #         logger=logger,
-    #         step_number=2,
-    #         total_steps=total_steps,
-    #         title="Build Trade Sync bilateral pairs",
-    #         runner=lambda: build_trade_sync_pairs(
-    #             cfg=cfg,
-    #             input_path=prepared_path,
-    #             force=force,
-    #             logger=logger,
-    #         ),
-    #     )
+        pairs_result = run_step(
+            logger=logger,
+            step_number=2,
+            total_steps=total_steps,
+            title="Build Trade Sync bilateral pairs",
+            runner=lambda: build_trade_sync_pairs(
+                cfg=cfg,
+                input_path=prepared_path,
+                force=force,
+                logger=logger,
+            ),
+        )
 
-    #     pairs_path = require_result_path(
-    #         pairs_result,
-    #         "bilateral_pairs_path",
-    #         "output_path",
-    #     )
-    # else:
-    #     raise RuntimeError(
-    #         "Trade Sync bilateral_pairs must be enabled because "
-    #         "reconciliation depends on paired import/export evidence."
-    #     )
+        pairs_path = require_result_path(
+            pairs_result,
+            "Trade Sync step result did not contain any expected path key",
+            "bilateral_pairs_path",
+            "output_path",
+        )
+    else:
+        raise RuntimeError(
+            "Trade Sync bilateral_pairs must be enabled because "
+            "reconciliation depends on paired import/export evidence."
+        )
 
     # # ==================================================================
     # # Step 3 — Reconcile bilateral trade values
