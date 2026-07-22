@@ -19,7 +19,7 @@ from vacoda.trade_sync.prepare_input import  prepare_trade_sync_input
 from vacoda.trade_sync.build_pairs import build_trade_sync_pairs
 from vacoda.trade_sync.reliability_evidence import build_trade_sync_reliability_evidence
 from vacoda.trade_sync.country_reliability import estimate_trade_sync_country_reliability
-# from vacoda.trade_sync.reconcile import reconcile_trade
+from vacoda.trade_sync.reconcile import reconcile_trade
 # from vacoda.trade_sync.diagnostics import build_trade_sync_diagnostics
 # from vacoda.trade_sync.report import   write_trade_sync_decision_report
 
@@ -263,50 +263,51 @@ def run_trade_sync_workflow(
             "Trade Sync country_reliability must be enabled."
         )
 
-    # # ==================================================================
-    # # Step 3 — Reconcile bilateral trade values
-    # # ==================================================================
+    # ==================================================================
+    # Step 5 — Reconcile bilateral trade values
+    # ==================================================================
 
-    # if enabled_products["reconciled_trade"]:
+    if enabled_products["reconciled_trade"]:
+        reconciled_result = run_step(
+            logger=logger,
+            step_number=5,
+            total_steps=total_steps,
+            title="Reconcile trade",
+            runner=lambda: reconcile_trade(
+                cfg=cfg,
+                prepared_input_path=prepared_path,
+                reliability_evidence_path=reliability_evidence_path,
+                country_reliability_path=country_reliability_path,
+                force=force,
+                logger=logger,
+            ),
+        )
 
-    #     reconciled_result = run_step(
-    #         logger=logger,
-    #         step_number=3,
-    #         total_steps=total_steps,
-    #         title="Reconcile bilateral trade",
-    #         runner=lambda: reconcile_trade(
-    #             cfg=cfg,
-    #             input_path=pairs_path,
-    #             force=force,
-    #             logger=logger,
-    #         ),
-    #     )
+        reconciled_path = require_result_path(
+            reconciled_result,
+            "reconciled_trade_path",
+            "output_path",
+        )
 
-    #     reconciled_path = require_result_path(
-    #         reconciled_result,
-    #         "reconciled_trade_path",
-    #         "output_path",
-    #     )
-    # else:
-    #     raise RuntimeError(
-    #         "Trade Sync reconciled_trade product must be enabled."
-    #     )
+    else:
+        raise RuntimeError(
+            "Trade Sync reconciled_trade product must be enabled."
+        )
+    
+    audit_path = require_result_path(
+        reconciled_result,
+        "reconciliation_audit_path",
+        "audit_path",
+    )
 
-    # audit_path = Path(
-    #     reconciled_result.get(
-    #         "audit_path",
-    #         cfg.product_path("reconciliation_audit"),
-    #     )
-    # )
+    audit_passed = bool(reconciled_result.get("audit_passed", False))
 
-    # audit_passed = bool(
-    #     reconciled_result.get("audit_passed", False)
-    # )
+    if not audit_passed:
+        raise RuntimeError(
+            "Trade Sync reconciliation audit did not pass."
+        )
 
-    # if not audit_passed:
-    #     raise RuntimeError(
-    #         "Trade Sync reconciliation audit did not pass."
-    #     )
+
 
     # # ==================================================================
     # # Step 4 — Build diagnostics
