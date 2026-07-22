@@ -10,7 +10,7 @@ Outputs
 - Reconciliation-status figure
 - Annual trade-value totals figure
 - Country-reliability figure
-- Agreement/discrepancy figure
+- Positive-positive agreement/discrepancy figure
 """
 
 from __future__ import annotations
@@ -21,11 +21,15 @@ import shutil
 from typing import Any
 
 import duckdb
+import matplotlib
+
+matplotlib.use("Agg")
+
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from vacoda.config.trade_sync import TradeSyncConfig
 from vacoda.config.paths import get_figure_dir
+from vacoda.config.trade_sync import TradeSyncConfig
 from vacoda.utils.display import get_symbols
 
 
@@ -45,9 +49,8 @@ def valid_output(path: Path) -> bool:
 
 
 def _format_integer(value: float | int | None) -> str:
-    if value is None:
+    if value is None or pd.isna(value):
         return "NA"
-
     return f"{int(round(float(value))):,}"
 
 
@@ -56,36 +59,25 @@ def _format_percent(
     *,
     digits: int = 2,
 ) -> str:
-    if value is None:
+    if value is None or pd.isna(value):
         return "NA"
-
     return f"{100.0 * float(value):.{digits}f}%"
-
-
-def _format_fraction_as_percent(
-    value: float | None,
-    *,
-    digits: int = 2,
-) -> str:
-    return _format_percent(value, digits=digits)
 
 
 def _format_usd(value: Any) -> str:
     if value is None or pd.isna(value):
         return "—"
 
-    value = float(value)
+    numeric = float(value)
 
-    if abs(value) >= 1e12:
-        return f"${value / 1e12:,.3f} trillion"
+    if abs(numeric) >= 1e12:
+        return f"${numeric / 1e12:,.3f} trillion"
+    if abs(numeric) >= 1e9:
+        return f"${numeric / 1e9:,.3f} billion"
+    if abs(numeric) >= 1e6:
+        return f"${numeric / 1e6:,.3f} million"
 
-    if abs(value) >= 1e9:
-        return f"${value / 1e9:,.3f} billion"
-
-    if abs(value) >= 1e6:
-        return f"${value / 1e6:,.3f} million"
-
-    return f"${value:,.2f}"
+    return f"${numeric:,.2f}"
 
 
 def _markdown_table(
@@ -119,36 +111,28 @@ def _metric_lookup(
         & diagnostics["metric"].eq(metric)
     )
 
-    if year is None:
-        mask &= diagnostics["year"].isna()
-    else:
-        mask &= diagnostics["year"].eq(year)
-
-    if status is None:
-        mask &= diagnostics["reconciliation_status"].isna()
-    else:
-        mask &= diagnostics["reconciliation_status"].eq(
-            status
-        )
-
-    if direction is None:
-        mask &= diagnostics["reporting_direction"].isna()
-    else:
-        mask &= diagnostics["reporting_direction"].eq(
-            direction
-        )
+    mask &= (
+        diagnostics["year"].isna()
+        if year is None
+        else diagnostics["year"].eq(year)
+    )
+    mask &= (
+        diagnostics["reconciliation_status"].isna()
+        if status is None
+        else diagnostics["reconciliation_status"].eq(status)
+    )
+    mask &= (
+        diagnostics["reporting_direction"].isna()
+        if direction is None
+        else diagnostics["reporting_direction"].eq(direction)
+    )
 
     values = diagnostics.loc[mask, "metric_value"]
 
-    if values.empty:
+    if values.empty or pd.isna(values.iloc[0]):
         return None
 
-    value = values.iloc[0]
-
-    if pd.isna(value):
-        return None
-
-    return float(value)
+    return float(values.iloc[0])
 
 
 # ======================================================================
@@ -170,16 +154,9 @@ def _plot_reconciliation_status_by_year(
             year,
             reconciliation_status,
             COUNT(*) AS n_rows
-
         FROM read_parquet({reconciled_sql})
-
-        GROUP BY
-            year,
-            reconciliation_status
-
-        ORDER BY
-            year,
-            reconciliation_status
+        GROUP BY year, reconciliation_status
+        ORDER BY year, reconciliation_status
         """
     ).fetchdf()
 
@@ -189,35 +166,21 @@ def _plot_reconciliation_status_by_year(
         values="n_rows",
     ).fillna(0)
 
-    figure, axis = plt.subplots(
-        figsize=(11, 6)
-    )
+    figure, axis = plt.subplots(figsize=(11, 6))
+    pivot.plot(kind="bar", stacked=True, ax=axis)
 
-    pivot.plot(
-        kind="bar",
-        stacked=True,
-        ax=axis,
-    )
-
-    axis.set_title(
-        "Trade Sync reconciliation status by year"
-    )
+    axis.set_title("Trade Sync reconciliation status by year")
     axis.set_xlabel("Year")
     axis.set_ylabel("Number of bilateral product rows")
+    axis.grid(axis="y", linestyle="--", alpha=0.5)
     axis.legend(
         title="Reconciliation status",
         bbox_to_anchor=(1.02, 1),
         loc="upper left",
     )
-    axis.grid(axis="y", linestyle="--", alpha=0.5)
-    axis.grid(axis="x", linestyle="--", alpha=0.5)
 
     figure.tight_layout()
-    figure.savefig(
-        output_path,
-        dpi=180,
-        bbox_inches="tight",
-    )
+    figure.savefig(output_path, dpi=180, bbox_inches="tight")
     plt.close(figure)
 
 
@@ -233,28 +196,20 @@ def _plot_trade_value_totals_by_year(
         f"""
         SELECT
             year,
-
-            SUM(export_value_fob)
-                FILTER (
-                    WHERE export_value_fob IS NOT NULL
-                      AND isfinite(export_value_fob)
-                      AND export_value_fob > 0
-                ) AS exporter_fob_total,
-
-            SUM(import_value_fob_corrected)
-                FILTER (
-                    WHERE import_value_fob_corrected IS NOT NULL
-                      AND isfinite(import_value_fob_corrected)
-                      AND import_value_fob_corrected > 0
-                ) AS importer_fob_equivalent_total,
-
-            SUM(trade_value_reconciled)
-                FILTER (
-                    WHERE trade_value_reconciled IS NOT NULL
-                ) AS reconciled_total
-
+            SUM(export_value_fob) FILTER (
+                WHERE export_value_fob IS NOT NULL
+                  AND isfinite(export_value_fob)
+                  AND export_value_fob > 0
+            ) AS exporter_fob_total,
+            SUM(import_value_fob_corrected) FILTER (
+                WHERE import_value_fob_corrected IS NOT NULL
+                  AND isfinite(import_value_fob_corrected)
+                  AND import_value_fob_corrected > 0
+            ) AS importer_fob_equivalent_total,
+            SUM(trade_value_reconciled) FILTER (
+                WHERE trade_value_reconciled IS NOT NULL
+            ) AS reconciled_total
         FROM read_parquet({reconciled_sql})
-
         GROUP BY year
         ORDER BY year
         """
@@ -262,20 +217,15 @@ def _plot_trade_value_totals_by_year(
 
     frame = frame.set_index("year") / 1e9
 
-    figure, axis = plt.subplots(
-        figsize=(10, 6)
-    )
-
-    frame.plot(
-        marker="o",
-        ax=axis,
-    )
+    figure, axis = plt.subplots(figsize=(10, 6))
+    frame.plot(marker="o", ax=axis)
 
     axis.set_title(
         "Annual trade-value totals before and after Trade Sync"
     )
     axis.set_xlabel("Year")
     axis.set_ylabel("Trade value, USD billions")
+    axis.grid(axis="y", linestyle="--", alpha=0.5)
     axis.legend(
         labels=[
             "Exporter FOB reports",
@@ -283,15 +233,9 @@ def _plot_trade_value_totals_by_year(
             "Reconciled trade",
         ]
     )
-    axis.grid(axis="y", linestyle="--", alpha=0.5)
-    axis.grid(axis="x", linestyle="--", alpha=0.5)
 
     figure.tight_layout()
-    figure.savefig(
-        output_path,
-        dpi=180,
-        bbox_inches="tight",
-    )
+    figure.savefig(output_path, dpi=180, bbox_inches="tight")
     plt.close(figure)
 
 
@@ -308,32 +252,20 @@ def _plot_country_reliability_by_year(
         SELECT
             year,
             reporting_direction,
-            MEDIAN(reliability_index)
-                AS median_reliability_index,
+            MEDIAN(reliability_index) AS median_reliability_index,
             QUANTILE_CONT(reliability_index, 0.25)
                 AS p25_reliability_index,
             QUANTILE_CONT(reliability_index, 0.75)
                 AS p75_reliability_index
-
         FROM read_parquet({reliability_sql})
-
-        GROUP BY
-            year,
-            reporting_direction
-
-        ORDER BY
-            year,
-            reporting_direction
+        GROUP BY year, reporting_direction
+        ORDER BY year, reporting_direction
         """
     ).fetchdf()
 
-    figure, axis = plt.subplots(
-        figsize=(10, 6)
-    )
+    figure, axis = plt.subplots(figsize=(10, 6))
 
-    for direction, group in frame.groupby(
-        "reporting_direction"
-    ):
+    for direction, group in frame.groupby("reporting_direction"):
         group = group.sort_values("year")
 
         axis.plot(
@@ -342,7 +274,6 @@ def _plot_country_reliability_by_year(
             marker="o",
             label=f"{direction.title()} median",
         )
-
         axis.fill_between(
             group["year"],
             group["p25_reliability_index"],
@@ -350,87 +281,92 @@ def _plot_country_reliability_by_year(
             alpha=0.15,
         )
 
-    axis.set_title(
-        "Country reliability index by year"
-    )
+    axis.set_title("Country reliability index by year")
     axis.set_xlabel("Year")
-    axis.set_ylabel(
-        "Reliability index: 1 − mean bilateral deviation"
-    )
-    axis.grid(axis="y", linestyle="--", alpha=0.5)
-    axis.grid(axis="x", linestyle="--", alpha=0.5)
+    axis.set_ylabel("Reliability index: 1 − mean evidence deviation")
     axis.set_ylim(0, 1)
+    axis.grid(axis="y", linestyle="--", alpha=0.5)
     axis.legend()
 
     figure.tight_layout()
-    figure.savefig(
-        output_path,
-        dpi=180,
-        bbox_inches="tight",
-    )
+    figure.savefig(output_path, dpi=180, bbox_inches="tight")
     plt.close(figure)
 
 
-def _plot_agreement_and_discrepancy_by_year(
+def _plot_positive_positive_agreement_by_year(
     *,
-    diagnostics: pd.DataFrame,
+    con: duckdb.DuckDBPyConnection,
+    reconciled_sql: str,
+    agreement_tolerance: float,
     output_path: Path,
 ) -> None:
-    """Plot agreement-tolerance share and median discrepancy."""
+    """
+    Plot agreement and discrepancy using genuine positive-positive
+    comparisons only.
+    """
 
-    year_metrics = diagnostics.loc[
-        diagnostics["diagnostic_scope"].eq("year")
-        & diagnostics["metric"].isin(
-            [
-                "within_agreement_tolerance_share",
-                "median_relative_difference",
-            ]
+    frame = con.execute(
+        f"""
+        WITH positive_pairs AS (
+            SELECT
+                year,
+                ABS(
+                    reconciliation_export_value
+                    - reconciliation_import_value
+                )
+                / GREATEST(
+                    reconciliation_export_value,
+                    reconciliation_import_value
+                ) AS relative_difference
+            FROM read_parquet({reconciled_sql})
+            WHERE reliability_evidence_case = 'both_positive'
+              AND reconciliation_export_value > 0
+              AND reconciliation_import_value > 0
         )
-    ].copy()
+        SELECT
+            year,
+            MEDIAN(relative_difference)
+                AS median_relative_difference,
+            AVG(
+                CASE
+                    WHEN relative_difference <= {float(agreement_tolerance)}
+                        THEN 1.0
+                    ELSE 0.0
+                END
+            ) AS agreement_share
+        FROM positive_pairs
+        GROUP BY year
+        ORDER BY year
+        """
+    ).fetchdf()
 
-    pivot = year_metrics.pivot(
-        index="year",
-        columns="metric",
-        values="metric_value",
-    ).sort_index()
+    figure, axis = plt.subplots(figsize=(10, 6))
 
-    figure, axis = plt.subplots(
-        figsize=(10, 6)
+    axis.plot(
+        frame["year"],
+        100 * frame["agreement_share"],
+        marker="o",
+        label=(
+            f"Within {100 * agreement_tolerance:.0f}% agreement"
+        ),
+    )
+    axis.plot(
+        frame["year"],
+        100 * frame["median_relative_difference"],
+        marker="o",
+        label="Median positive-positive difference",
     )
 
-    if "within_agreement_tolerance_share" in pivot:
-        axis.plot(
-            pivot.index,
-            100
-            * pivot["within_agreement_tolerance_share"],
-            marker="o",
-            label="Within 5% agreement",
-        )
-
-    if "median_relative_difference" in pivot:
-        axis.plot(
-            pivot.index,
-            100
-            * pivot["median_relative_difference"],
-            marker="o",
-            label="Median bilateral difference",
-        )
-
-    axis.grid(axis="y", linestyle="--", alpha=0.5)
-    axis.grid(axis="x", linestyle="--", alpha=0.5)
     axis.set_title(
-        "Agreement and bilateral discrepancy by year"
+        "Positive-report agreement and discrepancy by year"
     )
     axis.set_xlabel("Year")
     axis.set_ylabel("Share or relative difference, percent")
+    axis.grid(axis="y", linestyle="--", alpha=0.5)
     axis.legend()
 
     figure.tight_layout()
-    figure.savefig(
-        output_path,
-        dpi=180,
-        bbox_inches="tight",
-    )
+    figure.savefig(output_path, dpi=180, bbox_inches="tight")
     plt.close(figure)
 
 
@@ -472,7 +408,7 @@ def build_trade_sync_report(
         return {
             "status": "disabled",
             "report_path": None,
-            "latest_path": None,
+            "latest_report_path": None,
             "ready_for_processed_export": False,
         }
 
@@ -485,19 +421,8 @@ def build_trade_sync_report(
         / f"target_{cfg.scope.target_hs.lower()}"
     )
 
-    report_path.parent.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    figure_dir.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    latest_report_path: Path | None = None
-
-    latest_report_path = latest_path
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    figure_dir.mkdir(parents=True, exist_ok=True)
 
     if not force and valid_output(report_path):
         logger.info(
@@ -509,21 +434,19 @@ def build_trade_sync_report(
             "status": "reused",
             "output_path": report_path,
             "report_path": report_path,
-            "latest_report_path": latest_report_path,
+            "latest_report_path": (
+                latest_path if latest_path.exists() else None
+            ),
             "ready_for_processed_export": True,
         }
 
-    reconciled_sql = _sql_literal(
-        reconciled_trade_path
-    )
-    reliability_sql = _sql_literal(
-        country_reliability_path
-    )
-    audit_sql = _sql_literal(
-        reconciliation_audit_path
-    )
-    diagnostics_sql = _sql_literal(
-        diagnostics_path
+    reconciled_sql = _sql_literal(reconciled_trade_path)
+    reliability_sql = _sql_literal(country_reliability_path)
+    audit_sql = _sql_literal(reconciliation_audit_path)
+    diagnostics_sql = _sql_literal(diagnostics_path)
+
+    agreement_tolerance = float(
+        cfg.diagnostics.agreement_tolerance.relative_difference
     )
 
     info = get_symbols("info")
@@ -533,29 +456,15 @@ def build_trade_sync_report(
         "%s Building Trade Sync decision report.",
         info,
     )
-    logger.info(
-        "  Reconciled trade: %s",
-        reconciled_trade_path,
-    )
-    logger.info(
-        "  Diagnostics: %s",
-        diagnostics_path,
-    )
-    logger.info(
-        "  Report: %s",
-        report_path,
-    )
-    logger.info(
-        "  Figure directory: %s",
-        figure_dir,
-    )
+    logger.info("  Reconciled trade: %s", reconciled_trade_path)
+    logger.info("  Diagnostics: %s", diagnostics_path)
+    logger.info("  Report: %s", report_path)
+    logger.info("  Figure directory: %s", figure_dir)
 
     con = duckdb.connect()
 
     try:
-        con.execute(
-            f"SET threads = {int(cfg.engine.threads)}"
-        )
+        con.execute(f"SET threads = {int(cfg.engine.threads)}")
 
         diagnostics = con.execute(
             f"""
@@ -576,8 +485,23 @@ def build_trade_sync_report(
                 "Reconciliation audit must contain exactly one row."
             )
 
+        required_audit_columns = {
+            "n_invalid_reconciled_values",
+            "n_missing_expected_reconciled_values",
+            "n_duplicate_keys",
+        }
+        missing_audit_columns = (
+            required_audit_columns - set(audit.columns)
+        )
+
+        if missing_audit_columns:
+            raise RuntimeError(
+                "Reconciliation audit is missing required columns: "
+                + ", ".join(sorted(missing_audit_columns))
+            )
+
         # --------------------------------------------------------------
-        # Report-level values
+        # Core diagnostic totals
         # --------------------------------------------------------------
 
         n_rows = _metric_lookup(
@@ -620,34 +544,109 @@ def build_trade_sync_report(
             scope="overall",
             metric="total_corrected_import_fob",
         )
-        median_difference = _metric_lookup(
-            diagnostics,
-            scope="overall",
-            metric="median_relative_difference",
-        )
-        p90_difference = _metric_lookup(
-            diagnostics,
-            scope="overall",
-            metric="p90_relative_difference",
-        )
-        median_change_simple = _metric_lookup(
-            diagnostics,
-            scope="overall",
-            metric=(
-                "median_absolute_change_from_simple_average"
-            ),
-        )
-        p90_change_simple = _metric_lookup(
-            diagnostics,
-            scope="overall",
-            metric=(
-                "p90_absolute_change_from_simple_average"
-            ),
-        )
-        agreement_share = _metric_lookup(
-            diagnostics,
-            scope="overall",
-            metric="within_agreement_tolerance_share",
+
+        # Compute agreement measures directly from genuine two-sided
+        # positive reports. This avoids mixing implicit-zero evidence
+        # into descriptive report-agreement statistics.
+        discrepancy_row = con.execute(
+            f"""
+            WITH positive_pairs AS (
+                SELECT
+                    ABS(
+                        reconciliation_export_value
+                        - reconciliation_import_value
+                    )
+                    / GREATEST(
+                        reconciliation_export_value,
+                        reconciliation_import_value
+                    ) AS relative_difference,
+
+                    ABS(
+                        trade_value_reconciled
+                        - (
+                            reconciliation_export_value
+                            + reconciliation_import_value
+                        ) / 2.0
+                    )
+                    / (
+                        (
+                            reconciliation_export_value
+                            + reconciliation_import_value
+                        ) / 2.0
+                    ) AS absolute_change_from_simple_average
+
+                FROM read_parquet({reconciled_sql})
+
+                WHERE reliability_evidence_case = 'both_positive'
+                  AND reconciliation_export_value > 0
+                  AND reconciliation_import_value > 0
+            )
+            SELECT
+                COUNT(*) AS n_positive_positive_rows,
+                MEDIAN(relative_difference)
+                    AS median_relative_difference,
+                QUANTILE_CONT(relative_difference, 0.90)
+                    AS p90_relative_difference,
+                MEDIAN(absolute_change_from_simple_average)
+                    AS median_absolute_change_from_simple_average,
+                QUANTILE_CONT(
+                    absolute_change_from_simple_average,
+                    0.90
+                ) AS p90_absolute_change_from_simple_average,
+                AVG(
+                    CASE
+                        WHEN relative_difference
+                            <= {agreement_tolerance}
+                            THEN 1.0
+                        ELSE 0.0
+                    END
+                ) AS agreement_share
+            FROM positive_pairs
+            """
+        ).fetchone()
+
+        if discrepancy_row is None:
+            raise RuntimeError(
+                "Could not calculate positive-positive discrepancy "
+                "statistics."
+            )
+
+        (
+            n_positive_positive,
+            median_difference,
+            p90_difference,
+            median_change_simple,
+            p90_change_simple,
+            agreement_share,
+        ) = discrepancy_row
+
+        evidence_row = con.execute(
+            f"""
+            SELECT
+                COUNT(*) FILTER (
+                    WHERE reliability_evidence_case IS NOT NULL
+                ) AS n_evidence_rows,
+                COUNT(*) FILTER (
+                    WHERE reliability_evidence_case IN (
+                        'export_positive_import_implicit_zero',
+                        'import_positive_export_implicit_zero'
+                    )
+                ) AS n_implicit_zero_rows
+            FROM read_parquet({reconciled_sql})
+            """
+        ).fetchone()
+
+        if evidence_row is None:
+            raise RuntimeError(
+                "Could not calculate reliability-evidence composition."
+            )
+
+        n_evidence_rows = int(evidence_row[0] or 0)
+        n_implicit_zero_rows = int(evidence_row[1] or 0)
+        implicit_zero_share = (
+            n_implicit_zero_rows / n_evidence_rows
+            if n_evidence_rows
+            else None
         )
 
         usable_coverage = (
@@ -655,19 +654,16 @@ def build_trade_sync_report(
             if n_rows
             else None
         )
-
         weighted_share = (
             n_weighted / n_rows
             if n_rows
             else None
         )
-
         single_report_share = (
             n_single_report / n_rows
             if n_rows
             else None
         )
-
         not_eligible_share = (
             n_not_eligible / n_rows
             if n_rows
@@ -686,22 +682,17 @@ def build_trade_sync_report(
                 100.0 * COUNT(*)
                     / SUM(COUNT(*)) OVER ()
                     AS share_percent,
-                SUM(trade_value_reconciled)
-                    FILTER (
-                        WHERE trade_value_reconciled IS NOT NULL
-                    ) AS reconciled_value
-
+                SUM(trade_value_reconciled) FILTER (
+                    WHERE trade_value_reconciled IS NOT NULL
+                ) AS reconciled_value
             FROM read_parquet({reconciled_sql})
-
             GROUP BY reconciliation_status
-
             ORDER BY rows DESC
             """
         ).fetchdf()
 
         status_summary["reconciled_value"] = (
-            status_summary["reconciled_value"]
-            .map(_format_usd)
+            status_summary["reconciled_value"].map(_format_usd)
         )
 
         annual_summary = con.execute(
@@ -712,26 +703,44 @@ def build_trade_sync_report(
                 COUNT(*) FILTER (
                     WHERE trade_value_reconciled IS NOT NULL
                 ) AS rows_with_reconciled_value,
-                SUM(trade_value_reconciled)
-                    FILTER (
-                        WHERE trade_value_reconciled IS NOT NULL
-                    ) AS reconciled_value,
-                MEDIAN(reliability_deviation)
-                    FILTER (
-                        WHERE reliability_evidence_case = 'both_positive'
-                        AND reliability_deviation IS NOT NULL
-                    ) AS median_positive_positive_deviation
-
+                SUM(trade_value_reconciled) FILTER (
+                    WHERE trade_value_reconciled IS NOT NULL
+                ) AS reconciled_value,
+                MEDIAN(reliability_deviation) FILTER (
+                    WHERE reliability_evidence_case = 'both_positive'
+                      AND reliability_deviation IS NOT NULL
+                ) AS median_positive_positive_deviation,
+                AVG(
+                    CASE
+                        WHEN reliability_evidence_case IN (
+                            'export_positive_import_implicit_zero',
+                            'import_positive_export_implicit_zero'
+                        )
+                            THEN 1.0
+                        WHEN reliability_evidence_case IS NOT NULL
+                            THEN 0.0
+                        ELSE NULL
+                    END
+                ) AS implicit_zero_evidence_share
             FROM read_parquet({reconciled_sql})
-
             GROUP BY year
             ORDER BY year
             """
         ).fetchdf()
 
         annual_summary["reconciled_value"] = (
-            annual_summary["reconciled_value"]
-            .map(_format_usd)
+            annual_summary["reconciled_value"].map(_format_usd)
+        )
+        annual_summary[
+            "implicit_zero_evidence_share"
+        ] = annual_summary[
+            "implicit_zero_evidence_share"
+        ].map(
+            lambda value: (
+                _format_percent(value)
+                if not pd.isna(value)
+                else "NA"
+            )
         )
 
         reliability_summary = con.execute(
@@ -754,33 +763,57 @@ def build_trade_sync_report(
                 COUNT(*) FILTER (
                     WHERE n_evidence_observations < 30
                 ) AS scores_below_30_rows
-
             FROM read_parquet({reliability_sql})
-
             GROUP BY reporting_direction
             ORDER BY reporting_direction
             """
         ).fetchdf()
+
+        # Flag a substantially incomplete final year.
+        annual_rows_numeric = con.execute(
+            f"""
+            SELECT year, COUNT(*) AS rows
+            FROM read_parquet({reconciled_sql})
+            GROUP BY year
+            ORDER BY year
+            """
+        ).fetchdf()
+
+        maximum_year = int(annual_rows_numeric["year"].max())
+        latest_rows = int(
+            annual_rows_numeric.loc[
+                annual_rows_numeric["year"].eq(maximum_year),
+                "rows",
+            ].iloc[0]
+        )
+        previous_rows_median = float(
+            annual_rows_numeric.loc[
+                annual_rows_numeric["year"].lt(maximum_year),
+                "rows",
+            ].median()
+        )
+
+        latest_year_provisional = bool(
+            previous_rows_median > 0
+            and latest_rows < 0.75 * previous_rows_median
+        )
 
         # --------------------------------------------------------------
         # Figures
         # --------------------------------------------------------------
 
         status_figure = (
-            figure_dir
-            / "reconciliation_status_by_year.png"
+            figure_dir / "reconciliation_status_by_year.png"
         )
         totals_figure = (
-            figure_dir
-            / "trade_value_totals_by_year.png"
+            figure_dir / "trade_value_totals_by_year.png"
         )
         reliability_figure = (
-            figure_dir
-            / "country_reliability_by_year.png"
+            figure_dir / "country_reliability_by_year.png"
         )
         agreement_figure = (
             figure_dir
-            / "agreement_and_discrepancy_by_year.png"
+            / "positive_positive_agreement_by_year.png"
         )
 
         _plot_reconciliation_status_by_year(
@@ -788,21 +821,20 @@ def build_trade_sync_report(
             reconciled_sql=reconciled_sql,
             output_path=status_figure,
         )
-
         _plot_trade_value_totals_by_year(
             con=con,
             reconciled_sql=reconciled_sql,
             output_path=totals_figure,
         )
-
         _plot_country_reliability_by_year(
             con=con,
             reliability_sql=reliability_sql,
             output_path=reliability_figure,
         )
-
-        _plot_agreement_and_discrepancy_by_year(
-            diagnostics=diagnostics,
+        _plot_positive_positive_agreement_by_year(
+            con=con,
+            reconciled_sql=reconciled_sql,
+            agreement_tolerance=agreement_tolerance,
             output_path=agreement_figure,
         )
 
@@ -810,29 +842,30 @@ def build_trade_sync_report(
         # Decision logic
         # --------------------------------------------------------------
 
+        audit_row = audit.iloc[0]
+
         audit_passed = bool(
-            audit.iloc[0].get(
-                "n_invalid_reconciled_values",
-                0,
-            )
-            == 0
-            and audit.iloc[0].get(
-                "n_missing_expected_reconciled_values",
-                0,
-            )
-            == 0
-            and audit.iloc[0].get(
-                "n_duplicate_keys",
-                0,
-            )
-            == 0
+            int(audit_row["n_invalid_reconciled_values"]) == 0
+            and int(
+                audit_row[
+                    "n_missing_expected_reconciled_values"
+                ]
+            ) == 0
+            and int(audit_row["n_duplicate_keys"]) == 0
+        )
+
+        population_partition_passed = bool(
+            n_rows is not None
+            and n_reconciled is not None
+            and n_not_eligible is not None
+            and int(round(n_rows))
+            == int(round(n_reconciled))
+            + int(round(n_not_eligible))
         )
 
         ready_for_processed_export = bool(
             audit_passed
-            and n_rows is not None
-            and n_reconciled is not None
-            and n_rows == n_reconciled + n_not_eligible
+            and population_partition_passed
         )
 
         decision = (
@@ -840,6 +873,15 @@ def build_trade_sync_report(
             if ready_for_processed_export
             else "REVIEW REQUIRED"
         )
+
+        provisional_note = ""
+
+        if latest_year_provisional:
+            provisional_note = (
+                f" Results for **{maximum_year}** contain substantially "
+                "fewer records than preceding years and should be "
+                "treated as provisional."
+            )
 
         # --------------------------------------------------------------
         # Markdown
@@ -851,14 +893,17 @@ def build_trade_sync_report(
             f"**Decision:** `{decision}`  ",
             f"**Run ID:** `{run_id}`  ",
             f"**Target HS:** `{cfg.scope.target_hs}`  ",
-            f"**Generated:** `{datetime.now().isoformat(timespec='seconds')}`",
+            (
+                f"**Generated:** "
+                f"`{datetime.now().isoformat(timespec='seconds')}`"
+            ),
             "",
             "## Executive summary",
             "",
             (
                 f"Trade Sync processed **{_format_integer(n_rows)}** "
-                "bilateral product-year rows. "
-                f"A reconciled FOB-basis value is available for "
+                "bilateral product-year rows. A reconciled FOB-basis "
+                f"value is available for "
                 f"**{_format_integer(n_reconciled)}** rows "
                 f"({_format_percent(usable_coverage)})."
             ),
@@ -875,7 +920,7 @@ def build_trade_sync_report(
             (
                 f"**{_format_integer(n_not_eligible)}** rows "
                 f"({_format_percent(not_eligible_share)}) had no usable "
-                "FOB-basis trade value."
+                f"FOB-basis trade value.{provisional_note}"
             ),
             "",
             (
@@ -888,7 +933,10 @@ def build_trade_sync_report(
             "| Check | Result |",
             "|---|---:|",
             f"| Reconciliation audit passed | `{audit_passed}` |",
-            f"| Full population preserved | `{_format_integer(n_rows)}` rows |",
+            (
+                "| Full population preserved | "
+                f"{_format_integer(n_rows)} |"
+            ),
             (
                 "| Rows with reconciled value | "
                 f"{_format_integer(n_reconciled)} |"
@@ -919,59 +967,100 @@ def build_trade_sync_report(
                 f"{_format_usd(total_reconciled)} |"
             ),
             "",
-            "## Bilateral discrepancy",
+            (
+                "The reconciled aggregate is not required to lie between "
+                "the aggregate exporter and importer totals because the "
+                "three totals cover different combinations of available "
+                "bilateral reports. At row level, a two-sided weighted "
+                "reconciliation remains bounded by its two source values."
+            ),
+            "",
+            "## Positive-positive bilateral discrepancy",
             "",
             (
-                f"The median bilateral difference relative to the larger "
-                f"report is **{_format_fraction_as_percent(median_difference)}**; "
-                f"the 90th percentile is "
-                f"**{_format_fraction_as_percent(p90_difference)}**."
+                f"The comparison contains "
+                f"**{_format_integer(n_positive_positive)}** rows with "
+                "two positive reports."
+            ),
+            "",
+            (
+                "Among these genuine two-sided comparisons, the median "
+                "difference relative to the larger report is "
+                f"**{_format_percent(median_difference)}**; the 90th "
+                f"percentile is **{_format_percent(p90_difference)}**."
             ),
             "",
             (
                 "Relative to a simple bilateral average, the median "
-                f"absolute reliability-weighting adjustment is "
-                f"**{_format_fraction_as_percent(median_change_simple)}**, "
-                f"and the 90th percentile is "
-                f"**{_format_fraction_as_percent(p90_change_simple)}**."
+                "absolute reliability-weighting adjustment is "
+                f"**{_format_percent(median_change_simple)}**, and the "
+                f"90th percentile is "
+                f"**{_format_percent(p90_change_simple)}**."
             ),
             "",
             (
-                "The share of comparable reports within the configured "
-                f"5% agreement tolerance is "
-                f"**{_format_fraction_as_percent(agreement_share)}**."
+                "The share of positive-positive report pairs within the "
+                f"configured {100 * agreement_tolerance:.0f}% agreement "
+                f"tolerance is **{_format_percent(agreement_share)}**."
+            ),
+            "",
+            "## Reliability evidence",
+            "",
+            (
+                f"Reliability estimation used "
+                f"**{_format_integer(n_evidence_rows)}** evidence rows. "
+                f"Of these, **{_format_integer(n_implicit_zero_rows)}** "
+                f"({_format_percent(implicit_zero_share)}) involved a "
+                "positive report paired with an implicit zero."
+            ),
+            "",
+            (
+                "The country reliability index therefore reflects both "
+                "disagreement among positive mirror reports and the "
+                "frequency of implicit-zero evidence. It is not a "
+                "prediction-accuracy score."
             ),
             "",
             "## Reconciliation composition",
             "",
             _markdown_table(status_summary),
             "",
-            f"![Reconciliation status by year]({status_figure.as_posix()})",
+            (
+                f"![Reconciliation status by year]"
+                f"({status_figure.as_posix()})"
+            ),
             "",
             "## Annual results",
             "",
             _markdown_table(annual_summary),
             "",
-            f"![Annual trade totals]({totals_figure.as_posix()})",
+            (
+                f"![Annual trade totals]"
+                f"({totals_figure.as_posix()})"
+            ),
             "",
             "## Country reliability",
             "",
             (
-                "Country reliability is estimated separately by year and "
-                "reporting direction. The primary model quantity is mean "
-                "bilateral deviation, where lower values indicate more "
-                "consistent reporting. The derived reliability index is "
-                "`1 − mean deviation`, where higher values indicate more "
-                "consistent reporting."
+                "Country reliability is estimated separately by year "
+                "and reporting direction. Lower mean evidence deviation "
+                "and higher reliability index indicate more internally "
+                "consistent reporting evidence."
             ),
             "",
             _markdown_table(reliability_summary),
             "",
-            f"![Country reliability by year]({reliability_figure.as_posix()})",
+            (
+                f"![Country reliability by year]"
+                f"({reliability_figure.as_posix()})"
+            ),
             "",
-            "## Agreement and discrepancy",
+            "## Positive-report agreement by year",
             "",
-            f"![Agreement and discrepancy by year]({agreement_figure.as_posix()})",
+            (
+                f"![Positive-report agreement and discrepancy by year]"
+                f"({agreement_figure.as_posix()})"
+            ),
             "",
             "## Methodological notes",
             "",
@@ -992,9 +1081,8 @@ def build_trade_sync_report(
                 "`retain_unmatched_flows` is enabled."
             ),
             (
-                "- The configured agreement tolerance is currently used "
-                "for diagnostics and does not bypass reliability-weighted "
-                "reconciliation."
+                "- The configured agreement tolerance is diagnostic only "
+                "and does not bypass reliability-weighted reconciliation."
             ),
             "",
             "## Output artifacts",
@@ -1017,50 +1105,34 @@ def build_trade_sync_report(
                 "Trade Sync decision report was not written correctly."
             )
 
+        latest_report_path: Path | None = None
+
         if cfg.artifacts.write_latest:
             latest_path.parent.mkdir(
                 parents=True,
                 exist_ok=True,
             )
-
-            shutil.copyfile(
-                report_path,
-                latest_path,
-            )
-
+            shutil.copyfile(report_path, latest_path)
             latest_report_path = latest_path
-
-        if not valid_output(report_path):
-            raise RuntimeError(
-                "Trade Sync decision report was not written correctly."
-            )
 
         logger.info(
             "%s Trade Sync decision report created.",
             ok,
         )
-        logger.info(
-            "  Decision: %s",
-            decision,
-        )
+        logger.info("  Decision: %s", decision)
         logger.info(
             "  Ready for processed export: %s",
             ready_for_processed_export,
         )
-        logger.info(
-            "  Report: %s",
-            report_path,
-        )
+        logger.info("  Report: %s", report_path)
 
-        if cfg.artifacts.write_latest:
+        if latest_report_path is not None:
             logger.info(
                 "  Latest report: %s",
                 latest_report_path,
             )
 
-        logger.info(
-            "  Figures written: 4"
-        )
+        logger.info("  Figures written: 4")
 
         return {
             "status": "completed",
@@ -1084,6 +1156,12 @@ def build_trade_sync_report(
             ),
             "n_not_eligible_rows": int(
                 round(n_not_eligible or 0)
+            ),
+            "n_positive_positive_rows": int(
+                n_positive_positive or 0
+            ),
+            "n_implicit_zero_evidence_rows": (
+                n_implicit_zero_rows
             ),
             "total_reconciled_value": float(
                 total_reconciled or 0.0

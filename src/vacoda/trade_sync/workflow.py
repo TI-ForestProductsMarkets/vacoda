@@ -461,50 +461,50 @@ def run_trade_sync_workflow(
 
     workflow_elapsed = perf_counter() - workflow_start
 
-    # ready_for_weight_sync = (
-    #     audit_passed
-    #     and reconciled_path.is_file()
-    #     and reconciled_path.stat().st_size > 0
-    # )
+    ready_for_weight_sync = (
+        audit_passed
+        and reconciled_path.is_file()
+        and reconciled_path.stat().st_size > 0
+    )
 
-    # if not ready_for_weight_sync:
-    #     raise RuntimeError(
-    #         "Trade Sync finished without a valid reconciled-trade output."
-    #     )
+    if not ready_for_weight_sync:
+        raise RuntimeError(
+            "Trade Sync finished without a valid reconciled-trade output."
+        )
 
-    # separator(logger)
-    # logger.info(
-    #     "%s Trade Sync workflow finished.",
-    #     ok,
-    # )
-    # logger.info(
-    #     "Final reconciled-trade output: %s",
-    #     reconciled_path,
-    # )
-    # logger.info(
-    #     "Final reconciliation audit: %s",
-    #     audit_path,
-    # )
-    # logger.info(
-    #     "Ready for Weight Sync: %s",
-    #     ready_for_weight_sync,
-    # )
-    # logger.info(
-    #     "Workflow duration: %.2fs",
-    #     workflow_elapsed,
-    # )
+    separator(logger)
+    logger.info(
+        "%s Trade Sync workflow finished.",
+        ok,
+    )
+    logger.info(
+        "Final reconciled-trade output: %s",
+        reconciled_path,
+    )
+    logger.info(
+        "Final reconciliation audit: %s",
+        audit_path,
+    )
+    logger.info(
+        "Ready for Weight Sync: %s",
+        ready_for_weight_sync,
+    )
+    logger.info(
+        "Workflow duration: %.2fs",
+        workflow_elapsed,
+    )
 
-    # decision_report_path = report_result.get(
-    #     "decision_report_path"
-    # )
+    decision_report_path = report_result.get(
+        "decision_report_path"
+    )
 
-    # if decision_report_path:
-    #     logger.info(
-    #         "Decision report: %s",
-    #         decision_report_path,
-    #     )
+    if decision_report_path:
+        logger.info(
+            "Decision report: %s",
+            decision_report_path,
+        )
 
-    # separator(logger)
+    separator(logger)
 
     # return {
     #     "status": "completed",
@@ -560,6 +560,7 @@ def run_trade_sync_workflow(
         "country_reliability_result": country_reliability_result,
         "reconciled_result": reconciled_result,
         "audit_result": audit_result,
+        "n_failed_audit_rows": reconciled_result.get("n_failed_audit_rows", 0,),
         "diagnostics_result": diagnostics_result,
         "report_result": report_result,
     }
