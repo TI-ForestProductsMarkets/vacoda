@@ -247,6 +247,8 @@ class TradeSyncProductConfig:
 class TradeSyncProductsConfig:
     prepared_input: TradeSyncProductConfig
     bilateral_pairs: TradeSyncProductConfig
+    reliability_evidence: TradeSyncProductConfig
+    country_reliability: TradeSyncProductConfig
     reconciled_trade: TradeSyncProductConfig
     reconciliation_audit: TradeSyncProductConfig
     diagnostics: TradeSyncProductConfig
@@ -263,6 +265,8 @@ class TradeSyncProductsConfig:
         return cls(
             prepared_input=product("prepared_input"),
             bilateral_pairs=product("bilateral_pairs"),
+            reliability_evidence=product("reliability_evidence"),
+            country_reliability=product("country_reliability"),
             reconciled_trade=product("reconciled_trade"),
             reconciliation_audit=product("reconciliation_audit"),
             diagnostics=product("diagnostics"),
@@ -858,6 +862,8 @@ class TradeSyncConfig:
         products = {
             "prepared_input": self.products.prepared_input,
             "bilateral_pairs": self.products.bilateral_pairs,
+            "reliability_evidence": self.products.reliability_evidence,
+            "country_reliability": self.products.country_reliability,
             "reconciled_trade": self.products.reconciled_trade,
             "reconciliation_audit": self.products.reconciliation_audit,
             "diagnostics": self.products.diagnostics,
@@ -876,6 +882,8 @@ class TradeSyncConfig:
             for name in (
                 "prepared_input",
                 "bilateral_pairs",
+                "reliability_evidence",
+                "country_reliability",
                 "reconciled_trade",
                 "reconciliation_audit",
                 "diagnostics",
@@ -886,10 +894,10 @@ class TradeSyncConfig:
         return {
             "prepared_input": self.products.prepared_input.enable,
             "bilateral_pairs": self.products.bilateral_pairs.enable,
+            "reliability_evidence": self.products.reliability_evidence.enable,
+            "country_reliability": self.products.country_reliability.enable,
             "reconciled_trade": self.products.reconciled_trade.enable,
-            "reconciliation_audit": (
-                self.products.reconciliation_audit.enable
-            ),
+            "reconciliation_audit": self.products.reconciliation_audit.enable,
             "diagnostics": self.products.diagnostics.enable,
         }
 

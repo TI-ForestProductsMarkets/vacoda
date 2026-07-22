@@ -36,6 +36,14 @@ trade_sync:
       enable: true
       filename: "target_{target_hs_lower}_trade_sync_bilateral_pairs.parquet"
 
+    reliability_evidence:
+      enable: true
+      filename: "reliability/target_{target_hs_lower}_trade_sync_reliability_evidence.parquet"
+
+    country_reliability:
+      enable: true
+      filename: "reliability/target_{target_hs_lower}_trade_sync_country_reliability.parquet"
+
     reconciled_trade:
       enable: true
       filename: "comtrade_target_{target_hs_lower}_trade_synced.parquet"

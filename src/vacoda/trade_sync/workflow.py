@@ -17,6 +17,8 @@ from vacoda.utils.display import get_symbols
 from vacoda.utils.logger import require_result_path, run_step, separator
 from vacoda.trade_sync.prepare_input import  prepare_trade_sync_input
 from vacoda.trade_sync.build_pairs import build_trade_sync_pairs
+from vacoda.trade_sync.reliability_evidence import build_trade_sync_reliability_evidence
+from vacoda.trade_sync.country_reliability import estimate_trade_sync_country_reliability
 # from vacoda.trade_sync.reconcile import reconcile_trade
 # from vacoda.trade_sync.diagnostics import build_trade_sync_diagnostics
 # from vacoda.trade_sync.report import   write_trade_sync_decision_report
@@ -24,6 +26,8 @@ from vacoda.trade_sync.build_pairs import build_trade_sync_pairs
 WORKFLOW_STEPS = [
     "Prepare Trade Sync input",
     "Build Trade Sync bilateral pairs",
+    "Build Trade Sync reliability evidence",
+    "Estimate Trade Sync country reliability",
     "Reconcile trade",
     "Build Trade Sync diagnostics",
     "Write Trade Sync decision report",
@@ -197,6 +201,66 @@ def run_trade_sync_workflow(
         raise RuntimeError(
             "Trade Sync bilateral_pairs must be enabled because "
             "reconciliation depends on paired import/export evidence."
+        )
+    
+
+    # ==================================================================
+    # Step 3 — Build reliability evidence
+    # ==================================================================
+
+    if enabled_products["reliability_evidence"]:
+
+        reliability_evidence_result  = run_step(
+            logger=logger,
+            step_number=3,
+            total_steps=total_steps,
+            title="Build Trade Sync reliability evidence",
+            runner=lambda: build_trade_sync_reliability_evidence(
+                cfg=cfg,
+                input_path=prepared_path,
+                force=force,
+                logger=logger,
+                ),
+            )
+
+        reliability_evidence_path = require_result_path(
+                    reliability_evidence_result,
+                    "Trade Sync reliability-evidence result did not contain an expected path key",
+                    "reliability_evidence_path",
+                    "output_path",
+                )
+    else:
+        raise RuntimeError(
+            "Trade Sync reliability_evidence must be enabled."
+        )
+    
+    # ==================================================================
+    # Step 4 — Estimate country reliability
+    # ==================================================================
+    if enabled_products["country_reliability"]:
+
+        country_reliability_result  = run_step(
+            logger=logger,
+            step_number=4,
+            total_steps=total_steps,
+            title="Estimate Trade Sync country reliability",
+            runner=lambda: estimate_trade_sync_country_reliability(
+                cfg=cfg,
+                input_path=reliability_evidence_path,
+                force=force,
+                logger=logger,
+            ),
+        )
+
+        country_reliability_path = require_result_path(
+                    country_reliability_result,
+                    "Trade Sync country-reliability result did not contain an expected path key",
+                    "country_reliability_path",
+                    "output_path",
+        )
+    else:
+        raise RuntimeError(
+            "Trade Sync country_reliability must be enabled."
         )
 
     # # ==================================================================
@@ -380,13 +444,18 @@ def run_trade_sync_workflow(
             "run_id": run_id,
 
             "ready_for_processed_export": bool(
-                prepared_result.get(
-                    "ready_for_bilateral_pairs",
+                reliability_evidence_result.get(
+                    "ready_for_country_reliability",
                     False,
                 )
             ),
 
-            "output_path": prepared_path,
+            "output_path": reliability_evidence_path,
             "prepared_input_path": prepared_path,
+            "bilateral_pairs_path": pairs_path,
+            "reliability_evidence_path": reliability_evidence_path,
+
             "prepared_result": prepared_result,
+            "pairs_result": pairs_result,
+            "reliability_evidence_result": reliability_evidence_result,
         }
