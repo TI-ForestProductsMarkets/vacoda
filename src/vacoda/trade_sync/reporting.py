@@ -844,6 +844,16 @@ def build_trade_sync_report(
 
         audit_row = audit.iloc[0]
 
+        n_invalid_reconciled = int(
+            audit_row["n_invalid_reconciled_values"]
+        )
+        n_missing_expected = int(
+            audit_row["n_missing_expected_reconciled_values"]
+        )
+        n_duplicate_keys = int(
+            audit_row["n_duplicate_keys"]
+        )
+
         audit_passed = bool(
             int(audit_row["n_invalid_reconciled_values"]) == 0
             and int(
@@ -901,52 +911,93 @@ def build_trade_sync_report(
             "## Executive summary",
             "",
             (
-                f"Trade Sync processed **{_format_integer(n_rows)}** "
-                "bilateral product-year rows. A reconciled FOB-basis "
-                f"value is available for "
+                f"Trade Sync received **{_format_integer(n_rows)}** "
+                "bilateral exporter–importer–product–year rows from the "
+                "CIF/FOB-corrected dataset."
+            ),
+            "",
+            (
+                f"Of this upstream population, "
                 f"**{_format_integer(n_reconciled)}** rows "
-                f"({_format_percent(usable_coverage)})."
+                f"({_format_percent(usable_coverage)}) produced a usable "
+                "FOB-basis trade value after Trade Sync."
             ),
             "",
             (
                 f"Reliability-weighted reconciliation was applied to "
                 f"**{_format_integer(n_weighted)}** rows "
-                f"({_format_percent(weighted_share)}), while "
-                f"**{_format_integer(n_single_report)}** unilateral "
-                f"reports were retained "
-                f"({_format_percent(single_report_share)})."
+                f"({_format_percent(weighted_share)} of the CIF/FOB input), "
+                f"while **{_format_integer(n_single_report)}** rows "
+                f"({_format_percent(single_report_share)}) contained only one "
+                "usable report and were therefore retained without bilateral "
+                f"weighting. Together, these two groups account for all **{_format_integer(n_reconciled)}** rows with a usable Trade Sync value."
             ),
             "",
             (
-                f"**{_format_integer(n_not_eligible)}** rows "
-                f"({_format_percent(not_eligible_share)}) had no usable "
-                f"FOB-basis trade value.{provisional_note}"
+                f"The remaining **{_format_integer(n_not_eligible)}** rows "
+                f"({_format_percent(not_eligible_share)}) of **{_format_integer(n_rows)}** rows had neither a usable "
+                "exporter FOB value nor a usable corrected importer "
+                "FOB-equivalent value, so no reconciled trade value could be "
+                f"produced.{provisional_note}"
             ),
             "",
             (
-                f"The final reconciled trade total is "
-                f"**{_format_usd(total_reconciled)}**."
+                f"All **{_format_integer(n_rows)}** rows received from the "
+                "CIF/FOB step were preserved in the Trade Sync output."
+            ),
+            "",
+            (
+                f"The total reconciled trade value across rows with a usable "
+                f"output is **{_format_usd(total_reconciled)}**."
             ),
             "",
             "## Decision checks",
             "",
             "| Check | Result |",
             "|---|---:|",
-            f"| Reconciliation audit passed | `{audit_passed}` |",
             (
-                "| Full population preserved | "
+                "| CIF/FOB input rows received | "
                 f"{_format_integer(n_rows)} |"
             ),
             (
-                "| Rows with reconciled value | "
-                f"{_format_integer(n_reconciled)} |"
+                "| Rows preserved in Trade Sync output | "
+                f"{_format_integer(n_rows)} |"
             ),
             (
-                "| Rows not eligible | "
-                f"{_format_integer(n_not_eligible)} |"
+                "| Reliability-weighted rows | "
+                f"{_format_integer(n_weighted)} "
+                f"({_format_percent(weighted_share)}) |"
             ),
             (
-                "| Ready for processed export | "
+                "| Single-report rows retained | "
+                f"{_format_integer(n_single_report)} "
+                f"({_format_percent(single_report_share)}) |"
+            ),
+            (
+                "| Rows with a usable Trade Sync value | "
+                f"{_format_integer(n_reconciled)} "
+                f"({_format_percent(usable_coverage)}) |"
+            ),
+            (
+                "| Rows without a usable FOB-basis value | "
+                f"{_format_integer(n_not_eligible)} "
+                f"({_format_percent(not_eligible_share)}) |"
+            ),
+            (
+                "| Invalid reconciled values | "
+                f"{_format_integer(n_invalid_reconciled)} |"
+            ),
+            (
+                "| Missing expected reconciled values | "
+                f"{_format_integer(n_missing_expected)} |"
+            ),
+            (
+                "| Duplicate bilateral product-year keys | "
+                f"{_format_integer(n_duplicate_keys)} |"
+            ),
+            f"| Reconciliation audit passed | `{audit_passed}` |",
+            (
+                "| Ready for Weight Sync | "
                 f"`{ready_for_processed_export}` |"
             ),
             "",
