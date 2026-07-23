@@ -26,7 +26,8 @@ from typing import Any, TYPE_CHECKING
 import duckdb
 import pandas as pd
 
-from vacoda.utils.logger import get_logger, rel_path
+from vacoda.config.paths import rel_path
+from vacoda.utils.logger import get_logger
 from vacoda.io.reports import write_dataframe_report
 from vacoda.config.hs_sync import HarvardStagingLayoutConfig
 

@@ -9,9 +9,10 @@ from pathlib import Path
 import duckdb
 import pandas as pd
 
-from vacoda.utils.logger import get_logger, rel_path
+from vacoda.config.paths import rel_path
+from vacoda.utils.logger import get_logger
 from vacoda.io.duckdb_scan import duckdb_scan_relation
-from vacoda.utils.progress import progress_bar
+from vacoda.utils.display import progress_bar
 
 logger = get_logger("HS_SYNC.COVERAGE")
 

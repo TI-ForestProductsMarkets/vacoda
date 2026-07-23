@@ -10,7 +10,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from vacoda.utils.logger import get_logger, rel_path
+from vacoda.utils.logger import get_logger
+from vacoda.config.paths import rel_path
 
 
 logger = get_logger("IO.WRITER")

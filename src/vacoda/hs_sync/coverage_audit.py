@@ -21,10 +21,10 @@ from vacoda.hs_sync.coverage import (
 )
 
 from vacoda.hs_sync.harvard.diagnostics import build_trade_source_pair_summary
-
+from vacoda.config.paths import rel_path
 from vacoda.io.reports import TextReport, write_text_report
 from vacoda.io.writer import write_csv, write_parquet
-from vacoda.utils.logger import rel_path, get_logger
+from vacoda.utils.logger import get_logger
 
 
 #logger = get_logger("HS_SYNC.COVERAGE_AUDIT")

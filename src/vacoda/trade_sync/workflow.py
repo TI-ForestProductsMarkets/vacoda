@@ -14,7 +14,7 @@ from time import perf_counter
 from typing import Any
 from vacoda.config.trade_sync import TradeSyncConfig
 from vacoda.utils.display import get_symbols
-from vacoda.utils.logger import require_result_path, run_step, separator
+from vacoda.utils.runtime import require_result_path, run_step, separator
 from vacoda.trade_sync.prepare_input import  prepare_trade_sync_input
 from vacoda.trade_sync.build_pairs import build_trade_sync_pairs
 from vacoda.trade_sync.reliability_evidence import build_trade_sync_reliability_evidence

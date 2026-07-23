@@ -318,3 +318,17 @@ def resolve_log_path(
             log_path = make_timestamped_log_path(log_path)
 
     return log_path
+
+def rel_path(
+    path: str | Path,
+    *,
+    cfg: dict[str, Any] | None = None,
+) -> str:
+    """Return a path relative to the configured project root when possible."""
+    candidate = Path(path)
+    project_root = get_project_root(cfg)
+
+    try:
+        return str(candidate.relative_to(project_root))
+    except ValueError:
+        return str(candidate)

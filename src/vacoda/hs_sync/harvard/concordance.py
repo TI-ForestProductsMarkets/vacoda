@@ -13,8 +13,8 @@ from typing import Any
 import pandas as pd
 
 from vacoda.config.hs_sync import get_concordance_columns
-from vacoda.utils.logger import get_logger, rel_path
-
+from vacoda.utils.logger import get_logger
+from vacoda.config.paths import rel_path
 
 logger = get_logger("HS_SYNC.CONCORDANCE")
 

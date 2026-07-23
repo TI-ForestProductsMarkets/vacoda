@@ -6,11 +6,9 @@ from pathlib import Path
 import duckdb
 import pandas as pd
 import polars as pl
-from vacoda.utils.progress import progress_bar
+from vacoda.utils.display import progress_bar
 from vacoda.io.duckdb_scan import duckdb_scan_relation
 
-def _quote_ident(name: str) -> str:
-    return '"' + name.replace('"', '""') + '"'
 
 def _quote_ident(name: str) -> str:
     """Quote a SQL identifier for DuckDB."""

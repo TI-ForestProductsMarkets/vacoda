@@ -1,4 +1,18 @@
+"""
+vacoda.utils.display
+-------------------
+Utility functions for displaying pandas Series and various symbols.
+
+"""
+from __future__ import annotations
+
 import pandas as pd
+from collections.abc import Iterable, Iterator
+from typing import TypeVar
+
+from tqdm import tqdm
+
+T = TypeVar("T")
 
 def pretty_print_series(series: pd.Series, float_fmt: str = ",.2f", int_fmt: str = ","):
     """
@@ -69,3 +83,25 @@ def get_symbols(name):
         return "\U0001F504"  # 🔄
     else:
         raise ValueError(f"Unknown symbol name: {name}")
+
+def progress_bar(
+    iterable: Iterable[T],
+    *,
+    total: int | None = None,
+    desc: str = "Progress",
+    unit: str = "it",
+    enabled: bool = True,
+    leave: bool = True,
+) -> Iterator[T]:
+    if not enabled:
+        yield from iterable
+        return
+
+    yield from tqdm(
+        iterable,
+        total=total,
+        desc=desc,
+        unit=unit,
+        dynamic_ncols=True,
+        leave=leave,
+    )

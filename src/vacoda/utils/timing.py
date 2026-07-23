@@ -1,3 +1,9 @@
+"""
+vacoda.utils.timing
+
+------------------------------
+This will be removed in the future. Use vacoda.utils.runtime instead.
+"""
 from __future__ import annotations
 
 import logging

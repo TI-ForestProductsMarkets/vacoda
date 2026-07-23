@@ -29,7 +29,7 @@ from vacoda.config.hs_coverage import (
     get_coverage_progress_bool,
     get_coverage_product_filename
     )
-from vacoda.config.paths import get_data_dir, get_output_dir
+from vacoda.config.paths import get_data_dir, get_output_dir, rel_path
 from vacoda.hs_coverage.coverage import (
     build_hs_system_overall_summary,
     build_reporter_year_hs_coverage,
@@ -46,7 +46,7 @@ from vacoda.hs_coverage.coverage import (
 )
 from vacoda.hs_coverage.reports import build_year_hs_coverage_report_text
 from vacoda.io.writer import write_csv, write_parquet
-from vacoda.utils.logger import get_logger, rel_path, make_timestamped_log_path
+from vacoda.utils.logger import get_logger, make_timestamped_log_path
 from vacoda.utils.timing import timed_step, timed_workflow
 
 
