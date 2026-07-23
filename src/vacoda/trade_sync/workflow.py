@@ -335,37 +335,30 @@ def run_trade_sync_workflow(
     # ==================================================================
 
     if enabled_products["reconciliation_audit"]:
+        audit_result = run_step(
+            logger=logger,
+            step_number=6,
+            total_steps=total_steps,
+            title="Audit trade reconciliation",
+            runner=lambda: validate_reconciliation_audit(
+                reconciled_result=reconciled_result,
+                logger=logger,
+            ),
+        )
 
         audit_path = require_result_path(
-            reconciled_result,
-            "Trade Sync reconciliation result did not contain "
-            "the reconciliation-audit path.",
+            audit_result,
+            "Trade Sync audit-validation result did not contain the reconciliation-audit path.",
             "reconciliation_audit_path",
-            "audit_path",
+            "output_path",
         )
 
         audit_passed = bool(
-            reconciled_result.get("audit_passed", False)
-        )
-
-        if not audit_passed:
-            raise RuntimeError(
-                "Trade Sync reconciliation audit did not pass."
+            audit_result.get(
+                "audit_passed",
+                False,
             )
-
-        logger.info(
-            "VALIDATED — Trade Sync reconciliation audit: %s",
-            audit_path,
         )
-
-        audit_result = {
-            "status": "completed",
-            "output_path": audit_path,
-            "reconciliation_audit_path": audit_path,
-            "audit_passed": True,
-            "ready_for_diagnostics": True,
-        }
-
     else:
         raise RuntimeError(
             "Trade Sync reconciliation_audit product must be enabled."
@@ -419,6 +412,12 @@ def run_trade_sync_workflow(
     # Step 8 — Write Trade Sync decision report
     # ==================================================================
 
+    if cfg.artifacts.enable and diagnostics_path is None:
+        raise RuntimeError(
+            "Trade Sync decision reporting requires diagnostics, "
+            "but the diagnostics product is disabled."
+        )
+
     if cfg.artifacts.enable:
 
         report_result = run_step(
@@ -461,16 +460,28 @@ def run_trade_sync_workflow(
 
     workflow_elapsed = perf_counter() - workflow_start
 
-    ready_for_weight_sync = (
-        audit_passed
-        and reconciled_path.is_file()
+    reconciled_output_valid = bool(
+        reconciled_path.is_file()
         and reconciled_path.stat().st_size > 0
+    )
+
+    ready_for_weight_sync = bool(
+        audit_passed
+        and reconciled_output_valid
     )
 
     if not ready_for_weight_sync:
         raise RuntimeError(
-            "Trade Sync finished without a valid reconciled-trade output."
+            "Trade Sync finished without an audited, usable "
+            "reconciled-trade output."
         )
+
+    n_failed_audit_rows = int(
+        reconciled_result.get(
+            "n_failed_audit_rows",
+            0,
+        )
+    )
 
     separator(logger)
     logger.info(
@@ -478,13 +489,48 @@ def run_trade_sync_workflow(
         ok,
     )
     logger.info(
-        "Final reconciled-trade output: %s",
+        "Run ID: %s",
+        run_id,
+    )
+    logger.info(
+        "Reconciled trade: %s",
         reconciled_path,
     )
     logger.info(
-        "Final reconciliation audit: %s",
+        "Reconciliation audit: %s",
         audit_path,
     )
+    logger.info(
+        "Reconciliation audit passed: %s",
+        audit_passed,
+    )
+    logger.info(
+        "Failed audit rows: %s",
+        n_failed_audit_rows,
+    )
+
+    if diagnostics_path is not None:
+        logger.info(
+            "Diagnostics: %s",
+            diagnostics_path,
+        )
+
+    if report_path is not None:
+        logger.info(
+            "Decision report: %s",
+            report_path,
+        )
+
+    latest_report_path = report_result.get(
+        "latest_report_path"
+    )
+
+    if latest_report_path is not None:
+        logger.info(
+            "Latest decision report: %s",
+            latest_report_path,
+        )
+
     logger.info(
         "Ready for Weight Sync: %s",
         ready_for_weight_sync,
@@ -493,59 +539,25 @@ def run_trade_sync_workflow(
         "Workflow duration: %.2fs",
         workflow_elapsed,
     )
-
-    decision_report_path = report_result.get(
-        "decision_report_path"
-    )
-
-    if decision_report_path:
-        logger.info(
-            "Decision report: %s",
-            decision_report_path,
-        )
-
     separator(logger)
-
-    # return {
-    #     "status": "completed",
-    #     "run_id": run_id,
-    #     "audit_passed": audit_passed,
-    #     "ready_for_weight_sync": ready_for_weight_sync,
-    #     "output_path": reconciled_path,
-    #     "reconciled_trade_path": reconciled_path,
-    #     "audit_path": audit_path,
-    #     "reconciliation_audit_path": audit_path,
-    #     "prepared_input_path": prepared_path,
-    #     "bilateral_pairs_path": pairs_path,
-    #     "diagnostics_path": diagnostics_result.get(
-    #         "diagnostics_path"
-    #     ),
-    #     "decision_report_path": decision_report_path,
-    #     "n_failed_audit_rows": reconciled_result.get(
-    #         "n_failed_audit_rows",
-    #         0,
-    #     ),
-    #     "prepared_result": prepared_result,
-    #     "pairs_result": pairs_result,
-    #     "reconciled_result": reconciled_result,
-    #     "diagnostics_result": diagnostics_result,
-    #     "report_result": report_result,
-    # }
 
     return {
         "status": "completed",
         "run_id": run_id,
 
-        "ready_for_processed_export": bool(
-            report_result.get(
-                "ready_for_processed_export",
-                False,
-            )
-        ),
+        # Master-pipeline readiness contract.
+        "ready_for_weight_sync": ready_for_weight_sync,
 
+        # Compatibility alias until pipeline.yaml and the master pipeline
+        # use ready_for_weight_sync directly.
+        "ready_for_processed_export": ready_for_weight_sync,
+
+        # Canonical primary output and audit keys used by the master
+        # pipeline and checkpoint system.
         "output_path": reconciled_path,
-        "report_path": report_path,
+        "audit_path": audit_path,
 
+        # Explicit Trade Sync product paths.
         "prepared_input_path": prepared_path,
         "bilateral_pairs_path": pairs_path,
         "reliability_evidence_path": reliability_evidence_path,
@@ -553,14 +565,16 @@ def run_trade_sync_workflow(
         "reconciled_trade_path": reconciled_path,
         "reconciliation_audit_path": audit_path,
         "diagnostics_path": diagnostics_path,
+        "report_path": report_path,
+        "latest_report_path": report_result.get(
+            "latest_report_path"
+        ),
 
-        "prepared_result": prepared_result,
-        "pairs_result": pairs_result,
-        "reliability_evidence_result": reliability_evidence_result,
-        "country_reliability_result": country_reliability_result,
-        "reconciled_result": reconciled_result,
-        "audit_result": audit_result,
-        "n_failed_audit_rows": reconciled_result.get("n_failed_audit_rows", 0,),
-        "diagnostics_result": diagnostics_result,
-        "report_result": report_result,
+        # Final validation outcome.
+        "audit_passed": audit_passed,
+        "n_failed_audit_rows": n_failed_audit_rows,
+
+        # Useful final decision metadata.
+        "decision": report_result.get("decision"),
+        "workflow_duration_seconds": workflow_elapsed,
     }

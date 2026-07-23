@@ -798,6 +798,126 @@ def build_trade_sync_report(
             and latest_rows < 0.75 * previous_rows_median
         )
 
+        treatment_definitions = pd.DataFrame(
+            [
+                {
+                    "Input situation": (
+                        "Exporter value positive; corrected importer "
+                        "value positive"
+                    ),
+                    "Status": "bilateral_reconciled",
+                    "Trade Sync treatment": (
+                        "Combine both reports using normalized "
+                        "country-year-direction reliability weights."
+                    ),
+                    "Output": "Reliability-weighted reconciled value",
+                },
+                {
+                    "Input situation": (
+                        "Exporter side classified as implicit zero; "
+                        "corrected importer value positive"
+                    ),
+                    "Status": (
+                        "bilateral_reconciled_export_implicit_zero"
+                    ),
+                    "Trade Sync treatment": (
+                        "Reconcile the positive importer report against "
+                        "zero evidence using the applicable reliability "
+                        "weights."
+                    ),
+                    "Output": "Reliability-weighted reconciled value",
+                },
+                {
+                    "Input situation": (
+                        "Exporter value positive; importer side "
+                        "classified as implicit zero"
+                    ),
+                    "Status": (
+                        "bilateral_reconciled_import_implicit_zero"
+                    ),
+                    "Trade Sync treatment": (
+                        "Reconcile the positive exporter report against "
+                        "zero evidence using the applicable reliability "
+                        "weights."
+                    ),
+                    "Output": "Reliability-weighted reconciled value",
+                },
+                {
+                    "Input situation": (
+                        "Usable exporter value; no usable or expected "
+                        "importer mirror value"
+                    ),
+                    "Status": "export_only",
+                    "Trade Sync treatment": (
+                        "Retain the exporter-reported FOB value without "
+                        "bilateral weighting."
+                    ),
+                    "Output": "Exporter value retained",
+                },
+                {
+                    "Input situation": (
+                        "Usable corrected importer value; no usable or "
+                        "expected exporter mirror value"
+                    ),
+                    "Status": "import_only",
+                    "Trade Sync treatment": (
+                        "Retain the corrected importer FOB-equivalent "
+                        "value without bilateral weighting."
+                    ),
+                    "Output": "Corrected importer value retained",
+                },
+                {
+                    "Input situation": (
+                        "Neither side provides a usable FOB-basis value"
+                    ),
+                    "Status": "not_eligible",
+                    "Trade Sync treatment": (
+                        "Preserve the row but leave the reconciled trade "
+                        "value missing."
+                    ),
+                    "Output": "No reconciled value",
+                },
+            ]
+        )
+
+        population_accounting = pd.DataFrame(
+            [
+                {
+                    "Population component": (
+                        "Reliability-weighted reconciliation"
+                    ),
+                    "Rows": int(round(n_weighted or 0)),
+                    "Share of CIF/FOB input": (
+                        _format_percent(weighted_share)
+                    ),
+                },
+                {
+                    "Population component": (
+                        "Single usable report retained"
+                    ),
+                    "Rows": int(round(n_single_report or 0)),
+                    "Share of CIF/FOB input": (
+                        _format_percent(single_report_share)
+                    ),
+                },
+                {
+                    "Population component": (
+                        "No usable FOB-basis value"
+                    ),
+                    "Rows": int(round(n_not_eligible or 0)),
+                    "Share of CIF/FOB input": (
+                        _format_percent(not_eligible_share)
+                    ),
+                },
+                {
+                    "Population component": "Total CIF/FOB input",
+                    "Rows": int(round(n_rows or 0)),
+                    "Share of CIF/FOB input": "100.00%",
+                },
+            ]
+        )
+
+
         # --------------------------------------------------------------
         # Figures
         # --------------------------------------------------------------
@@ -898,254 +1018,551 @@ def build_trade_sync_report(
         # --------------------------------------------------------------
 
         lines = [
-            "# Trade Sync Decision Report",
-            "",
-            f"**Decision:** `{decision}`  ",
-            f"**Run ID:** `{run_id}`  ",
-            f"**Target HS:** `{cfg.scope.target_hs}`  ",
-            (
-                f"**Generated:** "
-                f"`{datetime.now().isoformat(timespec='seconds')}`"
-            ),
-            "",
-            "## Executive summary",
-            "",
-            (
-                f"Trade Sync received **{_format_integer(n_rows)}** "
-                "bilateral exporter–importer–product–year rows from the "
-                "CIF/FOB-corrected dataset."
-            ),
-            "",
-            (
-                f"Of this upstream population, "
-                f"**{_format_integer(n_reconciled)}** rows "
-                f"({_format_percent(usable_coverage)}) produced a usable "
-                "FOB-basis trade value after Trade Sync."
-            ),
-            "",
-            (
-                f"Reliability-weighted reconciliation was applied to "
-                f"**{_format_integer(n_weighted)}** rows "
-                f"({_format_percent(weighted_share)} of the CIF/FOB input), "
-                f"while **{_format_integer(n_single_report)}** rows "
-                f"({_format_percent(single_report_share)}) contained only one "
-                "usable report and were therefore retained without bilateral "
-                f"weighting. Together, these two groups account for all **{_format_integer(n_reconciled)}** rows with a usable Trade Sync value."
-            ),
-            "",
-            (
-                f"The remaining **{_format_integer(n_not_eligible)}** rows "
-                f"({_format_percent(not_eligible_share)}) of **{_format_integer(n_rows)}** rows had neither a usable "
-                "exporter FOB value nor a usable corrected importer "
-                "FOB-equivalent value, so no reconciled trade value could be "
-                f"produced.{provisional_note}"
-            ),
-            "",
-            (
-                f"All **{_format_integer(n_rows)}** rows received from the "
-                "CIF/FOB step were preserved in the Trade Sync output."
-            ),
-            "",
-            (
-                f"The total reconciled trade value across rows with a usable "
-                f"output is **{_format_usd(total_reconciled)}**."
-            ),
-            "",
-            "## Decision checks",
-            "",
-            "| Check | Result |",
-            "|---|---:|",
-            (
-                "| CIF/FOB input rows received | "
-                f"{_format_integer(n_rows)} |"
-            ),
-            (
-                "| Rows preserved in Trade Sync output | "
-                f"{_format_integer(n_rows)} |"
-            ),
-            (
-                "| Reliability-weighted rows | "
-                f"{_format_integer(n_weighted)} "
-                f"({_format_percent(weighted_share)}) |"
-            ),
-            (
-                "| Single-report rows retained | "
-                f"{_format_integer(n_single_report)} "
-                f"({_format_percent(single_report_share)}) |"
-            ),
-            (
-                "| Rows with a usable Trade Sync value | "
-                f"{_format_integer(n_reconciled)} "
-                f"({_format_percent(usable_coverage)}) |"
-            ),
-            (
-                "| Rows without a usable FOB-basis value | "
-                f"{_format_integer(n_not_eligible)} "
-                f"({_format_percent(not_eligible_share)}) |"
-            ),
-            (
-                "| Invalid reconciled values | "
-                f"{_format_integer(n_invalid_reconciled)} |"
-            ),
-            (
-                "| Missing expected reconciled values | "
-                f"{_format_integer(n_missing_expected)} |"
-            ),
-            (
-                "| Duplicate bilateral product-year keys | "
-                f"{_format_integer(n_duplicate_keys)} |"
-            ),
-            f"| Reconciliation audit passed | `{audit_passed}` |",
-            (
-                "| Ready for Weight Sync | "
-                f"`{ready_for_processed_export}` |"
-            ),
-            "",
-            "## Input and reconciled totals",
-            "",
-            "| Measure | Value |",
-            "|---|---:|",
-            (
-                "| Reported exporter FOB total | "
-                f"{_format_usd(total_export)} |"
-            ),
-            (
-                "| Corrected importer FOB-equivalent total | "
-                f"{_format_usd(total_import)} |"
-            ),
-            (
-                "| Final reconciled total | "
-                f"{_format_usd(total_reconciled)} |"
-            ),
-            "",
-            (
-                "The reconciled aggregate is not required to lie between "
-                "the aggregate exporter and importer totals because the "
-                "three totals cover different combinations of available "
-                "bilateral reports. At row level, a two-sided weighted "
-                "reconciliation remains bounded by its two source values."
-            ),
-            "",
-            "## Positive-positive bilateral discrepancy",
-            "",
-            (
-                f"The comparison contains "
-                f"**{_format_integer(n_positive_positive)}** rows with "
-                "two positive reports."
-            ),
-            "",
-            (
-                "Among these genuine two-sided comparisons, the median "
-                "difference relative to the larger report is "
-                f"**{_format_percent(median_difference)}**; the 90th "
-                f"percentile is **{_format_percent(p90_difference)}**."
-            ),
-            "",
-            (
-                "Relative to a simple bilateral average, the median "
-                "absolute reliability-weighting adjustment is "
-                f"**{_format_percent(median_change_simple)}**, and the "
-                f"90th percentile is "
-                f"**{_format_percent(p90_change_simple)}**."
-            ),
-            "",
-            (
-                "The share of positive-positive report pairs within the "
-                f"configured {100 * agreement_tolerance:.0f}% agreement "
-                f"tolerance is **{_format_percent(agreement_share)}**."
-            ),
-            "",
-            "## Reliability evidence",
-            "",
-            (
-                f"Reliability estimation used "
-                f"**{_format_integer(n_evidence_rows)}** evidence rows. "
-                f"Of these, **{_format_integer(n_implicit_zero_rows)}** "
-                f"({_format_percent(implicit_zero_share)}) involved a "
-                "positive report paired with an implicit zero."
-            ),
-            "",
-            (
-                "The country reliability index therefore reflects both "
-                "disagreement among positive mirror reports and the "
-                "frequency of implicit-zero evidence. It is not a "
-                "prediction-accuracy score."
-            ),
-            "",
-            "## Reconciliation composition",
-            "",
-            _markdown_table(status_summary),
-            "",
-            (
-                f"![Reconciliation status by year]"
-                f"({status_figure.as_posix()})"
-            ),
-            "",
-            "## Annual results",
-            "",
-            _markdown_table(annual_summary),
-            "",
-            (
-                f"![Annual trade totals]"
-                f"({totals_figure.as_posix()})"
-            ),
-            "",
-            "## Country reliability",
-            "",
-            (
-                "Country reliability is estimated separately by year "
-                "and reporting direction. Lower mean evidence deviation "
-                "and higher reliability index indicate more internally "
-                "consistent reporting evidence."
-            ),
-            "",
-            _markdown_table(reliability_summary),
-            "",
-            (
-                f"![Country reliability by year]"
-                f"({reliability_figure.as_posix()})"
-            ),
-            "",
-            "## Positive-report agreement by year",
-            "",
-            (
-                f"![Positive-report agreement and discrepancy by year]"
-                f"({agreement_figure.as_posix()})"
-            ),
-            "",
-            "## Methodological notes",
-            "",
-            (
-                "- Positive-positive observations are reconciled using "
-                "country-year-direction reliability weights."
-            ),
-            (
-                "- Positive-versus-implicit-zero observations participate "
-                "in country reliability estimation and reconciliation."
-            ),
-            (
-                "- Genuinely missing partner reports are not interpreted "
-                "as zeros."
-            ),
-            (
-                "- Unilateral usable observations are retained because "
-                "`retain_unmatched_flows` is enabled."
-            ),
-            (
-                "- The configured agreement tolerance is diagnostic only "
-                "and does not bypass reliability-weighted reconciliation."
-            ),
-            "",
-            "## Output artifacts",
-            "",
-            f"- Reconciled trade: `{reconciled_trade_path}`",
-            f"- Country reliability: `{country_reliability_path}`",
-            f"- Reconciliation audit: `{reconciliation_audit_path}`",
-            f"- Diagnostics: `{diagnostics_path}`",
-            f"- Report: `{report_path}`",
-            "",
-        ]
-
+        "# Trade Sync Decision Report",
+        "",
+        f"**Decision:** `{decision}`  ",
+        f"**Run ID:** `{run_id}`  ",
+        f"**Target HS:** `{cfg.scope.target_hs}`  ",
+        (
+            f"**Input period:** `{cfg.scope.min_year}–"
+            f"{cfg.scope.max_year}`  "
+        ),
+        (
+            f"**Generated:** "
+            f"`{datetime.now().isoformat(timespec='seconds')}`"
+        ),
+        "",
+        "## 1. Purpose of Trade Sync",
+        "",
+        (
+            "International bilateral trade can be reported twice: once "
+            "by the exporter and once by the importer. Even after the "
+            "importer-reported CIF value has been converted to an "
+            "FOB-equivalent value, the two mirror reports may disagree "
+            "substantially."
+        ),
+        "",
+        (
+            "The purpose of Trade Sync is to create one harmonized "
+            "FOB-basis trade value for every "
+            "**year × exporter × importer × product** observation. "
+            "Where two usable reports exist, Trade Sync combines them "
+            "using reporting-reliability weights. Where only one usable "
+            "report exists, that report is retained. Rows without either "
+            "usable value remain in the dataset but receive no reconciled "
+            "trade value."
+        ),
+        "",
+        "## 2. Input data and observation unit",
+        "",
+        (
+            f"Trade Sync received **{_format_integer(n_rows)}** "
+            "bilateral exporter–importer–product–year rows from the "
+            "upstream CIF/FOB-corrected dataset."
+        ),
+        "",
+        "| Property | Value |",
+        "|---|---|",
+        "| Upstream module | CIF/FOB correction |",
+        (
+            "| Observation unit | "
+            "Year × exporter × importer × target product |"
+        ),
+        f"| Target HS classification | `{cfg.scope.target_hs}` |",
+        (
+            f"| Covered years | "
+            f"`{cfg.scope.min_year}–{cfg.scope.max_year}` |"
+        ),
+        (
+            "| Export-side input | "
+            "`export_value_fob` |"
+        ),
+        (
+            "| Import-side input | "
+            "`import_value_fob_corrected` |"
+        ),
+        (
+            "| Final Trade Sync value | "
+            "`trade_value_reconciled` |"
+        ),
+        "",
+        "## 3. Methodology",
+        "",
+        "### 3.1 Mirror values",
+        "",
+        (
+            "For a given bilateral product-year row, Trade Sync may "
+            "observe two FOB-basis mirror values:"
+        ),
+        "",
+        (
+            "- the FOB value reported by the exporter; and"
+        ),
+        (
+            "- the importer-reported value after the upstream CIF/FOB "
+            "correction has converted it to an FOB-equivalent basis."
+        ),
+        "",
+        (
+            "The two values represent the same intended trade flow but "
+            "may differ because of reporting errors, timing, partner or "
+            "product classification differences, missing declarations, "
+            "or other inconsistencies."
+        ),
+        "",
+        "### 3.2 Bilateral deviation",
+        "",
+        (
+            "For rows where both mirror reports are positive, their "
+            "relative disagreement is measured against the larger report:"
+        ),
+        "",
+        "$$",
+        (
+            "d = "
+            "\\frac{|V^{export} - V^{import,FOB}|}"
+            "{\\max(V^{export}, V^{import,FOB})}"
+        ),
+        "$$",
+        "",
+        (
+            "A deviation of `0` means exact agreement. A deviation of "
+            "`0.20` means that the reports differ by 20% of the larger "
+            "reported value. A value close to `1` indicates very large "
+            "disagreement."
+        ),
+        "",
+        "### 3.3 Country-year-direction reliability",
+        "",
+        (
+            "Reporting reliability is estimated separately for each "
+            "country, year and reporting direction: exporter reporting "
+            "and importer reporting."
+        ),
+        "",
+        (
+            "The workflow aggregates the bilateral deviation evidence "
+            "associated with that country-year-direction. Its mean "
+            "evidence deviation is converted into a reliability index:"
+        ),
+        "",
+        "$$",
+        (
+            "R_{c,t,r} = "
+            "1 - \\overline{d}_{c,t,r}"
+        ),
+        "$$",
+        "",
+        (
+            "A higher reliability index indicates that the country's "
+            "reports are, on average, more consistent with corresponding "
+            "mirror evidence. The index is not a prediction-accuracy "
+            "score."
+        ),
+        "",
+        "### 3.4 Reliability-weighted reconciliation",
+        "",
+        (
+            "When both reporting sides participate in reconciliation, "
+            "their reliability scores are normalized into weights that "
+            "sum to one:"
+        ),
+        "",
+        "$$",
+        (
+            "w^{export} = "
+            "\\frac{R^{export}}"
+            "{R^{export} + R^{import}}"
+        ),
+        "$$",
+        "",
+        "$$",
+        (
+            "w^{import} = "
+            "\\frac{R^{import}}"
+            "{R^{export} + R^{import}}"
+        ),
+        "$$",
+        "",
+        (
+            "The harmonized value is then calculated as:"
+        ),
+        "",
+        "$$",
+        (
+            "V^{reconciled} = "
+            "w^{export}V^{export} + "
+            "w^{import}V^{import,FOB}"
+        ),
+        "$$",
+        "",
+        (
+            "Consequently, the side with more consistent reporting "
+            "evidence receives more influence. For a genuine two-positive "
+            "row, the reconciled value remains bounded by the exporter "
+            "and corrected importer values."
+        ),
+        "",
+        "### 3.5 Implicit zeros versus genuine missingness",
+        "",
+        (
+            "An **implicit zero** is not necessarily a literal reported "
+            "zero. It is a workflow classification used when one side "
+            "contains a positive flow while the corresponding partner-side "
+            "flow is absent within the expected reporting structure."
+        ),
+        "",
+        (
+            "Such positive-versus-implicit-zero cases contribute maximum "
+            "disagreement evidence and participate in reliability "
+            "estimation and weighted reconciliation."
+        ),
+        "",
+        (
+            "This is different from a genuinely unavailable partner "
+            "report. Genuinely missing partner information is not "
+            "automatically interpreted as zero. When only one usable "
+            "report remains, the available value is retained without "
+            "bilateral weighting."
+        ),
+        "",
+        "### 3.6 Treatment by input situation",
+        "",
+        _markdown_table(treatment_definitions),
+        "",
+        "### 3.7 Processing sequence",
+        "",
+        "```text",
+        "CIF/FOB-corrected bilateral input",
+        "        ↓",
+        "Identify exporter and corrected importer mirror values",
+        "        ↓",
+        "Classify positive, implicit-zero and unavailable cases",
+        "        ↓",
+        "Construct bilateral reliability evidence",
+        "        ↓",
+        "Estimate country-year-direction reliability",
+        "        ↓",
+        "Normalize exporter and importer reliability into weights",
+        "        ↓",
+        "Reconcile two-sided and implicit-zero cases",
+        "        ↓",
+        "Retain usable unilateral reports",
+        "        ↓",
+        "Preserve rows without a usable value as not eligible",
+        "        ↓",
+        "Run reconciliation audit",
+        "        ↓",
+        "Approve output for Weight Sync",
+        "```",
+        "",
+        "## 4. Processing outcome",
+        "",
+        (
+            f"Of the **{_format_integer(n_rows)}** rows received from "
+            f"CIF/FOB, **{_format_integer(n_reconciled)}** "
+            f"({_format_percent(usable_coverage)}) produced a usable "
+            "Trade Sync value."
+        ),
+        "",
+        (
+            f"Reliability-weighted reconciliation was applied to "
+            f"**{_format_integer(n_weighted)}** rows "
+            f"({_format_percent(weighted_share)} of the CIF/FOB input). "
+            f"A further **{_format_integer(n_single_report)}** rows "
+            f"({_format_percent(single_report_share)}) contained only "
+            "one usable report and were retained without bilateral "
+            "weighting."
+        ),
+        "",
+        (
+            f"Together, these two groups account for all "
+            f"**{_format_integer(n_reconciled)} rows with a usable "
+            "Trade Sync value**."
+        ),
+        "",
+        (
+            f"The remaining **{_format_integer(n_not_eligible)}** rows "
+            f"({_format_percent(not_eligible_share)}) had neither a "
+            "usable exporter FOB value nor a usable corrected importer "
+            "FOB-equivalent value. These rows were preserved, but no "
+            "reconciled trade value could be produced."
+        ),
+        "",
+        _markdown_table(population_accounting),
+        "",
+        (
+            f"All **{_format_integer(n_rows)}** CIF/FOB input rows were "
+            "preserved in the Trade Sync output."
+        ),
+        "",
+        (
+            f"The total reconciled trade value across rows with a usable "
+            f"output is **{_format_usd(total_reconciled)}**."
+        ),
+        "",
+        (
+            provisional_note.strip()
+            if provisional_note
+            else ""
+        ),
+        "",
+        "## 5. Decision basis",
+        "",
+        (
+            f"The Trade Sync output is **{decision.lower()} for Weight "
+            "Sync** because:"
+        ),
+        "",
+        (
+            f"- all **{_format_integer(n_rows)}** rows received from "
+            "CIF/FOB were preserved;"
+        ),
+        (
+            f"- all **{_format_integer(n_reconciled)}** rows expected to "
+            "receive a reconciled or retained value received one;"
+        ),
+        (
+            f"- the **{_format_integer(n_not_eligible)}** rows without a "
+            "value were explicitly classified as `not_eligible`, rather "
+            "than being silently dropped;"
+        ),
+        (
+            f"- the audit found "
+            f"**{_format_integer(n_invalid_reconciled)} invalid "
+            "reconciled values**;"
+        ),
+        (
+            f"- the audit found "
+            f"**{_format_integer(n_missing_expected)} missing expected "
+            "reconciled values**; and"
+        ),
+        (
+            f"- the audit found "
+            f"**{_format_integer(n_duplicate_keys)} duplicate bilateral "
+            "product-year keys**."
+        ),
+        "",
+        "### Decision checks",
+        "",
+        "| Check | Result |",
+        "|---|---:|",
+        (
+            "| CIF/FOB input rows received | "
+            f"{_format_integer(n_rows)} |"
+        ),
+        (
+            "| Rows preserved in Trade Sync output | "
+            f"{_format_integer(n_rows)} |"
+        ),
+        (
+            "| Reliability-weighted rows | "
+            f"{_format_integer(n_weighted)} "
+            f"({_format_percent(weighted_share)}) |"
+        ),
+        (
+            "| Single-report rows retained | "
+            f"{_format_integer(n_single_report)} "
+            f"({_format_percent(single_report_share)}) |"
+        ),
+        (
+            "| Rows with a usable Trade Sync value | "
+            f"{_format_integer(n_reconciled)} "
+            f"({_format_percent(usable_coverage)}) |"
+        ),
+        (
+            "| Rows without a usable FOB-basis value | "
+            f"{_format_integer(n_not_eligible)} "
+            f"({_format_percent(not_eligible_share)}) |"
+        ),
+        (
+            "| Invalid reconciled values | "
+            f"{_format_integer(n_invalid_reconciled)} |"
+        ),
+        (
+            "| Missing expected reconciled values | "
+            f"{_format_integer(n_missing_expected)} |"
+        ),
+        (
+            "| Duplicate bilateral product-year keys | "
+            f"{_format_integer(n_duplicate_keys)} |"
+        ),
+        f"| Reconciliation audit passed | `{audit_passed}` |",
+        (
+            "| Ready for Weight Sync | "
+            f"`{ready_for_processed_export}` |"
+        ),
+        "",
+        "## 6. Input and reconciled value totals",
+        "",
+        "| Measure | Value |",
+        "|---|---:|",
+        (
+            "| Reported exporter FOB total | "
+            f"{_format_usd(total_export)} |"
+        ),
+        (
+            "| Corrected importer FOB-equivalent total | "
+            f"{_format_usd(total_import)} |"
+        ),
+        (
+            "| Final reconciled total | "
+            f"{_format_usd(total_reconciled)} |"
+        ),
+        "",
+        (
+            "The reconciled aggregate is not required to lie between the "
+            "aggregate exporter and importer totals because those totals "
+            "cover different combinations of available bilateral reports. "
+            "The row-level boundedness statement applies specifically to "
+            "genuine two-sided weighted reconciliation."
+        ),
+        "",
+        "## 7. Mirror-report disagreement",
+        "",
+        (
+            f"There are **{_format_integer(n_positive_positive)}** rows "
+            "where both the exporter and corrected importer reports are "
+            "positive."
+        ),
+        "",
+        (
+            "Among these genuine two-sided comparisons, the median "
+            "difference relative to the larger report is "
+            f"**{_format_percent(median_difference)}**, while the 90th "
+            f"percentile is **{_format_percent(p90_difference)}**."
+        ),
+        "",
+        (
+            f"Only **{_format_percent(agreement_share)}** of these pairs "
+            f"fall within the configured "
+            f"{100 * agreement_tolerance:.0f}% agreement tolerance."
+        ),
+        "",
+        (
+            "These results show that exporter and importer mirror reports "
+            "remain highly dispersed. This supports harmonization using "
+            "reporting-reliability evidence rather than automatically "
+            "selecting one side or applying an unweighted average."
+        ),
+        "",
+        (
+            "Relative to a simple bilateral average, reliability weighting "
+            "changes the reconciled value by a median absolute amount of "
+            f"**{_format_percent(median_change_simple)}**. The 90th "
+            f"percentile adjustment is "
+            f"**{_format_percent(p90_change_simple)}**."
+        ),
+        "",
+        (
+            f"![Positive-report agreement and discrepancy by year]"
+            f"({agreement_figure.as_posix()})"
+        ),
+        "",
+        "## 8. Reliability evidence",
+        "",
+        (
+            f"Reliability estimation used "
+            f"**{_format_integer(n_evidence_rows)}** evidence rows."
+        ),
+        "",
+        (
+            f"Of these, **{_format_integer(n_positive_positive)}** "
+            "contained two positive mirror reports, while "
+            f"**{_format_integer(n_implicit_zero_rows)}** "
+            f"({_format_percent(implicit_zero_share)}) paired one "
+            "positive report with an implicit zero."
+        ),
+        "",
+        (
+            "The country reliability index therefore reflects both:"
+        ),
+        "",
+        "- disagreement between two positive mirror reports; and",
+        (
+            "- the frequency with which a country has positive reports "
+            "that are not mirrored on the partner side."
+        ),
+        "",
+        (
+            "For this reason, a low reliability index does not mean that "
+            "a statistical prediction model performed poorly. It means "
+            "that the country's reporting evidence was inconsistent with "
+            "its mirror evidence."
+        ),
+        "",
+        _markdown_table(reliability_summary),
+        "",
+        (
+            f"![Country reliability by year]"
+            f"({reliability_figure.as_posix()})"
+        ),
+        "",
+        "## 9. Reconciliation composition",
+        "",
+        (
+            "The following table reports how the complete CIF/FOB input "
+            "population was classified and treated:"
+        ),
+        "",
+        _markdown_table(status_summary),
+        "",
+        (
+            f"![Reconciliation status by year]"
+            f"({status_figure.as_posix()})"
+        ),
+        "",
+        "## 10. Annual results",
+        "",
+        _markdown_table(annual_summary),
+        "",
+        (
+            f"![Annual trade totals]"
+            f"({totals_figure.as_posix()})"
+        ),
+        "",
+        "## 11. Interpretation and limitations",
+        "",
+        (
+            "- Trade Sync harmonizes reporting evidence; it does not "
+            "establish the unobservable true trade value with certainty."
+        ),
+        (
+            "- Reliability scores reflect both positive-positive "
+            "disagreement and implicit-zero evidence."
+        ),
+        (
+            "- Retained unilateral values are usable but are not "
+            "corroborated by a corresponding usable mirror report."
+        ),
+        (
+            "- The results depend on the upstream CIF/FOB correction "
+            "because corrected importer values enter Trade Sync directly."
+        ),
+        (
+            "- The configured agreement tolerance is diagnostic only. "
+            "It does not bypass reliability-weighted reconciliation."
+        ),
+        (
+            f"- Results for {maximum_year} should be treated as "
+            "provisional when their reporting coverage is materially "
+            "lower than preceding years."
+            if latest_year_provisional
+            else (
+                "- No material final-year row-count shortfall was "
+                "detected by the current provisional-year diagnostic."
+            )
+        ),
+        "",
+        "## 12. Output artifacts",
+        "",
+        f"- Reconciled trade: `{reconciled_trade_path}`",
+        f"- Country reliability: `{country_reliability_path}`",
+        f"- Reconciliation audit: `{reconciliation_audit_path}`",
+        f"- Diagnostics: `{diagnostics_path}`",
+        f"- Report: `{report_path}`",
+        "",
+    ]
         report_path.write_text(
             "\n".join(lines),
             encoding="utf-8",
