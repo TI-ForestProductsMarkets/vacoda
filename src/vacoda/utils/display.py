@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pandas as pd
 from collections.abc import Iterable, Iterator
-from typing import TypeVar
+from typing import TypeVar, Iterable, Iterator
 
 from tqdm import tqdm
 
@@ -44,6 +44,9 @@ _SYMBOLS = {
     "audit": "\U0001F4DD",            # 📝
     "log": "\U0001F4D1",              # 📑
     "manifest": "\U0001F4C3",         # 📃
+    "skip": "\u2298",                 # ⏭
+    "flag": "\U0001F6A9",             # 🚩
+
 }
 
 _ANSI_COLORS = {
@@ -97,54 +100,6 @@ def get_recovery_symbol(pct, threshold):
         return "\u26A0"   # ⚠ partial recovery
     else:
         return "\u274C"   # ❌ no recovery
-
-def get_symbols_deprecated(name):
-    if name == "warning":
-        return "\u26A0"   # ⚠
-    elif name == "check":
-        return "\u2705"   # ✅
-    elif name == "cross":
-        return "\u274C"   # ❌
-    elif name == "info":
-        return "\u2139"   # ℹ
-    elif name == "star":
-        return "\u2B50"   # ⭐
-    elif name == "fire":
-        return "\U0001F525"  # 🔥
-    elif name == "important":
-        return "\U0001F4A5"  # 💥
-    elif name == "right_arrow":
-        return "\u27A1"   # ➡
-    elif name == "right_finger":
-        return "\U0001F449"  # 👉
-    elif name == "danger":
-        return "\U0001F6AB"  #  🚫
-    elif name == "success":
-        return "\U0001F44D"  #  👍
-    elif name == "failure":
-        return "\U0001F44E"  #  👎
-    elif name == "sparkles":
-        return "\U0001F496"  # 💖
-    elif name =="time":
-        return "\U0001F551"  # 🕑
-    elif name == "duckdb":
-        return "\U0001F986"  # 🦆
-    elif name == "pandas":
-        return "\U0001F43C"  #  🐼
-    elif name == "python":
-        return "\U0001F40D"  #  🐍
-    elif name == "warning_light":
-        return "\U0001F6A8"  # 🚨
-    elif name == "construction":
-        return "\U0001F6A7"  # 🚧
-    elif name == "recycle":
-        return "\U0001F504"  # 🔄
-    elif name == "workflow":
-        return "\U0001F3C1"  # 🏁
-    elif name == "pipeline_step":
-        return "\U0001F4A5"  # 💥
-    else:
-        raise ValueError(f"Unknown symbol name: {name}")
 
 def progress_bar(
     iterable: Iterable[T],

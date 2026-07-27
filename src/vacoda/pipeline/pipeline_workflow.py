@@ -35,7 +35,7 @@ from vacoda.pipeline.checkpoint import (
     validate_checkpoint,
     write_checkpoint,
 )
-from vacoda.utils.runtime import timed_pipeline_workflow, log_pipeline_step_banner
+from vacoda.utils.runtime import timed_pipeline_workflow, log_pipeline_step_banner, print_preflight_step, print_workflow_banner
 from vacoda.utils.logger import (
     get_logger,
     parse_log_level,
@@ -178,10 +178,10 @@ def _confirm_pipeline_run(
     checkpoint_dir: Path,
     decisions: list[StepDecision],
 ) -> bool:
-    print()
-    print("=" * 72)
-    print("VACODA PIPELINE PREFLIGHT CHECK")
-    print("=" * 72)
+    print_workflow_banner(
+        symbol = color_text(get_symbols("play"), "red"),
+        text="VACODA PIPELINE PREFLIGHT CHECK",
+    )
     print(f"Run ID:              {run_id}")
     print(f"Pipeline:            {cfg.pipeline.name}")
     print(f"Enabled:             {cfg.pipeline.enabled}")
@@ -196,29 +196,17 @@ def _confirm_pipeline_run(
     print(f"Manifest:            {manifest_path}")
     print(f"Log file:            {log_path}")
     print("-" * 72)
-    print("Step plan:")
+    print(f"{get_symbols('right_finger')} Step plan:")
     print("-" * 72)
 
     for decision in decisions:
-        step_cfg = decision.step_config
-        plan = decision.plan
-
-        print(f"Step:                {decision.step_name}")
-        print(f"  Action:            {decision.action.upper()}")
-        print(f"  Reason:            {decision.reason}")
-        print(f"  Config:            {step_cfg.config}")
-        print(f"  Expected status:   {step_cfg.expected_status}")
-        print(f"  Required flag:     {step_cfg.required_ready_flag}")
-        print(f"  Output:            {plan.output_path}")
-        print(f"  Audit:             {plan.audit_path}")
-        print(f"  Checkpoint:        {decision.checkpoint_path}")
-        print("-" * 72)
+        print_preflight_step(decision)
 
     if cfg.pipeline.force_run_all:
-        print("WARNING: force_run_all=true. All enabled steps will run even if valid checkpoints exist.")
+        print(f"{get_symbols('warning_light')} WARNING: force_run_all=true. All enabled steps will run even if valid checkpoints exist.")
         print("-" * 72)
 
-    answer = input("Continue with this pipeline run? Type 'y' to continue: ").strip().lower()
+    answer = input(f"{color_text(get_symbols('play'), 'green')}  Continue with this pipeline run? Type 'y' to continue: ").strip().lower()
 
     return answer == "y"
 
@@ -796,7 +784,7 @@ def run_pipeline(
         )
 
         if not confirmed:
-            logger.info("Pipeline run cancelled by user.")
+            print(f"{get_symbols('flag')}Pipeline run cancelled by user.")
             return {
                 "status": "cancelled",
                 "run_id": run_id,
@@ -806,11 +794,11 @@ def run_pipeline(
             }
 
     if cfg.pipeline.force_run_all:
-        logger.warning("FORCE RUN ALL is enabled — valid checkpoints will be ignored.")
+        logger.warning("%s FORCE RUN ALL is enabled — valid checkpoints will be ignored.", get_symbols("warning_light"))
 
 
     if not cfg.pipeline.enabled:
-        logger.warning("Pipeline is disabled in config. Nothing to run.")
+        logger.warning("%s Pipeline is disabled in config. Nothing to run.", get_symbols("warning_light"))
         return {
             "status": "disabled",
             "run_id": run_id,

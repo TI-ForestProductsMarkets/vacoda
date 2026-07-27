@@ -30,6 +30,26 @@ def _visible_width(text: str) -> int:
 
     return max(width, 0)
 
+def print_workflow_banner(
+    text: str,
+    *,
+    symbol: str | None = None,
+    width: int = 72,
+) -> None:
+    """Print a boxed banner for interactive terminal output."""
+    inner_width = width - 2
+
+    prefix = f"{symbol * 3}  " if symbol else ""
+    content = f"  {prefix}{text}"
+
+    padding = max(
+        inner_width - _visible_width(content),
+        0,
+    )
+
+    print(f"╔{'═' * inner_width}╗")
+    print(f"║{content}{' ' * padding}║")
+    print(f"╚{'═' * inner_width}╝")
 
 def _workflow_banner(
     logger: logging.Logger,
@@ -131,18 +151,41 @@ def run_step(
 
     return result
 
-def _workflow_banner_deprecated(
-    logger: logging.Logger,
-    text: str,
-    *,
-    width: int = 72,
+def print_preflight_step(
+    decision: Any,
 ) -> None:
-    """Log a boxed workflow banner."""
-    inner_width = width - 2
-    logger.info("╔%s╗", "═" * inner_width)
-    logger.info("║%-*s║", inner_width, f"  {text}")
-    logger.info("╚%s╝", "═" * inner_width)
+    step_cfg = decision.step_config
+    plan = decision.plan
 
+    action_label = (
+            color_text("[RUN]", "green")
+            if decision.action == "run"
+            else color_text("[SKIP]", "yellow")
+        )
+
+    pipeline_symbol = color_text(get_symbols("pipeline_step"), "cyan")
+    checkpoint_symbol = get_symbols("checkpoint")
+    output_symbol = get_symbols("output")
+    audit_symbol = get_symbols("audit")
+    flag_symbol = get_symbols("flag")
+
+    print()
+    print(
+        f"{pipeline_symbol * 3}  "
+        f"PIPELINE STEP  —  {decision.step_name.upper()}"
+    )
+    print(f"  Action:            {action_label}")
+    print(f"  Reason:            {decision.reason}")
+    print(f"  Config:            {step_cfg.config}")
+    print(
+        "  Expected status:   "
+        + ", ".join(step_cfg.expected_status)
+    )
+    print(f"  {flag_symbol} Required flag:     {step_cfg.required_ready_flag}")
+    print(f"  {checkpoint_symbol} Checkpoint:     {decision.checkpoint_path}")
+    print(f"  {output_symbol} Output:         {plan.output_path}")
+    print(f"  {audit_symbol} Audit:          {plan.audit_path}")
+    print("----------------------------------------------------------------------")
 
 def log_pipeline_step_banner(
     logger: logging.Logger,
