@@ -23,13 +23,16 @@ from vacoda.trade_sync.reconcile import reconcile_trade
 from vacoda.trade_sync.diagnostics import build_trade_sync_diagnostics
 from vacoda.trade_sync.reporting import build_trade_sync_report
 from vacoda.utils.runtime import timed_workflow
+from vacoda.utils.artifacts import require_artifact
 
 REQUIRED_PRODUCTS = (
+    "prepared_input",
     "bilateral_pairs",
     "reliability_evidence",
     "country_reliability",
     "reconciled_trade",
     "reconciliation_audit",
+    "diagnostics",
 )
 
 
@@ -226,11 +229,11 @@ def run_trade_sync_workflow(
                 ),
             )
 
-        prepared_path = require_result_path(
-                prepared_result,
-                "Trade Sync step result did not contain any expected path key",
-                "prepared_input_path",
-                "output_path",
+        prepared_path = require_artifact(
+                result=prepared_result,
+                path_key="prepared_input_path",
+                consumer_step=WORKFLOW_STEPS[1],
+                producer_product="prepared Trade Sync input",
             )
 
         # ==================================================================
@@ -250,12 +253,12 @@ def run_trade_sync_workflow(
                 ),
             )
 
-        pairs_path = require_result_path(
-                pairs_result,
-                "Trade Sync step result did not contain any expected path key",
-                "bilateral_pairs_path",
-                "output_path",
-            )
+        pairs_path = require_artifact(
+            result=pairs_result,
+            path_key="bilateral_pairs_path",
+            consumer_step=WORKFLOW_STEPS[2],
+            producer_product="bilateral-pairs Parquet",
+        )
         
 
         # ==================================================================
@@ -275,12 +278,12 @@ def run_trade_sync_workflow(
                     ),
                 )
 
-        reliability_evidence_path = require_result_path(
-                        reliability_evidence_result,
-                        "Trade Sync reliability-evidence result did not contain an expected path key",
-                        "reliability_evidence_path",
-                        "output_path",
-                    )
+        reliability_evidence_path = require_artifact(
+            result=reliability_evidence_result,
+            path_key="reliability_evidence_path",
+            consumer_step=WORKFLOW_STEPS[3],
+            producer_product="reliability-evidence Parquet",
+        )
 
         # ==================================================================
         # Step 4 — Estimate country reliability
@@ -298,12 +301,12 @@ def run_trade_sync_workflow(
                 ),
             )
 
-        country_reliability_path = require_result_path(
-                        country_reliability_result,
-                        "Trade Sync country-reliability result did not contain an expected path key",
-                        "country_reliability_path",
-                        "output_path",
-            )
+        country_reliability_path = require_artifact(
+            result=country_reliability_result,
+            path_key="country_reliability_path",
+            consumer_step=WORKFLOW_STEPS[4],
+            producer_product="country-reliability Parquet",
+        )
 
 
         # ==================================================================
@@ -325,14 +328,12 @@ def run_trade_sync_workflow(
                 ),
             )
 
-        reconciled_path = require_result_path(
-                reconciled_result,
-                "Trade Sync reconciliation result did not contain "
-                "an expected output path.",
-                "reconciled_trade_path",
-                "output_path",
-            )
-
+        reconciled_path = require_artifact(
+            result=reconciled_result,
+            path_key="reconciled_trade_path",
+            consumer_step=WORKFLOW_STEPS[5],
+            producer_product="reconciled-trade Parquet",
+        )
 
         # ==================================================================
         # Step 6 — Validate reconciliation audit
@@ -349,12 +350,12 @@ def run_trade_sync_workflow(
                 ),
             )
 
-        audit_path = require_result_path(
-                audit_result,
-                "Trade Sync audit-validation result did not contain the reconciliation-audit path.",
-                "reconciliation_audit_path",
-                "output_path",
-            )
+        audit_path = require_artifact(
+            result=audit_result,
+            path_key="reconciliation_audit_path",
+            consumer_step=WORKFLOW_STEPS[6],
+            producer_product="reconciliation-audit Parquet",
+        )
 
         audit_passed = bool(
                 audit_result.get(
@@ -387,13 +388,12 @@ def run_trade_sync_workflow(
                 ),
             )
 
-        diagnostics_path = require_result_path(
-                diagnostics_result,
-                "Trade Sync diagnostics result did not contain "
-                "an expected path key.",
-                "diagnostics_path",
-                "output_path",
-            )
+        diagnostics_path = require_artifact(
+            result=diagnostics_result,
+            path_key="diagnostics_path",
+            consumer_step=WORKFLOW_STEPS[7],
+            producer_product="diagnostics Parquet",
+        )
 
 
         # ==================================================================
@@ -425,6 +425,10 @@ def run_trade_sync_workflow(
                 "output_path",
             )
 
+        if not report_path.is_file():
+            raise FileNotFoundError(
+                f"Trade Sync decision report not found: {report_path}"
+            )
         
         reconciled_output_valid = bool(
             reconciled_path.is_file()
