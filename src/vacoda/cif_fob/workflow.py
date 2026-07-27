@@ -29,8 +29,8 @@ from vacoda.cif_fob.apply_rates import apply_cif_fob_weights
 from vacoda.config.cif_fob import CifFobConfig
 from vacoda.utils.display import get_symbols
 from vacoda.utils.logger import get_logger
-from vacoda.utils.timing import timed_step, timed_workflow
-
+from vacoda.utils.runtime import run_step, timed_workflow
+from vacoda.utils.artifacts import artifact_result, require_artifact
 
 WORKFLOW_STEPS = [
     "Prepare CIF/FOB input",
@@ -46,71 +46,56 @@ WORKFLOW_STEPS = [
 
 TOTAL_WORKFLOW_STEPS = len(WORKFLOW_STEPS)
 
-def _artifact_result(
-    *,
-    path_key: str,
-    path: Path) -> dict[str, Any]:
-    """
-    Return a standard result for a disabled step.
+REQUIRED_PRODUCTS = (
+    "prepared_input",
+    "mirror_pairs",
+    "training_sample",
+    "training_features",
+    "training_evidence_audit",
+    "estimated_rates",
+    "diagnostics",
+    "corrected_trade",
+)
 
-    When the expected artifact already exists, downstream steps may use
-    it. Otherwise, the step remains skipped and downstream dependency
-    checks will fail with a clear message when needed.
-    """
+
+def get_enabled_products(cfg: CifFobConfig) -> dict[str, bool]:
+    """Return CIF/FOB product enablement as a plain dictionary."""
     return {
-        "status": "provided" if path.exists() else "skipped",
-        path_key: path,
-        "output_path": path if path.exists() else None,
+        "prepared_input": cfg.products.prepared_input.enable,
+        "mirror_pairs": cfg.products.mirror_pairs.enable,
+        "training_sample": cfg.products.training_sample.enable,
+        "training_features": cfg.products.training_features.enable,
+        "training_evidence_audit": (
+            cfg.products.training_evidence_audit.enable
+        ),
+        "estimated_rates": cfg.products.estimated_rates.enable,
+        "diagnostics": cfg.products.diagnostics.enable,
+        "corrected_trade": cfg.products.corrected_trade.enable,
+        "decision_report": cfg.artifacts.enable,
     }
 
 
-def _require_artifact(
+def validate_workflow_products(
     *,
-    result: dict[str, Any],
-    path_key: str,
-    consumer_step: str,
-    producer_product: str) -> Path:
-    """Return a required upstream artifact or raise a clear error."""
-    path = result.get(path_key)
+    enabled_products: dict[str, bool],
+) -> None:
+    """Require all core CIF/FOB workflow products."""
+    disabled = [
+        name
+        for name in REQUIRED_PRODUCTS
+        if not enabled_products.get(name, False)
+    ]
 
-    if not isinstance(path, Path):
+    if disabled:
         raise RuntimeError(
-            f"{consumer_step} requires {producer_product}, but the "
-            f"upstream result does not contain {path_key!r}."
+            "CIF/FOB requires these products to be enabled: "
+            + ", ".join(disabled)
         )
 
-    if not path.exists():
-        raise FileNotFoundError(
-            f"{consumer_step} requires {producer_product}, but it was "
-            f"not found at {path}. Enable the corresponding product or "
-            "provide the existing artifact."
+    if not enabled_products["decision_report"]:
+        raise RuntimeError(
+            "CIF/FOB decision reporting must be enabled."
         )
-
-    return path
-
-
-def _log_step_header(
-    *,
-    logger,
-    symbol: str,
-    title: str) -> None:
-    logger.info("=" * 72)
-    logger.info("%s %s", symbol, title)
-    logger.info("=" * 72)
-
-
-def _resolve_primary_estimation_name(
-    *,
-    estimated_rates_result: dict[str, Any],
-) -> str | None:
-    """Resolve full primary estimation run name from Step 5 metadata."""
-    value = estimated_rates_result.get("primary_estimation_run")
-
-    if value and "__" in str(value):
-        return str(value)
-
-    return None
-
 
 def run_cif_fob_workflow(
     *,
@@ -132,268 +117,210 @@ def run_cif_fob_workflow(
     """
     logger = logger or get_logger("CIF_FOB")
 
-    info = get_symbols("info")
-    build = get_symbols("construction")
-    ok = get_symbols("check")
-    warn = get_symbols("warning")
-
-    logger.info("=" * 72)
-    logger.info("%s START — CIF/FOB workflow", info)
-    logger.info("=" * 72)
-    logger.info("Run ID: %s", run_id)
-    logger.info("Target HS: %s", cfg.scope.target_hs)
-    logger.info(
-        "Year range: %s-%s",
-        cfg.scope.min_year,
-        cfg.scope.max_year,
-    )
-    logger.info("Input: %s", cfg.input_path())
-    logger.info("Output directory: %s", cfg.output_dir())
-    logger.info(
-        "Enabled products: "
-        "prepared_input=%s mirror_pairs=%s training_sample=%s "
-        "training_features=%s estimated_rates=%s diagnostics=%s corrected_trade=%s",
-        cfg.products.prepared_input.enable,
-        cfg.products.mirror_pairs.enable,
-        cfg.products.training_sample.enable,
-        cfg.products.training_features.enable,
-        cfg.products.estimated_rates.enable,
-        cfg.products.diagnostics.enable,
-        cfg.products.corrected_trade.enable,
-    )
-    logger.info(
-        "Decision report: enabled=%s kind=%s subdir=%s "
-        "filename=%s timestamp=%s write_latest=%s",
-        cfg.artifacts.enable,
-        cfg.artifacts.kind,
-        cfg.artifacts.subdir,
-        cfg.artifacts.filename,
-        cfg.artifacts.timestamp,
-        cfg.artifacts.write_latest,
-    )
-    logger.info("=" * 72)
-
     # ------------------------------------------------------------------
     # Default results also expose expected artifact paths, allowing a
     # disabled step to be supplied by an already existing file.
     # ------------------------------------------------------------------
 
-    prepared_result = _artifact_result(
-        path_key="prepared_input_path",
-        path=cfg.product_path("prepared_input"),
-    )
+    prepared_result = artifact_result(
+            path_key="prepared_input_path",
+            path=cfg.product_path("prepared_input"),
+        )
 
-    mirror_result = _artifact_result(
-        path_key="mirror_pairs_path",
-        path=cfg.product_path("mirror_pairs"),
-    )
+    mirror_result = artifact_result(
+            path_key="mirror_pairs_path",
+            path=cfg.product_path("mirror_pairs"),
+        )
 
-    training_sample_result = _artifact_result(
-        path_key="training_sample_path",
-        path=cfg.product_path("training_sample"),
-    )
+    training_sample_result = artifact_result(
+            path_key="training_sample_path",
+            path=cfg.product_path("training_sample"),
+        )
 
-    training_features_result = _artifact_result(
-        path_key="training_features_path",
-        path=cfg.product_path("training_features"),
-    )
+    training_features_result = artifact_result(
+            path_key="training_features_path",
+            path=cfg.product_path("training_features"),
+        )
 
-    training_evidence_audit_result = _artifact_result(
-        path_key="training_evidence_audit_path",
-        path=cfg.product_path("training_evidence_audit"),
-    )
+    training_evidence_audit_result = artifact_result(
+            path_key="training_evidence_audit_path",
+            path=cfg.product_path("training_evidence_audit"),
+        )
 
-    estimated_rates_result = _artifact_result(
-        path_key="estimated_rates_path",
-        path=cfg.product_path("estimated_rates"),
-    )
-    
+    estimated_rates_result = artifact_result(
+            path_key="estimated_rates_path",
+            path=cfg.product_path("estimated_rates"),
+        )
+        
     diagnostics_result: dict[str, Any] = {
-        "status": "skipped",
-        "diagnostics_path": None,
-        "output_path": None,
-    }
-
-    report_result: dict[str, Any] = {
-        "status": "disabled" if not cfg.artifacts.enable else "skipped",
-        "report_path": None,
-        "latest_report_path": None,
-    }
-
-    corrected_trade_result: dict[str, Any] = {
-            "status": (
-                "skipped"
-                if cfg.products.corrected_trade.enable
-                else "disabled"
-            ),
+            "status": "skipped",
+            "diagnostics_path": None,
             "output_path": None,
-            "audit_path": None,
-            "corrected_trade_path": None,
-            "corrected_trade_audit_path": None,
-            "ready_for_trade_sync": False,
         }
 
+    report_result: dict[str, Any] = {
+            "status": "disabled" if not cfg.artifacts.enable else "skipped",
+            "report_path": None,
+            "latest_report_path": None,
+        }
+
+    corrected_trade_result: dict[str, Any] = {
+                "status": (
+                    "skipped"
+                    if cfg.products.corrected_trade.enable
+                    else "disabled"
+                ),
+                "output_path": None,
+                "audit_path": None,
+                "corrected_trade_path": None,
+                "corrected_trade_audit_path": None,
+                "ready_for_trade_sync": False,
+            }
+
+    enabled_products = get_enabled_products(cfg)
+
+    validate_workflow_products(
+        enabled_products=enabled_products,
+    )
+
+
     with timed_workflow(logger, "CIF/FOB workflow"):
-        STEP =1
+
+        logger.info("Run ID: %s", run_id)
+        logger.info("Target HS: %s", cfg.scope.target_hs)
+        logger.info(
+            "Year range: %s-%s",
+            cfg.scope.min_year,
+            cfg.scope.max_year,
+        )
+        logger.info("Input: %s", cfg.input_path())
+        logger.info("Output directory: %s", cfg.output_dir())
+        logger.info(
+            "Enabled products: %s",
+            " ".join(
+                f"{name}={enabled}"
+                for name, enabled in enabled_products.items()
+            ),
+        )
+
         # ==================================================================
         # STEP 1 — Prepare canonical CIF/FOB input
         # ==================================================================
-        with timed_step(logger, STEP, WORKFLOW_STEPS[STEP-1], total_steps=TOTAL_WORKFLOW_STEPS):
             
-            if cfg.products.prepared_input.enable:
-                _log_step_header(
-                    logger=logger,
-                    symbol=build,
-                    title=WORKFLOW_STEPS[STEP-1],
-                )
-
-                prepared_result = prepare_cif_fob_input(
+        prepared_result = run_step(
+            logger=logger,
+            step_number=1,
+            total_steps=TOTAL_WORKFLOW_STEPS,
+            title=WORKFLOW_STEPS[0],
+            runner = lambda: prepare_cif_fob_input(
                     cfg=cfg,
                     force=force,
                     logger=logger,
-                )
+                ),
+        )
 
-                if prepared_result.get("audit_passed", False):
-                    logger.info(
+        if prepared_result.get("audit_passed", False):
+            logger.info(
                         "%s CIF/FOB input preparation audit passed.",
-                        ok,
+                        get_symbols("check"),
                     )
-                else:
-                    logger.warning(
+        else:
+            logger.warning(
                     "%s CIF/FOB input preparation audit did not pass. "
                     "Check the Step 1 logs.",
-                    warn,
+                    get_symbols("warn"),
                 )
-            else:
-                logger.info(
-                    "%s SKIP — %s (disabled in config)",
-                    warn,
-                    WORKFLOW_STEPS[STEP-1],
-                )
-            
-            STEP += 1
 
         # ==================================================================
         # STEP 2 — Build bilateral mirror pairs
         # ==================================================================
 
-        with timed_step(logger, STEP, WORKFLOW_STEPS[STEP-1], total_steps=TOTAL_WORKFLOW_STEPS):
-            if cfg.products.mirror_pairs.enable:
-                _log_step_header(
-                    logger=logger,
-                    symbol=build,
-                    title=WORKFLOW_STEPS[STEP-1],
-                )
-                prepared_input_path = _require_artifact(
+        prepared_input_path = require_artifact(
                     result=prepared_result,
                     path_key="prepared_input_path",
                     consumer_step="Mirror-pair step",
                     producer_product="prepared-input Parquet",
                 )
 
-                mirror_result = build_mirror_pairs(
+        mirror_result = run_step(
+            logger=logger,
+            step_number=2,
+            total_steps=TOTAL_WORKFLOW_STEPS,
+            title=WORKFLOW_STEPS[1],
+            runner=lambda: build_mirror_pairs(
                                     cfg=cfg,
                                     input_path=prepared_input_path,
                                     force=force,
                                     logger=logger,
                                 )
-            else:
-                logger.info(
-                        "%s SKIP — %s (disabled in config)",
-                        warn,
-                        WORKFLOW_STEPS[STEP-1],
-                    )
+        )
 
-            STEP += 1
         
         # ==================================================================
         # STEP 3 — Build factor-candidate training sample
         # ==================================================================
 
-        with timed_step(logger, STEP, WORKFLOW_STEPS[STEP-1], total_steps=TOTAL_WORKFLOW_STEPS):
-            if cfg.products.training_sample.enable:
-                _log_step_header(
-                logger=logger,
-                symbol=build,
-                title=WORKFLOW_STEPS[STEP-1],
-                )
-
-                mirror_pairs_path = _require_artifact(
+        mirror_pairs_path = require_artifact(
                         result=mirror_result,
                         path_key="mirror_pairs_path",
                         consumer_step="Training-sample step",
                         producer_product="mirror-pairs Parquet",
                     )
 
-                training_sample_result = build_training_sample(
-                    cfg=cfg,
-                    input_path=mirror_pairs_path,
-                    force=force,
+        training_sample_result = run_step(
                     logger=logger,
+                    step_number=3,
+                    total_steps=TOTAL_WORKFLOW_STEPS,
+                    title=WORKFLOW_STEPS[2],
+                    runner=lambda: build_training_sample(
+                                cfg=cfg,
+                                input_path=mirror_pairs_path,
+                                force=force,
+                                logger=logger,
+                            )
                 )
-            else:
-                logger.info(
-                    "%s SKIP — %s (disabled in config)",
-                    warn,
-                    WORKFLOW_STEPS[STEP-1],
-                )
-                
-            STEP += 1
         
         # ==================================================================
         # STEP 4 — Enrich training sample with predictors
         # ==================================================================
 
-        with timed_step(logger, STEP, WORKFLOW_STEPS[STEP-1], total_steps=TOTAL_WORKFLOW_STEPS):
-            if cfg.products.training_features.enable:
-                _log_step_header(
-                    logger=logger,
-                    symbol=build,
-                    title=WORKFLOW_STEPS[STEP-1],
-                )
-
-                training_sample_path = _require_artifact(
+        training_sample_path = require_artifact(
                     result=training_sample_result,
                     path_key="training_sample_path",
                     consumer_step="Training-features step",
                     producer_product="training-sample Parquet",
                 )
 
-                training_features_result = build_training_features(
-                    cfg=cfg,
-                    input_path=training_sample_path,
-                    force=force,
+        training_features_result = run_step(
                     logger=logger,
+                    step_number=4,
+                    total_steps=TOTAL_WORKFLOW_STEPS,
+                    title=WORKFLOW_STEPS[3],
+                    runner=lambda: build_training_features(
+                                cfg=cfg,
+                                input_path=training_sample_path,
+                                force=force,
+                                logger=logger,
+                            )
                 )
-            else:
-                logger.info(
-                    "%s SKIP — %s (disabled in config)",
-                    warn,
-                    WORKFLOW_STEPS[STEP-1],
-                )
-
-            STEP += 1
 
         # ==================================================================
         # STEP 5 — Audit training-evidence representativeness
         # ==================================================================
 
-        with timed_step(logger, STEP, WORKFLOW_STEPS[STEP - 1], total_steps=TOTAL_WORKFLOW_STEPS,):
-            if cfg.products.training_evidence_audit.enable:
-                _log_step_header(
-                    logger=logger,
-                    symbol=build,
-                    title=WORKFLOW_STEPS[STEP - 1],
-                )
-
-                training_features_path = _require_artifact(
+        training_features_path = require_artifact(
                     result=training_features_result,
                     path_key="training_features_path",
                     consumer_step="Training-evidence audit step",
                     producer_product="training-features Parquet",
                 )
 
-                training_evidence_audit_result = (
+        training_evidence_audit_result = run_step(
+                    logger=logger,
+                    step_number=5,
+                    total_steps=TOTAL_WORKFLOW_STEPS,
+                    title=WORKFLOW_STEPS[4],
+                    runner=lambda:
                     write_training_evidence_audit(
                         input_path=training_features_path,
                         output_path=cfg.product_path(
@@ -404,94 +331,74 @@ def run_cif_fob_workflow(
                     )
                 )
 
-                logger.info(
+        logger.info(
                     "%s CIF/FOB training-evidence audit written: %s",
-                    ok,
+                    get_symbols("check"),
                     training_evidence_audit_result[
                         "training_evidence_audit_path"
                     ],
                 )
-                logger.info(
+        logger.info(
                     "Training-evidence audit rows: %s",
                     training_evidence_audit_result["n_rows"],
                 )
-
-            else:
-                logger.info(
-                    "%s SKIP — %s (disabled in config)",
-                    warn,
-                    WORKFLOW_STEPS[STEP - 1],
-                )
-
-            STEP += 1
 
         
         # ==================================================================
         # STEP 6 — Estimate CIF/FOB correction rates
         # ==================================================================
 
-        with timed_step(logger, STEP, WORKFLOW_STEPS[STEP-1], total_steps=TOTAL_WORKFLOW_STEPS):
-            if cfg.products.estimated_rates.enable:
-                _log_step_header(
-                    logger=logger,
-                    symbol=build,
-                    title=WORKFLOW_STEPS[STEP-1],
-                    )
-
-                training_features_path = _require_artifact(
+        training_features_path = require_artifact(
                         result=training_features_result,
                         path_key="training_features_path",
                         consumer_step="Rate-estimation step",
                         producer_product="training-features Parquet",
                     )
                 
-                estimated_rates_result = estimate_cif_fob_rates(
-                        cfg=cfg,
-                        input_path=training_features_path,
-                        force=force,
-                        logger=logger,
-                    )
-            else:
-                logger.info(
-                    "%s SKIP — %s (disabled in config)",
-                    warn,
-                    WORKFLOW_STEPS[STEP-1],
-                )
-            STEP += 1
+        estimated_rates_result = run_step(
+                    logger=logger,
+                    step_number=6,
+                    total_steps=TOTAL_WORKFLOW_STEPS,
+                    title=WORKFLOW_STEPS[5],
+                    runner=lambda:estimate_cif_fob_rates(
+                            cfg=cfg,
+                            input_path=training_features_path,
+                            force=force,
+                            logger=logger,
+                        )
+        )
 
         # ==================================================================
         # STEP 7 — Build CIF/FOB diagnostics
         # ==================================================================
 
-        with timed_step(logger, STEP, WORKFLOW_STEPS[STEP-1], total_steps=TOTAL_WORKFLOW_STEPS):
-            if cfg.products.diagnostics.enable:
-                _log_step_header(
-                    logger=logger,
-                    symbol=build,
-                    title=WORKFLOW_STEPS[STEP-1],
-                )
-
-                estimated_rates_path = _require_artifact(
+        estimated_rates_path = require_artifact(
                         result=estimated_rates_result,
                         path_key="estimated_rates_path",
                         consumer_step="Diagnostics step",
                         producer_product="estimated-rates Parquet",
                     )
 
-                diagnostics_result = write_primary_holdout_diagnostics(
+        diagnostics_result = run_step(
+                    logger=logger,
+                    step_number=7,
+                    total_steps=TOTAL_WORKFLOW_STEPS,
+                    title=WORKFLOW_STEPS[6],
+                    runner=lambda: write_primary_holdout_diagnostics(
                                             cfg=cfg,
                                             estimated_rates_path=estimated_rates_path,
                                             force=force,
                                             logger=logger,
                                         )
+        )
 
-                logger.info(
+        logger.info(
                         "%s CIF/FOB diagnostics written: %s",
-                        ok,
+                        get_symbols("check"),
                         diagnostics_result["diagnostics_path"],
                     )
 
-                logger.info(
+        logger.info(
                         "Diagnostics rows: %s; years: %s-%s; "
                         "median APE: %.4f; mean APE: %.4f; P90 APE: %.4f",
                         diagnostics_result["n_rows"],
@@ -502,88 +409,62 @@ def run_cif_fob_workflow(
                         diagnostics_result["p90_ape"],
                     )                                            
 
-            else:
-                logger.info(
-                    "%s SKIP — %s (disabled in config)",
-                    warn,
-                    WORKFLOW_STEPS[STEP-1],
-                )
-            STEP += 1
 
         #=================================================================
         # STEP 8 — Apply CIF/FOB corrections to trade data
         #=================================================================
-        with timed_step(logger, STEP, WORKFLOW_STEPS[STEP-1], total_steps=TOTAL_WORKFLOW_STEPS):
-            if cfg.products.corrected_trade.enable:
-                _log_step_header(
-                    logger=logger,
-                    symbol=build,
-                    title=WORKFLOW_STEPS[STEP-1],
-                )
-
-                estimated_rates_path = _require_artifact(
+        estimated_rates_path = require_artifact(
                     result=estimated_rates_result,
                     path_key="estimated_rates_path",
                     consumer_step="Trade-correction step",
                     producer_product="estimated-rates Parquet",
                 )
 
-                corrected_trade_result = apply_cif_fob_weights(
+        corrected_trade_result = run_step(
+            logger=logger,
+            step_number=8,
+            total_steps=TOTAL_WORKFLOW_STEPS,
+            title=WORKFLOW_STEPS[7],
+            runner=lambda: apply_cif_fob_weights(
                     cfg=cfg,
                     estimated_rates_path=estimated_rates_path,
                     force=force,
                     logger=logger,
                 )
+        )
 
-                # Placeholder for the trade-correction step
-                logger.info(
+        # Placeholder for the trade-correction step
+        logger.info(
                         "%s Corrected CIF/FOB trade written: %s",
-                        ok,
+                        get_symbols("check"),
                         corrected_trade_result["output_path"],
                     )
-            else:
-                logger.info(
-                    "%s SKIP — %s (disabled in config)",
-                    warn,
-                    WORKFLOW_STEPS[STEP-1],
-                )
-            STEP += 1
+
 
         # ==================================================================
         # STEP 9 — Write human-readable decision report
         # ==================================================================
 
-        with timed_step(logger, STEP, WORKFLOW_STEPS[STEP-1], total_steps=TOTAL_WORKFLOW_STEPS):
-            if cfg.artifacts.enable:
-                _log_step_header(
-                    logger=logger,
-                    symbol=build,
-                    title=WORKFLOW_STEPS[STEP-1],
-                )
-
-                _require_artifact(
+        require_artifact(
                     result=training_features_result,
                     path_key="training_features_path",
                     consumer_step="CIF/FOB reporting step",
                     producer_product="training-features Parquet",
                 )
 
-                _require_artifact(
+        require_artifact(
                     result=estimated_rates_result,
                     path_key="estimated_rates_path",
                     consumer_step="CIF/FOB reporting step",
                     producer_product="estimated-rates Parquet",
                 )
 
-                if cfg.products.diagnostics.enable:
-                    _require_artifact(
-                        result=diagnostics_result,
-                        path_key="diagnostics_path",
-                        consumer_step="CIF/FOB reporting step",
-                        producer_product="diagnostics Parquet",
-                    )
-
-                report_result = write_cif_fob_decision_report(
+        report_result = run_step(
+            logger=logger,
+            step_number=9,
+            total_steps=TOTAL_WORKFLOW_STEPS,
+            title=WORKFLOW_STEPS[8],
+            runner=lambda: write_cif_fob_decision_report(
                     cfg=cfg,
                     run_id=run_id,
                     training_features_result=training_features_result,
@@ -593,13 +474,8 @@ def run_cif_fob_workflow(
                     corrected_trade_result=corrected_trade_result,
                     logger=logger,
                 )
-            else:
-                logger.info(
-                    "%s SKIP — %s (disabled in config)",
-                    warn,
-                    WORKFLOW_STEPS[STEP-1],
-                )
-            STEP += 1
+            )
+
 
     final_parquet = corrected_trade_result.get(
         "corrected_trade_path"
@@ -644,7 +520,7 @@ def run_cif_fob_workflow(
             )
 
     logger.info("=" * 72)
-    logger.info("%s CIF/FOB workflow finished.", info)
+    logger.info("%s CIF/FOB workflow finished.", get_symbols("info"))
     logger.info(
         "Final corrected-trade output: %s",
         final_parquet,
