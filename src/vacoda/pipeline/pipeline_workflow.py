@@ -41,6 +41,7 @@ from vacoda.utils.logger import (
     parse_log_level,
     setup_logging,
 )
+from vacoda.utils.display import get_symbols, color_text
 
 
 @dataclass(frozen=True)
@@ -853,14 +854,14 @@ def run_pipeline(
 
                 logger.info("SKIP — %s", step_name)
                 logger.info("  Reason: %s", decision.reason)
-                logger.info("  Checkpoint: %s", step_checkpoint_path)
+                logger.info(" %s  Checkpoint: %s", get_symbols("checkpoint"), step_checkpoint_path)
                 logger.info(
-                    "  Output: %s",
-                    checkpoint.get("output", {}).get("path") if checkpoint else None,
+                    " %s  Output: %s",
+                    get_symbols("output"), checkpoint.get("output", {}).get("path") if checkpoint else None,
                 )
                 logger.info(
-                    "  Audit: %s",
-                    checkpoint.get("audit", {}).get("path") if checkpoint else None,
+                    " %s  Audit: %s",
+                    get_symbols("audit"), checkpoint.get("audit", {}).get("path") if checkpoint else None,
                 )
 
                 manifest_rows.append(
@@ -986,10 +987,11 @@ def run_pipeline(
         manifest = pd.DataFrame(manifest_rows)
         manifest.to_csv(manifest_path, index=False)
 
-
-        logger.info("Status: %s", pipeline_status)
-        logger.info("Manifest: %s", manifest_path)
-        logger.info("Log file: %s", log_path)
+        logger.info("")
+        logger.info("=" * 72)
+        logger.info("%s Status: %s", get_symbols("right_finger"), pipeline_status)
+        logger.info(" Manifest: %s",manifest_path)
+        logger.info(" Log file: %s", log_path)
         logger.info("=" * 72)
 
         if pipeline_status != "completed":

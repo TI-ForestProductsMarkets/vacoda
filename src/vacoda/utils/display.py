@@ -27,7 +27,6 @@ _SYMBOLS = {
     "danger": "\U0001F6AB",           # 🚫
     "success": "\U0001F44D",          # 👍
     "failure": "\U0001F44E",          # 👎
-    "sparkles": "\U0001F496",         # 💖
     "time": "\U0001F551",             # 🕑
     "duckdb": "\U0001F986",           # 🦆
     "pandas": "\U0001F43C",           # 🐼
@@ -39,6 +38,12 @@ _SYMBOLS = {
     "check_mark": "\u2714",           # ✔
     "pipeline_step": "\u25C6",        # ◆
     "play": "\u25B6",                 # ▶
+    "directory": "\U0001F4C2",        # 📂
+    "audit": "\U0001F4DD",            # 📝
+    "output": "\U0001F4E4",           # 📤
+    "checkpoint": "\U0001F4C4",       # 📄
+    "log": "\U0001F4D1",              # 📑
+    "manifest": "\U0001F4C3",         # 📃
 }
 
 _ANSI_COLORS = {
