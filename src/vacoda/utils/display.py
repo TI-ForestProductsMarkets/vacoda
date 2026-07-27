@@ -39,9 +39,9 @@ _SYMBOLS = {
     "pipeline_step": "\u25C6",        # ◆
     "play": "\u25B6",                 # ▶
     "directory": "\U0001F4C2",        # 📂
-    "audit": "\U0001F4DD",            # 📝
+    "checkpoint": "\U0001F4BE",       # 💾
     "output": "\U0001F4E4",           # 📤
-    "checkpoint": "\U0001F4C4",       # 📄
+    "audit": "\U0001F4DD",            # 📝
     "log": "\U0001F4D1",              # 📑
     "manifest": "\U0001F4C3",         # 📃
 }
