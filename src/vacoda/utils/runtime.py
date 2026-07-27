@@ -13,10 +13,46 @@ from contextlib import contextmanager
 from pathlib import Path
 from time import perf_counter
 from typing import Any, TypeVar
+from vacoda.utils.display import get_symbols, color_text
+import re
 
+from wcwidth import wcswidth
 
 ResultT = TypeVar("ResultT")
 
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _visible_width(text: str) -> int:
+    """Return the number of terminal columns occupied by text."""
+    plain_text = _ANSI_ESCAPE.sub("", text)
+    width = wcswidth(plain_text)
+
+    return max(width, 0)
+
+
+def _workflow_banner(
+    logger: logging.Logger,
+    text: str,
+    *,
+    width: int = 72,
+) -> None:
+    """Log a boxed workflow banner with ANSI-aware alignment."""
+    inner_width = width - 2
+    content = f"  {text}"
+
+    padding = max(
+        inner_width - _visible_width(content),
+        0,
+    )
+
+    logger.info("╔%s╗", "═" * inner_width)
+    logger.info(
+        "║%s%s║",
+        content,
+        " " * padding,
+    )
+    logger.info("╚%s╝", "═" * inner_width)
 
 def format_seconds(seconds: float) -> str:
     if seconds < 60:
@@ -95,7 +131,7 @@ def run_step(
 
     return result
 
-def _workflow_banner(
+def _workflow_banner_deprecated(
     logger: logging.Logger,
     text: str,
     *,
@@ -113,9 +149,15 @@ def log_pipeline_step_banner(
     step_name: str,
 ) -> None:
     """Log a prominent boundary between master-pipeline steps."""
+
+    symbol = color_text(
+        get_symbols("pipeline_step"),
+        "cyan",
+    )
+
     _workflow_banner(
         logger,
-        f"▶▶▶  PIPELINE STEP  —  {step_name.upper()}",
+        f"{symbol}{symbol}{symbol}  PIPELINE STEP  —  {step_name.upper()}",
     )
     
 @contextmanager
@@ -126,11 +168,14 @@ def timed_pipeline_workflow(
     """Log total workflow execution time."""
     display_name = workflow_name.upper()
     started = perf_counter()
+    start = color_text(get_symbols("play"), "red")
+    checkmark = color_text(get_symbols("check_mark"), "green")
+    cross = color_text(get_symbols("cross"), "red")
 
     logger.info("")
     _workflow_banner(
         logger,
-        f"▶▶▶  START WORKFLOW  —  {display_name}",
+        f"{start}{start}{start}  START WORKFLOW  —  {display_name}",
     )
 
     try:
@@ -140,7 +185,7 @@ def timed_pipeline_workflow(
 
         _workflow_banner(
             logger,
-            f"✖✖✖  FAILED WORKFLOW  —  {display_name} "
+            f"{cross}{cross}{cross}  FAILED WORKFLOW  —  {display_name} "
             f"({format_seconds(elapsed)})",
         )
         logger.info("")
@@ -150,7 +195,7 @@ def timed_pipeline_workflow(
 
         _workflow_banner(
             logger,
-            f"✔✔✔  END WORKFLOW  —  {display_name} "
+            f"{checkmark}{checkmark}{checkmark}  END WORKFLOW  —  {display_name} "
             f"({format_seconds(elapsed)})",
         )
         logger.info("")
