@@ -81,6 +81,8 @@ def get_symbols(name):
         return "\U0001F6A7"  # 🚧
     elif name == "recycle":
         return "\U0001F504"  # 🔄
+    elif name == "workflow":
+        return "\U0001F3C1"  # 🏁
     else:
         raise ValueError(f"Unknown symbol name: {name}")
 

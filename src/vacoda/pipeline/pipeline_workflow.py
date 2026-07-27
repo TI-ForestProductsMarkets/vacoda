@@ -35,6 +35,7 @@ from vacoda.pipeline.checkpoint import (
     validate_checkpoint,
     write_checkpoint,
 )
+from vacoda.utils.runtime import timed_pipeline_workflow, log_pipeline_step_banner
 from vacoda.utils.logger import (
     get_logger,
     parse_log_level,
@@ -803,20 +804,6 @@ def run_pipeline(
                 "n_steps": len(decisions),
             }
 
-    logger.info("=" * 72)
-    logger.info("START — VACODA master pipeline")
-    logger.info("=" * 72)
-    logger.info("Run ID: %s", run_id)
-    logger.info("Pipeline: %s", cfg.pipeline.name)
-    logger.info("Engine name: %s", cfg.engine.name)
-    logger.info("Engine threads: %s", cfg.engine.threads)
-    logger.info("Enabled steps: %s", ", ".join(cfg.pipeline.enabled_steps))
-    logger.info("Checkpoint reuse: %s", cfg.checkpoint.reuse_successful_steps)
-    logger.info("Force run all: %s", cfg.pipeline.force_run_all)
-    logger.info("Checkpoint dir: %s", checkpoint_dir)
-    logger.info("Manifest: %s", manifest_path)
-    logger.info("Log file: %s", log_path)
-
     if cfg.pipeline.force_run_all:
         logger.warning("FORCE RUN ALL is enabled — valid checkpoints will be ignored.")
 
@@ -833,168 +820,180 @@ def run_pipeline(
     manifest_rows: list[dict[str, Any]] = []
     pipeline_status = "completed"
 
-    
-    #for step_name, step_cfg in cfg.enabled_steps():
-    for decision in decisions:
-        step_name = decision.step_name
-        step_cfg = decision.step_config
-        plan = decision.plan
-        step_checkpoint_path = decision.checkpoint_path
 
-        logger.info("=" * 72)
-        logger.info("STEP — %s", step_name)
-        logger.info("=" * 72)
-        logger.info("Config: %s", step_cfg.config)
-        logger.info("Expected status: %s", step_cfg.expected_status)
-        logger.info("Required ready flag: %s", step_cfg.required_ready_flag)
+    with timed_pipeline_workflow(logger=logger, workflow_name="VACODA master pipeline"):
 
-        if decision.action == "skip":
-            checkpoint = load_checkpoint(step_checkpoint_path)
+        logger.info("Run ID: %s", run_id)
+        logger.info("Pipeline: %s", cfg.pipeline.name)
+        logger.info("Engine name: %s", cfg.engine.name)
+        logger.info("Engine threads: %s", cfg.engine.threads)
+        logger.info("Enabled steps: %s", ", ".join(cfg.pipeline.enabled_steps))
+        logger.info("Checkpoint reuse: %s", cfg.checkpoint.reuse_successful_steps)
+        logger.info("Force run all: %s", cfg.pipeline.force_run_all)
+        logger.info("Checkpoint dir: %s", checkpoint_dir)
+        logger.info("Manifest: %s", manifest_path)
+        logger.info("Log file: %s", log_path)
 
-            logger.info("SKIP — %s", step_name)
-            logger.info("  Reason: %s", decision.reason)
-            logger.info("  Checkpoint: %s", step_checkpoint_path)
-            logger.info(
-                "  Output: %s",
-                checkpoint.get("output", {}).get("path") if checkpoint else None,
-            )
-            logger.info(
-                "  Audit: %s",
-                checkpoint.get("audit", {}).get("path") if checkpoint else None,
-            )
+        
+        #for step_name, step_cfg in cfg.enabled_steps():
+        for decision in decisions:
+            step_name = decision.step_name
+            step_cfg = decision.step_config
+            plan = decision.plan
+            step_checkpoint_path = decision.checkpoint_path
 
-            manifest_rows.append(
-                _manifest_row(
-                    run_id=run_id,
-                    step_name=step_name,
-                    status="skipped_checkpoint",
-                    ready_flag=step_cfg.required_ready_flag,
-                    ready_value=checkpoint.get("ready_value") if checkpoint else None,
-                    duration_seconds=0.0,
-                    output_path=checkpoint.get("output", {}).get("path") if checkpoint else None,
-                    audit_path=checkpoint.get("audit", {}).get("path") if checkpoint else None,
-                    n_failed_audit_rows=(
-                        checkpoint.get("audit", {}).get("n_failed_audit_rows")
-                        if checkpoint
-                        else None
-                    ),
-                    message="Reused valid previous checkpoint.",
+            logger.info("")
+            log_pipeline_step_banner(logger, step_name,)
+            logger.info("Config: %s", step_cfg.config)
+            logger.info("Expected status: %s", step_cfg.expected_status)
+            logger.info("Required ready flag: %s", step_cfg.required_ready_flag)
+
+            if decision.action == "skip":
+                checkpoint = load_checkpoint(step_checkpoint_path)
+
+                logger.info("SKIP — %s", step_name)
+                logger.info("  Reason: %s", decision.reason)
+                logger.info("  Checkpoint: %s", step_checkpoint_path)
+                logger.info(
+                    "  Output: %s",
+                    checkpoint.get("output", {}).get("path") if checkpoint else None,
                 )
-            )
+                logger.info(
+                    "  Audit: %s",
+                    checkpoint.get("audit", {}).get("path") if checkpoint else None,
+                )
 
-            continue
-
-        start = perf_counter()
-
-        try:
-            result = plan.runner(run_id)
-            duration_seconds = perf_counter() - start
-
-            ok, message = _validate_step_result(
-                step_name=step_name,
-                result=result,
-                expected_status=step_cfg.expected_status,
-                required_ready_flag=step_cfg.required_ready_flag,
-            )
-
-            status = str(result.get("status", "unknown"))
-            ready_value = (
-                None
-                if step_cfg.required_ready_flag is None
-                else result.get(step_cfg.required_ready_flag)
-            )
-
-            output_path = _result_output_path(result, plan.output_path)
-            audit_path = _result_audit_path(result, plan.audit_path)
-
-            if ok:
-                logger.info("DONE — %s (%.2fs)", step_name, duration_seconds)
-                logger.info("  Status: %s", status)
-                logger.info("  Ready flag %s: %s", step_cfg.required_ready_flag, ready_value)
-
-                if cfg.checkpoint.enabled:
-
-                    checkpoint_plan = _build_step_plan(
-                                        step_name=step_name,
-                                        config_path=step_cfg.config,
-                                        pipeline_cfg=cfg,
-                                    )
-
-                    write_checkpoint(
-                        path=step_checkpoint_path,
+                manifest_rows.append(
+                    _manifest_row(
                         run_id=run_id,
                         step_name=step_name,
-                        status=status,
+                        status="skipped_checkpoint",
+                        ready_flag=step_cfg.required_ready_flag,
+                        ready_value=checkpoint.get("ready_value") if checkpoint else None,
+                        duration_seconds=0.0,
+                        output_path=checkpoint.get("output", {}).get("path") if checkpoint else None,
+                        audit_path=checkpoint.get("audit", {}).get("path") if checkpoint else None,
+                        n_failed_audit_rows=(
+                            checkpoint.get("audit", {}).get("n_failed_audit_rows")
+                            if checkpoint
+                            else None
+                        ),
+                        message="Reused valid previous checkpoint.",
+                    )
+                )
+
+                continue
+
+            start = perf_counter()
+
+            try:
+                result = plan.runner(run_id)
+                duration_seconds = perf_counter() - start
+
+                ok, message = _validate_step_result(
+                    step_name=step_name,
+                    result=result,
+                    expected_status=step_cfg.expected_status,
+                    required_ready_flag=step_cfg.required_ready_flag,
+                )
+
+                status = str(result.get("status", "unknown"))
+                ready_value = (
+                    None
+                    if step_cfg.required_ready_flag is None
+                    else result.get(step_cfg.required_ready_flag)
+                )
+
+                output_path = _result_output_path(result, plan.output_path)
+                audit_path = _result_audit_path(result, plan.audit_path)
+
+                if ok:
+                    logger.info("DONE — %s (%.2fs)", step_name, duration_seconds)
+                    logger.info("  Status: %s", status)
+                    logger.info("  Ready flag %s: %s", step_cfg.required_ready_flag, ready_value)
+
+                    if cfg.checkpoint.enabled:
+
+                        checkpoint_plan = _build_step_plan(
+                                            step_name=step_name,
+                                            config_path=step_cfg.config,
+                                            pipeline_cfg=cfg,
+                                        )
+
+                        write_checkpoint(
+                            path=step_checkpoint_path,
+                            run_id=run_id,
+                            step_name=step_name,
+                            status=status,
+                            ready_flag=step_cfg.required_ready_flag,
+                            ready_value=ready_value,
+                            config=checkpoint_plan.config_fingerprint,
+                            input_fingerprint=checkpoint_plan.input_fingerprint,
+                            output_path=output_path,
+                            audit_path=audit_path,
+                            result=result,
+                        )
+
+                        logger.info("  Checkpoint written: %s", step_checkpoint_path)
+
+                else:
+                    logger.error("FAILED — %s", step_name)
+                    logger.error("  %s", message)
+                    pipeline_status = "failed"
+
+                manifest_rows.append(
+                    _manifest_row(
+                        run_id=run_id,
+                        step_name=step_name,
+                        status=status if ok else "failed",
                         ready_flag=step_cfg.required_ready_flag,
                         ready_value=ready_value,
-                        config=checkpoint_plan.config_fingerprint,
-                        input_fingerprint=checkpoint_plan.input_fingerprint,
+                        duration_seconds=duration_seconds,
                         output_path=output_path,
                         audit_path=audit_path,
-                        result=result,
+                        n_failed_audit_rows=result.get("n_failed_audit_rows"),
+                        message=message,
                     )
+                )
 
-                    logger.info("  Checkpoint written: %s", step_checkpoint_path)
+                if not ok and cfg.pipeline.fail_fast:
+                    break
 
-            else:
-                logger.error("FAILED — %s", step_name)
-                logger.error("  %s", message)
+            except Exception as exc:
+                duration_seconds = perf_counter() - start
                 pipeline_status = "failed"
 
-            manifest_rows.append(
-                _manifest_row(
-                    run_id=run_id,
-                    step_name=step_name,
-                    status=status if ok else "failed",
-                    ready_flag=step_cfg.required_ready_flag,
-                    ready_value=ready_value,
-                    duration_seconds=duration_seconds,
-                    output_path=output_path,
-                    audit_path=audit_path,
-                    n_failed_audit_rows=result.get("n_failed_audit_rows"),
-                    message=message,
+                logger.exception("Step failed: %s", step_name)
+
+                manifest_rows.append(
+                    _manifest_row(
+                        run_id=run_id,
+                        step_name=step_name,
+                        status="failed",
+                        ready_flag=step_cfg.required_ready_flag,
+                        ready_value=None,
+                        duration_seconds=duration_seconds,
+                        output_path=plan.output_path,
+                        audit_path=plan.audit_path,
+                        n_failed_audit_rows=None,
+                        message=str(exc),
+                    )
                 )
-            )
 
-            if not ok and cfg.pipeline.fail_fast:
-                break
+                if cfg.pipeline.fail_fast:
+                    break
 
-        except Exception as exc:
-            duration_seconds = perf_counter() - start
-            pipeline_status = "failed"
+        manifest = pd.DataFrame(manifest_rows)
+        manifest.to_csv(manifest_path, index=False)
 
-            logger.exception("Step failed: %s", step_name)
 
-            manifest_rows.append(
-                _manifest_row(
-                    run_id=run_id,
-                    step_name=step_name,
-                    status="failed",
-                    ready_flag=step_cfg.required_ready_flag,
-                    ready_value=None,
-                    duration_seconds=duration_seconds,
-                    output_path=plan.output_path,
-                    audit_path=plan.audit_path,
-                    n_failed_audit_rows=None,
-                    message=str(exc),
-                )
-            )
+        logger.info("Status: %s", pipeline_status)
+        logger.info("Manifest: %s", manifest_path)
+        logger.info("Log file: %s", log_path)
+        logger.info("=" * 72)
 
-            if cfg.pipeline.fail_fast:
-                break
-
-    manifest = pd.DataFrame(manifest_rows)
-    manifest.to_csv(manifest_path, index=False)
-
-    logger.info("=" * 72)
-    logger.info("VACODA master pipeline finished.")
-    logger.info("Status: %s", pipeline_status)
-    logger.info("Manifest: %s", manifest_path)
-    logger.info("Log file: %s", log_path)
-    logger.info("=" * 72)
-
-    if pipeline_status != "completed":
-        raise SystemExit(1)
+        if pipeline_status != "completed":
+            raise SystemExit(1)
 
     return {
         "status": pipeline_status,

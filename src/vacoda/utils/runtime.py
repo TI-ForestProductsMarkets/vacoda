@@ -95,15 +95,73 @@ def run_step(
 
     return result
 
+def _workflow_banner(
+    logger: logging.Logger,
+    text: str,
+    *,
+    width: int = 72,
+) -> None:
+    """Log a boxed workflow banner."""
+    inner_width = width - 2
+    logger.info("╔%s╗", "═" * inner_width)
+    logger.info("║%-*s║", inner_width, f"  {text}")
+    logger.info("╚%s╝", "═" * inner_width)
+
+
+def log_pipeline_step_banner(
+    logger: logging.Logger,
+    step_name: str,
+) -> None:
+    """Log a prominent boundary between master-pipeline steps."""
+    _workflow_banner(
+        logger,
+        f"▶▶▶  PIPELINE STEP  —  {step_name.upper()}",
+    )
+    
+@contextmanager
+def timed_pipeline_workflow(
+    logger: logging.Logger,
+    workflow_name: str,
+) -> Iterator[None]:
+    """Log total workflow execution time."""
+    display_name = workflow_name.upper()
+    started = perf_counter()
+
+    logger.info("")
+    _workflow_banner(
+        logger,
+        f"▶▶▶  START WORKFLOW  —  {display_name}",
+    )
+
+    try:
+        yield
+    except Exception:
+        elapsed = perf_counter() - started
+
+        _workflow_banner(
+            logger,
+            f"✖✖✖  FAILED WORKFLOW  —  {display_name} "
+            f"({format_seconds(elapsed)})",
+        )
+        logger.info("")
+        raise
+    else:
+        elapsed = perf_counter() - started
+
+        _workflow_banner(
+            logger,
+            f"✔✔✔  END WORKFLOW  —  {display_name} "
+            f"({format_seconds(elapsed)})",
+        )
+        logger.info("")
+
 
 @contextmanager
 def timed_workflow(
     logger: logging.Logger,
     workflow_name: str,
 ) -> Iterator[None]:
-    """Log total workflow execution time."""
     started = perf_counter()
-    logger.info("START — %s", workflow_name)
 
     try:
         yield
@@ -118,7 +176,34 @@ def timed_workflow(
     else:
         elapsed = perf_counter() - started
         logger.info(
-            "DONE — %s (%s)",
+            "WORKFLOW COMPLETE — %s (%s)",
+            workflow_name,
+            format_seconds(elapsed),
+        )
+
+@contextmanager
+def timed_workflow_deprecated(
+    logger: logging.Logger,
+    workflow_name: str,
+) -> Iterator[None]:
+    """Log total workflow execution time."""
+    started = perf_counter()
+    logger.info("Starting %s.", workflow_name)
+
+    try:
+        yield
+    except Exception:
+        elapsed = perf_counter() - started
+        logger.error(
+            "Failed %s after %s.",
+            workflow_name,
+            format_seconds(elapsed),
+        )
+        raise
+    else:
+        elapsed = perf_counter() - started
+        logger.info(
+            "Completed %s in %s.",
             workflow_name,
             format_seconds(elapsed),
         )

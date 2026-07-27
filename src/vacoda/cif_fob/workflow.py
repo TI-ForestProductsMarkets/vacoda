@@ -30,7 +30,7 @@ from vacoda.config.cif_fob import CifFobConfig
 from vacoda.utils.display import get_symbols
 from vacoda.utils.logger import get_logger
 from vacoda.utils.runtime import run_step, timed_workflow
-from vacoda.utils.artifacts import artifact_result, require_artifact
+from vacoda.utils.artifacts import artifact_result, require_artifact, require_enabled_products, require_product_dependency
 
 WORKFLOW_STEPS = [
     "Prepare CIF/FOB input",
@@ -74,28 +74,6 @@ def get_enabled_products(cfg: CifFobConfig) -> dict[str, bool]:
         "decision_report": cfg.artifacts.enable,
     }
 
-
-def validate_workflow_products(
-    *,
-    enabled_products: dict[str, bool],
-) -> None:
-    """Require all core CIF/FOB workflow products."""
-    disabled = [
-        name
-        for name in REQUIRED_PRODUCTS
-        if not enabled_products.get(name, False)
-    ]
-
-    if disabled:
-        raise RuntimeError(
-            "CIF/FOB requires these products to be enabled: "
-            + ", ".join(disabled)
-        )
-
-    if not enabled_products["decision_report"]:
-        raise RuntimeError(
-            "CIF/FOB decision reporting must be enabled."
-        )
 
 def run_cif_fob_workflow(
     *,
@@ -179,12 +157,21 @@ def run_cif_fob_workflow(
 
     enabled_products = get_enabled_products(cfg)
 
-    validate_workflow_products(
+    require_enabled_products(
+        workflow_name="CIF/FOB", 
         enabled_products=enabled_products,
+        required_products=REQUIRED_PRODUCTS,
+    )
+
+    require_product_dependency(
+        workflow_name="CIF/FOB",
+        enabled_products=enabled_products,
+        product="decision_report",
+        required_product="diagnostics",
     )
 
 
-    with timed_workflow(logger, "CIF/FOB workflow"):
+    with timed_workflow(logger, "CIF/FOB"):
 
         logger.info("Run ID: %s", run_id)
         logger.info("Target HS: %s", cfg.scope.target_hs)

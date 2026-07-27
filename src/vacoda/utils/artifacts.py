@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from collections.abc import Iterable, Mapping
 
 
 def artifact_result(
@@ -57,3 +58,41 @@ def require_artifact(
         )
 
     return path
+
+
+def require_enabled_products(
+    *,
+    workflow_name: str,
+    enabled_products: Mapping[str, bool],
+    required_products: Iterable[str],
+) -> None:
+    """Raise when required workflow products are disabled."""
+    disabled = [
+        name
+        for name in required_products
+        if not enabled_products.get(name, False)
+    ]
+
+    if disabled:
+        raise RuntimeError(
+            f"{workflow_name} requires these products to be enabled: "
+            + ", ".join(disabled)
+        )
+
+
+def require_product_dependency(
+    *,
+    workflow_name: str,
+    enabled_products: Mapping[str, bool],
+    product: str,
+    required_product: str,
+) -> None:
+    """Require one product when another product is enabled."""
+    if (
+        enabled_products.get(product, False)
+        and not enabled_products.get(required_product, False)
+    ):
+        raise RuntimeError(
+            f"{workflow_name} product {product!r} requires "
+            f"{required_product!r} to be enabled."
+        )

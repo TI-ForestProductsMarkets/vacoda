@@ -23,7 +23,7 @@ from vacoda.trade_sync.reconcile import reconcile_trade
 from vacoda.trade_sync.diagnostics import build_trade_sync_diagnostics
 from vacoda.trade_sync.reporting import build_trade_sync_report
 from vacoda.utils.runtime import timed_workflow
-from vacoda.utils.artifacts import require_artifact
+from vacoda.utils.artifacts import require_artifact, require_product_dependency, require_enabled_products
 
 REQUIRED_PRODUCTS = (
     "prepared_input",
@@ -50,30 +50,6 @@ WORKFLOW_STEPS = [
 TOTAL_WORKFLOW_STEPS = len(WORKFLOW_STEPS)
 
 
-def validate_workflow_products(
-    *,
-    enabled_products: dict[str, bool],
-    report_enabled: bool,
-) -> None:
-    """Validate the Trade Sync product configuration."""
-
-    disabled_required = [
-        name
-        for name in REQUIRED_PRODUCTS
-        if not enabled_products.get(name, False)
-    ]
-
-    if disabled_required:
-        raise RuntimeError(
-            "Trade Sync requires these products to be enabled: "
-            + ", ".join(disabled_required)
-        )
-
-    if report_enabled and not enabled_products.get("diagnostics", False):
-        raise RuntimeError(
-            "Trade Sync decision reporting requires diagnostics "
-            "to be enabled."
-        )
     
 def validate_reconciliation_audit(
     *,
@@ -168,9 +144,17 @@ def run_trade_sync_workflow(
 
     enabled_products = cfg.enabled_products()
 
-    validate_workflow_products(
+    require_enabled_products(
+        workflow_name="Trade Sync",
         enabled_products=enabled_products,
-        report_enabled=cfg.artifacts.enable,
+        required_products=REQUIRED_PRODUCTS,
+    )
+
+    require_product_dependency(
+        workflow_name="Trade Sync",
+        enabled_products=enabled_products,
+        product="decision_report",
+        required_product="diagnostics",
     )
 
     cfg.output_dir().mkdir(
@@ -181,7 +165,7 @@ def run_trade_sync_workflow(
     workflow_start = perf_counter()
 
 
-    with timed_workflow(logger, "Trade Sync workflow"):
+    with timed_workflow(logger, "Trade Sync"):
 
         logger.info("Run ID: %s", run_id)
         logger.info("Target HS: %s", cfg.scope.target_hs)
