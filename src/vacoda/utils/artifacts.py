@@ -96,3 +96,10 @@ def require_product_dependency(
             f"{workflow_name} product {product!r} requires "
             f"{required_product!r} to be enabled."
         )
+
+def enabled_coverage_products(self) -> list[str]:
+    return [
+        product_name
+        for product_name, product in self.coverage.products.items()
+        if product.enabled
+    ]
