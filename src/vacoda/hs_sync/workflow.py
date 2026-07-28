@@ -4,9 +4,8 @@ Defines the main workflow orchestration for HS-sync allocation and application.
 
 """
 from __future__ import annotations
-from typing import Callable
-
 from time import perf_counter
+
 from logging import Logger
 from vacoda.config.hs_sync import HsSyncConfig
 from vacoda.hs_sync.mapping import run_comtrade_mapping_preparation
@@ -20,11 +19,18 @@ from vacoda.hs_sync.allocation import run_equal_split_allocation
 from vacoda.hs_sync.weights import run_complete_mapping_weights
 from vacoda.hs_sync.apply import run_hs_sync_apply
 from vacoda.hs_sync.applied_audit import run_hs_sync_applied_output_audit
-from vacoda.utils.timing import (
-    timed_step,
+from vacoda.utils.runtime import (
     timed_workflow,
+    run_step,
 )
+from vacoda.utils.artifacts import require_artifact, require_enabled_products
 
+REQUIRED_PRODUCTS = (
+    "coverage",
+    "equal_split_allocation",
+    "complete_mapping_weights",
+    "hs_sync_apply",
+)
 
 WORKFLOW_STEPS = [
     "Prepare UNSD/Comtrade HS mappings",
@@ -40,111 +46,45 @@ WORKFLOW_STEPS = [
 TOTAL_WORKFLOW_STEPS = len(WORKFLOW_STEPS)
 
 
-def _infer_step_status(result: dict[str, object]) -> str:
-    """
-    Infer pass/fail/skipped from a step output dictionary.
-    """
-    explicit = result.get("status")
-    if explicit in {"pass", "fail", "skipped", "disabled", "completed"}:
-        if explicit == "completed":
-            return "pass"
-        if explicit == "disabled":
-            return "skipped"
-        return str(explicit)
-
-    failed = result.get("n_failed_audit_rows")
-    if failed is not None:
-        return "pass" if int(failed) == 0 else "fail"
-
-    return "pass"
-
-
-def _run_step(
+def load_coverage_inputs_step(
     *,
-    step_name: str,
-    func: Callable[[], dict[str, object]],
-    logger: Logger) -> dict[str, object]:
-    """
-    Run one workflow step and normalize its result.
-
-    The backend function may return any useful dictionary, but this wrapper
-    guarantees:
-      - status
-      - step
-      - elapsed_seconds
-    """
-    t0 = perf_counter()
-
-    try:
-        result = func()
-    except Exception as exc:
-        elapsed = perf_counter() - t0
-        logger.exception("Step failed: %s", step_name)
-
-        return {
-            "step": step_name,
-            "status": "fail",
-            "elapsed_seconds": elapsed,
-            "error_type": type(exc).__name__,
-            "error": str(exc),
-        }
-
-    elapsed = perf_counter() - t0
-
-    if result is None:
-        result = {}
-
-    status = _infer_step_status(result)
+    cfg: HsSyncConfig,
+    logger: Logger,
+) -> dict[str, object]:
+    coverage_inputs = load_target_hs_coverage_inputs(
+        cfg=cfg,
+        logger=logger,
+    )
 
     return {
-        "step": step_name,
-        "status": status,
-        "elapsed_seconds": elapsed,
-        **result,
+        "status": "completed",
+        "coverage_inputs": coverage_inputs,
+        "input_dir": coverage_inputs["input_dir"],
+        "mapping_dir": coverage_inputs["mapping_dir"],
+        "output_dir": coverage_inputs["output_dir"],
     }
 
-
-PASS_STATUSES = {"pass", "completed", "success"}
-
-def _require_pass(
+def build_coverage_tables_step(
     *,
-    outputs: dict[str, object],
-    dependency: str,
-) -> None:
-    dep = outputs.get(dependency)
+    cfg: HsSyncConfig,
+    coverage_inputs: dict[str, object],
+    logger: Logger,
+) -> dict[str, object]:
+    tables = build_target_hs_coverage_products(
+        cfg=cfg,
+        source_summary=coverage_inputs["source_summary"],
+        mappings=coverage_inputs["mappings"],
+        logger=logger,
+    )
 
-    if not isinstance(dep, dict):
-        raise RuntimeError(f"Missing dependency output: {dependency}")
-
-    status = str(dep.get("status", "")).lower()
-
-    if status not in PASS_STATUSES:
-        raise RuntimeError(
-            f"Cannot continue: dependency {dependency!r} has status {status!r}."
-        )
-
-
-def _build_workflow_summary(outputs: dict[str, object]) -> list[dict[str, object]]:
-    rows: list[dict[str, object]] = []
-
-    for key, value in outputs.items():
-        if not isinstance(value, dict):
-            continue
-
-        if "step" not in value and "status" not in value:
-            continue
-
-        rows.append(
-            {
-                "name": key,
-                "step": value.get("step", key),
-                "status": value.get("status", "unknown"),
-                "elapsed_seconds": value.get("elapsed_seconds"),
-                "n_failed_audit_rows": value.get("n_failed_audit_rows"),
-            }
-        )
-
-    return rows
+    return {
+        "status": "completed",
+        "coverage_tables": tables,
+        "table_shapes": {
+            name: table.shape
+            for name, table in tables.items()
+        },
+    }
 
 
 def run_hs_sync_workflow(
@@ -152,67 +92,150 @@ def run_hs_sync_workflow(
     cfg: HsSyncConfig,
     run_id: str,
     logger: Logger,
+    force: bool = False,
 ) -> dict[str, object]:
-    outputs: dict[str, object] = {
-        "run_id": run_id,
-        "status": "started",
-    }
+
+    """
+    Run the HS-sync workflow, which includes the following steps:
+    
+    Parameters:
+        cfg:
+            (HsSyncConfig): Configuration for the HS-sync workflow.
+        run_id (str): 
+            Unique identifier for this workflow run.
+        logger (Logger): 
+            Logger for logging workflow progress and information.
+        force_run (bool): 
+            Whether to force the workflow to run, ignoring cached results.
+        input_path (Path | None):
+            Optional path to input data for the workflow. When omitted, ``cfg.input_dir`` is used.
+
+        Expected step modules:
+            - run_comtrade_mapping_preparation
+            - load_target_hs_coverage_inputs
+            - build_target_hs_coverage_products
+            - write_target_hs_coverage_outputs
+            - run_comtrade_mapping_audit
+            - run_equal_split_allocation
+            - run_complete_mapping_weights
+            - run_hs_sync_apply
+            - run_hs_sync_audit
+    """
+
+    input_dir = cfg.coverage_input_dir()
+    input_pattern = cfg.coverage.input.pattern
+
+    if not input_dir.is_dir():
+        raise FileNotFoundError(
+            f"HS Sync input directory not found: {input_dir}"
+        )
+
+    if not input_pattern:
+        raise ValueError(
+            "HS Sync coverage input pattern is not configured."
+        )
+
+    input_files = sorted(input_dir.glob(input_pattern))
+
+    if not input_files:
+        raise FileNotFoundError(
+            "No HS Sync input files matched "
+            f"{input_dir / input_pattern}"
+        )
+
+    enabled_products = cfg.workflow_enabled_products()
+
+    require_enabled_products(
+        workflow_name="HS Sync",
+        enabled_products=enabled_products,
+        required_products=REQUIRED_PRODUCTS,
+    )
+
+    workflow_start = perf_counter()
 
     with timed_workflow(logger, "HS-sync workflow"):
 
-        with timed_step(logger, 1, WORKFLOW_STEPS[0], total_steps=TOTAL_WORKFLOW_STEPS):
-            outputs["mapping_preparation"] = _run_step(
-                step_name=WORKFLOW_STEPS[0],
+        logger.info("Run ID: %s", run_id)
+        logger.info("Target HS: %s", cfg.scope.target_hs)
+        logger.info(
+            "Year range: %s-%s",
+            cfg.scope.min_year,
+            cfg.scope.max_year,
+        )
+        logger.info("Input: %s", input_dir)
+        logger.info("Input directory: %s", input_dir)
+        logger.info("Input pattern: %s", input_pattern)
+        logger.info("Matched input files: %s", len(input_files))
+        logger.info(
+            "Enabled products: %s",
+            " ".join(
+                f"{name}={enabled}"
+                for name, enabled in enabled_products.items()
+            ),
+        )
+
+        # ==================================================================
+        # Step 1 —  Prepare UNSD/Comtrade HS mappings
+        # ==================================================================
+
+        mapping_result = run_step(
                 logger=logger,
-                func=lambda: run_comtrade_mapping_preparation(
+                step_number=1,
+                total_steps=TOTAL_WORKFLOW_STEPS,
+                title=WORKFLOW_STEPS[0],
+                runner=lambda: run_comtrade_mapping_preparation(
                     cfg=cfg,
                     run_id=run_id,
                     logger=logger,
                 ),
             )
 
-        with timed_step(logger, 2, WORKFLOW_STEPS[1], total_steps=TOTAL_WORKFLOW_STEPS):
-            _require_pass(outputs=outputs, dependency="mapping_preparation")
+        # ==================================================================
+        # Step 2 — Build coverage products
+        # ==================================================================
 
-            coverage_inputs = load_target_hs_coverage_inputs(
+        coverage_inputs_result = run_step(
+            logger=logger,
+            step_number=2,
+            total_steps=TOTAL_WORKFLOW_STEPS,
+            title=WORKFLOW_STEPS[1],
+            runner=lambda: load_coverage_inputs_step(
                 cfg=cfg,
                 logger=logger,
-            )
+            ),
+        )
 
-            outputs["coverage_inputs"] = {
-                "step": WORKFLOW_STEPS[1],
-                "status": "pass",
-                "input_dir": coverage_inputs["input_dir"],
-                "mapping_dir": coverage_inputs["mapping_dir"],
-                "output_dir": coverage_inputs["output_dir"],
-            }
+        coverage_inputs = coverage_inputs_result["coverage_inputs"]
 
-        with timed_step(logger, 3, WORKFLOW_STEPS[2], total_steps=TOTAL_WORKFLOW_STEPS):
-            _require_pass(outputs=outputs, dependency="coverage_inputs")
+        # ==================================================================
+        # Step 3 — Build coverage tables
+        # ==================================================================
 
-            coverage_tables = build_target_hs_coverage_products(
+        coverage_tables_result = run_step(
+            logger=logger,
+            step_number=3,
+            total_steps=TOTAL_WORKFLOW_STEPS,
+            title=WORKFLOW_STEPS[2],
+            runner=lambda: build_coverage_tables_step(
                 cfg=cfg,
-                source_summary=coverage_inputs["source_summary"],
-                mappings=coverage_inputs["mappings"],
+                coverage_inputs=coverage_inputs,
                 logger=logger,
-            )
+            ),
+        )
 
-            outputs["coverage_tables"] = {
-                "step": WORKFLOW_STEPS[2],
-                "status": "pass",
-                "tables": {
-                    name: table.shape
-                    for name, table in coverage_tables.items()
-                },
-            }
+        coverage_tables = coverage_tables_result["coverage_tables"]
 
-        with timed_step(logger, 4, WORKFLOW_STEPS[3], total_steps=TOTAL_WORKFLOW_STEPS):
-            _require_pass(outputs=outputs, dependency="coverage_tables")
 
-            outputs["coverage"] = _run_step(
-                step_name=WORKFLOW_STEPS[3],
-                logger=logger,
-                func=lambda: write_target_hs_coverage_outputs(
+        # ==================================================================
+        # Step 4 — Build coverage outputs
+        # ==================================================================
+
+        coverage_result  = run_step(
+            logger=logger,
+            step_number=4,
+            total_steps=TOTAL_WORKFLOW_STEPS,
+            title=WORKFLOW_STEPS[3],
+            runner=lambda: write_target_hs_coverage_outputs(
                     cfg=cfg,
                     tables=coverage_tables,
                     run_id=run_id,
@@ -220,13 +243,16 @@ def run_hs_sync_workflow(
                 ),
             )
 
-        with timed_step(logger, 5, WORKFLOW_STEPS[4], total_steps=TOTAL_WORKFLOW_STEPS):
-            _require_pass(outputs=outputs, dependency="coverage")
+        # ==================================================================
+        # Step 5 — Run mapping audit
+        # ==================================================================
 
-            outputs["mapping_audit"] = _run_step(
-                step_name=WORKFLOW_STEPS[4],
-                logger=logger,
-                func=lambda: run_comtrade_mapping_audit(
+        mapping_audit_result  = run_step(
+            step_number=5,
+            total_steps=TOTAL_WORKFLOW_STEPS,
+            title=WORKFLOW_STEPS[4],
+            logger=logger,
+            runner=lambda: run_comtrade_mapping_audit(
                     cfg=cfg,
                     run_id=run_id,
                     logger=logger,
@@ -235,107 +261,131 @@ def run_hs_sync_workflow(
                 ),
             )
 
-        with timed_step(logger, 6, WORKFLOW_STEPS[5], total_steps=TOTAL_WORKFLOW_STEPS):
-            _require_pass(outputs=outputs, dependency="mapping_audit")
+        # ==================================================================
+        # Step 6 — Run equal split allocation
+        # ==================================================================
 
-            outputs["equal_split_allocation"] = _run_step(
-                step_name=WORKFLOW_STEPS[5],
-                logger=logger,
-                func=lambda: run_equal_split_allocation(
+        equal_split_result  = run_step(
+            step_number=6,
+            total_steps=TOTAL_WORKFLOW_STEPS,
+            title=WORKFLOW_STEPS[5],
+            logger=logger,
+            runner=lambda: run_equal_split_allocation(
                     cfg=cfg,
                     run_id=run_id,
                     logger=logger,
                 ),
             )
 
-        with timed_step(logger, 7, WORKFLOW_STEPS[6], total_steps=TOTAL_WORKFLOW_STEPS):
-            _require_pass(outputs=outputs, dependency="equal_split_allocation")
+        # ==================================================================
+        # Step 7 — Run complete mapping weights
+        # ==================================================================
 
-            outputs["complete_mapping_weights"] = _run_step(
-                step_name=WORKFLOW_STEPS[6],
-                logger=logger,
-                func=lambda: run_complete_mapping_weights(
+        complete_weights_result  = run_step(
+            step_number=7,
+            total_steps=TOTAL_WORKFLOW_STEPS,
+            title=WORKFLOW_STEPS[6],
+            logger=logger,
+            runner=lambda: run_complete_mapping_weights(
                     cfg=cfg,
                     run_id=run_id,
                     logger=logger,
                 ),
             )
 
-        with timed_step(logger, 8, WORKFLOW_STEPS[7], total_steps=TOTAL_WORKFLOW_STEPS):
-            _require_pass(outputs=outputs, dependency="complete_mapping_weights")
+        # ==================================================================
+        # Step 8 — Run HS sync apply
+        # ==================================================================
 
-            outputs["apply"] = _run_step(
-                step_name=WORKFLOW_STEPS[7],
-                logger=logger,
-                func=lambda: run_hs_sync_apply(
+        apply_result  = run_step(
+            step_number=8,
+            total_steps=TOTAL_WORKFLOW_STEPS,
+            title=WORKFLOW_STEPS[7],
+            logger=logger,
+            runner=lambda: run_hs_sync_apply(
                     cfg=cfg,
                     run_id=run_id,
                     logger=logger,
                 ),
             )
+        applied_path = require_artifact(
+                    result=apply_result,
+                    path_key="output_path",
+                    consumer_step=WORKFLOW_STEPS[8],
+                    producer_product="HS-synced trade Parquet",
+                )
 
-        with timed_step(logger, 9, WORKFLOW_STEPS[8], total_steps=TOTAL_WORKFLOW_STEPS):
-            _require_pass(outputs=outputs, dependency="apply")
+        # ==================================================================
+        # Step 9 — Run HS sync applied output audit
+        # ==================================================================
 
-            outputs["applied_output_audit"] = _run_step(
-                step_name=WORKFLOW_STEPS[8],
-                logger=logger,
-                func=lambda: run_hs_sync_applied_output_audit(
+        applied_audit_result = run_step(
+            step_number=9,
+            total_steps=TOTAL_WORKFLOW_STEPS,
+            title=WORKFLOW_STEPS[8],
+            logger=logger,
+            runner=lambda: run_hs_sync_applied_output_audit(
                     cfg=cfg,
                     run_id=run_id,
                     logger=logger,
                 ),
             )
+        
+        audit_path = require_artifact(
+                result=applied_audit_result,
+                path_key="audit_path",
+                consumer_step="HS Sync readiness validation",
+                producer_product="applied HS Sync audit",
+            )
 
-    apply_outputs = outputs.get("apply", {})
-    audit_outputs = outputs.get("applied_output_audit", {})
-
-    if isinstance(apply_outputs, dict):
-        outputs["final_parquet"] = apply_outputs.get("output_path")
-
-    if isinstance(audit_outputs, dict):
-        outputs["final_audit"] = audit_outputs.get("audit_path")
-
-    outputs["workflow_summary"] = _build_workflow_summary(outputs)
-
-    failed_steps = [
-        row for row in outputs["workflow_summary"]
-        if row.get("status") == "fail"
-    ]
-
-    final_status = "failed" if failed_steps else "completed"
-    outputs["status"] = final_status
-
-    logger.info("")
-    logger.info("HS-sync workflow step summary:")
-    for row in outputs["workflow_summary"]:
-        logger.info(
-            "  %-30s status=%-8s failed=%s",
-            row["name"],
-            row["status"],
-            row.get("n_failed_audit_rows"),
+        ready_for_cif_fob = (
+            applied_audit_result.get("ready_for_cif_fob") is True
         )
 
-    outputs["ready_for_next_step"] = final_status == "completed"
-    outputs["ready_for_cif_fob"] = final_status == "completed"
+        if not ready_for_cif_fob:
+            raise RuntimeError(
+                "HS Sync applied-output audit did not approve "
+                "the output for CIF/FOB."
+            )
 
-    final_parquet = cfg.apply_output_path()
-    final_audit = cfg.apply_integrity_audit_path()
+        n_failed_audit_rows = int(
+                    applied_audit_result.get("n_failed_audit_rows", 0)
+                )
+       ########################################################################################
+        
+        workflow_elapsed = perf_counter() - workflow_start
 
-    n_failed = sum(
-        1 for row in outputs["workflow_summary"]
-        if row.get("status") == "fail"
-    )
+        logger.info("HS Sync workflow finished.")
+        logger.info("Applied output: %s", applied_path)
+        logger.info("Applied-output audit: %s", audit_path)
+        logger.info("Audit passed: %s", ready_for_cif_fob)
+        logger.info("Failed audit rows: %s", n_failed_audit_rows)
+        logger.info("Ready for CIF/FOB: %s", ready_for_cif_fob)
+        logger.info("Workflow elapsed time: %.2f seconds", workflow_elapsed)
 
     return {
-        "status": final_status,
-        "ready_for_next_step": final_status == "completed",
-        "ready_for_cif_fob": final_status == "completed",
-        "run_id": run_id,
-        "output_path": final_parquet,
-        "audit_path": final_audit,
-        "final_parquet": final_parquet,
-        "final_audit": final_audit,
-        "n_failed_audit_rows": n_failed,
-        "workflow_summary": outputs["workflow_summary"],
-    }
+            "status": "completed",
+            "run_id": run_id,
+
+            # Master-pipeline readiness contract.
+            "ready_for_cif_fob": ready_for_cif_fob,
+
+            # Compatibility alias.
+            "ready_for_next_step": ready_for_cif_fob,
+
+            # Canonical primary output and audit keys used by the master
+            # pipeline and checkpoint system.
+            "output_path": applied_path,
+            "audit_path": audit_path,
+
+            # Explicit HS Sync product paths.
+            "final_parquet": applied_path,
+            "final_audit": audit_path,
+
+            # Final validation outcome.
+            "audit_passed": ready_for_cif_fob,
+            "n_failed_audit_rows": n_failed_audit_rows,
+
+            # Useful final workflow metadata.
+            "workflow_duration_seconds": workflow_elapsed,
+        }

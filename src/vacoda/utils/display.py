@@ -8,11 +8,72 @@ from __future__ import annotations
 
 import pandas as pd
 from collections.abc import Iterable, Iterator
-from typing import TypeVar
+from typing import TypeVar, Iterable, Iterator
 
 from tqdm import tqdm
 
 T = TypeVar("T")
+
+_SYMBOLS = {
+    "warning": "\u26A0",              # ⚠
+    "check": "\u2705",                # ✅
+    "cross": "\u274C",                # ❌
+    "info": "\u2139",                 # ℹ
+    "star": "\u2B50",                 # ⭐
+    "fire": "\U0001F525",             # 🔥
+    "important": "\U0001F4A5",        # 💥
+    "right_arrow": "\u27A1",          # ➡
+    "right_finger": "\U0001F449",     # 👉
+    "danger": "\U0001F6AB",           # 🚫
+    "success": "\U0001F44D",          # 👍
+    "failure": "\U0001F44E",          # 👎
+    "time": "\U0001F551",             # 🕑
+    "duckdb": "\U0001F986",           # 🦆
+    "pandas": "\U0001F43C",           # 🐼
+    "python": "\U0001F40D",           # 🐍
+    "warning_light": "\U0001F6A8",    # 🚨
+    "construction": "\U0001F6A7",     # 🚧
+    "recycle": "\U0001F504",          # 🔄
+    "workflow": "\U0001F3C1",         # 🏁
+    "check_mark": "\u2714",           # ✔
+    "pipeline_step": "\u25C6",        # ◆
+    "play": "\u25B6",                 # ▶
+    "directory": "\U0001F4C2",        # 📂
+    "checkpoint": "\U0001F4BE",       # 💾
+    "output": "\U0001F4E4",           # 📤
+    "audit": "\U0001F4DD",            # 📝
+    "log": "\U0001F4D1",              # 📑
+    "manifest": "\U0001F4C3",         # 📃
+    "skip": "\u2298",                 # ⏭
+    "flag": "\U0001F6A9",             # 🚩
+
+}
+
+_ANSI_COLORS = {
+    "green": "\033[32m",
+    "yellow": "\033[33m",
+    "red": "\033[31m",
+    "cyan": "\033[36m",
+    "reset": "\033[0m",
+}
+
+
+def color_text(text: str, color: str) -> str:
+    try:
+        prefix = _ANSI_COLORS[color]
+    except KeyError as exc:
+        raise ValueError(f"Unknown color: {color}") from exc
+
+    return f"{prefix}{text}{_ANSI_COLORS['reset']}"
+
+def get_symbols(name: str) -> str:
+    try:
+        return _SYMBOLS[name]
+    except KeyError as exc:
+        raise ValueError(
+            f"Unknown symbol name: {name}"
+        ) from exc
+
 
 def pretty_print_series(series: pd.Series, float_fmt: str = ",.2f", int_fmt: str = ","):
     """
@@ -39,50 +100,6 @@ def get_recovery_symbol(pct, threshold):
         return "\u26A0"   # ⚠ partial recovery
     else:
         return "\u274C"   # ❌ no recovery
-
-def get_symbols(name):
-    if name == "warning":
-        return "\u26A0"   # ⚠
-    elif name == "check":
-        return "\u2705"   # ✅
-    elif name == "cross":
-        return "\u274C"   # ❌
-    elif name == "info":
-        return "\u2139"   # ℹ
-    elif name == "star":
-        return "\u2B50"   # ⭐
-    elif name == "fire":
-        return "\U0001F525"  # 🔥
-    elif name == "important":
-        return "\U0001F4A5"  # 💥
-    elif name == "right_arrow":
-        return "\u27A1"   # ➡
-    elif name == "right_finger":
-        return "\U0001F449"  # 👉
-    elif name == "danger":
-        return "\U0001F6AB"  #  🚫
-    elif name == "success":
-        return "\U0001F44D"  #  👍
-    elif name == "failure":
-        return "\U0001F44E"  #  👎
-    elif name == "sparkles":
-        return "\U0001F496"  # 💖
-    elif name =="time":
-        return "\U0001F551"  # 🕑
-    elif name == "duckdb":
-        return "\U0001F986"  # 🦆
-    elif name == "pandas":
-        return "\U0001F43C"  #  🐼
-    elif name == "python":
-        return "\U0001F40D"  #  🐍
-    elif name == "warning_light":
-        return "\U0001F6A8"  # 🚨
-    elif name == "construction":
-        return "\U0001F6A7"  # 🚧
-    elif name == "recycle":
-        return "\U0001F504"  # 🔄
-    else:
-        raise ValueError(f"Unknown symbol name: {name}")
 
 def progress_bar(
     iterable: Iterable[T],
