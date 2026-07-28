@@ -3643,12 +3643,12 @@ def _save_cif_fob_figure(
 
     figure_paths[key] = path
 
-    if logger is not None:
-        logger.info(
-            "PLOT WRITTEN — %s: %s",
-            key,
-            path,
-        )
+    # if logger is not None:
+    #     logger.info(
+    #         "PLOT WRITTEN — %s: %s",
+    #         key,
+    #         path,
+    #     )
 
     return path
 

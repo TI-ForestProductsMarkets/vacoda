@@ -103,9 +103,11 @@ def log_step_header(
     total_steps: int,
     title: str,
 ) -> None:
+    run_symbol = color_text(get_symbols("play"), "cyan")
     separator(logger)
     logger.info(
-        "STEP %s/%s — %s",
+        "%s  STEP %s/%s — %s",
+        run_symbol,
         step_number,
         total_steps,
         title,
