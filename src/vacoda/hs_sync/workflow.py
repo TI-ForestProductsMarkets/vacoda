@@ -338,31 +338,19 @@ def run_hs_sync_workflow(
                 producer_product="applied HS Sync audit",
             )
 
-        audit_passed = bool(
-            applied_audit_result.get("audit_passed", False)
-        )
-
-        n_failed_audit_rows = int(
-            applied_audit_result.get("n_failed_audit_rows", 0)
-        )
-
-        applied_output_valid = bool(
-            applied_path.is_file()
-            and applied_path.stat().st_size > 0
-        )
-
-        ready_for_cif_fob = bool(
-            audit_passed
-            and n_failed_audit_rows == 0
-            and applied_output_valid
+        ready_for_cif_fob = (
+            applied_audit_result.get("ready_for_cif_fob") is True
         )
 
         if not ready_for_cif_fob:
             raise RuntimeError(
-                "HS Sync finished without an audited, usable "
-                "HS-synced trade output."
-                )
+                "HS Sync applied-output audit did not approve "
+                "the output for CIF/FOB."
+            )
 
+        n_failed_audit_rows = int(
+                    applied_audit_result.get("n_failed_audit_rows", 0)
+                )
        ########################################################################################
         
         workflow_elapsed = perf_counter() - workflow_start
@@ -370,36 +358,34 @@ def run_hs_sync_workflow(
         logger.info("HS Sync workflow finished.")
         logger.info("Applied output: %s", applied_path)
         logger.info("Applied-output audit: %s", audit_path)
-        logger.info("Audit passed: %s", audit_passed)
+        logger.info("Audit passed: %s", ready_for_cif_fob)
         logger.info("Failed audit rows: %s", n_failed_audit_rows)
         logger.info("Ready for CIF/FOB: %s", ready_for_cif_fob)
         logger.info("Workflow elapsed time: %.2f seconds", workflow_elapsed)
 
     return {
-        "status": "completed",
-        "run_id": run_id,
-        "workflow_duration_seconds": workflow_elapsed,
+            "status": "completed",
+            "run_id": run_id,
 
-        "ready_for_next_step": ready_for_cif_fob,
-        "ready_for_cif_fob": ready_for_cif_fob,
+            # Master-pipeline readiness contract.
+            "ready_for_cif_fob": ready_for_cif_fob,
 
-        "output_path": applied_path,
-        "audit_path": audit_path,
-        "final_parquet": applied_path,
-        "final_audit": audit_path,
+            # Compatibility alias.
+            "ready_for_next_step": ready_for_cif_fob,
 
-        "audit_passed": audit_passed,
-        "n_failed_audit_rows": n_failed_audit_rows,
+            # Canonical primary output and audit keys used by the master
+            # pipeline and checkpoint system.
+            "output_path": applied_path,
+            "audit_path": audit_path,
 
-        "steps": {
-            "mapping_preparation": mapping_result,
-            "coverage_inputs": coverage_inputs_result,
-            "coverage_tables": coverage_tables_result,
-            "coverage": coverage_result,
-            "mapping_audit": mapping_audit_result,
-            "equal_split_allocation": equal_split_result,
-            "complete_mapping_weights": complete_weights_result,
-            "apply": apply_result,
-            "applied_output_audit": applied_audit_result,
-        },
-    }
+            # Explicit HS Sync product paths.
+            "final_parquet": applied_path,
+            "final_audit": audit_path,
+
+            # Final validation outcome.
+            "audit_passed": ready_for_cif_fob,
+            "n_failed_audit_rows": n_failed_audit_rows,
+
+            # Useful final workflow metadata.
+            "workflow_duration_seconds": workflow_elapsed,
+        }

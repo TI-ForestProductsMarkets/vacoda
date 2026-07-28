@@ -949,10 +949,9 @@ def run_hs_sync_applied_output_audit(
 
         audit_rows.extend(_build_distribution_info(con=con))
 
-        audit = pd.DataFrame(audit_rows)
 
-        audit_path.parent.mkdir(parents=True, exist_ok=True)
-        audit.to_csv(audit_path, index=False)
+        ## Make final audit DataFrame and write to CSV
+        audit = pd.DataFrame(audit_rows)
 
         failed = audit[audit["status"] == "fail"]
         ready_for_cif_fob = failed.empty
@@ -968,7 +967,19 @@ def run_hs_sync_applied_output_audit(
             )  
 
         audit = pd.DataFrame(audit_rows)
-        failed = audit[audit["status"] == "fail"]
+        failed = audit.loc[
+                audit["status"].astype(str).str.strip().str.lower() == "fail"
+            ]
+
+        audit_path.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        audit.to_csv(
+            audit_path,
+            index=False,
+        )
 
         logger.info("HS-sync applied-output integrity audit complete.")
         logger.info("  Input file size: %s", format_bytes(raw_size))
@@ -991,9 +1002,15 @@ def run_hs_sync_applied_output_audit(
         return {
             "status": "completed",
             "run_id": run_id,
+            
             "audit_path": audit_path,
             "applied_path": applied_path,
             "weights_path": weights_path,
+
+            "ready_for_cif_fob": ready_for_cif_fob,
+            "audit_passed": ready_for_cif_fob,
+            "n_failed_audit_rows": len(failed),
+
             "raw_file_size": raw_size,
             "applied_parquet_size": parquet_size,
             "raw_rows": _to_int(raw_summary["raw_rows"]),
@@ -1003,7 +1020,6 @@ def run_hs_sync_applied_output_audit(
             "applied_value_total": applied_value,
             "value_diff": value_diff,
             "value_rel_diff": value_rel_diff,
-            "n_failed_audit_rows": len(failed),
         }
 
     finally:

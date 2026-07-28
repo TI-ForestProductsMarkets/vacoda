@@ -2154,33 +2154,33 @@ class HsSyncConfig:
     def comtrade_hs_correlation_normalized_dir(self) -> Path:
         return self.comtrade_hs_correlation_root() / "normalized"
 
-def workflow_enabled_products(self) -> dict[str, bool]:
-    """Return enablement for products required by the HS Sync workflow."""
-    equal_split_name = self.weights.input.equal_split_product
-    complete_weights_name = self.weights.input.complete_mapping_product
-    apply_output_name = self.apply.input.output_product
+    def workflow_enabled_products(self) -> dict[str, bool]:
+        """Return enablement for products required by the HS Sync workflow."""
+        equal_split_name = self.weights.input.equal_split_product
+        complete_weights_name = self.weights.input.complete_mapping_product
+        apply_output_name = self.apply.input.output_product
 
-    equal_split_product = self.weights.products.get(equal_split_name)
-    complete_weights_product = self.weights.products.get(
-        complete_weights_name
-    )
-    apply_output_product = self.apply.products.get(apply_output_name)
+        equal_split_product = self.weights.products.get(equal_split_name)
+        complete_weights_product = self.weights.products.get(
+            complete_weights_name
+        )
+        apply_output_product = self.apply.products.get(apply_output_name)
 
-    return {
-        "coverage": self.coverage.enabled,
-        "equal_split_allocation": bool(
-            self.weights.enabled
-            and equal_split_product is not None
-            and equal_split_product.enabled
-        ),
-        "complete_mapping_weights": bool(
-            self.weights.enabled
-            and complete_weights_product is not None
-            and complete_weights_product.enabled
-        ),
-        "hs_sync_apply": bool(
-            self.apply.enabled
-            and apply_output_product is not None
-            and apply_output_product.enabled
-        ),
-    }
+        return {
+            "coverage": self.coverage.enabled,
+            "equal_split_allocation": bool(
+                self.weights.enabled
+                and equal_split_product is not None
+                and equal_split_product.enabled
+            ),
+            "complete_mapping_weights": bool(
+                self.weights.enabled
+                and complete_weights_product is not None
+                and complete_weights_product.enabled
+            ),
+            "hs_sync_apply": bool(
+                self.apply.enabled
+                and apply_output_product is not None
+                and apply_output_product.enabled
+            ),
+        }

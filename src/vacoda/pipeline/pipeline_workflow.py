@@ -81,11 +81,113 @@ def _run_staging_step(
         logger=get_logger("PIPELINE.STAGING"),
     )
 
+
+
 def _build_step_decisions(
     *,
     cfg: PipelineConfig,
     checkpoint_dir: Path,
-    logger,) -> list[StepDecision]:
+    logger: Any,
+) -> list[StepDecision]:
+    decisions: list[StepDecision] = []
+    upstream_will_run = False
+
+    for step_name, step_cfg in cfg.enabled_steps():
+        plan = _build_step_plan(
+            step_name=step_name,
+            config_path=step_cfg.config,
+            pipeline_cfg=cfg,
+        )
+
+        step_checkpoint_path = checkpoint_path(
+            checkpoint_dir=checkpoint_dir,
+            step_name=step_name,
+        )
+
+        action = "run"
+        reason = "no reusable checkpoint"
+
+        if upstream_will_run:
+            action = "run"
+            reason = "upstream pipeline step is scheduled to run"
+
+        elif (
+            cfg.checkpoint.enabled
+            and cfg.checkpoint.reuse_successful_steps
+            and not cfg.pipeline.force_run_all
+        ):
+            checkpoint = load_checkpoint(step_checkpoint_path)
+
+            if checkpoint is not None:
+                reusable, checkpoint_reason = validate_checkpoint(
+                    checkpoint=checkpoint,
+                    expected_status=step_cfg.expected_status,
+                    required_ready_flag=step_cfg.required_ready_flag,
+                    current_config=plan.config_fingerprint,
+                    current_input=plan.input_fingerprint,
+                )
+
+                if reusable:
+                    output_path = checkpoint.get("output", {}).get("path")
+                    audit_path = checkpoint.get("audit", {}).get("path")
+
+                    if isinstance(output_path, str) and output_path:
+                        plan = StepPlan(
+                            step_name=plan.step_name,
+                            config_path=plan.config_path,
+                            config_fingerprint=plan.config_fingerprint,
+                            input_fingerprint=plan.input_fingerprint,
+                            output_path=Path(output_path),
+                            audit_path=(
+                                Path(audit_path)
+                                if isinstance(audit_path, str) and audit_path
+                                else plan.audit_path
+                            ),
+                            runner=plan.runner,
+                        )
+
+                    action = "skip"
+                    reason = "valid checkpoint exists"
+                else:
+                    action = "run"
+                    reason = (
+                        "checkpoint not reusable: "
+                        f"{checkpoint_reason}"
+                    )
+
+        elif cfg.pipeline.force_run_all:
+            action = "run"
+            reason = "pipeline.force_run_all=true"
+
+        elif not cfg.checkpoint.enabled:
+            action = "run"
+            reason = "checkpointing disabled"
+
+        elif not cfg.checkpoint.reuse_successful_steps:
+            action = "run"
+            reason = "checkpoint reuse disabled"
+
+        decisions.append(
+            StepDecision(
+                step_name=step_name,
+                step_config=step_cfg,
+                plan=plan,
+                checkpoint_path=step_checkpoint_path,
+                action=action,
+                reason=reason,
+            )
+        )
+
+        if action == "run":
+            upstream_will_run = True
+
+    return decisions
+
+def _build_step_decisions_deprecated(
+    *,
+    cfg: PipelineConfig,
+    checkpoint_dir: Path,
+    logger: Any,) -> list[StepDecision]:
     decisions: list[StepDecision] = []
 
     for step_name, step_cfg in cfg.enabled_steps():
