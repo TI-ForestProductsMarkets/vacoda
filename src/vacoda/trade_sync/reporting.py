@@ -19,10 +19,11 @@ from datetime import datetime
 from pathlib import Path
 import shutil
 from typing import Any
+import pycountry
 
 import duckdb
 import matplotlib
-
+from matplotlib.ticker import MaxNLocator
 matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
@@ -37,6 +38,34 @@ from vacoda.utils.display import get_symbols
 # Helpers
 # ======================================================================
 
+_COUNTRY_DISPLAY_NAME_OVERRIDES = {
+    "BOL": "Bolivia",
+    "HKG": "Hong Kong",
+    "IRN": "Iran",
+    "KOR": "South Korea",
+    "LAO": "Laos",
+    "MDA": "Moldova",
+    "PRY": "Paraguay",
+    "RUS": "Russia",
+    "TZA": "Tanzania",
+    "VEN": "Venezuela",
+    "VNM": "Vietnam",
+}
+
+def _country_name_from_iso(country_iso: str) -> str:
+    """Return a concise display name for an ISO alpha-3 code."""
+
+    code = str(country_iso).upper()
+
+    if code in _COUNTRY_DISPLAY_NAME_OVERRIDES:
+        return _COUNTRY_DISPLAY_NAME_OVERRIDES[code]
+
+    country = pycountry.countries.get(alpha_3=code)
+
+    if country is None:
+        return code
+
+    return country.name
 
 def _sql_literal(value: str | Path) -> str:
     """Return a safely quoted SQL literal."""
@@ -139,6 +168,609 @@ def _metric_lookup(
 # Figures
 # ======================================================================
 
+def _plot_positive_positive_deviation_distribution(
+    *,
+    con: duckdb.DuckDBPyConnection,
+    reconciled_sql: str,
+    output_path: Path,
+) -> None:
+    """
+    Plot the distribution of relative differences between genuine
+    positive exporter and importer mirror reports.
+    """
+
+    frame = con.execute(
+        f"""
+        SELECT
+            ABS(
+                reconciliation_export_value
+                - reconciliation_import_value
+            )
+            / GREATEST(
+                reconciliation_export_value,
+                reconciliation_import_value
+            ) AS relative_difference
+        FROM read_parquet({reconciled_sql})
+        WHERE reliability_evidence_case = 'both_positive'
+          AND reconciliation_export_value > 0
+          AND reconciliation_import_value > 0
+        """
+    ).fetchdf()
+
+    if frame.empty:
+        raise RuntimeError(
+            "No positive-positive observations are available for the "
+            "deviation-distribution figure."
+        )
+
+    relative_difference = frame["relative_difference"].dropna()
+
+    if relative_difference.empty:
+        raise RuntimeError(
+            "Positive-positive relative differences are all missing."
+        )
+
+    bin_edges = [index / 10 for index in range(11)]
+    bin_labels = [
+        "[0%, 10%]",
+        "(10%, 20%]",
+        "(20%, 30%]",
+        "(30%, 40%]",
+        "(40%, 50%]",
+        "(50%, 60%]",
+        "(60%, 70%]",
+        "(70%, 80%]",
+        "(80%, 90%]",
+        "(90%, 100%]",
+    ]
+
+    counts = pd.cut(
+        relative_difference.clip(lower=0, upper=1),
+        bins=bin_edges,
+        labels=bin_labels,
+        include_lowest=True,
+        right=True,
+    ).value_counts(sort=False)
+
+    if int(counts.sum()) != len(relative_difference):
+        raise RuntimeError(
+            "Deviation-distribution bins do not account for all "
+            "positive-positive observations."
+        )
+
+    shares = 100.0 * counts / counts.sum()
+
+    figure, axis = plt.subplots(figsize=(11, 6))
+
+    bars = axis.bar(
+        shares.index.astype(str),
+        shares.values,
+        width=1.0,
+        edgecolor="white",
+        linewidth=0.5,
+    )
+
+    axis.bar_label(
+        bars,
+        labels=[f"{value:.1f}%" for value in shares],
+        padding=3,
+        fontsize=9,
+    )
+
+    axis.set_title(
+        "Distribution of positive mirror-report differences\n"
+        f"All years, n = {len(relative_difference):,}"
+    )
+    axis.set_xlabel(
+        "Difference relative to the larger mirror report"
+    )
+    axis.set_ylabel("Share of rows (%)")
+    axis.grid(axis="y", linestyle="--", alpha=0.5)
+    axis.set_axisbelow(True)
+
+    axis.set_ylim(0, shares.max() * 1.12)
+    axis.tick_params(
+        axis="x",
+        labelrotation=35,
+    )
+
+    figure.tight_layout()
+    figure.savefig(
+        output_path,
+        dpi=180,
+        bbox_inches="tight",
+    )
+    plt.close(figure)
+
+
+def _plot_country_directional_reliability(
+    *,
+    con: duckdb.DuckDBPyConnection,
+    reliability_sql: str,
+    output_path: Path,
+    year: int,
+    minimum_evidence: int = 30,
+    maximum_countries: int = 25,
+) -> None:
+    """
+    Compare exporter and importer reliability by country for one year.
+
+    Countries are selected by the largest absolute difference between
+    exporter and importer reliability, subject to a minimum evidence
+    threshold in both directions.
+    """
+
+    frame = con.execute(
+        f"""
+        WITH directional_scores AS (
+            SELECT
+                country_iso,
+                reporting_direction,
+                reliability_index,
+                n_evidence_observations
+            FROM read_parquet({reliability_sql})
+            WHERE year = {int(year)}
+              AND reliability_index IS NOT NULL
+              AND isfinite(reliability_index)
+              AND n_evidence_observations >= {int(minimum_evidence)}
+              AND reporting_direction IN ('export', 'import')
+        ),
+        country_scores AS (
+            SELECT
+                country_iso,
+
+                MAX(reliability_index) FILTER (
+                    WHERE reporting_direction = 'export'
+                ) AS export_reliability,
+
+                MAX(reliability_index) FILTER (
+                    WHERE reporting_direction = 'import'
+                ) AS import_reliability,
+
+                MAX(n_evidence_observations) FILTER (
+                    WHERE reporting_direction = 'export'
+                ) AS export_evidence,
+
+                MAX(n_evidence_observations) FILTER (
+                    WHERE reporting_direction = 'import'
+                ) AS import_evidence
+
+            FROM directional_scores
+            GROUP BY country_iso
+        )
+        SELECT
+            country_iso,
+            export_reliability,
+            import_reliability,
+            export_evidence,
+            import_evidence,
+            ABS(
+                export_reliability - import_reliability
+            ) AS reliability_gap
+        FROM country_scores
+        WHERE export_reliability IS NOT NULL
+          AND import_reliability IS NOT NULL
+        ORDER BY reliability_gap DESC, country_iso
+        LIMIT {int(maximum_countries)}
+        """
+    ).fetchdf()
+
+    frame["country_name"] = frame["country_iso"].map(
+        _country_name_from_iso
+    )
+    if frame.empty:
+        raise RuntimeError(
+            "No countries have sufficient exporter and importer "
+            f"reliability evidence for {year}."
+        )
+
+    frame = frame.sort_values(
+        ["reliability_gap", "country_iso"],
+        ascending=[True, True],
+    ).reset_index(drop=True)
+
+    y_positions = range(len(frame))
+
+    figure_height = max(
+        6.0,
+        0.34 * len(frame) + 1.8,
+    )
+
+    figure, axis = plt.subplots(
+        figsize=(11, figure_height)
+    )
+
+    for row_number, row in frame.iterrows():
+        axis.plot(
+            [
+                row["export_reliability"],
+                row["import_reliability"],
+            ],
+            [row_number, row_number],
+            color="0.70",
+            linewidth=1.4,
+            zorder=1,
+        )
+
+    axis.scatter(
+        frame["export_reliability"],
+        list(y_positions),
+        marker="o",
+        s=42,
+        label="Exporter reliability",
+        zorder=3,
+    )
+
+    axis.scatter(
+        frame["import_reliability"],
+        list(y_positions),
+        marker="s",
+        s=42,
+        label="Importer reliability",
+        zorder=3,
+    )
+
+    axis.set_yticks(list(y_positions))
+    axis.set_yticklabels(frame["country_name"])
+
+    axis.set_title(
+        "Largest exporter–importer reliability gaps by country\n"
+        f"{year}, top {len(frame)}, minimum "
+        f"{minimum_evidence:,} evidence rows per direction"
+    )
+    axis.set_xlabel("Reliability index")
+    axis.set_ylabel("Reporting country")
+    axis.set_xlim(0, 1)
+    axis.grid(axis="x", linestyle="--", alpha=0.5)
+    axis.set_axisbelow(True)
+    axis.legend(loc="lower right")
+
+    figure.tight_layout()
+    figure.savefig(
+        output_path,
+        dpi=180,
+        bbox_inches="tight",
+    )
+    plt.close(figure)
+
+def _plot_selected_country_reliability_over_time(
+    *,
+    con: duckdb.DuckDBPyConnection,
+    reliability_sql: str,
+    output_path: Path,
+    reporting_direction: str,
+    maximum_year: int,
+    minimum_evidence: int = 30,
+    minimum_years: int = 6,
+    maximum_countries: int = 8,
+) -> None:
+    """
+    Plot reliability trajectories for countries with the greatest
+    temporal variation in one reporting direction.
+    """
+
+    if reporting_direction not in {"export", "import"}:
+        raise ValueError(
+            "reporting_direction must be 'export' or 'import'."
+        )
+
+    frame = con.execute(
+        f"""
+        WITH eligible_scores AS (
+            SELECT
+                year,
+                country_iso,
+                reliability_index
+            FROM read_parquet({reliability_sql})
+            WHERE reporting_direction = '{reporting_direction}'
+              AND year <= {int(maximum_year)}
+              AND reliability_index IS NOT NULL
+              AND isfinite(reliability_index)
+              AND n_evidence_observations >= {int(minimum_evidence)}
+        ),
+        country_variation AS (
+            SELECT
+                country_iso,
+                COUNT(*) AS n_years,
+                STDDEV_SAMP(reliability_index)
+                    AS reliability_stddev,
+                MAX(reliability_index)
+                    - MIN(reliability_index)
+                    AS reliability_range
+            FROM eligible_scores
+            GROUP BY country_iso
+            HAVING COUNT(*) >= {int(minimum_years)}
+        ),
+        selected_countries AS (
+            SELECT country_iso
+            FROM country_variation
+            ORDER BY
+                reliability_stddev DESC,
+                reliability_range DESC,
+                country_iso
+            LIMIT {int(maximum_countries)}
+        )
+        SELECT
+            scores.year,
+            scores.country_iso,
+            scores.reliability_index
+        FROM eligible_scores AS scores
+        INNER JOIN selected_countries AS selected
+            USING (country_iso)
+        ORDER BY
+            scores.country_iso,
+            scores.year
+        """
+    ).fetchdf()
+
+    if frame.empty:
+        raise RuntimeError(
+            "No countries have sufficient reliability history for "
+            f"the {reporting_direction} trajectory figure."
+        )
+
+    frame["country_name"] = frame["country_iso"].map(
+        _country_name_from_iso
+    )
+
+    figure, axis = plt.subplots(figsize=(11, 7))
+
+    for country_name, group in frame.groupby(
+        "country_name",
+        sort=True,
+    ):
+        group = group.sort_values("year")
+
+        axis.plot(
+            group["year"],
+            group["reliability_index"],
+            marker="o",
+            markersize=4,
+            linewidth=1.6,
+            label=country_name,
+        )
+
+    minimum_year = int(frame["year"].min())
+    maximum_year = int(frame["year"].max())
+
+    axis.set_title(
+        f"Selected-country {reporting_direction} reliability over time\n"
+        "Countries with the greatest temporal variation"
+    )
+    axis.set_xlabel("Year")
+    axis.set_ylabel("Reliability index")
+    axis.set_ylim(0, 1)
+    axis.set_xticks(
+        range(minimum_year, maximum_year + 1)
+    )
+    axis.grid(
+        axis="y",
+        linestyle="--",
+        alpha=0.4,
+    )
+    axis.set_axisbelow(True)
+
+    axis.legend(
+        title="Reporting country",
+        bbox_to_anchor=(1.02, 1),
+        loc="upper left",
+    )
+
+    figure.tight_layout()
+    figure.savefig(
+        output_path,
+        dpi=180,
+        bbox_inches="tight",
+    )
+    plt.close(figure)
+
+def _plot_country_reliability_level_vs_gap(
+    *,
+    con: duckdb.DuckDBPyConnection,
+    reliability_sql: str,
+    output_path: Path,
+    year: int,
+    minimum_evidence: int = 30,
+    marker_size = 8,
+    line_alpha = 0.9,
+    line_width = 0.4,
+) -> None:
+    """
+    Plot average directional reliability against the absolute
+    exporter-importer reliability gap for each reporting country.
+    """
+
+    frame = con.execute(
+        f"""
+        WITH directional_scores AS (
+            SELECT
+                country_iso,
+                reporting_direction,
+                reliability_index,
+                n_evidence_observations
+            FROM read_parquet({reliability_sql})
+            WHERE year = {int(year)}
+              AND reporting_direction IN ('export', 'import')
+              AND reliability_index IS NOT NULL
+              AND isfinite(reliability_index)
+              AND n_evidence_observations >= {int(minimum_evidence)}
+        ),
+        country_scores AS (
+            SELECT
+                country_iso,
+
+                MAX(reliability_index) FILTER (
+                    WHERE reporting_direction = 'export'
+                ) AS export_reliability,
+
+                MAX(reliability_index) FILTER (
+                    WHERE reporting_direction = 'import'
+                ) AS import_reliability,
+
+                MAX(n_evidence_observations) FILTER (
+                    WHERE reporting_direction = 'export'
+                ) AS export_evidence,
+
+                MAX(n_evidence_observations) FILTER (
+                    WHERE reporting_direction = 'import'
+                ) AS import_evidence
+
+            FROM directional_scores
+            GROUP BY country_iso
+        )
+        SELECT
+            country_iso,
+            export_reliability,
+            import_reliability,
+            export_evidence,
+            import_evidence,
+            (
+                export_reliability + import_reliability
+            ) / 2.0 AS mean_reliability,
+            ABS(
+                export_reliability - import_reliability
+            ) AS reliability_gap
+        FROM country_scores
+        WHERE export_reliability IS NOT NULL
+          AND import_reliability IS NOT NULL
+        ORDER BY country_iso
+        """
+    ).fetchdf()
+
+    if frame.empty:
+        raise RuntimeError(
+            "No countries have sufficient exporter and importer "
+            f"reliability evidence for {year}."
+        )
+
+    figure, axis = plt.subplots(figsize=(10, 7))
+
+    density = axis.hexbin(
+        frame["mean_reliability"],
+        frame["reliability_gap"],
+        gridsize=18,
+        mincnt=1,
+        linewidths=0.4,
+        cmap="YlGnBu",
+        alpha=0.95
+    )
+
+    maximum_count = int(density.get_array().max())
+
+    colorbar = figure.colorbar(
+        density,
+        ax=axis,
+        pad=0.02,
+        ticks=range(1, maximum_count + 1),
+    )
+    colorbar.set_label("Number of reporting countries")
+    colorbar.ax.yaxis.set_major_locator(
+        MaxNLocator(integer=True)
+    )
+
+    largest_gap_codes = set(
+        frame.nlargest(5, "reliability_gap")["country_iso"]
+    )
+    lowest_reliability_codes = set(
+        frame.nsmallest(5, "mean_reliability")["country_iso"]
+    )
+    highest_reliability_codes = set(
+        frame.nlargest(5, "mean_reliability")["country_iso"]
+    )
+
+    label_codes = (
+        largest_gap_codes
+        | lowest_reliability_codes
+        | highest_reliability_codes
+    )
+
+    label_frame = frame[
+        frame["country_iso"].isin(label_codes)
+    ].copy() 
+
+    label_frame["country_name"] = label_frame[
+        "country_iso"
+    ].map(_country_name_from_iso)
+
+    axis.scatter(
+        label_frame["mean_reliability"],
+        label_frame["reliability_gap"],
+        marker="o",
+        facecolors="none",
+        edgecolors="black",
+        s=marker_size,
+        linewidths=line_width,
+        zorder=3,
+    )
+
+    for row in label_frame.itertuples(index=False):
+        axis.annotate(
+            row.country_name,
+            (
+                row.mean_reliability,
+                row.reliability_gap,
+            ),
+            xytext=(6, 5),
+            textcoords="offset points",
+            fontsize=8,
+            zorder=4,
+        )
+
+    median_mean_reliability = float(
+        frame["mean_reliability"].median()
+    )
+    median_gap = float(
+        frame["reliability_gap"].median()
+    )
+
+    axis.axvline(
+        median_mean_reliability,
+        linestyle=":",
+        linewidth=1.4,
+        alpha=line_alpha,
+    )
+
+    axis.axhline(
+        median_gap,
+        linestyle=":",
+        linewidth=1.4,
+        alpha=line_alpha,
+    )
+
+    axis.set_title(
+        "Country reliability level and directional imbalance\n"
+        f"{year}, minimum {minimum_evidence:,} evidence rows "
+        "per direction"
+    )
+    axis.set_xlabel(
+        "Mean exporter-importer reliability index"
+    )
+    axis.set_ylabel(
+        "Absolute exporter-importer reliability gap"
+    )
+
+    axis.set_xlim(0, 1)
+    axis.set_ylim(
+        0,
+        max(
+            0.05,
+            float(frame["reliability_gap"].max()) * 1.12,
+        ),
+    )
+
+    axis.grid(
+        linestyle="--",
+        alpha=0.35,
+    )
+    axis.set_axisbelow(True)
+
+    figure.tight_layout()
+    figure.savefig(
+        output_path,
+        dpi=180,
+        bbox_inches="tight",
+    )
+    plt.close(figure)
 
 def _plot_reconciliation_status_by_year(
     *,
@@ -798,6 +1430,35 @@ def build_trade_sync_report(
             and latest_rows < 0.75 * previous_rows_median
         )
 
+        available_reliability_years = con.execute(
+            f"""
+            SELECT DISTINCT year
+            FROM read_parquet({reliability_sql})
+            WHERE reliability_index IS NOT NULL
+            ORDER BY year
+            """
+        ).fetchdf()["year"].astype(int).tolist()
+
+        preferred_year = (
+            maximum_year - 1
+            if latest_year_provisional
+            else maximum_year
+        )
+
+        eligible_years = [
+            year
+            for year in available_reliability_years
+            if year <= preferred_year
+        ]
+
+        if not eligible_years:
+            raise RuntimeError(
+                "No reliability year is available for the country comparison."
+            )
+
+        country_reliability_plot_year = max(eligible_years)
+
+
         treatment_definitions = pd.DataFrame(
             [
                 {
@@ -921,41 +1582,90 @@ def build_trade_sync_report(
         # --------------------------------------------------------------
         # Figures
         # --------------------------------------------------------------
-
-        status_figure = (
-            figure_dir / "reconciliation_status_by_year.png"
-        )
-        totals_figure = (
-            figure_dir / "trade_value_totals_by_year.png"
-        )
-        reliability_figure = (
-            figure_dir / "country_reliability_by_year.png"
-        )
-        agreement_figure = (
-            figure_dir
-            / "positive_positive_agreement_by_year.png"
-        )
-
+        figure_paths = {
+            "status": (
+                figure_dir / "reconciliation_status_by_year.png"
+            ),
+            "totals": (
+                figure_dir / "trade_value_totals_by_year.png"
+            ),
+            "reliability": (
+                figure_dir / "country_reliability_by_year.png"
+            ),
+            "agreement": (
+                figure_dir
+                / "positive_positive_agreement_by_year.png"
+            ),
+            "deviation_distribution": (
+                figure_dir
+                / "positive_positive_deviation_distribution.png"
+            ),
+            "country_directional_reliability": (
+                figure_dir
+                / "country_export_import_reliability_gap.png"
+            ),
+            "country_reliability_level_gap": (
+                figure_dir
+                / "country_reliability_level_vs_gap.png"
+            ),
+            "export_reliability_trajectory": (
+                figure_dir
+                / "selected_country_export_reliability_over_time.png"
+            ),
+        }
+        
         _plot_reconciliation_status_by_year(
             con=con,
             reconciled_sql=reconciled_sql,
-            output_path=status_figure,
+            output_path=figure_paths["status"],
         )
         _plot_trade_value_totals_by_year(
             con=con,
             reconciled_sql=reconciled_sql,
-            output_path=totals_figure,
+            output_path=figure_paths["totals"],
         )
         _plot_country_reliability_by_year(
             con=con,
             reliability_sql=reliability_sql,
-            output_path=reliability_figure,
+            output_path=figure_paths["reliability"],
+        )
+        _plot_country_directional_reliability(
+            con=con,
+            reliability_sql=reliability_sql,
+            output_path=figure_paths["country_directional_reliability"],
+            year=country_reliability_plot_year,
+            minimum_evidence=30,
+            maximum_countries=30,
         )
         _plot_positive_positive_agreement_by_year(
             con=con,
             reconciled_sql=reconciled_sql,
             agreement_tolerance=agreement_tolerance,
-            output_path=agreement_figure,
+            output_path=figure_paths["agreement"],
+        )
+        _plot_positive_positive_deviation_distribution(
+            con=con,
+            reconciled_sql=reconciled_sql,
+            output_path=figure_paths["deviation_distribution"],
+        )
+
+        _plot_country_reliability_level_vs_gap(
+            con=con,
+            reliability_sql=reliability_sql,
+            output_path=figure_paths["country_reliability_level_gap"],
+            year=country_reliability_plot_year,
+            minimum_evidence=30,
+        )
+
+        _plot_selected_country_reliability_over_time(
+            con=con,
+            reliability_sql=reliability_sql,
+            output_path=figure_paths["export_reliability_trajectory"],
+            reporting_direction="export",
+            maximum_year=country_reliability_plot_year,
+            minimum_evidence=30,
+            minimum_years=6,
+            maximum_countries=8,
         )
 
         # --------------------------------------------------------------
@@ -1160,6 +1870,18 @@ def build_trade_sync_report(
             "score."
         ),
         "",
+        (
+            "The following figure places each eligible country according to "
+            "its average exporter-importer reliability and the absolute gap "
+            "between the two directional scores. Countries toward the right "
+            "have higher average reliability, while countries near the bottom "
+            "have more balanced exporter and importer reliability."
+        ),
+        "",
+        (
+            f"![Country reliability level and directional gap]"
+            f"({figure_paths['country_reliability_level_gap'].as_posix()})"
+        ),
         "### 3.4 Reliability-weighted reconciliation",
         "",
         (
@@ -1455,8 +2177,20 @@ def build_trade_sync_report(
         ),
         "",
         (
+            "The following distribution shows whether disagreement is "
+            "concentrated near low deviations or spread across more severe "
+            "difference bands. It includes only rows where both mirror reports "
+            "are positive."
+        ),
+        "",
+        (
+            f"![Distribution of positive-positive mirror-report differences]"
+            f"({figure_paths['deviation_distribution'].as_posix()})"
+        ),
+        "",
+        (
             f"![Positive-report agreement and discrepancy by year]"
-            f"({agreement_figure.as_posix()})"
+            f"({figure_paths['agreement'].as_posix()})"
         ),
         "",
         "## 8. Reliability evidence",
@@ -1495,7 +2229,32 @@ def build_trade_sync_report(
         "",
         (
             f"![Country reliability by year]"
-            f"({reliability_figure.as_posix()})"
+            f"({figure_paths['reliability'].as_posix()})"
+        ),
+        "",
+        (
+            "The following figure compares exporter and importer reliability "
+            "for countries with the largest directional gaps. Only countries "
+            "with at least 30 reliability-evidence observations in both "
+            "directions are included."
+        ),
+        "",
+        (
+            f"![Country exporter versus importer reliability]"
+            f"({figure_paths['country_directional_reliability'].as_posix()})"
+        ),
+        "",
+        (
+            "The following figure shows exporter-reliability trajectories for "
+            "countries with the greatest temporal variation. Countries must "
+            "have at least 30 evidence observations in at least six years to "
+            "be eligible. Selection is based on variation, not on the absolute "
+            "level of reliability."
+        ),
+        "",
+        (
+            f"![Selected-country exporter reliability over time]"
+            f"({figure_paths['export_reliability_trajectory'].as_posix()})"
         ),
         "",
         "## 9. Reconciliation composition",
@@ -1509,7 +2268,7 @@ def build_trade_sync_report(
         "",
         (
             f"![Reconciliation status by year]"
-            f"({status_figure.as_posix()})"
+            f"({figure_paths['status'].as_posix()})"
         ),
         "",
         "## 10. Annual results",
@@ -1518,7 +2277,7 @@ def build_trade_sync_report(
         "",
         (
             f"![Annual trade totals]"
-            f"({totals_figure.as_posix()})"
+            f"({figure_paths['totals'].as_posix()})"
         ),
         "",
         "## 11. Interpretation and limitations",
@@ -1600,19 +2359,18 @@ def build_trade_sync_report(
                 latest_report_path,
             )
 
-        logger.info("  Figures written: 4")
+        logger.info(
+                "  Figures written: %d",
+                len(figure_paths),
+            )
 
         return {
             "status": "completed",
             "output_path": report_path,
             "report_path": report_path,
             "latest_report_path": latest_report_path,
-            "figure_paths": [
-                status_figure,
-                totals_figure,
-                reliability_figure,
-                agreement_figure,
-            ],
+            "figure_paths": list(figure_paths.values()),
+            "figures": figure_paths,
             "decision": decision,
             "audit_passed": audit_passed,
             "ready_for_processed_export": (
