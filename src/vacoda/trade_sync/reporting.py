@@ -1718,7 +1718,7 @@ def build_trade_sync_report(
 
         if latest_year_provisional:
             provisional_note = (
-                f" Results for **{maximum_year}** contain substantially "
+                f" Results for {maximum_year} contain substantially "
                 "fewer records than preceding years and should be "
                 "treated as provisional."
             )
@@ -1730,16 +1730,15 @@ def build_trade_sync_report(
         lines = [
         "# Trade Sync Decision Report",
         "",
-        f"**Decision:** `{decision}`  ",
-        f"**Run ID:** `{run_id}`  ",
-        f"**Target HS:** `{cfg.scope.target_hs}`  ",
+        f"**Decision:** {decision}  ",
+        f"**Run ID:** {run_id}  ",
+        f"**Target HS:** {cfg.scope.target_hs}  ",
         (
-            f"**Input period:** `{cfg.scope.min_year}–"
-            f"{cfg.scope.max_year}`  "
+            f"**Input period:** {cfg.scope.min_year}–"
+            f"{cfg.scope.max_year}  "
         ),
         (
-            f"**Generated:** "
-            f"`{datetime.now().isoformat(timespec='seconds')}`"
+            f"**Generated:** {datetime.now().isoformat(timespec='seconds')}"
         ),
         "",
         "## 1. Purpose of Trade Sync",
@@ -1755,7 +1754,7 @@ def build_trade_sync_report(
         (
             "The purpose of Trade Sync is to create one harmonized "
             "FOB-basis trade value for every "
-            "**year × exporter × importer × product** observation. "
+            "`year × exporter × importer × product` observation. "
             "Where two usable reports exist, Trade Sync combines them "
             "using reporting-reliability weights. Where only one usable "
             "report exists, that report is retained. Rows without either "
@@ -1766,7 +1765,7 @@ def build_trade_sync_report(
         "## 2. Input data and observation unit",
         "",
         (
-            f"Trade Sync received **{_format_integer(n_rows)}** "
+            f"Trade Sync received `{_format_integer(n_rows)}` "
             "bilateral exporter–importer–product–year rows from the "
             "upstream CIF/FOB-corrected dataset."
         ),
@@ -1778,27 +1777,33 @@ def build_trade_sync_report(
             "| Observation unit | "
             "Year × exporter × importer × target product |"
         ),
-        f"| Target HS classification | `{cfg.scope.target_hs}` |",
+        f"| Target HS classification | {cfg.scope.target_hs} |",
         (
             f"| Covered years | "
-            f"`{cfg.scope.min_year}–{cfg.scope.max_year}` |"
+            f"{cfg.scope.min_year}–{cfg.scope.max_year} |"
         ),
         (
             "| Export-side input | "
-            "`export_value_fob` |"
+            "export_value_fob |"
         ),
         (
             "| Import-side input | "
-            "`import_value_fob_corrected` |"
+            "import_value_fob_corrected |"
         ),
         (
             "| Final Trade Sync value | "
-            "`trade_value_reconciled` |"
+            "trade_value_reconciled |"
         ),
         "",
         "## 3. Methodology",
         "",
         "### 3.1 Mirror values",
+        "",
+        (
+            "Trade Sync works at this key: "
+            "`year × exporter × importer × product`"
+        ),
+        "",
         "",
         (
             "For a given bilateral product-year row, Trade Sync may "
@@ -1832,6 +1837,8 @@ def build_trade_sync_report(
             "d = "
             "\\frac{|V^{export} - V^{import,FOB}|}"
             "{\\max(V^{export}, V^{import,FOB})}"
+            "\\qquad 0 \\leq d \\leq 1"
+
         ),
         "$$",
         "",
@@ -1845,8 +1852,13 @@ def build_trade_sync_report(
         "### 3.3 Country-year-direction reliability",
         "",
         (
+            "Across all relevant rows involving one country in one year and one "
+            "and reporting direction, how consistently did that country agree with its mirror partners?"
+        ),
+        "",
+        (
             "Reporting reliability is estimated separately for each "
-            "country, year and reporting direction: exporter reporting "
+            "`country x year x reporting direction`: exporter reporting "
             "and importer reporting."
         ),
         "",
@@ -1858,8 +1870,8 @@ def build_trade_sync_report(
         "",
         "$$",
         (
-            "R_{c,t,r} = "
-            "1 - \\overline{d}_{c,t,r}"
+            "R_{c,t,r} = 1 - \\overline{d}_{c,t,r}"
+             "\\qquad 0 \\leq R_{c,t,r} \\leq 1"
         ),
         "$$",
         "",
@@ -1928,7 +1940,7 @@ def build_trade_sync_report(
         "### 3.5 Implicit zeros versus genuine missingness",
         "",
         (
-            "An **implicit zero** is not necessarily a literal reported "
+            "An implicit zero is not necessarily a literal reported "
             "zero. It is a workflow classification used when one side "
             "contains a positive flow while the corresponding partner-side "
             "flow is absent within the expected reporting structure."
@@ -1981,17 +1993,17 @@ def build_trade_sync_report(
         "## 4. Processing outcome",
         "",
         (
-            f"Of the **{_format_integer(n_rows)}** rows received from "
-            f"CIF/FOB, **{_format_integer(n_reconciled)}** "
+            f"Of the `{_format_integer(n_rows)}` rows received from "
+            f"CIF/FOB, `{_format_integer(n_reconciled)}` "
             f"({_format_percent(usable_coverage)}) produced a usable "
             "Trade Sync value."
         ),
         "",
         (
             f"Reliability-weighted reconciliation was applied to "
-            f"**{_format_integer(n_weighted)}** rows "
+            f"`{_format_integer(n_weighted)}` rows "
             f"({_format_percent(weighted_share)} of the CIF/FOB input). "
-            f"A further **{_format_integer(n_single_report)}** rows "
+            f"A further `{_format_integer(n_single_report)}` rows "
             f"({_format_percent(single_report_share)}) contained only "
             "one usable report and were retained without bilateral "
             "weighting."
@@ -1999,12 +2011,12 @@ def build_trade_sync_report(
         "",
         (
             f"Together, these two groups account for all "
-            f"**{_format_integer(n_reconciled)} rows with a usable "
-            "Trade Sync value**."
+            f"`{_format_integer(n_reconciled)}` rows with a usable "
+            "Trade Sync value`."
         ),
         "",
         (
-            f"The remaining **{_format_integer(n_not_eligible)}** rows "
+            f"The remaining `{_format_integer(n_not_eligible)}` rows "
             f"({_format_percent(not_eligible_share)}) had neither a "
             "usable exporter FOB value nor a usable corrected importer "
             "FOB-equivalent value. These rows were preserved, but no "
@@ -2014,13 +2026,13 @@ def build_trade_sync_report(
         _markdown_table(population_accounting),
         "",
         (
-            f"All **{_format_integer(n_rows)}** CIF/FOB input rows were "
+            f"All `{_format_integer(n_rows)}` CIF/FOB input rows were "
             "preserved in the Trade Sync output."
         ),
         "",
         (
             f"The total reconciled trade value across rows with a usable "
-            f"output is **{_format_usd(total_reconciled)}**."
+            f"output is `{_format_usd(total_reconciled)}`."
         ),
         "",
         (
@@ -2032,37 +2044,37 @@ def build_trade_sync_report(
         "## 5. Decision basis",
         "",
         (
-            f"The Trade Sync output is **{decision.lower()} for Weight "
-            "Sync** because:"
+            f"The Trade Sync output is `{decision.lower()}` for Weight "
+            "Sync because:"
         ),
         "",
         (
-            f"- all **{_format_integer(n_rows)}** rows received from "
+            f"- all `{_format_integer(n_rows)}` rows received from "
             "CIF/FOB were preserved;"
         ),
         (
-            f"- all **{_format_integer(n_reconciled)}** rows expected to "
+            f"- all `{_format_integer(n_reconciled)}` rows expected to "
             "receive a reconciled or retained value received one;"
         ),
         (
-            f"- the **{_format_integer(n_not_eligible)}** rows without a "
+            f"- the `{_format_integer(n_not_eligible)}` rows without a "
             "value were explicitly classified as `not_eligible`, rather "
             "than being silently dropped;"
         ),
         (
             f"- the audit found "
-            f"**{_format_integer(n_invalid_reconciled)} invalid "
-            "reconciled values**;"
+            f"`{_format_integer(n_invalid_reconciled)}` invalid "
+            "reconciled values`;"
         ),
         (
             f"- the audit found "
-            f"**{_format_integer(n_missing_expected)} missing expected "
-            "reconciled values**; and"
+            f"`{_format_integer(n_missing_expected)} missing expected "
+            "reconciled values`; and"
         ),
         (
             f"- the audit found "
-            f"**{_format_integer(n_duplicate_keys)} duplicate bilateral "
-            "product-year keys**."
+            f"`{_format_integer(n_duplicate_keys)} duplicate bilateral "
+            "product-year keys`."
         ),
         "",
         "### Decision checks",
@@ -2143,7 +2155,7 @@ def build_trade_sync_report(
         "## 7. Mirror-report disagreement",
         "",
         (
-            f"There are **{_format_integer(n_positive_positive)}** rows "
+            f"There are `{_format_integer(n_positive_positive)}` rows "
             "where both the exporter and corrected importer reports are "
             "positive."
         ),
@@ -2151,12 +2163,12 @@ def build_trade_sync_report(
         (
             "Among these genuine two-sided comparisons, the median "
             "difference relative to the larger report is "
-            f"**{_format_percent(median_difference)}**, while the 90th "
-            f"percentile is **{_format_percent(p90_difference)}**."
+            f"`{_format_percent(median_difference)}`, while the 90th "
+            f"percentile is `{_format_percent(p90_difference)}`."
         ),
         "",
         (
-            f"Only **{_format_percent(agreement_share)}** of these pairs "
+            f"Only `{_format_percent(agreement_share)}` of these pairs "
             f"fall within the configured "
             f"{100 * agreement_tolerance:.0f}% agreement tolerance."
         ),
@@ -2171,9 +2183,9 @@ def build_trade_sync_report(
         (
             "Relative to a simple bilateral average, reliability weighting "
             "changes the reconciled value by a median absolute amount of "
-            f"**{_format_percent(median_change_simple)}**. The 90th "
+            f"`{_format_percent(median_change_simple)}`. The 90th "
             f"percentile adjustment is "
-            f"**{_format_percent(p90_change_simple)}**."
+            f"`{_format_percent(p90_change_simple)}`."
         ),
         "",
         (
@@ -2197,13 +2209,13 @@ def build_trade_sync_report(
         "",
         (
             f"Reliability estimation used "
-            f"**{_format_integer(n_evidence_rows)}** evidence rows."
+            f"`{_format_integer(n_evidence_rows)}` evidence rows."
         ),
         "",
         (
-            f"Of these, **{_format_integer(n_positive_positive)}** "
+            f"Of these, `{_format_integer(n_positive_positive)}` "
             "contained two positive mirror reports, while "
-            f"**{_format_integer(n_implicit_zero_rows)}** "
+            f"`{_format_integer(n_implicit_zero_rows)}` "
             f"({_format_percent(implicit_zero_share)}) paired one "
             "positive report with an implicit zero."
         ),
@@ -2311,6 +2323,24 @@ def build_trade_sync_report(
                 "- No material final-year row-count shortfall was "
                 "detected by the current provisional-year diagnostic."
             )
+        ),
+        (
+            "- An absent mirror report is treated as an implicit zero when "
+            "the country reported at least one positive trade flow in the "
+            "same direction and year. This activity test is defined at the "
+            "country–year–direction level, not at the partner or product "
+            "level, so some missing bilateral product flows may be penalized "
+            "as implicit zeros even when reporting coverage is uneven across "
+            "partners or HS codes."
+        ),
+        (
+            "- Mirror reports are aligned within the same calendar year. "
+            "Exports recorded when goods leave the exporting country may be "
+            "reported as imports only after entering the partner country in "
+            "the following year. Such timing differences, especially around "
+            "year-end, may increase measured disagreement or produce apparent "
+            "implicit-zero cases even when both reports refer to the same "
+            "underlying trade flow."
         ),
         "",
         "## 12. Output artifacts",
