@@ -861,7 +861,7 @@ def _plot_trade_value_totals_by_year(
     axis.legend(
         labels=[
             "Exporter FOB reports",
-            "Corrected importer FOB-equivalent reports",
+            "Importer FOB-equivalent reports",
             "Reconciled trade",
         ]
     )
@@ -1463,7 +1463,7 @@ def build_trade_sync_report(
             [
                 {
                     "Input situation": (
-                        "Exporter value positive; corrected importer "
+                        "Exporter value positive; importer FOB-equivalent "
                         "value positive"
                     ),
                     "Status": "bilateral_reconciled",
@@ -1476,7 +1476,7 @@ def build_trade_sync_report(
                 {
                     "Input situation": (
                         "Exporter side classified as implicit zero; "
-                        "corrected importer value positive"
+                        "importer FOB-equivalent value positive"
                     ),
                     "Status": (
                         "bilateral_reconciled_export_implicit_zero"
@@ -1517,12 +1517,12 @@ def build_trade_sync_report(
                 },
                 {
                     "Input situation": (
-                        "Usable corrected importer value; no usable or "
+                        "Usable importer FOB-equivalent value; no usable or "
                         "expected exporter mirror value"
                     ),
                     "Status": "import_only",
                     "Trade Sync treatment": (
-                        "Retain the corrected importer FOB-equivalent "
+                        "Retain the importer FOB-equivalent value "
                         "value without bilateral weighting."
                     ),
                     "Output": "Corrected importer value retained",
@@ -1814,8 +1814,10 @@ def build_trade_sync_report(
             "- the FOB value reported by the exporter; and"
         ),
         (
-            "- the importer-reported value after the upstream CIF/FOB "
-            "correction has converted it to an FOB-equivalent basis."
+            "- the importer-reported CIF value converted to an "
+            "FOB-equivalent basis using an eligible observed direct "
+            "CIF/FOB factor where available, and a model-estimated "
+            "factor otherwise."
         ),
         "",
         (
@@ -1969,7 +1971,7 @@ def build_trade_sync_report(
         "```text",
         "CIF/FOB-corrected bilateral input",
         "        ↓",
-        "Identify exporter and corrected importer mirror values",
+        "Identify exporter FOB and importer FOB-equivalent mirror values",
         "        ↓",
         "Classify positive, implicit-zero and unavailable cases",
         "        ↓",
@@ -2308,7 +2310,7 @@ def build_trade_sync_report(
         ),
         (
             "- The results depend on the upstream CIF/FOB correction "
-            "because corrected importer values enter Trade Sync directly."
+            "because importer FOB-equivalent values enter Trade Sync directly"
         ),
         (
             "- The configured agreement tolerance is diagnostic only. "

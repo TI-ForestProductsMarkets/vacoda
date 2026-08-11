@@ -150,6 +150,7 @@ def prepare_trade_sync_input(
             "export_value_fob",
             "import_value_cif",
             "import_value_fob_corrected",
+            "cif_fob_factor_applied_source",
         }
 
         missing_columns = sorted(
