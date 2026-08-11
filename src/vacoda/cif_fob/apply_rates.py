@@ -24,7 +24,7 @@ from vacoda.cif_fob.artifact_manifest import (
     write_manifest,
 )
 
-CORRECTED_TRADE_CACHE_VERSION = 1
+CORRECTED_TRADE_CACHE_VERSION = 2
 
 _CORRECTED_TRADE_FAILURE_METRICS = {
     "duplicate_bilateral_keys": "n_duplicate_keys",
@@ -38,11 +38,25 @@ _CORRECTED_TRADE_FAILURE_METRICS = {
 }
 
 _REQUIRED_COLUMNS = {
-    "year", "exporter_iso", "importer_iso", "target_cmd",
-    "prediction_eligible", "primary_model_name", "primary_estimation_run",
-    "predicted_log_cif_fob_factor", "estimated_cif_fob_factor",
-    "holdout_predicted_log_factor", "observed_cif_fob_factor",
+    "year",
+    "exporter_iso",
+    "importer_iso",
+    "target_cmd",
+    "prediction_eligible",
+    "primary_model_name",
+    "primary_estimation_run",
+    "predicted_log_cif_fob_factor",
+    "estimated_cif_fob_factor",
+    "holdout_predicted_log_factor",
+    "observed_cif_fob_factor",
+    "factor_source",
     "import_value_cif",
+
+    # Direct importer-side evidence
+    "import_direct_cif_value",
+    "import_direct_fob_value",
+    "import_direct_cif_fob_factor",
+    "import_direct_value_coverage",
 }
 
 
@@ -369,6 +383,7 @@ def _audit_corrected_trade_output(
             "import_value_cif",
             "import_value_fob_corrected",
             "cif_fob_correction_applied",
+            "cif_fob_factor_applied_source",
         }
 
         for level in coverage_levels:
@@ -401,20 +416,20 @@ def _audit_corrected_trade_output(
             interval_failure_expressions.append(
                 f"""
                 (
-                    cif_fob_correction_applied
+                    cif_fob_factor_applied_source = 'model_estimated'
                     AND (
-                           cif_fob_factor_pi{suffix}_lower IS NULL
+                        cif_fob_factor_pi{suffix}_lower IS NULL
                         OR cif_fob_factor_pi{suffix}_upper IS NULL
                         OR cif_fob_factor_pi{suffix}_lower <= 0
                         OR cif_fob_factor_pi{suffix}_upper <= 0
                         OR cif_fob_factor_pi{suffix}_lower
-                           > cif_fob_factor_applied
+                        > cif_fob_factor_applied
                         OR cif_fob_factor_applied
-                           > cif_fob_factor_pi{suffix}_upper
+                        > cif_fob_factor_pi{suffix}_upper
                         OR import_value_fob_corrected_pi{suffix}_lower
-                           > import_value_fob_corrected
+                        > import_value_fob_corrected
                         OR import_value_fob_corrected
-                           > import_value_fob_corrected_pi{suffix}_upper
+                        > import_value_fob_corrected_pi{suffix}_upper
                     )
                 )
                 """
@@ -467,8 +482,16 @@ def _audit_corrected_trade_output(
                 ) AS n_eligible_not_corrected,
 
                 COUNT(*) FILTER (
-                    WHERE NOT prediction_eligible
-                      AND cif_fob_correction_applied
+                    WHERE cif_fob_correction_applied
+                    AND (
+                            cif_fob_factor_applied_source IS NULL
+                        OR cif_fob_factor_applied_source
+                            NOT IN ('direct_observed', 'model_estimated')
+                        OR (
+                                cif_fob_factor_applied_source = 'model_estimated'
+                                AND NOT prediction_eligible
+                            )
+                    )
                 ) AS n_ineligible_corrected,
 
                 COUNT(*) FILTER (
@@ -948,23 +971,124 @@ def apply_cif_fob_weights(
 
     quantiles, calibration_rows = _calibrate_log_error_quantiles(data, levels)
 
-    factor = pd.to_numeric(data["estimated_cif_fob_factor"], errors="coerce")
-    predicted_log = pd.to_numeric(data["predicted_log_cif_fob_factor"], errors="coerce")
-    import_cif = pd.to_numeric(data["import_value_cif"], errors="coerce")
-    prediction_eligible = data["prediction_eligible"].fillna(False).astype(bool)
+    estimated_factor = pd.to_numeric(
+        data["estimated_cif_fob_factor"],
+        errors="coerce",
+    )
+
+    direct_factor = pd.to_numeric(
+        data["import_direct_cif_fob_factor"],
+        errors="coerce",
+    )
+
+    predicted_log = pd.to_numeric(
+        data["predicted_log_cif_fob_factor"],
+        errors="coerce",
+    )
+
+    import_cif = pd.to_numeric(
+        data["import_value_cif"],
+        errors="coerce",
+    )
+
+    prediction_eligible = (
+        data["prediction_eligible"]
+        .fillna(False)
+        .astype(bool)
+    )
+
+    factor_source = (
+        data["factor_source"]
+        .astype("string")
+        .str.lower()
+    )
+
+    valid_import_cif = (
+        import_cif.notna()
+        & np.isfinite(import_cif)
+        & import_cif.ge(0)
+    )
+
+    is_direct_source = (
+        factor_source
+        .eq("direct")
+        .fillna(False)
+        .astype(bool)
+    )
+
+    direct_factor_available = (
+        is_direct_source
+        & direct_factor.notna()
+        & np.isfinite(direct_factor)
+        & direct_factor.gt(0)
+    )
+
+    model_factor_available = (
+        prediction_eligible
+        & estimated_factor.notna()
+        & np.isfinite(estimated_factor)
+        & estimated_factor.gt(0)
+    )
+
+    direct_application = (
+        valid_import_cif
+        & direct_factor_available
+    )
+
+    model_application = (
+        valid_import_cif
+        & ~direct_application
+        & model_factor_available
+    )
 
     correction_eligible = (
-        prediction_eligible
-        & factor.notna() & np.isfinite(factor) & factor.gt(0)
-        & import_cif.notna() & np.isfinite(import_cif) & import_cif.ge(0)
+        direct_application
+        | model_application
     )
 
-    data["cif_fob_factor_applied"] = factor.where(correction_eligible)
-    data["import_value_fob_corrected"] = np.where(
-        correction_eligible, import_cif / factor, np.nan
+    data["cif_fob_factor_applied"] = np.select(
+        [
+            direct_application,
+            model_application,
+        ],
+        [
+            direct_factor,
+            estimated_factor,
+        ],
+        default=np.nan,
     )
+
+    data["cif_fob_factor_applied_source"] = np.select(
+        [
+            direct_application,
+            model_application,
+        ],
+        [
+            "direct_observed",
+            "model_estimated",
+        ],
+        default=None,
+    )
+
+    data["import_value_fob_corrected"] = np.where(
+        correction_eligible,
+        import_cif / data["cif_fob_factor_applied"],
+        np.nan,
+    )
+
     data["cif_fob_correction_applied"] = correction_eligible
-    data["cif_fob_uncertainty_method"] = "latest_temporal_holdout_absolute_log_residual"
+
+    data["cif_fob_uncertainty_method"] = np.select(
+            [
+                direct_application,
+                model_application,
+            ],
+            [
+                "not_applicable_direct_observed",
+                "latest_temporal_holdout_absolute_log_residual",
+            ],
+            default=None,
+        )
     data["cif_fob_uncertainty_calibration_rows"] = calibration_rows
 
     valid_prediction = prediction_eligible & predicted_log.notna() & np.isfinite(predicted_log)
@@ -979,14 +1103,23 @@ def apply_cif_fob_weights(
         data[f"cif_fob_factor_pi{suffix}_upper"] = upper
         data[f"cif_fob_factor_pi{suffix}_level"] = float(level)
         data[f"cif_fob_factor_pi{suffix}_log_error_quantile"] = float(q)
+
         data[f"import_value_fob_corrected_pi{suffix}_lower"] = np.where(
-            correction_eligible, import_cif / upper, np.nan
+            model_application,
+            import_cif / upper,
+            np.nan,
         )
+
         data[f"import_value_fob_corrected_pi{suffix}_upper"] = np.where(
-            correction_eligible, import_cif / lower, np.nan
+            model_application,
+            import_cif / lower,
+            np.nan,
         )
+
         data[f"cif_fob_factor_pi{suffix}_relative_width"] = np.where(
-            correction_eligible, (upper - lower) / factor, np.nan
+            model_application,
+            (upper - lower) / estimated_factor,
+            np.nan,
         )
 
     _write_parquet(data, output_path, cfg.engine.threads)

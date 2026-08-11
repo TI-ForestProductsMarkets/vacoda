@@ -287,6 +287,8 @@ def _confirm_pipeline_run(
     print(f"Run ID:              {run_id}")
     print(f"Pipeline:            {cfg.pipeline.name}")
     print(f"Enabled:             {cfg.pipeline.enabled}")
+    print(f"Target HS:           {cfg.scope.target_hs}")
+    print(f"Year range:          {cfg.scope.min_year} — {cfg.scope.max_year}")
     print(f"Enabled steps:       {', '.join(cfg.pipeline.enabled_steps)}")
     print(f"Engine name:         {cfg.engine.name}")
     print(f"Engine threads:      {cfg.engine.threads}")

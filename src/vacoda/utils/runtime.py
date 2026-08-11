@@ -183,7 +183,7 @@ def print_preflight_step(
         "  Expected status:   "
         + ", ".join(step_cfg.expected_status)
     )
-    print(f"  {flag_symbol} Required flag:     {step_cfg.required_ready_flag}")
+    print(f"  {flag_symbol} Required flag:  {step_cfg.required_ready_flag}")
     print(f"  {checkpoint_symbol} Checkpoint:     {decision.checkpoint_path}")
     print(f"  {output_symbol} Output:         {plan.output_path}")
     print(f"  {audit_symbol} Audit:          {plan.audit_path}")

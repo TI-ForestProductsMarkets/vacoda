@@ -59,7 +59,7 @@ from vacoda.cif_fob.artifact_manifest import (
     validate_manifest,
     write_manifest,
 )
-ESTIMATION_CACHE_VERSION = 1
+ESTIMATION_CACHE_VERSION = 2
 MODEL_CHECKPOINT_SCHEMA_VERSION = 2
 
 # ======================================================================
@@ -1056,6 +1056,10 @@ def _validate_input_columns(
         "lagged_pair_factor_observations",
         "lagged_pair_factor_years",
         "lagged_pair_factor_found",
+        "import_direct_cif_value",
+        "import_direct_fob_value",
+        "import_direct_cif_fob_factor",
+        "import_direct_value_coverage",
         *predictors,
     }
 
@@ -3065,6 +3069,10 @@ def estimate_cif_fob_rates(
             "lagged_pair_factor_observations",
             "lagged_pair_factor_years",
             "lagged_pair_factor_found",
+            "import_direct_cif_value",
+            "import_direct_fob_value",
+            "import_direct_cif_fob_factor",
+            "import_direct_value_coverage",
             *[
                 predictor
                 for predictor in predictors

@@ -1732,15 +1732,22 @@ def _inspect_correction_application_reasons(
                 ) AS corrected_rows,
 
                 COUNT(*) FILTER (
+                    WHERE cif_fob_factor_applied_source = 'direct_observed'
+                ) AS direct_corrected_rows,
+
+                COUNT(*) FILTER (
+                    WHERE cif_fob_factor_applied_source = 'model_estimated'
+                ) AS model_corrected_rows,
+
+                COUNT(*) FILTER (
                     WHERE NOT cif_fob_correction_applied
-                      AND import_value_cif IS NULL
+                    AND import_value_cif IS NULL
                 ) AS no_importer_cif_rows,
 
                 COUNT(*) FILTER (
                     WHERE NOT cif_fob_correction_applied
-                      AND import_value_cif IS NOT NULL
-                      AND estimated_cif_fob_factor IS NULL
-                ) AS no_estimated_factor_rows
+                    AND import_value_cif IS NOT NULL
+                ) AS no_applicable_factor_rows
 
             FROM read_parquet(?)
             """,
@@ -1785,8 +1792,10 @@ def _inspect_correction_application_reasons(
     (
         total_rows,
         corrected_rows,
+        direct_corrected_rows,
+        model_corrected_rows,
         no_importer_cif_rows,
-        no_estimated_factor_rows,
+        no_applicable_factor_rows,
     ) = application_row
 
     (
@@ -1802,25 +1811,27 @@ def _inspect_correction_application_reasons(
             "Corrected-trade and training-feature artifacts have "
             "different bilateral row counts."
         )
-
-    if (
-        int(no_estimated_factor_rows)
-        != int(importer_rows_without_pair_geography)
-    ):
-        raise RuntimeError(
-            "Importer rows without an estimated factor do not match "
-            "importer rows without pair geography."
-        )
-
+    
     application_outcomes = pd.DataFrame(
         [
             {
-                "Application outcome": "Corrected importer CIF value",
-                "Rows": corrected_rows,
-                "Share": 100.0 * corrected_rows / total_rows,
+                "Application outcome": "Corrected using observed direct factor",
+                "Rows": direct_corrected_rows,
+                "Share": 100.0 * direct_corrected_rows / total_rows,
                 "Explanation": (
-                    "Importer CIF value and all predictors were available, "
-                    "so an estimated CIF/FOB factor could be applied."
+                    "Usable direct importer-side CIF/FOB evidence was "
+                    "available, so the observed direct factor was applied "
+                    "to the total importer CIF value."
+                ),
+            },
+            {
+                "Application outcome": "Corrected using estimated factor",
+                "Rows": model_corrected_rows,
+                "Share": 100.0 * model_corrected_rows / total_rows,
+                "Explanation": (
+                    "No eligible direct factor was available, but model "
+                    "predictors were complete, so the estimated CIF/FOB "
+                    "factor was applied."
                 ),
             },
             {
@@ -1836,13 +1847,14 @@ def _inspect_correction_application_reasons(
             },
             {
                 "Application outcome": (
-                    "Uncorrected rows: no estimated CIF/FOB factor"
+                    "Uncorrected rows: no applicable CIF/FOB factor"
                 ),
-                "Rows": no_estimated_factor_rows,
-                "Share": 100.0 * no_estimated_factor_rows / total_rows,
+                "Rows": no_applicable_factor_rows,
+                "Share": 100.0 * no_applicable_factor_rows / total_rows,
                 "Explanation": (
-                    "An importer CIF value exists, but pair geography is "
-                    "unavailable, making the initial predictors incomplete."
+                    "An importer CIF value exists, but neither an eligible "
+                    "observed direct factor nor an eligible model-estimated "
+                    "factor is available."
                 ),
             },
         ]
@@ -1898,7 +1910,9 @@ def _inspect_correction_application_reasons(
                     / total_rows
                 ),
                 "Interpretation": (
-                    "Correction was needed but could not be applied."
+                    "A model prediction cannot be generated for these rows. "
+                    "Some rows may nevertheless receive correction from eligible "
+                    "direct CIF/FOB evidence."
                 ),
             },
             {
