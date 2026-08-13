@@ -854,7 +854,7 @@ def _plot_trade_value_totals_by_year(
     frame.plot(marker="o", ax=axis)
 
     axis.set_title(
-        "Annual reported and Trade Sync totals (different coverage"
+        "Annual reported and Trade Sync totals (different coverage)"
     )
     axis.set_xlabel("Year")
     axis.set_ylabel("Trade value, USD billions")
@@ -1364,6 +1364,19 @@ def build_trade_sync_report(
         annual_summary["reconciled_value"] = (
             annual_summary["reconciled_value"].map(_format_usd)
         )
+
+        annual_summary[
+            "median_positive_positive_deviation"
+        ] = annual_summary[
+            "median_positive_positive_deviation"
+        ].map(
+            lambda value: (
+                _format_percent(value)
+                if not pd.isna(value)
+                else "NA"
+            )
+        )
+
         annual_summary[
             "implicit_zero_evidence_share"
         ] = annual_summary[
@@ -1469,8 +1482,8 @@ def build_trade_sync_report(
                     ),
                     "Status": "bilateral_reconciled",
                     "Trade Sync treatment": (
-                        "Combine both reports using normalized "
-                        "country-year-direction reliability weights."
+                        "Combine both reports using mean-deviation-derived "
+                        "weights with the paper's 0.10 import-report preference."
                     ),
                     "Output": "Reliability-weighted reconciled value",
                 },
@@ -1484,8 +1497,7 @@ def build_trade_sync_report(
                     ),
                     "Trade Sync treatment": (
                         "Reconcile the positive importer report against "
-                        "zero evidence using the applicable reliability "
-                        "weights."
+                        "zero evidence using the final adjusted weights."
                     ),
                     "Output": "Reliability-weighted reconciled value",
                 },
@@ -1499,8 +1511,7 @@ def build_trade_sync_report(
                     ),
                     "Trade Sync treatment": (
                         "Reconcile the positive exporter report against "
-                        "zero evidence using the applicable reliability "
-                        "weights."
+                        "zero evidence using the final adjusted weights."
                     ),
                     "Output": "Reliability-weighted reconciled value",
                 },
@@ -1524,7 +1535,7 @@ def build_trade_sync_report(
                     "Status": "import_only",
                     "Trade Sync treatment": (
                         "Retain the importer FOB-equivalent value "
-                        "value without bilateral weighting."
+                        "without bilateral weighting."
                     ),
                     "Output": "Importer FOB-equivalent value retained",
                 },
@@ -1756,9 +1767,11 @@ def build_trade_sync_report(
             "The purpose of Trade Sync is to create one harmonized "
             "FOB-basis trade value for every "
             "`year × exporter × importer × product` observation. "
-            "Where two usable reports exist, Trade Sync combines them "
-            "using reporting-reliability weights. Where only one usable "
-            "report exists, that report is retained. Rows without either "
+            "Where bilateral reliability evidence is available, including "
+            "positive-versus-implicit-zero cases, Trade Sync reconciles the "
+            "two reporting sides using reliability-based weights. Where only "
+            "one usable report exists and the missing mirror is not classified "
+            "as an implicit zero, that report is retained. Rows without either "
             "usable value remain in the dataset but receive no reconciled "
             "trade value."
         ),
@@ -1855,13 +1868,13 @@ def build_trade_sync_report(
         "### 3.3 Country-year-direction reliability",
         "",
         (
-            "Across all relevant rows involving one country in one year and one reporting direction, "
-            " how consistently did that country agree with its mirror partners?"
+        "Across all relevant rows involving one country in one year and one reporting direction, "
+        "how consistently did that country agree with its mirror partners?"
         ),
         "",
         (
             "Reporting reliability is estimated separately for each "
-            "`country x year x reporting direction`: exporter reporting "
+            "`country × year × reporting direction`: exporter reporting "
             "and importer reporting."
         ),
         "",
@@ -1898,29 +1911,70 @@ def build_trade_sync_report(
             figure_paths["country_reliability_level_gap"],
             document_path=report_path,
         ),
+        "",
         "### 3.4 Reliability-weighted reconciliation",
         "",
         (
             "When both reporting sides participate in reconciliation, "
-            "their reliability scores are normalized into weights that "
-            "sum to one:"
+            "Trade Sync follows the weighting approach of Bremer, Perger, "
+            "and Schumacher. The weights are derived from the "
+            "country-year-direction mean deviations rather than directly from "
+            "the reliability indices."
+        ),
+        "",
+        (
+            "Because a lower mean deviation indicates more reliable "
+            "reporting, each report receives a base weight proportional "
+            "to the partner report's mean deviation:"
         ),
         "",
         "$$",
         (
-            "w^{export} = "
-            "\\frac{R^{export}}"
-            "{R^{export} + R^{import}}"
+            "w^{export}_{base} = "
+            "\\frac{\\overline{d}^{import}}"
+            "{\\overline{d}^{export} + \\overline{d}^{import}}"
         ),
         "$$",
         "",
         "$$",
         (
-            "w^{import} = "
-            "\\frac{R^{import}}"
-            "{R^{export} + R^{import}}"
+            "w^{import}_{base} = "
+            "\\frac{\\overline{d}^{export}}"
+            "{\\overline{d}^{export} + \\overline{d}^{import}}"
         ),
         "$$",
+        "",
+        (
+            "This inverse-deviation construction gives the larger base weight "
+            "to the reporting side with the lower country-year-direction "
+            "mean deviation."
+            "When both mean deviations are zero, equal base weights of "
+            "0.5 and 0.5 are used."
+        ),
+        "",
+        (
+            "Following Bremer, Perger, and Schumacher, Trade Sync then applies "
+            "an import-report preference by transferring 0.10 weight from the "
+            "exporter side to the importer side:"
+        ),
+        "",
+        "$$",
+        (
+            "w^{export} = w^{export}_{base} - 0.10"
+        ),
+        "$$",
+        "",
+        "$$",
+        (
+            "w^{import} = w^{import}_{base} + 0.10"
+        ),
+        "$$",
+        "",
+        (
+            "The adjusted weights therefore continue to sum to one. "
+            "The workflow audits that both adjusted weights remain within "
+            "the interval [0, 1]."
+        ),
         "",
         (
             "The harmonized value is then calculated as:"
@@ -1935,19 +1989,22 @@ def build_trade_sync_report(
         "$$",
         "",
         (
-            "Consequently, the side with more consistent reporting "
-            "evidence receives more influence. For a genuine two-positive "
-            "row, the reconciled value remains bounded by the exporter "
-            "and corrected importer values."
+            "Consequently, reconciliation reflects both the relative "
+            "consistency of exporter and importer reporting and the "
+            "paper's explicit additional preference for importer reports. "
+            "For a genuine two-positive row, the reconciled value remains "
+            "bounded by the exporter-reported FOB value and the importer "
+            "FOB-equivalent value."
         ),
         "",
         "### 3.5 Implicit zeros versus genuine missingness",
         "",
         (
-            "An implicit zero is not necessarily a literal reported "
-            "zero. It is a workflow classification used when one side "
-            "contains a positive flow while the corresponding partner-side "
-            "flow is absent within the expected reporting structure."
+            "An implicit zero is not necessarily a literal reported zero. "
+            "It is a workflow classification used when one side reports a "
+            "positive bilateral flow, the corresponding mirror flow is absent, "
+            "and the missing-side country reported at least one positive trade "
+            "flow in the same reporting direction and year."
         ),
         "",
         (
@@ -1981,9 +2038,11 @@ def build_trade_sync_report(
         "        ↓",
         "Estimate country-year-direction reliability",
         "        ↓",
-        "Normalize exporter and importer reliability into weights",
+        "Normalize mean-deviation-based weights",
         "        ↓",
-        "Reconcile two-sided and implicit-zero cases",
+        "Apply the 0.10 import-weight preference",
+        "        ↓",
+        "Reconcile two-sided and implicit-zero cases using the final adjusted weights",
         "        ↓",
         "Retain usable unilateral reports",
         "        ↓",
@@ -2184,8 +2243,9 @@ def build_trade_sync_report(
         ),
         "",
         (
-            "Relative to a simple bilateral average, reliability weighting "
-            "changes the reconciled value by a median absolute amount of "
+            "Relative to a simple bilateral average, the final adjusted "
+            "reconciliation weights change the reconciled value by a median "
+            "absolute amount of "
             f"`{_format_percent(median_change_simple)}`. The 90th "
             f"percentile adjustment is "
             f"`{_format_percent(p90_change_simple)}`."
@@ -2226,7 +2286,8 @@ def build_trade_sync_report(
         ),
         "",
         (
-            "The country reliability index incorporates positive-positive disagreement and, where present, implicit-zero evidence."
+            "The country reliability index therefore reflects two forms of "
+            "mirror-report inconsistency:"
         ),
         "",
         "- disagreement between two positive mirror reports; and",
@@ -2242,11 +2303,25 @@ def build_trade_sync_report(
             "its mirror evidence."
         ),
         "",
-        _markdown_table(reliability_summary),
+        _markdown_table(
+            reliability_summary.rename(
+                columns={
+                    "reporting_direction": "Reporting direction",
+                    "country_year_scores": "Country-year scores",
+                    "median_evidence_rows": "Median evidence rows",
+                    "p10_evidence_rows": "P10 evidence rows",
+                    "median_mean_deviation": "Median mean deviation",
+                    "median_reliability_index": "Median reliability index",
+                    "median_implicit_zero_share": "Median implicit-zero share",
+                    "scores_below_30_rows": "Scores below 30 evidence rows",
+                }
+            )
+        ),
         "",
-        (
-            f"![Country reliability by year]"
-            f"({figure_paths['reliability'].as_posix()})"
+        markdown_image(
+            "Country reliability by year",
+            figure_paths["reliability"],
+            document_path=report_path,
         ),
         "",
         (
@@ -2284,7 +2359,16 @@ def build_trade_sync_report(
             "population was classified and treated:"
         ),
         "",
-        _markdown_table(status_summary),
+        _markdown_table(
+            status_summary.rename(
+                columns={
+                    "status": "Status",
+                    "rows": "Rows",
+                    "share_percent (%)": "Share of input",
+                    "reconciled_value": "Reconciled value",
+                }
+            )
+        ),
         "",
         markdown_image(
             "Reconciliation status by year",
@@ -2294,13 +2378,29 @@ def build_trade_sync_report(
         "",
         "## 10. Annual results",
         "",
-        _markdown_table(annual_summary),
+        _markdown_table(
+            annual_summary.rename(
+                columns={
+                    "year": "Year",
+                    "rows": "Rows",
+                    "rows_with_reconciled_value": "Rows with Trade Sync value",
+                    "reconciled_value": "Reconciled value",
+                    "median_positive_positive_deviation": (
+                        "Median positive-positive deviation"
+                    ),
+                    "implicit_zero_evidence_share": (
+                        "Implicit-zero evidence share"
+                    ),
+                }
+            )
+        ),
         "",
         markdown_image(
             "Annual trade value totals",
             figure_paths["totals"],
             document_path=report_path,
         ),
+        "",
         (
             "The reconciled total may exceed both exporter and importer aggregate totals because Trade Sync combines "
             "the union of available reports: bilateral rows are reconciled, while exporter-only and importer-only rows "
@@ -2326,7 +2426,7 @@ def build_trade_sync_report(
         ),
         (
             "- The configured agreement tolerance is diagnostic only. "
-            "It does not bypass reliability-weighted reconciliation."
+            "It does not override the final adjusted reconciliation weights."
         ),
         (
             f"- Results for {maximum_year} should be treated as "
