@@ -15,7 +15,7 @@ import pandas as pd
 
 from vacoda.config.cif_fob import CifFobConfig
 from vacoda.cif_fob.prepare_input import valid_output
-from vacoda.cif_fob.artifact_manifest import (
+from vacoda.pipeline.artifact_manifest import (
     file_content_sha256,
     file_stat_fingerprint,
     manifest_path_for,

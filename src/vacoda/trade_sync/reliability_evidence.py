@@ -37,7 +37,14 @@ import duckdb
 
 from vacoda.config.trade_sync import TradeSyncConfig
 from vacoda.utils.display import get_symbols
-
+from vacoda.pipeline.artifact_manifest import (
+    file_content_sha256,
+    file_stat_fingerprint,
+    manifest_path_for,
+    semantic_fingerprint,
+    validate_manifest,
+    write_manifest,
+)
 
 # ======================================================================
 # Small helpers
@@ -64,8 +71,7 @@ def build_trade_sync_reliability_evidence(
     cfg: TradeSyncConfig,
     input_path: Path,
     force: bool = False,
-    logger,
-) -> dict[str, Any]:
+    logger) -> dict[str, Any]:
     """
     Build observation-level evidence for country reliability scores.
 
@@ -85,14 +91,32 @@ def build_trade_sync_reliability_evidence(
     input_path = Path(input_path)
     output_path = cfg.product_path("reliability_evidence")
 
-    if not input_path.exists():
-        raise FileNotFoundError(
-            f"Prepared Trade Sync input not found: {input_path}"
-        )
+    manifest_path = manifest_path_for(output_path)
 
-    if not force and valid_output(output_path):
+    semantic_payload = {
+        "artifact": "trade_sync_reliability_evidence",
+        "implementation_sha256": file_content_sha256(
+            Path(__file__)
+        ),
+        "input": file_stat_fingerprint(
+            input_path
+        ),
+    }
+
+    if not force:
+        reusable, reason = validate_manifest(
+            artifact_path=output_path,
+            manifest_path=manifest_path,
+            expected_payload=semantic_payload,
+        )
+    else:
+        reusable = False
+        reason = "Force rebuild requested"
+
+    if reusable:
         logger.info(
-            "REUSE — Trade Sync reliability evidence already exists: %s",
+            "REUSE — Trade Sync reliability evidence "
+            "manifest matches: %s",
             output_path,
         )
 
@@ -100,9 +124,24 @@ def build_trade_sync_reliability_evidence(
             "status": "reused",
             "output_path": output_path,
             "reliability_evidence_path": output_path,
+            "manifest_path": manifest_path,
+            "semantic_fingerprint": semantic_fingerprint(
+                semantic_payload
+            ),
             "audit_passed": True,
             "ready_for_country_reliability": True,
         }
+    else:
+        logger.info(
+            "REBUILD — Trade Sync reliability evidence: %s",
+            reason,
+        )
+
+
+    if not input_path.exists():
+        raise FileNotFoundError(
+            f"Prepared Trade Sync input not found: {input_path}"
+        )
 
     output_path.parent.mkdir(
         parents=True,
@@ -773,6 +812,19 @@ def build_trade_sync_reliability_evidence(
 
         audit_passed = True
         ready_for_country_reliability = True
+        write_manifest(
+            manifest_path=manifest_path,
+            artifact_name="trade_sync_reliability_evidence",
+            semantic_payload=semantic_payload,
+            artifact_path=output_path,
+            extra={
+                "n_prepared_rows": int(n_prepared_rows),
+                "n_reliability_evidence_rows": int(n_output_rows),
+                "n_both_positive": int(n_both_positive),
+                "n_implicit_zero_rows": int(implicit_zero_rows),
+                "audit_passed": True,
+            },
+        )
 
         # ==============================================================
         # LOG RESULTS
@@ -895,20 +947,16 @@ def build_trade_sync_reliability_evidence(
             "implicit_zero_share_percent": (
                 implicit_zero_share_percent
             ),
-            "n_export_positive_import_report_missing": int(
-                n_export_positive_import_report_missing
-            ),
-            "n_import_positive_export_report_missing": int(
-                n_import_positive_export_report_missing
-            ),
-            "n_import_reported_but_not_fob_comparable": int(
-                n_import_reported_but_not_fob_comparable
-            ),
+            "n_export_positive_import_report_missing": int(n_export_positive_import_report_missing),
+            "n_import_positive_export_report_missing": int(n_import_positive_export_report_missing),
+            "n_import_reported_but_not_fob_comparable": int(n_import_reported_but_not_fob_comparable),
             "minimum_deviation": float(minimum_deviation),
             "median_deviation": float(median_deviation),
             "mean_deviation": float(mean_deviation),
             "p90_deviation": float(p90_deviation),
             "maximum_deviation": float(maximum_deviation),
+            "manifest_path": manifest_path,
+            "semantic_fingerprint": semantic_fingerprint(semantic_payload),
         }
 
     finally:

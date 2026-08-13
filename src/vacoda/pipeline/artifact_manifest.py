@@ -1,4 +1,6 @@
 """
+vacoda.pipeline.artifact_manifest.py
+
 Reusable provenance manifests for CIF/FOB artifacts.
 
 An artifact is reusable only when:

@@ -256,7 +256,7 @@ def run_trade_sync_workflow(
                 title=WORKFLOW_STEPS[2],
                 runner=lambda: build_trade_sync_reliability_evidence(
                     cfg=cfg,
-                    input_path=pairs_path,
+                    input_path=prepared_path,
                     force=force,
                     logger=logger,
                     ),

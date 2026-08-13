@@ -30,6 +30,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 from vacoda.config.paths import get_figure_dir
+from vacoda.utils.markdown import markdown_image
 from vacoda.config.trade_sync import TradeSyncConfig
 from vacoda.utils.display import get_symbols
 
@@ -853,7 +854,7 @@ def _plot_trade_value_totals_by_year(
     frame.plot(marker="o", ax=axis)
 
     axis.set_title(
-        "Annual trade-value totals before and after Trade Sync"
+        "Annual reported and Trade Sync totals (different coverage"
     )
     axis.set_xlabel("Year")
     axis.set_ylabel("Trade value, USD billions")
@@ -1525,7 +1526,7 @@ def build_trade_sync_report(
                         "Retain the importer FOB-equivalent value "
                         "value without bilateral weighting."
                     ),
-                    "Output": "Corrected importer value retained",
+                    "Output": "Importer FOB-equivalent value retained",
                 },
                 {
                     "Input situation": (
@@ -1854,8 +1855,8 @@ def build_trade_sync_report(
         "### 3.3 Country-year-direction reliability",
         "",
         (
-            "Across all relevant rows involving one country in one year and one "
-            "and reporting direction, how consistently did that country agree with its mirror partners?"
+            "Across all relevant rows involving one country in one year and one reporting direction, "
+            " how consistently did that country agree with its mirror partners?"
         ),
         "",
         (
@@ -1892,9 +1893,10 @@ def build_trade_sync_report(
             "have more balanced exporter and importer reliability."
         ),
         "",
-        (
-            f"![Country reliability level and directional gap]"
-            f"({figure_paths['country_reliability_level_gap'].as_posix()})"
+        markdown_image(
+            "Country reliability level and directional gap",
+            figure_paths["country_reliability_level_gap"],
+            document_path=report_path,
         ),
         "### 3.4 Reliability-weighted reconciliation",
         "",
@@ -2014,14 +2016,13 @@ def build_trade_sync_report(
         (
             f"Together, these two groups account for all "
             f"`{_format_integer(n_reconciled)}` rows with a usable "
-            "Trade Sync value`."
+            "Trade Sync value."
         ),
         "",
         (
             f"The remaining `{_format_integer(n_not_eligible)}` rows "
             f"({_format_percent(not_eligible_share)}) had neither a "
-            "usable exporter FOB value nor a usable corrected importer "
-            "FOB-equivalent value. These rows were preserved, but no "
+            "usable exporter FOB value nor a usable importer FOB-equivalent value. These rows were preserved, but no "
             "reconciled trade value could be produced."
         ),
         "",
@@ -2066,12 +2067,12 @@ def build_trade_sync_report(
         (
             f"- the audit found "
             f"`{_format_integer(n_invalid_reconciled)}` invalid "
-            "reconciled values`;"
+            "reconciled values;"
         ),
         (
             f"- the audit found "
-            f"`{_format_integer(n_missing_expected)} missing expected "
-            "reconciled values`; and"
+            f"`{_format_integer(n_missing_expected)}` missing expected "
+            "reconciled values; and"
         ),
         (
             f"- the audit found "
@@ -2138,7 +2139,7 @@ def build_trade_sync_report(
             f"{_format_usd(total_export)} |"
         ),
         (
-            "| Corrected importer FOB-equivalent total | "
+            "| Importer FOB-equivalent total | "
             f"{_format_usd(total_import)} |"
         ),
         (
@@ -2158,7 +2159,7 @@ def build_trade_sync_report(
         "",
         (
             f"There are `{_format_integer(n_positive_positive)}` rows "
-            "where both the exporter and corrected importer reports are "
+            "where both the exporter and importer FOB-equivalent reports are "
             "positive."
         ),
         "",
@@ -2197,14 +2198,16 @@ def build_trade_sync_report(
             "are positive."
         ),
         "",
-        (
-            f"![Distribution of positive-positive mirror-report differences]"
-            f"({figure_paths['deviation_distribution'].as_posix()})"
+        markdown_image(
+            "Distribution of positive-positive mirror-report differences",
+            figure_paths["deviation_distribution"],
+            document_path=report_path,
         ),
         "",
-        (
-            f"![Positive-report agreement and discrepancy by year]"
-            f"({figure_paths['agreement'].as_posix()})"
+        markdown_image(
+            "Positive-report agreement and discrepancy by year",
+            figure_paths["agreement"],
+            document_path=report_path,
         ),
         "",
         "## 8. Reliability evidence",
@@ -2223,7 +2226,7 @@ def build_trade_sync_report(
         ),
         "",
         (
-            "The country reliability index therefore reflects both:"
+            "The country reliability index incorporates positive-positive disagreement and, where present, implicit-zero evidence."
         ),
         "",
         "- disagreement between two positive mirror reports; and",
@@ -2253,9 +2256,11 @@ def build_trade_sync_report(
             "directions are included."
         ),
         "",
-        (
-            f"![Country exporter versus importer reliability]"
-            f"({figure_paths['country_directional_reliability'].as_posix()})"
+        markdown_image(
+            "Country exporter versus importer reliability",
+            figure_paths["country_directional_reliability"],
+            document_path=report_path,
+            height=700
         ),
         "",
         (
@@ -2266,9 +2271,10 @@ def build_trade_sync_report(
             "level of reliability."
         ),
         "",
-        (
-            f"![Selected-country exporter reliability over time]"
-            f"({figure_paths['export_reliability_trajectory'].as_posix()})"
+        markdown_image(
+            "Selected-country exporter reliability over time",
+            figure_paths["export_reliability_trajectory"],
+            document_path=report_path,
         ),
         "",
         "## 9. Reconciliation composition",
@@ -2280,18 +2286,25 @@ def build_trade_sync_report(
         "",
         _markdown_table(status_summary),
         "",
-        (
-            f"![Reconciliation status by year]"
-            f"({figure_paths['status'].as_posix()})"
+        markdown_image(
+            "Reconciliation status by year",
+            figure_paths["status"],
+            document_path=report_path,
         ),
         "",
         "## 10. Annual results",
         "",
         _markdown_table(annual_summary),
         "",
+        markdown_image(
+            "Annual trade value totals",
+            figure_paths["totals"],
+            document_path=report_path,
+        ),
         (
-            f"![Annual trade totals]"
-            f"({figure_paths['totals'].as_posix()})"
+            "The reconciled total may exceed both exporter and importer aggregate totals because Trade Sync combines "
+            "the union of available reports: bilateral rows are reconciled, while exporter-only and importer-only rows "
+            "are both retained. The boundedness property applies row-by-row to bilateral reconciliation, not to these aggregate totals."
         ),
         "",
         "## 11. Interpretation and limitations",
@@ -2301,16 +2314,15 @@ def build_trade_sync_report(
             "establish the unobservable true trade value with certainty."
         ),
         (
-            "- Reliability scores reflect both positive-positive "
-            "disagreement and implicit-zero evidence."
+            "- Reliability scores incorporate positive-positive disagreement and, where present, implicit-zero evidence."
         ),
         (
             "- Retained unilateral values are usable but are not "
             "corroborated by a corresponding usable mirror report."
         ),
         (
-            "- The results depend on the upstream CIF/FOB correction "
-            "because importer FOB-equivalent values enter Trade Sync directly"
+            "- The results depend on the upstream CIF/FOB correction because importer FOB-equivalent "
+            "values enter Trade Sync directly."
         ),
         (
             "- The configured agreement tolerance is diagnostic only. "

@@ -29,11 +29,13 @@ from vacoda.pipeline.checkpoint import (
     checkpoint_path,
     config_fingerprint,
     semantic_config_fingerprint,
+    file_fingerprint,
     file_list_fingerprint,
     file_manifest_fingerprint,
     load_checkpoint,
     validate_checkpoint,
     write_checkpoint,
+    source_files_fingerprint
 )
 from vacoda.utils.runtime import timed_pipeline_workflow, log_pipeline_step_banner, print_preflight_step, print_workflow_banner
 from vacoda.utils.logger import (
@@ -529,7 +531,68 @@ def _build_cif_fob_plan(
         ),
     )
 
+
 def _build_trade_sync_plan(
+    *,
+    step_name: str,
+    config_path: Path,
+    pipeline_cfg: PipelineConfig,
+) -> StepPlan:
+    cfg = TradeSyncConfig.from_yaml(
+        config_path,
+        scope=pipeline_cfg.scope,
+        engine=pipeline_cfg.engine,
+    )
+
+    input_path = cfg.input_path()
+
+    trade_sync_source_dir = Path(
+        run_trade_sync_workflow.__code__.co_filename
+    ).parent
+
+    implementation_fp = source_files_fingerprint(
+        paths=list(
+            trade_sync_source_dir.rglob("*.py")
+        ),
+        label="trade_sync_implementation",
+    )
+
+    input_fp = {
+        "trade_sync_input": file_list_fingerprint(
+            paths=[input_path],
+            label="trade_sync_required_input",
+        ),
+        "implementation": implementation_fp,
+    }
+
+    output_path = cfg.product_path(
+        "reconciled_trade"
+    )
+    audit_path = cfg.product_path(
+        "reconciliation_audit"
+    )
+
+    return StepPlan(
+        step_name=step_name,
+        config_path=config_path,
+        config_fingerprint=_step_config_fingerprint(
+            config_path=config_path,
+            resolved_config=cfg,
+            pipeline_cfg=pipeline_cfg,
+            include_scope=True,
+        ),
+        input_fingerprint=input_fp,
+        output_path=output_path,
+        audit_path=audit_path,
+        runner=lambda run_id: _run_trade_sync_step(
+            config_path=config_path,
+            pipeline_cfg=pipeline_cfg,
+            run_id=run_id,
+        ),
+    )
+
+
+def _build_trade_sync_plan_deprecated(
     *,
     step_name: str,
     config_path: Path,

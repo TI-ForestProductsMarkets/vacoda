@@ -474,6 +474,46 @@ def checkpoint_path(
 ) -> Path:
     return checkpoint_dir / f"{step_name}.json"
 
+def source_files_fingerprint(
+    *,
+    paths: list[Path],
+    label: str,
+) -> dict[str, Any]:
+    """
+    Fingerprint source files by content.
+
+    Unlike ordinary data-file fingerprints, source reuse depends on
+    file contents rather than mtime.
+    """
+    files = sorted(Path(path) for path in paths)
+
+    manifest_lines: list[str] = []
+    missing_files: list[str] = []
+
+    for path in files:
+        if not path.is_file():
+            missing_files.append(str(path))
+            manifest_lines.append(
+                f"{path}|MISSING"
+            )
+            continue
+
+        manifest_lines.append(
+            f"{path.resolve()}|{file_sha256(path)}"
+        )
+
+    manifest_text = "\n".join(manifest_lines)
+
+    return {
+        "kind": "source_files",
+        "label": label,
+        "n_files": len(files),
+        "n_missing_files": len(missing_files),
+        "missing_files": missing_files,
+        "manifest_sha256": sha256_text(
+            manifest_text
+        ),
+    }
 
 def write_checkpoint(
     *,

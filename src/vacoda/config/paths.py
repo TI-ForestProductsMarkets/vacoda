@@ -9,6 +9,7 @@ It does not know about pipeline.yaml.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -258,6 +259,24 @@ def get_figure_dir(cfg: dict[str, Any] | None = None) -> Path:
     """Return figures directory."""
     return get_output_dir("figures", cfg=cfg)
 
+def get_markdown_relative_path(
+    target_path: Path,
+    *,
+    document_path: Path,
+) -> str:
+    """
+    Return a POSIX-style path from a Markdown document
+    to another local artifact.
+
+    Filesystem paths remain absolute internally; only the
+    reference written into Markdown is made relative.
+    """
+    relative_path = os.path.relpath(
+        Path(target_path),
+        start=Path(document_path).parent,
+    )
+
+    return Path(relative_path).as_posix()
 
 def get_reports_dir(cfg: dict[str, Any] | None = None) -> Path:
     """Return reports directory."""
