@@ -387,5 +387,167 @@ try:
 
     print(old_only_reasons.to_string(index=False))
 
+
+    # ------------------------------------------------------------
+    # 5. Trace old-only CIF/FOB rows through Trade Sync
+    # ------------------------------------------------------------
+
+    PREPARED_PATH = Path(
+        "/storage/vacoda/data/interim/trade_sync/target_h5/"
+        "prepared/comtrade_target_h5_trade_sync_prepared.parquet"
+    )
+
+    RELIABILITY_PATH = Path(
+        "/storage/vacoda/data/interim/trade_sync/target_h5/"
+        "reliability/target_h5_trade_sync_reliability_evidence.parquet"
+    )
+
+    RECONCILED_PATH = Path(
+        "/storage/vacoda/data/interim/trade_sync/target_h5/"
+        "comtrade_target_h5_trade_synced.parquet"
+    )
+
+
+    propagation = con.execute(
+        """
+        WITH cif AS (
+            SELECT
+                *,
+
+                CASE
+                    WHEN prediction_eligible
+                    AND import_value_cif IS NOT NULL
+                    AND import_value_cif >= 0
+                    AND estimated_cif_fob_factor IS NOT NULL
+                    AND estimated_cif_fob_factor > 0
+                    THEN import_value_cif / estimated_cif_fob_factor
+                END AS model_only_fob,
+
+                CASE
+                    WHEN factor_source = 'direct'
+                    AND import_direct_cif_fob_factor IS NOT NULL
+                    AND import_direct_cif_fob_factor > 0
+                    AND import_value_cif IS NOT NULL
+                    AND import_value_cif >= 0
+                    THEN import_value_cif / import_direct_cif_fob_factor
+
+                    WHEN prediction_eligible
+                    AND estimated_cif_fob_factor IS NOT NULL
+                    AND estimated_cif_fob_factor > 0
+                    AND import_value_cif IS NOT NULL
+                    AND import_value_cif >= 0
+                    THEN import_value_cif / estimated_cif_fob_factor
+                END AS old_fob
+
+            FROM read_parquet(?)
+        ),
+
+        old_only AS (
+            SELECT *
+            FROM cif
+            WHERE old_fob IS NOT NULL
+            AND model_only_fob IS NULL
+        ),
+
+        prepared AS (
+            SELECT *
+            FROM read_parquet(?)
+        ),
+
+        evidence AS (
+            SELECT *
+            FROM read_parquet(?)
+        ),
+
+        reconciled AS (
+            SELECT *
+            FROM read_parquet(?)
+        ),
+
+        traced AS (
+            SELECT
+                o.year,
+                o.exporter_iso,
+                o.importer_iso,
+                o.target_cmd,
+
+                o.old_fob,
+
+                p.export_value_fob,
+                p.import_value_cif,
+                p.import_value_fob_corrected,
+
+                p.trade_sync_has_export_fob,
+                p.trade_sync_has_import_fob_equivalent,
+
+                e.reliability_evidence_case,
+
+                r.reconciliation_status,
+                r.trade_value_reconciled
+
+            FROM old_only o
+
+            LEFT JOIN prepared p
+            USING (
+                year,
+                exporter_iso,
+                importer_iso,
+                target_cmd
+            )
+
+            LEFT JOIN evidence e
+            USING (
+                year,
+                exporter_iso,
+                importer_iso,
+                target_cmd
+            )
+
+            LEFT JOIN reconciled r
+            USING (
+                year,
+                exporter_iso,
+                importer_iso,
+                target_cmd
+            )
+        )
+
+        SELECT
+            trade_sync_has_export_fob,
+            trade_sync_has_import_fob_equivalent,
+            reliability_evidence_case,
+            reconciliation_status,
+
+            COUNT(*) AS rows,
+
+            SUM(old_fob) AS old_importer_fob_value,
+
+            SUM(export_value_fob) FILTER (
+                WHERE trade_sync_has_export_fob
+            ) AS exporter_fob_value,
+
+            SUM(trade_value_reconciled) AS reconciled_value
+
+        FROM traced
+
+        GROUP BY
+            trade_sync_has_export_fob,
+            trade_sync_has_import_fob_equivalent,
+            reliability_evidence_case,
+            reconciliation_status
+
+        ORDER BY rows DESC
+        """,
+        [
+            str(PATH),
+            str(PREPARED_PATH),
+            str(RELIABILITY_PATH),
+            str(RECONCILED_PATH),
+        ],
+    ).df()
+
+    print("\n=== OLD-ONLY ROWS THROUGH TRADE SYNC ===")
+    print(propagation.to_string(index=False))
+
 finally:
     con.close()
