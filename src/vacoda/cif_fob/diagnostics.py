@@ -440,37 +440,6 @@ def write_primary_holdout_diagnostics(
                 reason,
             )
 
-    if reusable:
-        if logger is not None:
-            logger.info(
-                "REUSE — CIF/FOB diagnostics manifest "
-                "matches: %s",
-                output_path,
-            )
-
-        diagnostics = pd.read_parquet(
-            output_path
-        )
-
-        return _diagnostics_result(
-            diagnostics=diagnostics,
-            output_path=output_path,
-            primary_run_name=(
-                _read_primary_run_name(
-                    estimated_rates_path=(
-                        estimated_rates_path
-                    )
-                )
-            ),
-            status="reused",
-            manifest_path=manifest_path,
-            semantic_fingerprint_value=(
-                semantic_fingerprint(
-                    semantic_payload
-                )
-            ),
-        )
-
     diagnostics.to_parquet(
         output_path,
         index=False,

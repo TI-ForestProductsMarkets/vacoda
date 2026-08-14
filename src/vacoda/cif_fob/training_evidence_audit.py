@@ -30,7 +30,6 @@ from typing import Any
 import duckdb
 import numpy as np
 import pandas as pd
-from vacoda.cif_fob.prepare_input import valid_output
 from vacoda.cif_fob.display import (
     DISTANCE_BAND_BINS,
     DISTANCE_BAND_ORDER,
@@ -156,7 +155,7 @@ def write_training_evidence_audit(
     """
     Build and write the CIF/FOB training-evidence audit.
 
-    Reuse an existing valid audit CSV unless force=True.
+    The audit is always rebuilt from the current training-features artifact.
     """
     input_path = Path(input_path)
     output_path = Path(output_path)
@@ -167,29 +166,6 @@ def write_training_evidence_audit(
             f"{input_path}"
         )
 
-    if valid_output(output_path):
-        existing_result = _inspect_existing_training_evidence_audit(
-            output_path=output_path,
-        )
-
-        missing_required_columns = sorted(
-            REQUIRED_TRAINING_EVIDENCE_AUDIT_COLUMNS
-            - existing_result["columns"]
-        )
-
-        if missing_required_columns:
-            logger.info(
-                "REBUILD — Existing CIF/FOB training-evidence audit is "
-                "missing required columns: %s",
-                ", ".join(missing_required_columns),
-            )
-        else:
-            logger.info(
-                "REUSE — CIF/FOB training-evidence audit already exists: %s",
-                output_path,
-            )
-
-            return existing_result["result"]
 
     audit = build_training_evidence_audit(
         input_path=input_path,

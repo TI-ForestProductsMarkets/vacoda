@@ -485,12 +485,8 @@ def _audit_corrected_trade_output(
                     WHERE cif_fob_correction_applied
                     AND (
                             cif_fob_factor_applied_source IS NULL
-                        OR cif_fob_factor_applied_source
-                            NOT IN ('direct_observed', 'model_estimated')
-                        OR (
-                                cif_fob_factor_applied_source = 'model_estimated'
-                                AND NOT prediction_eligible
-                            )
+                        OR cif_fob_factor_applied_source != 'model_estimated'
+                        OR NOT prediction_eligible
                     )
                 ) AS n_ineligible_corrected,
 
@@ -976,11 +972,6 @@ def apply_cif_fob_weights(
         errors="coerce",
     )
 
-    direct_factor = pd.to_numeric(
-        data["import_direct_cif_fob_factor"],
-        errors="coerce",
-    )
-
     predicted_log = pd.to_numeric(
         data["predicted_log_cif_fob_factor"],
         errors="coerce",
@@ -997,30 +988,10 @@ def apply_cif_fob_weights(
         .astype(bool)
     )
 
-    factor_source = (
-        data["factor_source"]
-        .astype("string")
-        .str.lower()
-    )
-
     valid_import_cif = (
         import_cif.notna()
         & np.isfinite(import_cif)
         & import_cif.ge(0)
-    )
-
-    is_direct_source = (
-        factor_source
-        .eq("direct")
-        .fillna(False)
-        .astype(bool)
-    )
-
-    direct_factor_available = (
-        is_direct_source
-        & direct_factor.notna()
-        & np.isfinite(direct_factor)
-        & direct_factor.gt(0)
     )
 
     model_factor_available = (
@@ -1030,44 +1001,23 @@ def apply_cif_fob_weights(
         & estimated_factor.gt(0)
     )
 
-    direct_application = (
-        valid_import_cif
-        & direct_factor_available
-    )
-
     model_application = (
         valid_import_cif
-        & ~direct_application
         & model_factor_available
     )
 
-    correction_eligible = (
-        direct_application
-        | model_application
+    correction_eligible = model_application
+
+    data["cif_fob_factor_applied"] = np.where(
+        model_application,
+        estimated_factor,
+        np.nan,
     )
 
-    data["cif_fob_factor_applied"] = np.select(
-        [
-            direct_application,
-            model_application,
-        ],
-        [
-            direct_factor,
-            estimated_factor,
-        ],
-        default=np.nan,
-    )
-
-    data["cif_fob_factor_applied_source"] = np.select(
-        [
-            direct_application,
-            model_application,
-        ],
-        [
-            "direct_observed",
-            "model_estimated",
-        ],
-        default=None,
+    data["cif_fob_factor_applied_source"] = np.where(
+        model_application,
+        "model_estimated",
+        None,
     )
 
     data["import_value_fob_corrected"] = np.where(
@@ -1078,17 +1028,11 @@ def apply_cif_fob_weights(
 
     data["cif_fob_correction_applied"] = correction_eligible
 
-    data["cif_fob_uncertainty_method"] = np.select(
-            [
-                direct_application,
-                model_application,
-            ],
-            [
-                "not_applicable_direct_observed",
-                "latest_temporal_holdout_absolute_log_residual",
-            ],
-            default=None,
-        )
+    data["cif_fob_uncertainty_method"] = np.where(
+        model_application,
+        "latest_temporal_holdout_absolute_log_residual",
+        None,
+    )
     data["cif_fob_uncertainty_calibration_rows"] = calibration_rows
 
     valid_prediction = prediction_eligible & predicted_log.notna() & np.isfinite(predicted_log)

@@ -1829,9 +1829,7 @@ def build_trade_sync_report(
         ),
         (
             "- the importer-reported CIF value converted to an "
-            "FOB-equivalent basis using an eligible observed direct "
-            "CIF/FOB factor where available, and a model-estimated "
-            "factor otherwise."
+            "FOB-equivalent basis using the model-estimated CIF/FOB factor for eligible rows."
         ),
         "",
         (

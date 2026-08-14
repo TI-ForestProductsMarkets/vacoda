@@ -53,6 +53,7 @@ from vacoda.cif_fob.prepare_input import valid_output
 from vacoda.pipeline.artifact_manifest import (
     file_stat_fingerprint,
     json_safe,
+    file_content_sha256,
     manifest_path_for,
     read_manifest,
     semantic_fingerprint,
@@ -485,9 +486,10 @@ def _common_estimation_payload(
     return {
         "cache_version": ESTIMATION_CACHE_VERSION,
 
-        "input": file_stat_fingerprint(
-            input_path
-        ),
+        "input": {
+            "path": str(input_path),
+            "sha256": file_content_sha256(input_path),
+        },
         "scope": {
             "target_hs": cfg.scope.target_hs,
             "min_year": int(cfg.scope.min_year),
@@ -3474,20 +3476,16 @@ def estimate_cif_fob_rates(
             ]
         )
 
-        checkpoint_reusable = False
-        checkpoint_reason = "force=True"
-
-        if not force:
-            (
-                checkpoint_reusable,
-                checkpoint_reason,
-            ) = _run_checkpoint_reusable(
-                cfg=cfg,
-                run_name=run_spec.run_name,
-                maximum_factor=maximum_factor,
-                expected_semantic_payload=(
-                    run_semantic_payload
-                ),
+        (
+            checkpoint_reusable,
+            checkpoint_reason,
+        ) = _run_checkpoint_reusable(
+            cfg=cfg,
+            run_name=run_spec.run_name,
+            maximum_factor=maximum_factor,
+            expected_semantic_payload=(
+                run_semantic_payload
+            ),
             )
 
         if checkpoint_reusable:

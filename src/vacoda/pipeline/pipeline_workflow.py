@@ -54,7 +54,7 @@ class StepPlan:
     input_fingerprint: dict[str, Any]
     output_path: Path
     audit_path: Path
-    runner: Callable[[str], dict[str, Any]]
+    runner: Callable[[str, bool], dict[str, Any]]
 
 @dataclass(frozen=True)
 class StepDecision:
@@ -70,6 +70,7 @@ def _run_staging_step(
     config_path: Path,
     pipeline_cfg: PipelineConfig,
     run_id: str,
+    force: bool = False
 ) -> dict[str, Any]:
     cfg = DatasetConfig.from_yaml(
         config_path,
@@ -81,8 +82,8 @@ def _run_staging_step(
         cfg=cfg,
         run_id=run_id,
         logger=get_logger("PIPELINE.STAGING"),
+        force=force
     )
-
 
 
 def _build_step_decisions(
@@ -321,6 +322,7 @@ def _run_hs_sync_step(
     config_path: Path,
     pipeline_cfg: PipelineConfig,
     run_id: str,
+    force: bool = False,
 ) -> dict[str, Any]:
     cfg = HsSyncConfig.from_yaml(
         config_path,
@@ -332,6 +334,7 @@ def _run_hs_sync_step(
         cfg=cfg,
         run_id=run_id,
         logger=get_logger("PIPELINE.HS_SYNC"),
+        force=force
     )
 
 
@@ -340,6 +343,7 @@ def _run_cif_fob_step(
     config_path: Path,
     pipeline_cfg: PipelineConfig,
     run_id: str,
+    force: bool = False,
 ) -> dict[str, Any]:
     cfg = CifFobConfig.from_yaml(
         config_path,
@@ -351,6 +355,7 @@ def _run_cif_fob_step(
         cfg=cfg,
         run_id=run_id,
         logger=get_logger("PIPELINE.CIF_FOB"),
+        force=force
     )
 
 def _run_trade_sync_step(
@@ -358,6 +363,7 @@ def _run_trade_sync_step(
     config_path: Path,
     pipeline_cfg: PipelineConfig,
     run_id: str,
+    force: bool = False,
 ) -> dict[str, Any]:
     cfg = TradeSyncConfig.from_yaml(
         config_path,
@@ -369,6 +375,7 @@ def _run_trade_sync_step(
         cfg=cfg,
         run_id=run_id,
         logger=get_logger("PIPELINE.TRADE_SYNC"),
+        force=force,
     )
 
 
@@ -405,10 +412,11 @@ def _build_staging_plan(
         ),
         output_path=cfg.output_path(),
         audit_path=cfg.audit_path(),
-        runner=lambda run_id: _run_staging_step(
+        runner=lambda run_id, force: _run_staging_step(
             config_path=config_path,
             pipeline_cfg=pipeline_cfg,
             run_id=run_id,
+            force=force
         ),
     )
 
@@ -474,10 +482,11 @@ def _build_hs_sync_plan(
         input_fingerprint=input_fp,
         output_path=cfg.apply_output_path(),
         audit_path=cfg.apply_integrity_audit_path(),
-        runner=lambda run_id: _run_hs_sync_step(
+        runner=lambda run_id, force: _run_hs_sync_step(
             config_path=config_path,
             pipeline_cfg=pipeline_cfg,
             run_id=run_id,
+            force=force
         ),
     )
 
@@ -524,10 +533,11 @@ def _build_cif_fob_plan(
         input_fingerprint=input_fp,
         output_path=output_path,
         audit_path=audit_path,
-        runner=lambda run_id: _run_cif_fob_step(
+        runner=lambda run_id, force: _run_cif_fob_step(
             config_path=config_path,
             pipeline_cfg=pipeline_cfg,
             run_id=run_id,
+            force=force
         ),
     )
 
@@ -584,58 +594,11 @@ def _build_trade_sync_plan(
         input_fingerprint=input_fp,
         output_path=output_path,
         audit_path=audit_path,
-        runner=lambda run_id: _run_trade_sync_step(
+        runner=lambda run_id, force: _run_trade_sync_step(
             config_path=config_path,
             pipeline_cfg=pipeline_cfg,
             run_id=run_id,
-        ),
-    )
-
-
-def _build_trade_sync_plan_deprecated(
-    *,
-    step_name: str,
-    config_path: Path,
-    pipeline_cfg: PipelineConfig,
-) -> StepPlan:
-    cfg = TradeSyncConfig.from_yaml(
-        config_path,
-        scope=pipeline_cfg.scope,
-        engine=pipeline_cfg.engine,
-    )
-
-    input_path = cfg.input_path()
-
-    input_fp = {
-        "trade_sync_input": file_list_fingerprint(
-            paths=[input_path],
-            label="trade_sync_required_input",
-        )
-    }
-
-    output_path = cfg.product_path(
-        "reconciled_trade"
-    )
-    audit_path = cfg.product_path(
-        "reconciliation_audit"
-    )
-
-    return StepPlan(
-        step_name=step_name,
-        config_path=config_path,
-        config_fingerprint=_step_config_fingerprint(
-            config_path=config_path,
-            resolved_config=cfg,
-            pipeline_cfg=pipeline_cfg,
-            include_scope=True,
-        ),
-        input_fingerprint=input_fp,
-        output_path=output_path,
-        audit_path=audit_path,
-        runner=lambda run_id: _run_trade_sync_step(
-            config_path=config_path,
-            pipeline_cfg=pipeline_cfg,
-            run_id=run_id,
+            force=force
         ),
     )
 
@@ -1043,7 +1006,14 @@ def run_pipeline(
             start = perf_counter()
 
             try:
-                result = plan.runner(run_id)
+                force_internal_rebuild = (
+                    decision.action == "run"
+                )
+
+                result = plan.runner(
+                    run_id,
+                    force_internal_rebuild,
+                )
                 duration_seconds = perf_counter() - start
 
                 ok, message = _validate_step_result(
