@@ -10,8 +10,8 @@ from pathlib import Path
 
 from vacoda.config.paths import get_markdown_relative_path
 
-DEFAULT_MARKDOWN_IMAGE_WIDTH = 900
-DEFAULT_MARKDOWN_IMAGE_HEIGHT = 540
+DEFAULT_MARKDOWN_IMAGE_WIDTH = 700
+DEFAULT_MARKDOWN_IMAGE_HEIGHT = 440
 
 def markdown_image(
     alt_text: str,

@@ -1910,6 +1910,8 @@ def build_trade_sync_report(
             "Country reliability level and directional gap",
             figure_paths["country_reliability_level_gap"],
             document_path=report_path,
+            height=600,
+            width=700, 
         ),
         "",
         "### 3.4 Reliability-weighted reconciliation",
@@ -2335,7 +2337,9 @@ def build_trade_sync_report(
             "Country exporter versus importer reliability",
             figure_paths["country_directional_reliability"],
             document_path=report_path,
-            height=700
+            height=700,
+            width=750,
+
         ),
         "",
         (
@@ -2364,7 +2368,7 @@ def build_trade_sync_report(
                 columns={
                     "status": "Status",
                     "rows": "Rows",
-                    "share_percent (%)": "Share of input",
+                    "share_percent": "Share of input (%)",
                     "reconciled_value": "Reconciled value",
                 }
             )
