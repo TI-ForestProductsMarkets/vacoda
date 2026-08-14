@@ -57,7 +57,7 @@ from vacoda.cif_fob.display import (
     PRODUCT_MEDIAN_THRESHOLD_BINS,
 
 )
-
+from vacoda.utils.markdown import markdown_image
 
 # ======================================================================
 # Formatting helpers
@@ -1732,12 +1732,13 @@ def _inspect_correction_application_reasons(
                 ) AS corrected_rows,
 
                 COUNT(*) FILTER (
-                    WHERE cif_fob_factor_applied_source = 'direct_observed'
-                ) AS direct_corrected_rows,
-
-                COUNT(*) FILTER (
                     WHERE cif_fob_factor_applied_source = 'model_estimated'
                 ) AS model_corrected_rows,
+
+                COUNT(*) FILTER (
+                    WHERE cif_fob_correction_applied
+                    AND cif_fob_factor_applied_source <> 'model_estimated'
+                ) AS non_model_corrected_rows,
 
                 COUNT(*) FILTER (
                     WHERE NOT cif_fob_correction_applied
@@ -1747,7 +1748,7 @@ def _inspect_correction_application_reasons(
                 COUNT(*) FILTER (
                     WHERE NOT cif_fob_correction_applied
                     AND import_value_cif IS NOT NULL
-                ) AS no_applicable_factor_rows
+                ) AS no_model_factor_rows
 
             FROM read_parquet(?)
             """,
@@ -1792,10 +1793,10 @@ def _inspect_correction_application_reasons(
     (
         total_rows,
         corrected_rows,
-        direct_corrected_rows,
         model_corrected_rows,
+        non_model_corrected_rows,
         no_importer_cif_rows,
-        no_applicable_factor_rows,
+        no_model_factor_rows,
     ) = application_row
 
     (
@@ -1806,6 +1807,12 @@ def _inspect_correction_application_reasons(
         importer_rows_without_pair_geography,
     ) = predictor_row
 
+
+    if int(non_model_corrected_rows or 0) != 0:
+        raise RuntimeError(
+            "Corrected CIF/FOB trade contains non-model production "
+            f"corrections: {int(non_model_corrected_rows):,} rows."
+        )
     if int(total_rows) != int(predictor_total_rows):
         raise RuntimeError(
             "Corrected-trade and training-feature artifacts have "
@@ -1815,23 +1822,16 @@ def _inspect_correction_application_reasons(
     application_outcomes = pd.DataFrame(
         [
             {
-                "Application outcome": "Corrected using observed direct factor",
-                "Rows": direct_corrected_rows,
-                "Share": 100.0 * direct_corrected_rows / total_rows,
-                "Explanation": (
-                    "Usable direct importer-side CIF/FOB evidence was "
-                    "available, so the observed direct factor was applied "
-                    "to the total importer CIF value."
+                "Application outcome": (
+                    "Corrected using model-estimated factor"
                 ),
-            },
-            {
-                "Application outcome": "Corrected using estimated factor",
                 "Rows": model_corrected_rows,
                 "Share": 100.0 * model_corrected_rows / total_rows,
                 "Explanation": (
-                    "No eligible direct factor was available, but model "
-                    "predictors were complete, so the estimated CIF/FOB "
-                    "factor was applied."
+                    "Prediction-eligible importer rows receive the "
+                    "primary model's estimated CIF/FOB factor. "
+                    "Observed direct factors are retained as model evidence "
+                    "and are not directly applied in production."
                 ),
             },
             {
@@ -1847,14 +1847,14 @@ def _inspect_correction_application_reasons(
             },
             {
                 "Application outcome": (
-                    "Uncorrected rows: no applicable CIF/FOB factor"
+                    "Uncorrected rows: no model-estimated factor"
                 ),
-                "Rows": no_applicable_factor_rows,
-                "Share": 100.0 * no_applicable_factor_rows / total_rows,
+                "Rows": no_model_factor_rows,
+                "Share": 100.0 * no_model_factor_rows / total_rows,
                 "Explanation": (
-                    "An importer CIF value exists, but neither an eligible "
-                    "observed direct factor nor an eligible model-estimated "
-                    "factor is available."
+                    "An importer CIF value exists, but the row is not "
+                    "prediction-eligible and therefore no model-estimated "
+                    "CIF/FOB factor is available."
                 ),
             },
         ]
@@ -1910,9 +1910,9 @@ def _inspect_correction_application_reasons(
                     / total_rows
                 ),
                 "Interpretation": (
-                    "A model prediction cannot be generated for these rows. "
-                    "Some rows may nevertheless receive correction from eligible "
-                    "direct CIF/FOB evidence."
+                    "Required model predictors are incomplete, so no model-estimated "
+                    "CIF/FOB factor can be generated. Importer-containing rows in this "
+                    "group therefore remain uncorrected."
                 ),
             },
             {
@@ -5076,6 +5076,7 @@ def _build_corrected_trade_section(
     corrected_trade_report: dict[str, Any],
     year_figure: Path | None,
     value_band_figure: Path | None,
+    report_path: Path,
 ) -> list[str]:
     """Build the applied-correction section from prepared reporting material."""
     
@@ -5098,10 +5099,12 @@ def _build_corrected_trade_section(
         "## 10. Applied CIF/FOB correction",
         "",
         (
-            "The primary estimated CIF/FOB factor was applied to each "
-            "eligible import observation. The corrected FOB-equivalent value "
-            "is calculated as:\n\n"
+            "Observed direct CIF/FOB factors are used as empirical evidence "
+            "for model training and validation. They are not directly applied "
+            "to production rows; FOB-equivalent importer values are generated "
+            "only from the selected model's estimated CIF/FOB factor."
         ),
+        "",
         "",
         equation,
         "",
@@ -5148,9 +5151,10 @@ def _build_corrected_trade_section(
     if year_figure is not None:
         lines.extend(
             [
-                (
-                    "![Applied CIF/FOB correction by year]"
-                    f"({year_figure})"
+                markdown_image(
+                    "Applied CIF/FOB correction by year",
+                    year_figure,
+                    document_path=report_path,
                 ),
                 "",
             ]
@@ -5176,9 +5180,10 @@ def _build_corrected_trade_section(
     if value_band_figure is not None:
         lines.extend(
             [
-                (
-                    "![Applied CIF/FOB correction by evidence-value band]"
-                    f"({value_band_figure})"
+                markdown_image(
+                    "Applied CIF/FOB correction by evidence-value band",
+                    value_band_figure,
+                    document_path=report_path,
                 ),
                 "",
             ]
@@ -6530,6 +6535,25 @@ def write_cif_fob_decision_report(
         / paired_groups
     )
 
+    maximum_factor_rule = cfg.method.estimation.maximum_factor_rule
+
+    if maximum_factor_rule.method == "iqr_cap":
+        resolved_maximum_factor = (
+            float(direct_factor_distribution_metrics["q3"])
+            + float(maximum_factor_rule.iqr_multiplier)
+            * float(direct_factor_distribution_metrics["iqr"])
+        )
+    else:
+        resolved_maximum_factor = None
+
+    upper_bound_removed = (
+        int(rate_metrics["n_after_lower_factor_bound"])
+        - int(rate_metrics["n_after_upper_factor_bound"])
+    )
+
+    upper_bound_population = int(
+        rate_metrics["n_after_lower_factor_bound"]
+    )
 
     primary_diagnostics_section = _build_primary_diagnostics_section(
         diagnostics_result=diagnostics_result,
@@ -6539,6 +6563,7 @@ def write_cif_fob_decision_report(
         corrected_trade_report=corrected_trade_report,
         year_figure=corrected_trade_year_figure,
         value_band_figure=corrected_trade_value_band_figure,
+        report_path=report_path,
     )
 
     lines = [
@@ -6719,9 +6744,19 @@ def write_cif_fob_decision_report(
             f"{_fmt_float(cfg.method.estimation.minimum_evidence_value_usd, 2)} USD"
         ),
         (
-            f"- **Permitted observed CIF/FOB factor range:** "
-            f"{_fmt_float(cfg.method.estimation.minimum_factor, 3)}–"
-            f"{_fmt_float(cfg.method.estimation.maximum_factor, 3)}"
+            f"- **Minimum permitted CIF/FOB factor:** "
+            f"{_fmt_float(cfg.method.estimation.minimum_factor, 3)}"
+        ),
+        (
+            f"- **Upper-factor rule:** "
+            f"`{cfg.method.estimation.maximum_factor_rule.method}`"
+        ),
+        (
+            f"- **Upper-factor IQR multiplier:** "
+            f"{_fmt_float(
+                cfg.method.estimation.maximum_factor_rule.iqr_multiplier,
+                2,
+            )}"
         ),
         (
             f"- **Exclude proxy weights:** "
@@ -6733,9 +6768,12 @@ def write_cif_fob_decision_report(
         (
             "The internal `model_eligible` flag means that a row has a "
             "selected observed-factor candidate. It does not mean that "
-            "the row is used to train the model. Direct evidence has "
-            "priority; a mirror factor is selected only where an eligible "
-            "direct factor was not selected."
+            "the row is used to train the model. For observed-target "
+            "construction, direct evidence has priority; a mirror factor is "
+            "selected only where an eligible direct factor was not selected. "
+            "This priority applies to model-evidence construction only and "
+            "does not determine which factor is applied in downstream "
+            "production."
         ),
         "",
         _markdown_table(
@@ -6884,10 +6922,10 @@ def write_cif_fob_decision_report(
             "middle 50% of displayed direct observations."
         ),
         "",
-        (
-            f"![Direct CIF/FOB factor distribution]("
-            f"{figure_dir / f'{cfg.scope.target_hs.lower()}_direct_cif_fob_factor_distribution.png'}"
-            f")"
+        markdown_image(
+            "Direct CIF/FOB factor distribution",
+            direct_factor_distribution_figure,
+            document_path=report_path,
         ),
         "",
         (
@@ -6903,23 +6941,25 @@ def write_cif_fob_decision_report(
         (
             f"The full-distribution IQR is "
             f"{_fmt_float(direct_factor_distribution_metrics['iqr'], 3)}. "
-            f"A strict boxplot-style upper threshold "
-            f"Q3 + 1.5×IQR is "
-            f"{_fmt_float(direct_factor_distribution_metrics['q3_plus_1_5_iqr'], 3)}, "
-            f"while Q3 + 2.5×IQR is "
-            f"{_fmt_float(direct_factor_distribution_metrics['q3_plus_2_5_iqr'], 3)}. "
-            f"The configured upper training bound is "
-            f"{_fmt_float(cfg.method.estimation.maximum_factor, 3)}."
+            f"A strict boxplot-style upper threshold Q3 + 1.5×IQR is "
+            f"{_fmt_float(
+                direct_factor_distribution_metrics['q3_plus_1_5_iqr'],
+                3,
+            )}, while the configured `iqr_cap` rule uses "
+            f"Q3 + "
+            f"{_fmt_float(maximum_factor_rule.iqr_multiplier, 2)}×IQR. "
+            f"For this run, that rule resolves to an upper training bound "
+            f"of {_fmt_float(resolved_maximum_factor, 3)}."
         ),
         (
-            f"Direct factors above 3 account for "
-            f"{_fmt_percent_value(direct_factor_distribution_metrics['share_above_3_percent'])} "
-            f"of positive direct observations, while factors above 10 account "
-            f"for "
-            f"{_fmt_percent_value(direct_factor_distribution_metrics['share_above_10_percent'])}. "
-            "The configured upper bound therefore removes the extreme "
-            "right tail while retaining the central and moderately high "
-            "CIF/FOB observations."
+            f"Applying this resolved upper bound removes "
+            f"{_fmt_int(upper_bound_removed)} observations "
+            f"({_fmt_fraction_percent(
+                upper_bound_removed / upper_bound_population
+                if upper_bound_population
+                else 0.0
+            )}) "
+            f"after the lower-bound filter."
         ),
 
         (
@@ -7275,9 +7315,10 @@ def write_cif_fob_decision_report(
     if comparison_figure is not None:
         value_band_section.extend(
             [
-                (
-                    "![Baseline versus weighted HGB by evidence-value band]"
-                    f"({comparison_figure})"
+                markdown_image(
+                    "Baseline versus weighted HGB by evidence-value band",
+                    comparison_figure,
+                    document_path=report_path,
                 ),
                 "",
             ]

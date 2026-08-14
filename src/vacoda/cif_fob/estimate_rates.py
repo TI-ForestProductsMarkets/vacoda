@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 import json
 import platform
-
+from hashlib import sha256
 import joblib
 import sklearn
 
@@ -53,7 +53,6 @@ from vacoda.cif_fob.prepare_input import valid_output
 from vacoda.pipeline.artifact_manifest import (
     file_stat_fingerprint,
     json_safe,
-    file_content_sha256,
     manifest_path_for,
     read_manifest,
     semantic_fingerprint,
@@ -61,7 +60,13 @@ from vacoda.pipeline.artifact_manifest import (
     write_manifest,
 )
 ESTIMATION_CACHE_VERSION = 2
-MODEL_CHECKPOINT_SCHEMA_VERSION = 2
+
+MODEL_ROW_KEY = [
+    "year",
+    "exporter_iso",
+    "importer_iso",
+    "target_cmd",
+]
 
 # ======================================================================
 # Small containers
@@ -465,10 +470,10 @@ def _model_config_payload(
     return json_safe(value)
 
 
+
 def _common_estimation_payload(
     *,
     cfg: CifFobConfig,
-    input_path: Path,
     minimum_factor: float,
     maximum_factor: float,
     validation_years: list[int],
@@ -486,10 +491,6 @@ def _common_estimation_payload(
     return {
         "cache_version": ESTIMATION_CACHE_VERSION,
 
-        "input": {
-            "path": str(input_path),
-            "sha256": file_content_sha256(input_path),
-        },
         "scope": {
             "target_hs": cfg.scope.target_hs,
             "min_year": int(cfg.scope.min_year),
@@ -536,21 +537,26 @@ def _model_run_semantic_payload(
     *,
     run_spec: EstimationRunSpec,
     common_payload: dict[str, Any],
+    data_payload: dict[str, Any],
 ) -> dict[str, Any]:
     """Return the complete semantic identity of one estimation run."""
     return {
         "artifact": "cif_fob_model_checkpoint",
         "common": common_payload,
+        "data": data_payload,
         "run": {
             "run_name": run_spec.run_name,
             "model_name": run_spec.model_name,
             "predictor_set_name": run_spec.predictor_set_name,
             "predictors": list(run_spec.predictors),
-            "categorical_predictors": list(run_spec.categorical_predictors),
-            "model_config": _model_config_payload(run_spec.model_cfg),
+            "categorical_predictors": list(
+                run_spec.categorical_predictors
+            ),
+            "model_config": _model_config_payload(
+                run_spec.model_cfg
+            ),
         },
     }
-
 
 def _aggregate_estimated_rates_payload(
     *,
@@ -604,10 +610,12 @@ def _write_model_metadata(
     semantic_payload: dict[str, Any],
 ) -> None:
     """Write human-readable metadata for one fitted model."""
+
+    normalized_payload = _normalized_model_payload(semantic_payload)
+
     metadata = {
-        "schema_version": MODEL_CHECKPOINT_SCHEMA_VERSION,
-        "semantic_fingerprint": semantic_fingerprint(semantic_payload),
-        "semantic_payload": json_safe(semantic_payload),
+        "semantic_fingerprint": semantic_fingerprint(normalized_payload),
+        "semantic_payload": json_safe(normalized_payload),
         "run_name": run_spec.run_name,
         "model_name": run_spec.model_name,
         "predictor_set_name": run_spec.predictor_set_name,
@@ -690,7 +698,114 @@ def _estimation_run_checkpoint_paths(
         "metadata": checkpoint_dir / "metadata.json",
     }
 
+def _print_payload_diff(
+    stored: Any,
+    expected: Any,
+    path: str = "",
+) -> None:
+    if isinstance(stored, dict) and isinstance(expected, dict):
+        keys = sorted(set(stored) | set(expected))
 
+        for key in keys:
+            child = f"{path}.{key}" if path else key
+
+            if key not in stored:
+                print(f"+ {child}: {expected[key]!r}")
+            elif key not in expected:
+                print(f"- {child}: {stored[key]!r}")
+            else:
+                _print_payload_diff(
+                    stored[key],
+                    expected[key],
+                    child,
+                )
+
+        return
+
+    if stored != expected:
+        print(
+            f"~ {path}: "
+            f"{stored!r} -> {expected!r}"
+        )
+
+def _validate_model_row_keys(
+    frame: pd.DataFrame,
+) -> None:
+    """Validate the canonical row identity used by model checkpoints."""
+
+    missing_key_values = frame[MODEL_ROW_KEY].isna().any(axis=1)
+
+    if missing_key_values.any():
+        examples = (
+            frame.loc[
+                missing_key_values,
+                MODEL_ROW_KEY,
+            ]
+            .head(5)
+            .to_dict("records")
+        )
+
+        raise RuntimeError(
+            "CIF/FOB estimation input contains missing canonical "
+            f"model-row keys. Examples: {examples}"
+        )
+
+    duplicate_keys = frame.duplicated(
+        MODEL_ROW_KEY,
+        keep=False,
+    )
+
+    if duplicate_keys.any():
+        examples = (
+            frame.loc[
+                duplicate_keys,
+                MODEL_ROW_KEY,
+            ]
+            .head(5)
+            .to_dict("records")
+        )
+
+        raise RuntimeError(
+            "CIF/FOB estimation input is not unique at the "
+            "canonical model-row grain "
+            f"{MODEL_ROW_KEY}. Examples: {examples}"
+        )
+    
+def _checkpoint_prediction_columns_valid(
+    *,
+    prediction_path: Path,
+) -> tuple[bool, str]:
+    con = duckdb.connect()
+
+    try:
+        columns = _read_parquet_columns(
+            con=con,
+            path=prediction_path,
+        )
+    finally:
+        con.close()
+
+    required = {
+        *MODEL_ROW_KEY,
+        "model_name",
+        "full_predicted_log_factor",
+        "full_predicted_factor",
+        "holdout_predicted_log_factor",
+        "holdout_predicted_factor",
+        "is_latest_holdout",
+        "latest_holdout_year",
+    }
+
+    missing = sorted(required - columns)
+
+    if missing:
+        return (
+            False,
+            "prediction checkpoint format changed; missing columns: "
+            + ", ".join(missing),
+        )
+
+    return True, "prediction checkpoint format is compatible"
 
 def _normalized_model_payload(
     payload: dict[str, Any],
@@ -725,7 +840,8 @@ def _run_checkpoint_reusable(
     expected_semantic_payload: dict[str, Any],
 ) -> tuple[bool, str]:
     """
-    Return whether a model checkpoint matches current semantics.
+    Return whether a model checkpoint is structurally compatible
+    and matches the current model semantics.
     """
     paths = _estimation_run_checkpoint_paths(
         cfg=cfg,
@@ -733,6 +849,9 @@ def _run_checkpoint_reusable(
         maximum_factor=maximum_factor,
     )
 
+    # --------------------------------------------------------------
+    # 1. All checkpoint artifacts must exist and be non-empty.
+    # --------------------------------------------------------------
     for name, path in paths.items():
         if not valid_output(path):
             return (
@@ -740,6 +859,9 @@ def _run_checkpoint_reusable(
                 f"checkpoint artifact missing or empty: {name}",
             )
 
+    # --------------------------------------------------------------
+    # 2. Metadata must be readable and contain the required contract.
+    # --------------------------------------------------------------
     metadata = read_manifest(
         paths["metadata"]
     )
@@ -747,11 +869,25 @@ def _run_checkpoint_reusable(
     if metadata is None:
         return False, "model metadata is missing or invalid"
 
-    if (
-        metadata.get("schema_version")
-        != MODEL_CHECKPOINT_SCHEMA_VERSION
-    ):
-        return False, "model metadata schema version changed"
+    required_metadata_fields = {
+        "semantic_fingerprint",
+        "semantic_payload",
+        "run_name",
+        "model_name",
+        "predictors",
+        "categorical_predictors",
+    }
+
+    missing_metadata_fields = sorted(
+        required_metadata_fields - set(metadata)
+    )
+
+    if missing_metadata_fields:
+        return (
+            False,
+            "model metadata format changed; missing fields: "
+            + ", ".join(missing_metadata_fields),
+        )
 
     stored_payload = metadata.get(
         "semantic_payload"
@@ -760,21 +896,175 @@ def _run_checkpoint_reusable(
     if not isinstance(stored_payload, dict):
         return False, "model semantic payload is missing"
 
+    # --------------------------------------------------------------
+    # 3. Prediction checkpoint must satisfy the current structure.
+    # --------------------------------------------------------------
+    prediction_valid, prediction_reason = (
+        _checkpoint_prediction_columns_valid(
+            prediction_path=paths["predictions"],
+        )
+    )
+
+    if not prediction_valid:
+        return False, prediction_reason
+
+    # --------------------------------------------------------------
+    # 4. Stored fingerprint must agree with the stored payload.
+    #    This catches corrupted / manually edited metadata.
+    # --------------------------------------------------------------
     stored_normalized = _normalized_model_payload(
         stored_payload
     )
+
+    stored_fp = semantic_fingerprint(
+        stored_normalized
+    )
+
+    stored_metadata_fp = metadata.get(
+        "semantic_fingerprint"
+    )
+
+    if stored_metadata_fp != stored_fp:
+        return (
+            False,
+            "model metadata semantic fingerprint does not match "
+            "its stored semantic payload",
+        )
+
+    # --------------------------------------------------------------
+    # 5. Compare stored semantics with the current expected semantics.
+    # --------------------------------------------------------------
     expected_normalized = _normalized_model_payload(
         expected_semantic_payload
     )
 
-    if (
-        semantic_fingerprint(stored_normalized)
-        != semantic_fingerprint(expected_normalized)
-    ):
+    expected_fp = semantic_fingerprint(
+        expected_normalized
+    )
+
+    if stored_fp != expected_fp:
+        _print_payload_diff(
+            stored_normalized,
+            expected_normalized,
+        )
+
         return False, "model semantic fingerprint changed"
 
     return True, "model semantic fingerprint matches"
 
+def _canonical_frame_fingerprint(
+    frame: pd.DataFrame,
+    *,
+    columns: list[str],
+) -> str:
+    """
+    Fingerprint logical tabular content independent of physical
+    Parquet serialization and input row order.
+
+    Rows are ordered by MODEL_ROW_KEY before hashing.
+    """
+    missing = sorted(
+        set(columns) - set(frame.columns)
+    )
+
+    if missing:
+        raise RuntimeError(
+            "Cannot fingerprint model data; missing columns: "
+            + ", ".join(missing)
+        )
+
+    canonical = (
+        frame[columns]
+        .sort_values(
+            MODEL_ROW_KEY,
+            kind="mergesort",
+        )
+        .reset_index(drop=True)
+    )
+
+    row_hashes = pd.util.hash_pandas_object(
+        canonical,
+        index=False,
+        categorize=True,
+    )
+
+    digest = sha256()
+
+    # Include the semantic column contract as well as the row values.
+    digest.update(
+        json.dumps(
+            columns,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("utf-8")
+    )
+
+    digest.update(
+        row_hashes.to_numpy(
+            dtype="uint64",
+            copy=False,
+        ).tobytes()
+    )
+
+    return digest.hexdigest()
+
+def _model_data_semantic_payload(
+    *,
+    clean: pd.DataFrame,
+    prediction_rows: pd.DataFrame,
+    run_spec: EstimationRunSpec,
+) -> dict[str, Any]:
+    """
+    Return the logical data identity relevant to one model run.
+
+    The training identity covers everything that can affect fitting
+    or temporal validation. The prediction identity covers everything
+    that can affect full-sample predictions and representation weights.
+    """
+    training_columns = list(
+        dict.fromkeys(
+            [
+                *MODEL_ROW_KEY,
+                "observed_cif_fob_factor",
+                "estimation_source_weight",
+                "estimation_evidence_value",
+                *run_spec.predictors,
+            ]
+        )
+    )
+
+    prediction_columns = list(
+        dict.fromkeys(
+            [
+                *MODEL_ROW_KEY,
+                "estimation_evidence_value",
+                *run_spec.predictors,
+            ]
+        )
+    )
+
+    return {
+        "training": {
+            "rows": int(len(clean)),
+            "columns": training_columns,
+            "semantic_sha256": (
+                _canonical_frame_fingerprint(
+                    clean,
+                    columns=training_columns,
+                )
+            ),
+        },
+        "prediction": {
+            "rows": int(len(prediction_rows)),
+            "columns": prediction_columns,
+            "semantic_sha256": (
+                _canonical_frame_fingerprint(
+                    prediction_rows,
+                    columns=prediction_columns,
+                )
+            ),
+        },
+    }
 
 def _read_fitted_model(
     *,
@@ -909,20 +1199,24 @@ def _read_run_checkpoint(
 def _build_run_prediction_checkpoint(
     *,
     run_name: str,
-    prediction_row_index: pd.Index,
+    prediction_rows: pd.DataFrame,
     full_predicted_log: np.ndarray,
     full_predicted_factor: np.ndarray,
     latest_holdout_year: int,
-    latest_holdout_predictions: tuple[pd.Index, np.ndarray, np.ndarray] | None,
+    latest_holdout_predictions: tuple[pd.DataFrame, np.ndarray, np.ndarray] | None,
 ) -> pd.DataFrame:
     """Build row-level prediction checkpoint for one estimation run."""
-    prediction_checkpoint = pd.DataFrame(
-        {
-            "_row_index": prediction_row_index.to_numpy(),
-            "model_name": run_name,
-            "full_predicted_log_factor": full_predicted_log,
-            "full_predicted_factor": full_predicted_factor,
-        }
+    prediction_checkpoint = (
+        prediction_rows[MODEL_ROW_KEY]
+        .copy()
+        .reset_index(drop=True)
+    )
+    prediction_checkpoint["model_name"] = run_name
+    prediction_checkpoint["full_predicted_log_factor"] = (
+        full_predicted_log
+    )
+    prediction_checkpoint["full_predicted_factor"] = (
+        full_predicted_factor
     )
 
     prediction_checkpoint[
@@ -939,29 +1233,30 @@ def _build_run_prediction_checkpoint(
 
     if latest_holdout_predictions is not None:
         (
-            holdout_index,
+            holdout_rows,
             holdout_predicted_log,
             holdout_predicted_factor,
         ) = latest_holdout_predictions
 
-        holdout_frame = pd.DataFrame(
-            {
-                "_row_index": holdout_index.to_numpy(),
-                "holdout_predicted_log_factor": (
-                    holdout_predicted_log
-                ),
-                "holdout_predicted_factor": (
-                    holdout_predicted_factor
-                ),
-                "is_latest_holdout": True,
-            }
+        holdout_frame = (
+            holdout_rows[MODEL_ROW_KEY]
+            .copy()
+            .reset_index(drop=True)
         )
+        holdout_frame["holdout_predicted_log_factor"] = (
+            np.asarray(holdout_predicted_log, dtype=float)
+        )
+        holdout_frame["holdout_predicted_factor"] = (
+            np.asarray(holdout_predicted_factor, dtype=float)
+        )
+        holdout_frame["is_latest_holdout"] = True
 
         prediction_checkpoint = prediction_checkpoint.merge(
             holdout_frame,
-            on="_row_index",
+            on=MODEL_ROW_KEY,
             how="left",
             suffixes=("", "_holdout"),
+            validate="one_to_one",
         )
 
         for column in [
@@ -2454,7 +2749,7 @@ def _run_temporal_backtest(
     maximum_factor: float,
     validation_years: list[int]) -> tuple[
     pd.DataFrame,
-    dict[int, tuple[pd.Index, np.ndarray, np.ndarray]],]:
+    dict[int, tuple[pd.DataFrame, np.ndarray, np.ndarray]],]:
     """
     Run expanding-window folds for one model.
 
@@ -2464,7 +2759,8 @@ def _run_temporal_backtest(
         One row per model/year fold.
     predictions_by_year
         Mapping from validation year to
-        (original row index, predicted log factor, predicted factor).
+        (holdout rows keyed by the canonical model keys,
+        predicted log factor, predicted factor).
     """
     model_name = run_spec.model_name
     model_cfg = run_spec.model_cfg
@@ -2490,7 +2786,7 @@ def _run_temporal_backtest(
     fold_rows: list[dict[str, Any]] = []
     predictions_by_year: dict[
         int,
-        tuple[pd.Index, np.ndarray, np.ndarray],
+        tuple[pd.DataFrame, np.ndarray, np.ndarray],
     ] = {}
 
     for validation_year in validation_years:
@@ -2598,8 +2894,14 @@ def _run_temporal_backtest(
             }
         )
 
+        holdout_rows = (
+            validation_frame[MODEL_ROW_KEY]
+            .copy()
+            .reset_index(drop=True)
+        )
+
         predictions_by_year[int(validation_year)] = (
-            validation_frame.index,
+            holdout_rows,
             predicted_log,
             predicted_factor,
         )
@@ -3106,6 +3408,8 @@ def estimate_cif_fob_rates(
         raise RuntimeError(
             "Rate-estimation input contains no rows."
         )
+
+    _validate_model_row_keys(data)
     
     maximum_factor_metrics = _resolve_maximum_factor(
         data=data,
@@ -3289,7 +3593,6 @@ def estimate_cif_fob_rates(
     common_estimation_payload = (
         _common_estimation_payload(
             cfg=cfg,
-            input_path=input_path,
             minimum_factor=minimum_factor,
             maximum_factor=maximum_factor,
             validation_years=validation_years,
@@ -3297,15 +3600,24 @@ def estimate_cif_fob_rates(
         )
     )
 
-    run_semantic_payloads = {
-        run_spec.run_name: (
-            _model_run_semantic_payload(
+    run_semantic_payloads = {}
+
+    for run_spec in run_specs:
+        model_data_payload = (
+            _model_data_semantic_payload(
+                clean=clean,
+                prediction_rows=prediction_rows,
                 run_spec=run_spec,
-                common_payload=common_estimation_payload,
             )
         )
-        for run_spec in run_specs
-    }
+
+        run_semantic_payloads[
+            run_spec.run_name
+        ] = _model_run_semantic_payload(
+            run_spec=run_spec,
+            common_payload=common_estimation_payload,
+            data_payload=model_data_payload,
+        )
 
     model_run_fingerprints = {
         run_name: semantic_fingerprint(payload)
@@ -3333,49 +3645,6 @@ def estimate_cif_fob_rates(
         raise RuntimeError(
             "No rows have complete predictors for final estimation."
         )
-
-    common_estimation_payload = (
-            _common_estimation_payload(
-                cfg=cfg,
-                input_path=input_path,
-                minimum_factor=minimum_factor,
-                maximum_factor=maximum_factor,
-                validation_years=validation_years,
-                latest_holdout_year=latest_holdout_year,
-            )
-        )
-
-    run_semantic_payloads = {
-        run_spec.run_name: (
-            _model_run_semantic_payload(
-                run_spec=run_spec,
-                common_payload=common_estimation_payload,
-            )
-        )
-        for run_spec in run_specs
-    }
-
-    model_run_fingerprints = {
-        run_name: semantic_fingerprint(payload)
-        for run_name, payload
-        in run_semantic_payloads.items()
-    }
-
-    aggregate_semantic_payload = (
-        _aggregate_estimated_rates_payload(
-            input_path=input_path,
-            common_payload=common_estimation_payload,
-            run_specs=run_specs,
-            model_run_fingerprints=(
-                model_run_fingerprints
-            ),
-            primary_run_name=primary_run_name,
-        )
-    )
-
-    estimated_rates_manifest_path = (
-        manifest_path_for(output_path)
-    )
 
     if not force:
         aggregate_reusable, aggregate_reason = (
@@ -3568,7 +3837,7 @@ def estimate_cif_fob_rates(
             prediction_checkpoint = (
                 _build_run_prediction_checkpoint(
                     run_name=run_spec.run_name,
-                    prediction_row_index=prediction_rows.index,
+                    prediction_rows=prediction_rows,
                     full_predicted_log=full_predicted_log,
                     full_predicted_factor=full_predicted_factor,
                     latest_holdout_year=latest_holdout_year,
@@ -3609,11 +3878,14 @@ def estimate_cif_fob_rates(
         )
 
         required_prediction_columns = {
-            "_row_index",
+            *MODEL_ROW_KEY,
+            "model_name",
             "full_predicted_log_factor",
             "full_predicted_factor",
             "holdout_predicted_log_factor",
             "holdout_predicted_factor",
+            "is_latest_holdout",
+            "latest_holdout_year",
         }
 
         missing_prediction_columns = sorted(
@@ -3628,58 +3900,96 @@ def estimate_cif_fob_rates(
                 + ", ".join(missing_prediction_columns)
             )
 
-        prediction_checkpoint = prediction_checkpoint.set_index(
-            "_row_index"
+        row_lookup = data[MODEL_ROW_KEY].copy()
+        row_lookup["_row_index"] = data.index.to_numpy()
+
+        duplicate_checkpoint_keys = (
+            prediction_checkpoint.duplicated(
+                MODEL_ROW_KEY,
+                keep=False,
+            )
+        )
+
+        if duplicate_checkpoint_keys.any():
+            examples = (
+                prediction_checkpoint.loc[
+                    duplicate_checkpoint_keys,
+                    MODEL_ROW_KEY,
+                ]
+                .head(5)
+                .to_dict("records")
+            )
+
+            raise RuntimeError(
+                f"Checkpoint for run {run_spec.run_name!r} "
+                "contains duplicate canonical row keys. "
+                f"Examples: {examples}"
+            )
+
+        prediction_checkpoint_with_index = (
+            prediction_checkpoint.merge(
+                row_lookup,
+                on=MODEL_ROW_KEY,
+                how="left",
+                validate="one_to_one",
+            )
         )
 
         unknown_checkpoint_rows = sorted(
-            set(prediction_checkpoint.index)
-            - set(data.index)
+            list(
+                prediction_checkpoint_with_index.loc[
+                    prediction_checkpoint_with_index["_row_index"].isna(),
+                    MODEL_ROW_KEY,
+                ].itertuples(index=False, name=None)
+            )
         )
 
         if unknown_checkpoint_rows:
             raise RuntimeError(
                 f"Checkpoint for run {run_spec.run_name!r} contains "
-                "row indexes that are absent from the current input. "
+                "row keys that are absent from the current input. "
                 f"Example: {unknown_checkpoint_rows[:5]}"
             )
 
+        row_index = prediction_checkpoint_with_index["_row_index"].to_numpy(dtype=int)
+
         data.loc[
-            prediction_checkpoint.index,
+            row_index,
             log_column,
-        ] = prediction_checkpoint[
+        ] = prediction_checkpoint_with_index[
             "full_predicted_log_factor"
         ].to_numpy(dtype=float)
 
         data.loc[
-            prediction_checkpoint.index,
+            row_index,
             factor_column,
-        ] = prediction_checkpoint[
+        ] = prediction_checkpoint_with_index[
             "full_predicted_factor"
         ].to_numpy(dtype=float)
 
-        holdout_mask = prediction_checkpoint[
+        holdout_mask = prediction_checkpoint_with_index[
             "holdout_predicted_factor"
         ].notna()
 
         if holdout_mask.any():
-            holdout_index = prediction_checkpoint.index[
-                holdout_mask
-            ]
+            holdout_index = prediction_checkpoint_with_index.loc[
+                holdout_mask,
+                "_row_index",
+            ].to_numpy(dtype=int)
 
             data.loc[
                 holdout_index,
                 holdout_log_column,
-            ] = prediction_checkpoint.loc[
-                holdout_index,
+            ] = prediction_checkpoint_with_index.loc[
+                holdout_mask,
                 "holdout_predicted_log_factor",
             ].to_numpy(dtype=float)
 
             data.loc[
                 holdout_index,
                 holdout_factor_column,
-            ] = prediction_checkpoint.loc[
-                holdout_index,
+            ] = prediction_checkpoint_with_index.loc[
+                holdout_mask,
                 "holdout_predicted_factor",
             ].to_numpy(dtype=float)
 
