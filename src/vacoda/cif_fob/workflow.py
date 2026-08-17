@@ -31,6 +31,7 @@ from vacoda.utils.display import get_symbols
 from vacoda.utils.logger import get_logger
 from vacoda.utils.runtime import run_step, timed_workflow
 from vacoda.utils.artifacts import artifact_result, require_artifact, require_enabled_products, require_product_dependency
+from vacoda.pipeline.checkpoint import file_sha256
 
 WORKFLOW_STEPS = [
     "Prepare CIF/FOB input",
@@ -292,7 +293,7 @@ def run_cif_fob_workflow(
                 )
 
         # ==================================================================
-        # STEP 5 — Audit training-evidence representativeness
+        # STEP 5 — Audit CIF/FOB training evidence 
         # ==================================================================
 
         training_features_path = require_artifact(
@@ -329,7 +330,6 @@ def run_cif_fob_workflow(
                     "Training-evidence audit rows: %s",
                     training_evidence_audit_result["n_rows"],
                 )
-
         
         # ==================================================================
         # STEP 6 — Estimate CIF/FOB correction rates

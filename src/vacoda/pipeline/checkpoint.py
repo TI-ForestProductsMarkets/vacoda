@@ -466,6 +466,70 @@ def audit_summary(
         "ready_check_status": ready_status,
     }
 
+def write_local_checkpoint(
+    *,
+    checkpoint_path: Path,
+    step_name: str,
+    run_id: str,
+    config: dict[str, Any],
+    input_fingerprint: dict[str, Any],
+    output_path: Path,
+) -> None:
+    payload = {
+        "schema_version": 1,
+        "step_name": step_name,
+        "run_id": run_id,
+        "config": config,
+        "input": input_fingerprint,
+        "output": file_fingerprint(
+            output_path,
+            hash_file=True,
+        ),
+    }
+
+    checkpoint_path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    checkpoint_path.write_text(
+        json.dumps(
+            _to_json_safe(payload),
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    
+def validate_local_checkpoint(
+    *,
+    checkpoint_path: Path,
+    current_config: dict[str, Any],
+    current_input: dict[str, Any],
+    output_path: Path,
+) -> tuple[bool, str]:
+    checkpoint = load_checkpoint(checkpoint_path)
+
+    if checkpoint is None:
+        return False, "local checkpoint missing"
+
+    if checkpoint.get("config") != current_config:
+        return False, "semantic config changed"
+
+    if checkpoint.get("input") != current_input:
+        return False, "input fingerprint changed"
+
+    if not output_path.is_file():
+        return False, "output missing"
+
+    current_output = file_fingerprint(
+        output_path,
+        hash_file=True,
+    )
+
+    if checkpoint.get("output") != current_output:
+        return False, "output fingerprint changed"
+
+    return True, "local checkpoint matches"
 
 def checkpoint_path(
     *,

@@ -1006,9 +1006,7 @@ def run_pipeline(
             start = perf_counter()
 
             try:
-                force_internal_rebuild = (
-                    decision.action == "run"
-                )
+                force_internal_rebuild = (cfg.pipeline.force_run_all)
 
                 result = plan.runner(
                     run_id,
