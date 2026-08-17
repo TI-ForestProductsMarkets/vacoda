@@ -39,7 +39,8 @@ from typing import Any
 import duckdb
 
 from vacoda.config.cif_fob import CifFobConfig
-from vacoda.utils.display import get_symbols
+from vacoda.utils.display import get_symbols, color_text
+from vacoda.pipeline.checkpoint import validate_local_checkpoint, file_fingerprint, write_local_checkpoint, semantic_config_fingerprint
 
 
 # ======================================================================
@@ -70,6 +71,7 @@ def valid_output(path: Path) -> bool:
 def prepare_cif_fob_input(
     *,
     cfg: CifFobConfig,
+    run_id: str,
     force: bool = False,
     logger,
 ) -> dict[str, Any]:
@@ -93,9 +95,35 @@ def prepare_cif_fob_input(
             f"CIF/FOB source parquet not found: {input_path}"
         )
 
-    if not force and valid_output(output_path):
+    checkpoint_path = (
+        cfg.output_dir()
+        / "checkpoints"
+        / "prepared_input.json"
+    )
+
+    config_fp = semantic_config_fingerprint(
+            config=cfg,
+            excluded_paths=(
+                ("engine", "threads"),
+            ),
+        )
+    input_fp = {
+        "source": file_fingerprint(
+            input_path,
+            hash_file=True,
+        ),
+    }
+
+    reusable, reason = validate_local_checkpoint(
+        checkpoint_path=checkpoint_path,
+        current_config=config_fp,
+        current_input=input_fp,
+        output_path=output_path,
+    )
+
+    if not force and reusable:
         logger.info(
-            "REUSE — Prepared CIF/FOB input already exists: %s",
+            "REUSE — Prepared CIF/FOB input checkpoint matches: %s",
             output_path,
         )
 
@@ -106,6 +134,13 @@ def prepare_cif_fob_input(
             "audit_passed": True,
             "ready_for_mirror_pairs": True,
         }
+
+    logger.info(
+        "%s REBUILD — Prepared CIF/FOB input: %s",
+        "forced" if force else reason,
+        get_symbols("recycle"),
+    )
+
 
     output_path.parent.mkdir(
         parents=True,
@@ -1454,6 +1489,15 @@ def prepare_cif_fob_input(
 
         audit_passed = True
         ready_for_mirror_pairs = audit_passed
+
+        write_local_checkpoint(
+                checkpoint_path=checkpoint_path,
+                step_name="prepared_input",
+                run_id=run_id,
+                config=config_fp,
+                input_fingerprint=input_fp,
+                output_path=output_path,
+            )
 
         # ==============================================================
         # LOG RESULTS

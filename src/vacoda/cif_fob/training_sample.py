@@ -35,6 +35,7 @@ import duckdb
 
 from vacoda.config.cif_fob import CifFobConfig
 from vacoda.cif_fob.prepare_input import valid_output
+from vacoda.pipeline.checkpoint import validate_local_checkpoint, file_fingerprint, write_local_checkpoint, semantic_config_fingerprint
 
 
 # ======================================================================
@@ -210,6 +211,7 @@ def build_training_sample(
     *,
     cfg: CifFobConfig,
     input_path: Path,
+    run_id: str,
     force: bool = False,
     logger,
 ) -> dict[str, Any]:
@@ -231,9 +233,36 @@ def build_training_sample(
             f"CIF/FOB mirror-pair parquet not found: {input_path}"
         )
 
-    if not force and valid_output(output_path):
+    checkpoint_path = (
+        cfg.output_dir()
+        / "checkpoints"
+        / "training_sample.json"
+    )
+
+    config_fp = semantic_config_fingerprint(
+        config=cfg,
+        excluded_paths=(
+            ("engine", "threads"),
+        ),
+    )
+
+    input_fp = {
+        "mirror_pairs": file_fingerprint(
+            input_path,
+            hash_file=True,
+        ),
+    }
+
+    reusable, reason = validate_local_checkpoint(
+        checkpoint_path=checkpoint_path,
+        current_config=config_fp,
+        current_input=input_fp,
+        output_path=output_path,
+    )
+
+    if not force and reusable:
         logger.info(
-            "REUSE — CIF/FOB training sample already exists: %s",
+            "REUSE — CIF/FOB training sample local checkpoint matches: %s",
             output_path,
         )
 
@@ -241,6 +270,11 @@ def build_training_sample(
             output_path=output_path,
             threads=cfg.engine.threads,
         )
+
+    logger.info(
+        "REBUILD — CIF/FOB training sample: %s",
+        "forced" if force else reason,
+    )
 
     output_path.parent.mkdir(
         parents=True,
@@ -1062,6 +1096,14 @@ def build_training_sample(
             metrics["n_model_eligible"] > 0
         )
 
+        write_local_checkpoint(
+            checkpoint_path=checkpoint_path,
+            step_name="training_sample",
+            run_id=run_id,
+            config=config_fp,
+            input_fingerprint=input_fp,
+            output_path=output_path,
+        )
         # ==============================================================
         # LOG SUMMARY
         # ==============================================================

@@ -79,6 +79,7 @@ from typing import Any
 import duckdb
 from vacoda.config.cif_fob import CifFobConfig
 from vacoda.cif_fob.prepare_input import valid_output
+from vacoda.pipeline.checkpoint import validate_local_checkpoint, file_fingerprint, write_local_checkpoint, semantic_config_fingerprint
 
 
 # ======================================================================
@@ -1078,20 +1079,14 @@ def build_training_features(
     *,
     cfg: CifFobConfig,
     input_path: Path,
+    run_id: str,
     force: bool = False,
     logger,
 ) -> dict[str, Any]:
     """
     Build the predictor-enriched CIF/FOB training Parquet.
-
-    Input grain
-    -----------
-    year, exporter_iso, importer_iso, target_cmd
-
-    Output grain
-    ------------
-    Exactly the same grain and row count as the input.
     """
+
     output_path = cfg.product_path(
         "training_features"
     )
@@ -1102,7 +1097,50 @@ def build_training_features(
             f"{input_path}"
         )
 
-    if (not force and valid_output(output_path)):
+    checkpoint_path = (
+        cfg.output_dir()
+        / "checkpoints"
+        / "training_features.json"
+    )
+
+    config_fp = semantic_config_fingerprint(
+        config=cfg,
+        excluded_paths=(
+            ("engine", "threads"),
+        ),
+    )
+
+    input_fp = {
+        "training_sample": file_fingerprint(
+            input_path,
+            hash_file=True,
+        ),
+        "geography": file_fingerprint(
+            cfg.features.geography.resolve_path(),
+            hash_file=True,
+        ),
+        "pair_geography": file_fingerprint(
+            cfg.features.pair_geography.resolve_path(),
+            hash_file=True,
+        ),
+        "geography_crosswalk": file_fingerprint(
+            cfg.features.geography_crosswalk.resolve_path(),
+            hash_file=True,
+        ),
+        "oil_price": file_fingerprint(
+            cfg.features.oil_price.resolve_path(),
+            hash_file=True,
+        ),
+    }
+
+    reusable, reason = validate_local_checkpoint(
+        checkpoint_path=checkpoint_path,
+        current_config=config_fp,
+        current_input=input_fp,
+        output_path=output_path,
+    )
+
+    if not force and reusable:
         reuse_con = duckdb.connect()
 
         try:
@@ -1113,12 +1151,12 @@ def build_training_features(
         finally:
             reuse_con.close()
 
-        missing_required_features  = sorted(
+        missing_required_features = sorted(
             REQUIRED_TRAINING_FEATURES
             - existing_columns
         )
 
-        if missing_required_features :
+        if missing_required_features:
             logger.info(
                 "REBUILD — Existing CIF/FOB training features are "
                 "missing required fields: %s",
@@ -1126,7 +1164,7 @@ def build_training_features(
             )
         else:
             logger.info(
-                "REUSE — CIF/FOB training features already exist: %s",
+                "REUSE — CIF/FOB training features local checkpoint matches: %s",
                 output_path,
             )
 
@@ -1134,6 +1172,17 @@ def build_training_features(
                 output_path=output_path,
                 threads=cfg.engine.threads,
             )
+
+    else:
+        logger.info(
+            "REBUILD — CIF/FOB training features: %s",
+            "forced" if force else reason,
+        )
+
+    output_path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
     pair_geography_path = cfg.features.pair_geography.resolve_path()
     country_geography_path = cfg.features.geography.resolve_path()
@@ -2896,6 +2945,15 @@ def build_training_features(
     )
 
     audit_passed = True
+
+    write_local_checkpoint(
+        checkpoint_path=checkpoint_path,
+        step_name="training_features",
+        run_id=run_id,
+        config=config_fp,
+        input_fingerprint=input_fp,
+        output_path=output_path,
+    )
 
     ready_for_rate_estimation = (
         metrics[

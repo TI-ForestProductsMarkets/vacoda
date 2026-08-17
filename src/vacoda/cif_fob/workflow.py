@@ -202,6 +202,7 @@ def run_cif_fob_workflow(
             title=WORKFLOW_STEPS[0],
             runner = lambda: prepare_cif_fob_input(
                     cfg=cfg,
+                    run_id=run_id,
                     force=force,
                     logger=logger,
                 ),
@@ -238,6 +239,7 @@ def run_cif_fob_workflow(
             runner=lambda: build_mirror_pairs(
                                     cfg=cfg,
                                     input_path=prepared_input_path,
+                                    run_id=run_id,
                                     force=force,
                                     logger=logger,
                                 )
@@ -249,11 +251,11 @@ def run_cif_fob_workflow(
         # ==================================================================
 
         mirror_pairs_path = require_artifact(
-                        result=mirror_result,
-                        path_key="mirror_pairs_path",
-                        consumer_step="Training-sample step",
-                        producer_product="mirror-pairs Parquet",
-                    )
+                                result=mirror_result,
+                                path_key="mirror_pairs_path",
+                                consumer_step="Training-sample step",
+                                producer_product="mirror-pairs Parquet",
+                            )
 
         training_sample_result = run_step(
                     logger=logger,
@@ -263,6 +265,7 @@ def run_cif_fob_workflow(
                     runner=lambda: build_training_sample(
                                 cfg=cfg,
                                 input_path=mirror_pairs_path,
+                                run_id=run_id,
                                 force=force,
                                 logger=logger,
                             )
@@ -287,6 +290,7 @@ def run_cif_fob_workflow(
                     runner=lambda: build_training_features(
                                 cfg=cfg,
                                 input_path=training_sample_path,
+                                run_id=run_id,
                                 force=force,
                                 logger=logger,
                             )
@@ -336,11 +340,11 @@ def run_cif_fob_workflow(
         # ==================================================================
 
         training_features_path = require_artifact(
-                        result=training_features_result,
-                        path_key="training_features_path",
-                        consumer_step="Rate-estimation step",
-                        producer_product="training-features Parquet",
-                    )
+                                    result=training_features_result,
+                                    path_key="training_features_path",
+                                    consumer_step="Rate-estimation step",
+                                    producer_product="training-features Parquet",
+                                )
                 
         estimated_rates_result = run_step(
                     logger=logger,
