@@ -466,6 +466,41 @@ def audit_summary(
         "ready_check_status": ready_status,
     }
 
+def write_estimation_local_checkpoint(
+    *,
+    checkpoint_path: Path,
+    run_id: str,
+    config: dict[str, Any],
+    input_fingerprint: dict[str, Any],
+    output_path: Path,
+) -> None:
+
+    payload = {
+        "schema_version": 1,
+        "step_name": "estimated_rates",
+        "run_id": run_id,
+        "config": config,
+        "input": input_fingerprint,
+        "output_path": str(output_path),
+        "output": file_fingerprint(
+            output_path,
+            hash_file=True,
+        ),
+    }
+
+    checkpoint_path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    checkpoint_path.write_text(
+        json.dumps(
+            _to_json_safe(payload),
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
 def write_local_checkpoint(
     *,
     checkpoint_path: Path,

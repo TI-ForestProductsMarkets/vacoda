@@ -29,7 +29,8 @@ from typing import Any
 import duckdb
 
 from vacoda.config.trade_sync import TradeSyncConfig
-from vacoda.utils.display import get_symbols
+from vacoda.utils.display import get_symbols, color_text
+from vacoda.pipeline.checkpoint import validate_local_checkpoint, file_fingerprint, write_local_checkpoint, semantic_config_fingerprint
 
 
 # ======================================================================
@@ -56,6 +57,7 @@ def prepare_trade_sync_input(
     *,
     cfg: TradeSyncConfig,
     input_path: Path,
+    run_id: str,
     force: bool = False,
     logger,
 ) -> dict[str, Any]:
@@ -78,9 +80,36 @@ def prepare_trade_sync_input(
             f"Trade Sync source parquet not found: {input_path}"
         )
 
-    if not force and valid_output(output_path):
+    checkpoint_path = (
+        cfg.output_dir()
+        / "checkpoints"
+        / "prepared_input.json"
+    )
+
+    config_fp = semantic_config_fingerprint(
+        config=cfg,
+        excluded_paths=(
+            ("engine", "threads"),
+        ),
+    )
+
+    input_fp = {
+        "source": file_fingerprint(
+            input_path,
+            hash_file=True,
+        ),
+    }
+
+    reusable, reason = validate_local_checkpoint(
+        checkpoint_path=checkpoint_path,
+        current_config=config_fp,
+        current_input=input_fp,
+        output_path=output_path,
+    )
+
+    if not force and reusable:
         logger.info(
-            "REUSE — Prepared Trade Sync input already exists: %s",
+            "REUSE — Prepared Trade Sync input local checkpoint matches: %s",
             output_path,
         )
 
@@ -92,6 +121,11 @@ def prepare_trade_sync_input(
             "ready_for_bilateral_pairs": True,
         }
 
+    logger.info(
+        "REBUILD — Prepared Trade Sync input: %s",
+        "forced" if force else reason,
+    )
+
     output_path.parent.mkdir(
         parents=True,
         exist_ok=True,
@@ -100,7 +134,7 @@ def prepare_trade_sync_input(
     input_sql = _sql_literal(input_path)
     output_sql = _sql_literal(output_path)
 
-    info = get_symbols("info")
+    info = color_text(get_symbols("info"), "red")
     ok = get_symbols("check")
 
     logger.info(
@@ -503,6 +537,14 @@ def prepare_trade_sync_input(
 
         audit_passed = True
         ready_for_bilateral_pairs = True
+        write_local_checkpoint(
+            checkpoint_path=checkpoint_path,
+            step_name="prepared_input",
+            run_id=run_id,
+            config=config_fp,
+            input_fingerprint=input_fp,
+            output_path=output_path,
+        )       
 
         # ==============================================================
         # LOG RESULTS

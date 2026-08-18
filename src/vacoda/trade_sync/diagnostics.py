@@ -25,6 +25,7 @@ import duckdb
 
 from vacoda.config.trade_sync import TradeSyncConfig
 from vacoda.utils.display import get_symbols
+from vacoda.pipeline.checkpoint import validate_local_checkpoint, file_fingerprint, write_local_checkpoint, semantic_config_fingerprint
 
 
 # ======================================================================
@@ -109,6 +110,7 @@ def build_trade_sync_diagnostics(
     reconciled_trade_path: Path,
     country_reliability_path: Path,
     reconciliation_audit_path: Path,
+    run_id: str,
     force: bool = False,
     logger,
 ) -> dict[str, Any]:
@@ -147,9 +149,44 @@ def build_trade_sync_diagnostics(
                 f"{label.capitalize()} not found: {path}"
             )
 
-    if not force and valid_output(output_path):
+    checkpoint_path = (
+        cfg.output_dir()
+        / "checkpoints"
+        / "diagnostics.json"
+    )
+
+    config_fp = semantic_config_fingerprint(
+        config=cfg,
+        excluded_paths=(
+            ("engine", "threads"),
+        ),
+    )
+
+    input_fp = {
+        "reconciled_trade": file_fingerprint(
+            reconciled_trade_path,
+            hash_file=True,
+        ),
+        "country_reliability": file_fingerprint(
+            country_reliability_path,
+            hash_file=True,
+        ),
+        "reconciliation_audit": file_fingerprint(
+            reconciliation_audit_path,
+            hash_file=True,
+        ),
+    }
+
+    reusable, reason = validate_local_checkpoint(
+        checkpoint_path=checkpoint_path,
+        current_config=config_fp,
+        current_input=input_fp,
+        output_path=output_path,
+    )
+
+    if not force and reusable:
         logger.info(
-            "REUSE — Trade Sync diagnostics already exist: %s",
+            "REUSE — Trade Sync diagnostics local checkpoint matches: %s",
             output_path,
         )
 
@@ -161,6 +198,10 @@ def build_trade_sync_diagnostics(
             "ready_for_decision_report": True,
         }
 
+    logger.info(
+        "REBUILD — Trade Sync diagnostics: %s",
+        "forced" if force else reason,
+    )
     output_path.parent.mkdir(
         parents=True,
         exist_ok=True,
@@ -1488,6 +1529,15 @@ def build_trade_sync_diagnostics(
 
         audit_passed = True
         ready_for_decision_report = True
+
+        write_local_checkpoint(
+            checkpoint_path=checkpoint_path,
+            step_name="diagnostics",
+            run_id=run_id,
+            config=config_fp,
+            input_fingerprint=input_fp,
+            output_path=output_path,
+        )
 
         logger.info(
             "%s Trade Sync diagnostics created.",

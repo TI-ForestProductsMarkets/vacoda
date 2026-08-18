@@ -26,6 +26,7 @@ import duckdb
 
 from vacoda.config.trade_sync import TradeSyncConfig
 from vacoda.utils.display import get_symbols
+from vacoda.pipeline.checkpoint import validate_local_checkpoint, file_fingerprint, write_local_checkpoint, semantic_config_fingerprint
 
 
 IMPORT_WEIGHT_BONUS = 0.10
@@ -57,6 +58,7 @@ def reconcile_trade(
     prepared_input_path: Path,
     reliability_evidence_path: Path,
     country_reliability_path: Path,
+    run_id: str,
     force: bool = False,
     logger,
 ) -> dict[str, Any]:
@@ -84,13 +86,44 @@ def reconcile_trade(
                 f"{label.capitalize()} not found: {path}"
             )
 
-    if (
-        not force
-        and valid_output(output_path)
-        and valid_output(audit_path)
-    ):
+    checkpoint_path = (
+        cfg.output_dir()
+        / "checkpoints"
+        / "reconciled_trade.json"
+    )
+
+    config_fp = semantic_config_fingerprint(
+        config=cfg,
+        excluded_paths=(
+            ("engine", "threads"),
+        ),
+    )
+
+    input_fp = {
+        "prepared_input": file_fingerprint(
+            prepared_input_path,
+            hash_file=True,
+        ),
+        "reliability_evidence": file_fingerprint(
+            reliability_evidence_path,
+            hash_file=True,
+        ),
+        "country_reliability": file_fingerprint(
+            country_reliability_path,
+            hash_file=True,
+        ),
+    }
+
+    reusable, reason = validate_local_checkpoint(
+        checkpoint_path=checkpoint_path,
+        current_config=config_fp,
+        current_input=input_fp,
+        output_path=output_path,
+    )
+
+    if not force and reusable and valid_output(audit_path):
         logger.info(
-            "REUSE — Reconciled Trade Sync output already exists: %s",
+            "REUSE — Reconciled Trade Sync local checkpoint matches: %s",
             output_path,
         )
 
@@ -104,6 +137,11 @@ def reconcile_trade(
             "ready_for_diagnostics": True,
             "ready_for_processed_export": True,
         }
+
+    logger.info(
+        "REBUILD — Reconciled Trade Sync output: %s",
+        "forced" if force else reason,
+    )
 
     output_path.parent.mkdir(
         parents=True,
@@ -872,6 +910,16 @@ def reconcile_trade(
         audit_passed = True
         ready_for_diagnostics = True
         ready_for_processed_export = True
+
+        write_local_checkpoint(
+            checkpoint_path=checkpoint_path,
+            step_name="reconciled_trade",
+            run_id=run_id,
+            config=config_fp,
+            input_fingerprint=input_fp,
+            output_path=output_path,
+        )
+
 
         logger.info(
             "%s Reliability-weighted trade reconciliation created.",

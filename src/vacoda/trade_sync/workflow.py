@@ -208,6 +208,7 @@ def run_trade_sync_workflow(
                 runner=lambda: prepare_trade_sync_input(
                     cfg=cfg,
                     input_path=resolved_input_path,
+                    run_id=run_id,
                     force=force,
                     logger=logger,
                 ),
@@ -232,6 +233,7 @@ def run_trade_sync_workflow(
                 runner=lambda: build_trade_sync_pairs(
                     cfg=cfg,
                     input_path=prepared_path,
+                    run_id=run_id,
                     force=force,
                     logger=logger,
                 ),
@@ -257,10 +259,11 @@ def run_trade_sync_workflow(
                 runner=lambda: build_trade_sync_reliability_evidence(
                     cfg=cfg,
                     input_path=prepared_path,
+                    run_id=run_id,
                     force=force,
                     logger=logger,
-                    ),
-                )
+                ),
+            )
 
         reliability_evidence_path = require_artifact(
             result=reliability_evidence_result,
@@ -280,6 +283,7 @@ def run_trade_sync_workflow(
                 runner=lambda: estimate_trade_sync_country_reliability(
                     cfg=cfg,
                     input_path=reliability_evidence_path,
+                    run_id=run_id,
                     force=force,
                     logger=logger,
                 ),
@@ -307,6 +311,7 @@ def run_trade_sync_workflow(
                     prepared_input_path=prepared_path,
                     reliability_evidence_path=reliability_evidence_path,
                     country_reliability_path=country_reliability_path,
+                    run_id=run_id,
                     force=force,
                     logger=logger,
                 ),
@@ -367,6 +372,7 @@ def run_trade_sync_workflow(
                     reconciled_trade_path=reconciled_path,
                     country_reliability_path=country_reliability_path,
                     reconciliation_audit_path=audit_path,
+                    run_id=run_id,
                     force=force,
                     logger=logger,
                 ),

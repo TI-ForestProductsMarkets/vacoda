@@ -45,6 +45,8 @@ from vacoda.pipeline.artifact_manifest import (
     validate_manifest,
     write_manifest,
 )
+from vacoda.pipeline.checkpoint import validate_local_checkpoint, file_fingerprint, write_local_checkpoint, semantic_config_fingerprint
+
 
 # ======================================================================
 # Small helpers
@@ -70,6 +72,7 @@ def build_trade_sync_reliability_evidence(
     *,
     cfg: TradeSyncConfig,
     input_path: Path,
+    run_id: str,
     force: bool = False,
     logger) -> dict[str, Any]:
     """
@@ -82,6 +85,8 @@ def build_trade_sync_reliability_evidence(
     input_path:
         Prepared Trade Sync parquet containing the full bilateral
         population.
+    run_id:
+        Unique identifier for the current workflow run.
     force:
         Rebuild an existing product when True.
     logger:
@@ -90,33 +95,43 @@ def build_trade_sync_reliability_evidence(
 
     input_path = Path(input_path)
     output_path = cfg.product_path("reliability_evidence")
+    
+    if not input_path.exists():
+        raise FileNotFoundError(
+            f"Prepared Trade Sync input not found: {input_path}"
+        )
 
-    manifest_path = manifest_path_for(output_path)
+    checkpoint_path = (
+        cfg.output_dir()
+        / "checkpoints"
+        / "reliability_evidence.json"
+    )
 
-    semantic_payload = {
-        "artifact": "trade_sync_reliability_evidence",
-        "implementation_sha256": file_content_sha256(
-            Path(__file__)
+    config_fp = semantic_config_fingerprint(
+        config=cfg,
+        excluded_paths=(
+            ("engine", "threads"),
         ),
-        "input": file_stat_fingerprint(
-            input_path
+    )
+
+    input_fp = {
+        "prepared_input": file_fingerprint(
+            input_path,
+            hash_file=True,
         ),
     }
 
-    if not force:
-        reusable, reason = validate_manifest(
-            artifact_path=output_path,
-            manifest_path=manifest_path,
-            expected_payload=semantic_payload,
-        )
-    else:
-        reusable = False
-        reason = "Force rebuild requested"
+    reusable, reason = validate_local_checkpoint(
+        checkpoint_path=checkpoint_path,
+        current_config=config_fp,
+        current_input=input_fp,
+        output_path=output_path,
+    )
 
-    if reusable:
+    if not force and reusable:
         logger.info(
             "REUSE — Trade Sync reliability evidence "
-            "manifest matches: %s",
+            "local checkpoint matches: %s",
             output_path,
         )
 
@@ -124,24 +139,14 @@ def build_trade_sync_reliability_evidence(
             "status": "reused",
             "output_path": output_path,
             "reliability_evidence_path": output_path,
-            "manifest_path": manifest_path,
-            "semantic_fingerprint": semantic_fingerprint(
-                semantic_payload
-            ),
             "audit_passed": True,
             "ready_for_country_reliability": True,
         }
-    else:
-        logger.info(
-            "REBUILD — Trade Sync reliability evidence: %s",
-            reason,
-        )
 
-
-    if not input_path.exists():
-        raise FileNotFoundError(
-            f"Prepared Trade Sync input not found: {input_path}"
-        )
+    logger.info(
+        "REBUILD — Trade Sync reliability evidence: %s",
+        "forced" if force else reason,
+    )
 
     output_path.parent.mkdir(
         parents=True,
@@ -812,18 +817,13 @@ def build_trade_sync_reliability_evidence(
 
         audit_passed = True
         ready_for_country_reliability = True
-        write_manifest(
-            manifest_path=manifest_path,
-            artifact_name="trade_sync_reliability_evidence",
-            semantic_payload=semantic_payload,
-            artifact_path=output_path,
-            extra={
-                "n_prepared_rows": int(n_prepared_rows),
-                "n_reliability_evidence_rows": int(n_output_rows),
-                "n_both_positive": int(n_both_positive),
-                "n_implicit_zero_rows": int(implicit_zero_rows),
-                "audit_passed": True,
-            },
+        write_local_checkpoint(
+            checkpoint_path=checkpoint_path,
+            step_name="reliability_evidence",
+            run_id=run_id,
+            config=config_fp,
+            input_fingerprint=input_fp,
+            output_path=output_path,
         )
 
         # ==============================================================
@@ -955,8 +955,6 @@ def build_trade_sync_reliability_evidence(
             "mean_deviation": float(mean_deviation),
             "p90_deviation": float(p90_deviation),
             "maximum_deviation": float(maximum_deviation),
-            "manifest_path": manifest_path,
-            "semantic_fingerprint": semantic_fingerprint(semantic_payload),
         }
 
     finally:

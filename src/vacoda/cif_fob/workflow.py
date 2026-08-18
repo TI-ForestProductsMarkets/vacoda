@@ -354,6 +354,7 @@ def run_cif_fob_workflow(
                     runner=lambda:estimate_cif_fob_rates(
                             cfg=cfg,
                             input_path=training_features_path,
+                            run_id=run_id,
                             force=force,
                             logger=logger,
                         )

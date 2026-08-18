@@ -31,6 +31,7 @@ import duckdb
 
 from vacoda.config.trade_sync import TradeSyncConfig
 from vacoda.utils.display import get_symbols
+from vacoda.pipeline.checkpoint import validate_local_checkpoint, file_fingerprint, write_local_checkpoint, semantic_config_fingerprint
 
 
 # ======================================================================
@@ -57,6 +58,7 @@ def build_trade_sync_pairs(
     *,
     cfg: TradeSyncConfig,
     input_path: Path,
+    run_id: str,
     force: bool = False,
     logger,
 ) -> dict[str, Any]:
@@ -73,10 +75,37 @@ def build_trade_sync_pairs(
         raise FileNotFoundError(
             f"Prepared Trade Sync input not found: {input_path}"
         )
+    
+    checkpoint_path = (
+        cfg.output_dir()
+        / "checkpoints"
+        / "bilateral_pairs.json"
+    )
 
-    if not force and valid_output(output_path):
+    config_fp = semantic_config_fingerprint(
+        config=cfg,
+        excluded_paths=(
+            ("engine", "threads"),
+        ),
+    )
+
+    input_fp = {
+        "prepared_input": file_fingerprint(
+            input_path,
+            hash_file=True,
+        ),
+    }
+
+    reusable, reason = validate_local_checkpoint(
+        checkpoint_path=checkpoint_path,
+        current_config=config_fp,
+        current_input=input_fp,
+        output_path=output_path,
+    )
+
+    if not force and reusable:
         logger.info(
-            "REUSE — Trade Sync bilateral pairs already exist: %s",
+            "REUSE — Trade Sync bilateral-pairs local checkpoint matches: %s",
             output_path,
         )
 
@@ -87,6 +116,12 @@ def build_trade_sync_pairs(
             "audit_passed": True,
             "ready_for_reconciliation": True,
         }
+
+    logger.info(
+        "REBUILD — Trade Sync bilateral pairs: %s",
+        "forced" if force else reason,
+    )
+
 
     output_path.parent.mkdir(
         parents=True,
@@ -564,6 +599,15 @@ def build_trade_sync_pairs(
 
         audit_passed = True
         ready_for_reconciliation = True
+
+        write_local_checkpoint(
+            checkpoint_path=checkpoint_path,
+            step_name="bilateral_pairs",
+            run_id=run_id,
+            config=config_fp,
+            input_fingerprint=input_fp,
+            output_path=output_path,
+        )
 
         # ==============================================================
         # LOG RESULTS

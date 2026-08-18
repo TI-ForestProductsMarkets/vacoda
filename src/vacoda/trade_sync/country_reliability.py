@@ -39,6 +39,7 @@ import duckdb
 
 from vacoda.config.trade_sync import TradeSyncConfig
 from vacoda.utils.display import get_symbols
+from vacoda.pipeline.checkpoint import validate_local_checkpoint, file_fingerprint, write_local_checkpoint, semantic_config_fingerprint
 
 
 # ======================================================================
@@ -65,6 +66,7 @@ def estimate_trade_sync_country_reliability(
     *,
     cfg: TradeSyncConfig,
     input_path: Path,
+    run_id: str,
     force: bool = False,
     logger,
 ) -> dict[str, Any]:
@@ -91,9 +93,37 @@ def estimate_trade_sync_country_reliability(
             f"Trade Sync reliability evidence not found: {input_path}"
         )
 
-    if not force and valid_output(output_path):
+    checkpoint_path = (
+        cfg.output_dir()
+        / "checkpoints"
+        / "country_reliability.json"
+    )
+
+    config_fp = semantic_config_fingerprint(
+        config=cfg,
+        excluded_paths=(
+            ("engine", "threads"),
+        ),
+    )
+
+    input_fp = {
+        "reliability_evidence": file_fingerprint(
+            input_path,
+            hash_file=True,
+        ),
+    }
+
+    reusable, reason = validate_local_checkpoint(
+        checkpoint_path=checkpoint_path,
+        current_config=config_fp,
+        current_input=input_fp,
+        output_path=output_path,
+    )
+
+    if not force and reusable:
         logger.info(
-            "REUSE — Trade Sync country reliability already exists: %s",
+            "REUSE — Trade Sync country reliability "
+            "local checkpoint matches: %s",
             output_path,
         )
 
@@ -105,9 +135,9 @@ def estimate_trade_sync_country_reliability(
             "ready_for_reconciliation": True,
         }
 
-    output_path.parent.mkdir(
-        parents=True,
-        exist_ok=True,
+    logger.info(
+        "REBUILD — Trade Sync country reliability: %s",
+        "forced" if force else reason,
     )
 
     input_sql = _sql_literal(input_path)
@@ -766,6 +796,15 @@ def estimate_trade_sync_country_reliability(
 
         audit_passed = True
         ready_for_reconciliation = True
+
+        write_local_checkpoint(
+            checkpoint_path=checkpoint_path,
+            step_name="country_reliability",
+            run_id=run_id,
+            config=config_fp,
+            input_fingerprint=input_fp,
+            output_path=output_path,
+        )
 
         both_positive_share_percent = (
             100.0 * int(n_both_positive) / int(n_evidence_rows)

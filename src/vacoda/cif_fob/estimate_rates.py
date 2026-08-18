@@ -31,6 +31,7 @@ import pandas as pd
 from scipy.stats import spearmanr
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from vacoda.pipeline.checkpoint import load_checkpoint, file_fingerprint, write_estimation_local_checkpoint, semantic_config_fingerprint
 
 try:
     import statsmodels.api as sm
@@ -3261,6 +3262,7 @@ def estimate_cif_fob_rates(
     *,
     cfg: CifFobConfig,
     input_path: Path,
+    run_id: str,
     force: bool = False,
     logger,
 ) -> dict[str, Any]:
@@ -3278,6 +3280,81 @@ def estimate_cif_fob_rates(
         raise FileNotFoundError(
             f"CIF/FOB training-features Parquet not found: {input_path}"
         )
+
+    checkpoint_path = (
+        cfg.output_dir()
+        / "checkpoints"
+        / "estimated_rates.json"
+    )
+
+    config_fp = semantic_config_fingerprint(
+        config=cfg,
+        excluded_paths=(
+            ("engine", "threads"),
+        ),
+    )
+
+    input_fp = {
+        "training_features": file_fingerprint(
+            input_path,
+            hash_file=True,
+        ),
+    }
+
+    reason = "local checkpoint missing"
+
+    if not force:
+        checkpoint = load_checkpoint(
+            checkpoint_path
+        )
+
+        if checkpoint is not None:
+            if checkpoint.get("config") != config_fp:
+                reason = "semantic config changed"
+
+            elif checkpoint.get("input") != input_fp:
+                reason = "input fingerprint changed"
+
+            elif not checkpoint.get("output_path"):
+                reason = "checkpoint output path missing"
+
+            else:
+                cached_output_path = Path(
+                    checkpoint["output_path"]
+                )
+
+                if not cached_output_path.is_file():
+                    reason = "cached output missing"
+
+                else:
+                    current_output_fp = file_fingerprint(
+                        cached_output_path,
+                        hash_file=True,
+                    )
+
+                    if checkpoint.get("output") != current_output_fp:
+                        reason = "cached output fingerprint changed"
+
+                    else:
+                        logger.info(
+                            "REUSE — CIF/FOB estimated rates "
+                            "local checkpoint matches: %s",
+                            cached_output_path,
+                        )
+
+                        return _inspect_existing_estimated_rates(
+                            cfg=cfg,
+                            output_path=cached_output_path,
+                            threads=cfg.engine.threads,
+                        )
+
+    else:
+        reason = "forced"
+
+    logger.info(
+        "CHECK — CIF/FOB estimation requires semantic validation: %s",
+        reason,
+    )
 
     estimation_cfg = cfg.method.estimation
 
@@ -3675,10 +3752,19 @@ def estimate_cif_fob_rates(
             result["manifest_path"] = (
                 estimated_rates_manifest_path
             )
+
             result["semantic_fingerprint"] = (
                 semantic_fingerprint(
                     aggregate_semantic_payload
                 )
+            )
+
+            write_estimation_local_checkpoint(
+                checkpoint_path=checkpoint_path,
+                run_id=run_id,
+                config=config_fp,
+                input_fingerprint=input_fp,
+                output_path=output_path,
             )
 
             return result
