@@ -8,11 +8,20 @@ from pathlib import Path
 import duckdb
 import pandas as pd
 from vacoda.config.dataset import DatasetConfig
+from vacoda.utils.sql import sql_literal
 
-
-def _sql_literal(value: str | Path) -> str:
-    text = str(value)
-    return "'" + text.replace("'", "''") + "'"
+COMTRADE_QUANTITY_UNIT_LABELS = {
+    2: "m²",
+    4: "m",
+    5: "u",
+    6: "2u",
+    7: "l",
+    8: "kg",
+    9: "1000u",
+    10: "U (jeu/pack)",
+    11: "12u",
+    12: "m³",
+}
 
 
 def _duckdb_type(dtype: str) -> str:
@@ -33,6 +42,25 @@ def _duckdb_type(dtype: str) -> str:
         raise ValueError(f"Unsupported staging dtype: {dtype!r}")
 
     return mapping[dtype]
+
+def _quantity_unit_expression(
+    *,
+    raw_code_col: str,
+    raw_abbr_col: str,
+    out_col: str,
+) -> str:
+    cases = "\n".join(
+        f'WHEN TRY_CAST("{raw_code_col}" AS INTEGER) = {code} '
+        f"THEN '{label}'"
+        for code, label in COMTRADE_QUANTITY_UNIT_LABELS.items()
+    )
+
+    return f"""
+        CASE
+            {cases}
+            ELSE CAST("{raw_abbr_col}" AS VARCHAR)
+        END AS {out_col}
+    """
 
 def _log_staging_summary(
     *,
@@ -81,10 +109,27 @@ def _cast_expression(*, raw_col: str, out_col: str, dtype: str) -> str:
     return f"TRY_CAST(\"{raw_col}\" AS {duck_type}) AS {out_col}"
 
 
+def _unit_consistency_condition(
+    *,
+    code_col: str,
+    unit_col: str,
+) -> str:
+    conditions = [
+        (
+            f"({code_col} = {code} "
+            f"AND {unit_col} <> '{label}')"
+        )
+        for code, label
+        in COMTRADE_QUANTITY_UNIT_LABELS.items()
+    ]
+
+    return " OR ".join(conditions)
+
 def build_comtrade_staging_dataset(
     *,
     cfg: DatasetConfig,
     run_id: str,
+    force: bool = False,
     logger: Logger,
 ) -> dict[str, object]:
     """
@@ -116,18 +161,23 @@ def build_comtrade_staging_dataset(
         if output_path.is_dir():
             raise IsADirectoryError(
                 f"Expected output file but found directory: {output_path}"
-                )
+            )
 
-        if not cfg.write.overwrite:
+        if not force and not cfg.write.overwrite:
             logger.warning("=" * 72)
             logger.warning("COMTRADE STAGING SKIPPED")
             logger.warning("=" * 72)
-            logger.warning("Reason: output already exists and write.overwrite=false.")
+            logger.warning(
+                "Reason: output already exists and "
+                "write.overwrite=false and force=false."
+            )
             logger.warning("Existing staged parquet:")
             logger.warning("  %s", output_path)
             logger.warning("Audit file:")
             logger.warning("  %s", audit_path)
-            logger.warning("Ready for HS-sync: YES, using existing staged parquet.")
+            logger.warning(
+                "Ready for HS-sync: YES, using existing staged parquet."
+            )
             logger.warning("=" * 72)
 
             return {
@@ -141,7 +191,11 @@ def build_comtrade_staging_dataset(
                 "n_failed_audit_rows": 0,
             }
 
-        logger.info("Output will be overwritten: %s", output_path)
+        logger.info(
+            "Output will be overwritten: %s%s",
+            output_path,
+            " (force=True)" if force else "",
+        )
         output_path.unlink()
     else:
         logger.info("Output will be created: %s", output_path)
@@ -160,6 +214,26 @@ def build_comtrade_staging_dataset(
                 f"mapped from raw column {raw_col!r}."
             )
 
+        if out_col == "quantity_unit":
+            select_exprs.append(
+                _quantity_unit_expression(
+                    raw_code_col="QtyUnitCode",
+                    raw_abbr_col="QtyUnitAbbr",
+                    out_col=out_col,
+                )
+            )
+            continue
+
+        if out_col == "alt_quantity_unit":
+            select_exprs.append(
+                _quantity_unit_expression(
+                    raw_code_col="AltQtyUnitCode",
+                    raw_abbr_col="AltQtyUnitAbbr",
+                    out_col=out_col,
+                )
+            )
+            continue
+
         select_exprs.append(
             _cast_expression(
                 raw_col=raw_col,
@@ -170,8 +244,8 @@ def build_comtrade_staging_dataset(
 
     select_sql = ",\n            ".join(select_exprs)
 
-    input_sql = _sql_literal(input_glob)
-    output_sql = _sql_literal(output_path)
+    input_sql = sql_literal(input_glob)
+    output_sql = sql_literal(output_path)
 
     con = duckdb.connect()
     con.execute(f"PRAGMA threads={int(cfg.engine.threads)}")
@@ -234,6 +308,38 @@ def build_comtrade_staging_dataset(
             (FORMAT PARQUET)
             """
         )
+
+        quantity_condition = _unit_consistency_condition(
+            code_col="quantity_unit_code",
+            unit_col="quantity_unit",
+        )
+
+        alt_quantity_condition = _unit_consistency_condition(
+            code_col="alt_quantity_unit_code",
+            unit_col="alt_quantity_unit",
+        )
+
+        unit_audit = con.execute(
+            f"""
+            SELECT
+                COUNT(*) FILTER (
+                    WHERE {quantity_condition}
+                ) AS bad_quantity_units,
+
+                COUNT(*) FILTER (
+                    WHERE {alt_quantity_condition}
+                ) AS bad_alt_quantity_units
+
+            FROM read_parquet({output_sql})
+            """
+        ).fetchone()
+
+        (
+            bad_quantity_units,
+            bad_alt_quantity_units,
+        ) = unit_audit
+
+        n_unit_inconsistencies = sum(unit_audit)
 
         row = con.execute(
             f"""
@@ -313,6 +419,20 @@ def build_comtrade_staging_dataset(
                 "actual": int(row["null_source_cmd_rows"]),
                 "status": "pass" if int(row["null_source_cmd_rows"]) == 0 else "fail",
                 "detail": "",
+            },
+            {
+                "check": "quantity_unit_code_label_consistency",
+                "expected": 0,
+                "actual": int(n_unit_inconsistencies),
+                "status": (
+                    "pass"
+                    if n_unit_inconsistencies == 0
+                    else "fail"
+                ),
+                "detail": (
+                    f"quantity_units={bad_quantity_units}; "
+                    f"alt_quantity_units={bad_alt_quantity_units}"
+                ),
             },
         ]
 

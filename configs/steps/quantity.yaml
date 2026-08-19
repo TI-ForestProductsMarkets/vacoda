@@ -1,0 +1,115 @@
+# configs/steps/quantity.yaml
+# Configuration for quantity synchronization after HS synchronization.
+
+quantity:
+
+  # --------------------------------------------------------------------
+  # Input
+  # --------------------------------------------------------------------
+
+  input:
+    stage: "interim"
+    subdir: "hs_sync/target_{target_hs_lower}/applied"
+    filename: "comtrade_target_{target_hs_lower}_hs_synced.parquet"
+    format: "parquet"
+
+  # --------------------------------------------------------------------
+  # Output
+  # --------------------------------------------------------------------
+
+  output:
+    stage: "interim"
+    subdir: "quantity/target_{target_hs_lower}"
+    format: "parquet"
+
+  # --------------------------------------------------------------------
+  # Products
+  # --------------------------------------------------------------------
+
+  products:
+
+    prepared_input:
+      enable: true
+      filename: "prepared/comtrade_target_{target_hs_lower}_quantity_prepared.parquet"
+
+    reconciliation_evidence:
+      enable: true
+      filename: "diagnostics/target_{target_hs_lower}_quantity_reconciliation_evidence.parquet"
+
+    synchronized_quantity:
+      enable: true
+      filename: "comtrade_target_{target_hs_lower}_quantity_synced.parquet"
+
+    diagnostics:
+      enable: true
+      filename: "target_{target_hs_lower}_quantity_diagnostics.parquet"
+
+  # --------------------------------------------------------------------
+  # Method
+  # --------------------------------------------------------------------
+
+  method:
+
+    kg_reconciliation:
+
+      require_positive_values: true
+
+      # Quantity can only participate in kg reconciliation when
+      # its reported unit is kg.
+      quantity_unit: "kg"
+
+      # Determine source preference from the observed data rather
+      # than imposing a fixed hierarchy.
+      source_selection:
+        method: "data_driven"
+
+      agreement:
+        relative_tolerance: 0.05
+
+    gross_weight:
+
+      # Gross weight is not equivalent to net physical quantity.
+      # Preserve it separately and never mix it into the canonical
+      # kg quantity unless explicitly enabled in future.
+      use_as_quantity_proxy: false
+
+  # --------------------------------------------------------------------
+  # Diagnostics
+  # --------------------------------------------------------------------
+
+  diagnostics:
+
+    source_coverage:
+      enabled: true
+
+    reported_estimated_overlap:
+      enabled: true
+
+    quantity_net_weight_comparison:
+      enabled: true
+      quantity_unit: "kg"
+
+    unit_distribution:
+      enabled: true
+
+  # --------------------------------------------------------------------
+  # Logging
+  # --------------------------------------------------------------------
+
+  logging:
+    level: "DEBUG"
+    subdir: "logs/quantity"
+    file: "LOG_QUANTITY_TARGET_{target_hs_lower}.log"
+    timestamp: true
+
+  # --------------------------------------------------------------------
+  # Decision report
+  # --------------------------------------------------------------------
+
+  artifacts:
+    enable: true
+    kind: "reports"
+    subdir: "quantity/target_{target_hs_lower}"
+    filename: "target_{target_hs_lower}_quantity_decision_report"
+    timestamp: true
+    write_latest: true
