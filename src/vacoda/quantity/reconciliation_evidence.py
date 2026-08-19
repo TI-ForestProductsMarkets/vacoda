@@ -419,6 +419,16 @@ def build_quantity_reconciliation_evidence(
                     WHERE has_net_weight_kg
                 ) AS n_net_weight_kg,
 
+                COUNT(*) FILTER (
+                    WHERE alt_quantity_kg_candidate > 0
+                ) AS n_alt_quantity_kg,
+
+                COUNT(*) FILTER (
+                    WHERE alt_quantity_kg_candidate > 0
+                    AND quantity_kg_candidate IS NULL
+                    AND net_weight_kg_candidate IS NULL
+                ) AS n_incremental_alt_kg,
+
                 count(*) FILTER (
                     WHERE has_quantity_kg
                       AND has_net_weight_kg
@@ -441,6 +451,8 @@ def build_quantity_reconciliation_evidence(
             n_rows,
             n_quantity_kg,
             n_net_weight_kg,
+            n_alt_quantity_kg,
+            n_incremental_alt_kg,
             n_both,
             n_agree,
             n_disagree,
@@ -471,6 +483,14 @@ def build_quantity_reconciliation_evidence(
             f"{n_disagree:,}",
         )
         logger.info(
+            "Usable alt-quantity kg candidate rows: %s",
+            f"{n_alt_quantity_kg:,}",
+        )
+        logger.info(
+            "Incremental alt-quantity kg rows after quantity/net weight: %s",
+            f"{n_incremental_alt_kg:,}",
+        )
+        logger.info(
             "Quantity reconciliation evidence: %s",
             output_path,
         )
@@ -492,6 +512,8 @@ def build_quantity_reconciliation_evidence(
         "n_rows": int(n_rows),
         "n_quantity_kg": int(n_quantity_kg),
         "n_net_weight_kg": int(n_net_weight_kg),
+        "n_alt_quantity_kg": int(n_alt_quantity_kg),
+        "n_incremental_alt_kg": int(n_incremental_alt_kg),
         "n_both": int(n_both),
         "n_agree": int(n_agree),
         "n_disagree": int(n_disagree),

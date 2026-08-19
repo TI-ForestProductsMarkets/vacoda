@@ -43,7 +43,7 @@ def main() -> None:
         cfg=cfg,
         run_id="quantity_manual_h5",
         logger=logger,
-        force=False,
+        force=True,
         input_path=Path(
             "/storage/vacoda/data/interim/hs_sync/target_h5/applied/"
             "comtrade_target_h5_hs_synced.parquet"

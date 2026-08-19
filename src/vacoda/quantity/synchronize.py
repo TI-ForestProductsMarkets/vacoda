@@ -123,7 +123,7 @@ def synchronize_quantity(
         "Synchronizing Quantity observations."
     )
     logger.info(
-        "Source-selection method: %s",
+        "Configured source-selection method: %s",
         source_selection_method,
     )
     logger.info(
@@ -457,7 +457,7 @@ def synchronize_quantity(
             conflict_pct,
         )
         logger.info(
-            "Rows without kg evidence: %s",
+            "Rows unresolved by current quantity/net-weight synchronization: %s",
             f"{n_no_kg_evidence:,}",
         )
         logger.info(

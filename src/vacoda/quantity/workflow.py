@@ -152,7 +152,7 @@ def run_quantity_workflow(
             cfg.method.kg_reconciliation.require_positive_values,
         )
         logger.info(
-            "Source-selection method: %s",
+            "Configured source-selection method: %s",
             cfg.method.kg_reconciliation.source_selection.method,
         )
         logger.info(

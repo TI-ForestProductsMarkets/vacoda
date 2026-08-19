@@ -679,16 +679,18 @@ def build_quantity_diagnostics(
                     'alt_quantity_unit_by_year'
                         AS diagnostic_group,
                     CASE
-                        WHEN alt_quantity_unit_code = 8
+                        WHEN (
+                            alt_quantity_unit_code = 8
                             AND LOWER(TRIM(alt_quantity_unit)) = 'kg'
-                            THEN 'kg'
-
-                        WHEN alt_quantity_unit_code = 21
+                        )
+                        OR (
+                            alt_quantity_unit_code = 21
                             AND UPPER(TRIM(alt_quantity_unit)) = '1000 KG'
-                            THEN 'kg'
-
-                        WHEN alt_quantity_unit_code = 15
+                        )
+                        OR (
+                            alt_quantity_unit_code = 15
                             AND LOWER(TRIM(alt_quantity_unit)) = 'g'
+                        )
                             THEN 'kg'
 
                         ELSE COALESCE(
@@ -703,8 +705,20 @@ def build_quantity_diagnostics(
                         ) AS percentage,
                     CAST(year AS INTEGER) AS year,
                     CASE
-                        WHEN alt_quantity_unit_code IN (8, 15, 21)
+                        WHEN (
+                            alt_quantity_unit_code = 8
+                            AND LOWER(TRIM(alt_quantity_unit)) = 'kg'
+                        )
+                        OR (
+                            alt_quantity_unit_code = 21
+                            AND UPPER(TRIM(alt_quantity_unit)) = '1000 KG'
+                        )
+                        OR (
+                            alt_quantity_unit_code = 15
+                            AND LOWER(TRIM(alt_quantity_unit)) = 'g'
+                        )
                             THEN '8'
+
                         ELSE CAST(alt_quantity_unit_code AS VARCHAR)
                     END AS category_1,
                     NULL::VARCHAR AS category_2,
@@ -713,27 +727,41 @@ def build_quantity_diagnostics(
                 GROUP BY
                     year,
                     CASE
-                        WHEN alt_quantity_unit_code = 8
-                            AND LOWER(TRIM(alt_quantity_unit)) = 'kg'
-                            THEN 'kg'
+                        WHEN (
+                        alt_quantity_unit_code = 8
+                        AND LOWER(TRIM(alt_quantity_unit)) = 'kg'
+                    )
+                    OR (
+                        alt_quantity_unit_code = 21
+                        AND UPPER(TRIM(alt_quantity_unit)) = '1000 KG'
+                    )
+                    OR (
+                        alt_quantity_unit_code = 15
+                        AND LOWER(TRIM(alt_quantity_unit)) = 'g'
+                    )
+                        THEN 'kg'
 
-                        WHEN alt_quantity_unit_code = 21
-                            AND UPPER(TRIM(alt_quantity_unit)) = '1000 KG'
-                            THEN 'kg'
-
-                        WHEN alt_quantity_unit_code = 15
-                            AND LOWER(TRIM(alt_quantity_unit)) = 'g'
-                            THEN 'kg'
-
-                        ELSE COALESCE(
-                            CAST(alt_quantity_unit AS VARCHAR),
-                            '<NULL>'
-                        )
+                    ELSE COALESCE(
+                        CAST(alt_quantity_unit AS VARCHAR),
+                        '<NULL>'
+                    )
                     END,
                     CASE
-                        WHEN alt_quantity_unit_code IN (8, 15, 21)
-                            THEN '8'
-                        ELSE CAST(alt_quantity_unit_code AS VARCHAR)
+                        WHEN (
+                        alt_quantity_unit_code = 8
+                        AND LOWER(TRIM(alt_quantity_unit)) = 'kg'
+                    )
+                    OR (
+                        alt_quantity_unit_code = 21
+                        AND UPPER(TRIM(alt_quantity_unit)) = '1000 KG'
+                    )
+                    OR (
+                        alt_quantity_unit_code = 15
+                        AND LOWER(TRIM(alt_quantity_unit)) = 'g'
+                    )
+                        THEN '8'
+
+                    ELSE CAST(alt_quantity_unit_code AS VARCHAR)
                     END
                 """
             )
@@ -1353,7 +1381,20 @@ def build_quantity_diagnostics(
             FROM read_parquet({prepared_sql})
             WHERE net_weight_kg > 0
               AND alt_quantity > 0
-              AND alt_quantity_unit_code NOT IN (8, 21)
+              AND NOT (
+                    (
+                        alt_quantity_unit_code = 8
+                        AND LOWER(TRIM(alt_quantity_unit)) = 'kg'
+                    )
+                    OR (
+                        alt_quantity_unit_code = 21
+                        AND UPPER(TRIM(alt_quantity_unit)) = '1000 KG'
+                    )
+                    OR (
+                        alt_quantity_unit_code = 15
+                        AND LOWER(TRIM(alt_quantity_unit)) = 'g'
+                    )
+                )
             GROUP BY
                 alt_quantity_unit,
                 alt_quantity_unit_code
@@ -1591,32 +1632,36 @@ def build_quantity_diagnostics(
                 UNION ALL
 
                 SELECT
-                    'gross_weight_available_after_other_sources_missing',
+                    'gross_weight_available_after_quantity_kg_and_net_weight_missing',
                     COUNT(*) FILTER (
                         WHERE gross_weight_kg > 0
-                          AND NOT COALESCE(
-                              quantity_kg_candidate > 0, FALSE
-                          )
-                          AND NOT COALESCE(
-                              net_weight_kg_candidate > 0, FALSE
-                          )
-                          AND NOT COALESCE(
-                              alt_quantity_kg_candidate > 0, FALSE
-                          )
+                          AND quantity_kg_candidate IS NULL
+                          AND net_weight_kg_candidate IS NULL
                     ),
                     100.0 * COUNT(*) FILTER (
                         WHERE gross_weight_kg > 0
-                          AND NOT COALESCE(
-                              quantity_kg_candidate > 0, FALSE
-                          )
-                          AND NOT COALESCE(
-                              net_weight_kg_candidate > 0, FALSE
-                          )
-                          AND NOT COALESCE(
-                              alt_quantity_kg_candidate > 0, FALSE
-                          )
+                          AND quantity_kg_candidate IS NULL
+                          AND net_weight_kg_candidate IS NULL
                     ) / COUNT(*)
-                FROM read_parquet({evidence_sql})
+                FROM read_parquet({synchronized_sql})
+
+                UNION ALL
+
+                SELECT
+                    'gross_weight_available_after_quantity_kg_net_weight_and_alt_kg_missing',
+                    COUNT(*) FILTER (
+                        WHERE gross_weight_kg > 0
+                          AND quantity_kg_candidate IS NULL
+                          AND net_weight_kg_candidate IS NULL
+                          AND alt_quantity_kg_candidate IS NULL
+                    ),
+                    100.0 * COUNT(*) FILTER (
+                        WHERE gross_weight_kg > 0
+                          AND quantity_kg_candidate IS NULL
+                          AND net_weight_kg_candidate IS NULL
+                          AND alt_quantity_kg_candidate IS NULL
+                    ) / COUNT(*)
+                FROM read_parquet({synchronized_sql})
 
                 UNION ALL
 
@@ -2291,7 +2336,7 @@ def build_quantity_diagnostics(
             unresolved_pct,
         )
         logger.info(
-            "Rows without kg evidence: %s",
+            "Rows unresolved by current quantity/net-weight synchronization: %s",
             f"{n_no_kg_evidence:,}",
         )
         logger.info(

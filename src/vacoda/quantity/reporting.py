@@ -84,6 +84,17 @@ def _diagnostic_group(
     ].copy()
 
 
+def _metric_value(frame: pd.DataFrame, *metric_names: str) -> Any:
+    if frame.empty:
+        return None
+    metric_column = frame["metric"].astype(str)
+    for metric_name in metric_names:
+        match = frame.loc[metric_column.eq(metric_name)]
+        if not match.empty:
+            return match.iloc[0]["value"]
+    return None
+
+
 def _as_numeric(frame: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
     frame = frame.copy()
     for column in columns:
@@ -106,11 +117,15 @@ def _simple_rows_table(
     return out.sort_values("Rows", ascending=False)
 
 
-def _source_state_table(frame: pd.DataFrame) -> pd.DataFrame:
+def _source_state_table(
+    frame: pd.DataFrame,
+    *,
+    percentage_name: str = "Share (%)",
+) -> pd.DataFrame:
     if frame.empty:
         return pd.DataFrame()
     out = frame[["metric", "category_1", "value", "percentage"]].copy()
-    out.columns = ["Candidate source", "Evidence state", "Rows", "Share (%)"]
+    out.columns = ["Candidate source", "Evidence state", "Rows", percentage_name]
     out["Rows"] = out["Rows"].round().astype("Int64")
     return out.sort_values(["Candidate source", "Evidence state"])
 
@@ -317,7 +332,7 @@ def _plot_net_weight_coverage_by_year(
         axis.plot(pivot.index, pivot[column], marker="o", label=str(column))
     axis.set_title("Positive net-weight coverage by year")
     axis.set_xlabel("Year")
-    axis.set_ylabel("Share of annual observations (%)")
+    axis.set_ylabel("Positive coverage within evidence-state rows (%)")
     axis.set_ylim(0, 100)
     axis.grid(axis="y", linestyle="--", alpha=0.4)
     axis.legend(title="Evidence state")
@@ -710,10 +725,12 @@ def build_quantity_report(
         # Alt kg candidate diagnostics
         # --------------------------------------------------------------
         alt_candidate_display = _source_state_table(
-            _diagnostic_group(diagnostics, "alt_quantity_kg_candidate_coverage")
+            _diagnostic_group(diagnostics, "alt_quantity_kg_candidate_coverage"),
+            percentage_name="Share of alt-kg candidates (%)",
         )
         alt_incremental_display = _source_state_table(
-            _diagnostic_group(diagnostics, "alt_quantity_kg_incremental_coverage")
+            _diagnostic_group(diagnostics, "alt_quantity_kg_incremental_coverage"),
+            percentage_name="Incremental population coverage (%)",
         )
         alt_agreement_display = _agreement_state_table(
             _diagnostic_group(diagnostics, "alt_quantity_kg_agreement"),
@@ -838,9 +855,16 @@ def build_quantity_report(
             for row in gross_weight.itertuples()
         }
         gross_available = gross_lookup.get("gross_weight_available", {}).get("value")
-        gross_after_other_missing = gross_lookup.get(
-            "gross_weight_available_after_other_sources_missing", {}
-        ).get("value")
+        gross_after_current = _metric_value(
+            gross_weight,
+            "gross_weight_available_after_quantity_kg_and_net_weight_missing",
+            "gross_weight_available_after_current_sources_missing",
+        )
+        gross_after_alt = _metric_value(
+            gross_weight,
+            "gross_weight_available_after_quantity_kg_net_weight_and_alt_kg_missing",
+            "gross_weight_available_after_alt_kg_missing",
+        )
         gross_used = gross_lookup.get("gross_weight_proxy_used", {}).get("value")
 
         gross_relationship = _diagnostic_group(
@@ -1064,12 +1088,14 @@ def build_quantity_report(
             diagnostic_group="quantity_m3_by_hs",
             title="HS codes with quantity reported in cubic metres",
             output_path=figure_paths["quantity_m3_hs"],
+            height=700
         )
         _plot_m3_by_hs(
             diagnostics=diagnostics,
             diagnostic_group="alt_quantity_m3_by_hs",
             title="HS codes with alternate quantity reported in cubic metres",
             output_path=figure_paths["alt_quantity_m3_hs"],
+            height=700
         )
 
         # --------------------------------------------------------------
@@ -1146,7 +1172,7 @@ def build_quantity_report(
             "| Canonical synchronized field | `synchronized_quantity_kg` |",
             f"| Agreement tolerance | {100 * agreement_tolerance:.2f}% |",
             (
-                "| Source-selection method | "
+                "| Configured source-selection method | "
                 f"`{cfg.method.kg_reconciliation.source_selection.method}` |"
             ),
             "",
@@ -1177,12 +1203,9 @@ def build_quantity_report(
             "### 3.2 Canonical `alt_quantity` unit distribution",
             "",
             (
-                "The visible unit distribution reflects the Quantity module's "
-                "canonical physical interpretation. Alternate quantity reported "
-                "as `1000 KG` is kg-equivalent after the exact ×1000 conversion "
-                "performed in reconciliation evidence; it is therefore counted "
-                "within the canonical kg class rather than shown as a separate "
-                "physical unit."
+                "Alternate quantities expressed as `kg`, `1000 KG`, or `g` are normalized to canonical "
+                "kilograms using exact scale conversions. Special mass bases such as `kg 90% sdt` "
+                "remain separate"
             ),
             "",
             _markdown_table(alt_quantity_units),
@@ -1261,8 +1284,8 @@ def build_quantity_report(
             "## 4. Canonical kg evidence",
             "",
             (
-                "Three kg-equivalent evidence families are evaluated: quantity "
-                "reported directly in kg, `net_weight_kg`, and alternate quantity "
+                "Three kg-equivalent evidence families are evaluated: `quantity` "
+                "reported directly in `kg`, `net_weight_kg`, and `alternate quantity` "
                 "that is either directly expressed in kg or exactly convertible "
                 "to kg (for example `1000 KG`). Special mass bases such as "
                 "`kg 90% sdt` are not treated as ordinary net kg."
@@ -1438,9 +1461,12 @@ def build_quantity_report(
             "|---|---:|",
             f"| Gross weight available | {_format_integer(gross_available)} |",
             (
-                "| Gross weight available where currently admitted quantity kg "
-                "and net weight are unavailable | "
-                f"{_format_integer(gross_after_other_missing)} |"
+                "| Gross weight available after quantity kg + net weight missing | "
+                f"{_format_integer(gross_after_current)} |"
+            ),
+            (
+                "| Gross weight available after quantity kg + net weight + alt kg missing | "
+                f"{_format_integer(gross_after_alt)} |"
             ),
             f"| Gross-weight proxy actually used | {_format_integer(gross_used)} |",
             "",
