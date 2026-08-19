@@ -30,11 +30,7 @@ from typing import Any
 import duckdb
 
 from vacoda.config.quantity import QuantityConfig
-
-
-def _sql_literal(value: str | Path) -> str:
-    """Return a safely quoted SQL literal."""
-    return "'" + str(value).replace("'", "''") + "'"
+from vacoda.utils.sql import sql_literal
 
 
 def build_quantity_diagnostics(
@@ -117,13 +113,14 @@ def build_quantity_diagnostics(
         exist_ok=True,
     )
 
-    prepared_sql = _sql_literal(prepared_input_path)
-    evidence_sql = _sql_literal(
+    prepared_sql = sql_literal(prepared_input_path)
+    evidence_sql = sql_literal(
         reconciliation_evidence_path
     )
-    synchronized_sql = _sql_literal(
+    synchronized_sql = sql_literal(
         synchronized_quantity_path
     )
+    output_sql = sql_literal(output_path)
 
     agreement_tolerance = float(
         cfg.method
@@ -208,10 +205,9 @@ def build_quantity_diagnostics(
 
                 SELECT
                     'quantity' AS field_name,
-                    'non_null_rows' AS statistic,
-                    COUNT(quantity) AS metric_value,
-                    100.0 * COUNT(quantity) / COUNT(*)
-                        AS percentage
+                    'total_rows' AS statistic,
+                    COUNT(*) AS metric_value,
+                    100.0 AS percentage
                 FROM read_parquet({prepared_sql})
 
                 UNION ALL
@@ -244,6 +240,19 @@ def build_quantity_diagnostics(
 
                 SELECT
                     'quantity',
+                    'negative_rows',
+                    COUNT(*) FILTER (
+                        WHERE quantity < 0
+                    ),
+                    100.0 * COUNT(*) FILTER (
+                        WHERE quantity < 0
+                    ) / COUNT(*)
+                FROM read_parquet({prepared_sql})
+
+                UNION ALL
+
+                SELECT
+                    'quantity',
                     'missing_rows',
                     COUNT(*) FILTER (
                         WHERE quantity IS NULL
@@ -257,9 +266,9 @@ def build_quantity_diagnostics(
 
                 SELECT
                     'alt_quantity',
-                    'non_null_rows',
-                    COUNT(alt_quantity),
-                    100.0 * COUNT(alt_quantity) / COUNT(*)
+                    'total_rows',
+                    COUNT(*),
+                    100.0
                 FROM read_parquet({prepared_sql})
 
                 UNION ALL
@@ -292,6 +301,19 @@ def build_quantity_diagnostics(
 
                 SELECT
                     'alt_quantity',
+                    'negative_rows',
+                    COUNT(*) FILTER (
+                        WHERE alt_quantity < 0
+                    ),
+                    100.0 * COUNT(*) FILTER (
+                        WHERE alt_quantity < 0
+                    ) / COUNT(*)
+                FROM read_parquet({prepared_sql})
+
+                UNION ALL
+
+                SELECT
+                    'alt_quantity',
                     'missing_rows',
                     COUNT(*) FILTER (
                         WHERE alt_quantity IS NULL
@@ -305,9 +327,9 @@ def build_quantity_diagnostics(
 
                 SELECT
                     'net_weight_kg',
-                    'non_null_rows',
-                    COUNT(net_weight_kg),
-                    100.0 * COUNT(net_weight_kg) / COUNT(*)
+                    'total_rows',
+                    COUNT(*),
+                    100.0
                 FROM read_parquet({prepared_sql})
 
                 UNION ALL
@@ -340,6 +362,19 @@ def build_quantity_diagnostics(
 
                 SELECT
                     'net_weight_kg',
+                    'negative_rows',
+                    COUNT(*) FILTER (
+                        WHERE net_weight_kg < 0
+                    ),
+                    100.0 * COUNT(*) FILTER (
+                        WHERE net_weight_kg < 0
+                    ) / COUNT(*)
+                FROM read_parquet({prepared_sql})
+
+                UNION ALL
+
+                SELECT
+                    'net_weight_kg',
                     'missing_rows',
                     COUNT(*) FILTER (
                         WHERE net_weight_kg IS NULL
@@ -353,9 +388,9 @@ def build_quantity_diagnostics(
 
                 SELECT
                     'gross_weight_kg',
-                    'non_null_rows',
-                    COUNT(gross_weight_kg),
-                    100.0 * COUNT(gross_weight_kg) / COUNT(*)
+                    'total_rows',
+                    COUNT(*),
+                    100.0
                 FROM read_parquet({prepared_sql})
 
                 UNION ALL
@@ -381,6 +416,19 @@ def build_quantity_diagnostics(
                     ),
                     100.0 * COUNT(*) FILTER (
                         WHERE gross_weight_kg = 0
+                    ) / COUNT(*)
+                FROM read_parquet({prepared_sql})
+
+                UNION ALL
+
+                SELECT
+                    'gross_weight_kg',
+                    'negative_rows',
+                    COUNT(*) FILTER (
+                        WHERE gross_weight_kg < 0
+                    ),
+                    100.0 * COUNT(*) FILTER (
+                        WHERE gross_weight_kg < 0
                     ) / COUNT(*)
                 FROM read_parquet({prepared_sql})
 
@@ -532,23 +580,65 @@ def build_quantity_diagnostics(
                 SELECT
                     'alt_quantity_unit_distribution'
                         AS diagnostic_group,
-                    COALESCE(
-                        CAST(alt_quantity_unit AS VARCHAR),
-                        '<NULL>'
-                    ) AS metric,
+                    CASE
+                        WHEN alt_quantity_unit_code IN (8, 15, 21)
+                            THEN 'kg'
+                        ELSE COALESCE(
+                            CAST(alt_quantity_unit AS VARCHAR),
+                            '<NULL>'
+                        )
+                    END AS metric,
                     CAST(COUNT(*) AS DOUBLE) AS value,
                     100.0 * COUNT(*)
                         / SUM(COUNT(*)) OVER ()
                         AS percentage,
                     NULL::INTEGER AS year,
-                    CAST(alt_quantity_unit_code AS VARCHAR)
-                        AS category_1,
+                    CASE
+                        WHEN (
+                            alt_quantity_unit_code = 8
+                            AND LOWER(TRIM(alt_quantity_unit)) = 'kg'
+                        )
+                        OR (
+                            alt_quantity_unit_code = 21
+                            AND UPPER(TRIM(alt_quantity_unit)) = '1000 KG'
+                        )
+                        OR (
+                            alt_quantity_unit_code = 15
+                            AND LOWER(TRIM(alt_quantity_unit)) = 'g'
+                        )
+                            THEN '8'
+
+                        ELSE CAST(alt_quantity_unit_code AS VARCHAR)
+                    END AS category_1,
                     NULL::VARCHAR AS category_2,
                     NULL::VARCHAR AS category_3
                 FROM read_parquet({prepared_sql})
                 GROUP BY
-                    alt_quantity_unit,
-                    alt_quantity_unit_code
+                    CASE
+                        WHEN alt_quantity_unit_code IN (8, 15, 21)
+                            THEN 'kg'
+                        ELSE COALESCE(
+                            CAST(alt_quantity_unit AS VARCHAR),
+                            '<NULL>'
+                        )
+                    END,
+                    CASE
+                        WHEN (
+                            alt_quantity_unit_code = 8
+                            AND LOWER(TRIM(alt_quantity_unit)) = 'kg'
+                        )
+                        OR (
+                            alt_quantity_unit_code = 21
+                            AND UPPER(TRIM(alt_quantity_unit)) = '1000 KG'
+                        )
+                        OR (
+                            alt_quantity_unit_code = 15
+                            AND LOWER(TRIM(alt_quantity_unit)) = 'g'
+                        )
+                            THEN '8'
+
+                        ELSE CAST(alt_quantity_unit_code AS VARCHAR)
+                    END
                 """
             )
 
@@ -588,25 +678,63 @@ def build_quantity_diagnostics(
                 SELECT
                     'alt_quantity_unit_by_year'
                         AS diagnostic_group,
-                    COALESCE(
-                        CAST(alt_quantity_unit AS VARCHAR),
-                        '<NULL>'
-                    ) AS metric,
+                    CASE
+                        WHEN alt_quantity_unit_code = 8
+                            AND LOWER(TRIM(alt_quantity_unit)) = 'kg'
+                            THEN 'kg'
+
+                        WHEN alt_quantity_unit_code = 21
+                            AND UPPER(TRIM(alt_quantity_unit)) = '1000 KG'
+                            THEN 'kg'
+
+                        WHEN alt_quantity_unit_code = 15
+                            AND LOWER(TRIM(alt_quantity_unit)) = 'g'
+                            THEN 'kg'
+
+                        ELSE COALESCE(
+                            CAST(alt_quantity_unit AS VARCHAR),
+                            '<NULL>'
+                        )
+                    END AS metric,
                     CAST(COUNT(*) AS DOUBLE) AS value,
                     100.0 * COUNT(*)
                         / SUM(COUNT(*)) OVER (
                             PARTITION BY year
                         ) AS percentage,
                     CAST(year AS INTEGER) AS year,
-                    CAST(alt_quantity_unit_code AS VARCHAR)
-                        AS category_1,
+                    CASE
+                        WHEN alt_quantity_unit_code IN (8, 15, 21)
+                            THEN '8'
+                        ELSE CAST(alt_quantity_unit_code AS VARCHAR)
+                    END AS category_1,
                     NULL::VARCHAR AS category_2,
                     NULL::VARCHAR AS category_3
                 FROM read_parquet({prepared_sql})
                 GROUP BY
                     year,
-                    alt_quantity_unit,
-                    alt_quantity_unit_code
+                    CASE
+                        WHEN alt_quantity_unit_code = 8
+                            AND LOWER(TRIM(alt_quantity_unit)) = 'kg'
+                            THEN 'kg'
+
+                        WHEN alt_quantity_unit_code = 21
+                            AND UPPER(TRIM(alt_quantity_unit)) = '1000 KG'
+                            THEN 'kg'
+
+                        WHEN alt_quantity_unit_code = 15
+                            AND LOWER(TRIM(alt_quantity_unit)) = 'g'
+                            THEN 'kg'
+
+                        ELSE COALESCE(
+                            CAST(alt_quantity_unit AS VARCHAR),
+                            '<NULL>'
+                        )
+                    END,
+                    CASE
+                        WHEN alt_quantity_unit_code IN (8, 15, 21)
+                            THEN '8'
+                        ELSE CAST(alt_quantity_unit_code AS VARCHAR)
+                    END
                 """
             )
 
@@ -630,8 +758,7 @@ def build_quantity_diagnostics(
                     'm3' AS category_2,
                     NULL::VARCHAR AS category_3
                 FROM read_parquet({prepared_sql})
-                WHERE LOWER(TRIM(quantity_unit))
-                    IN ('m3', 'm³')
+                WHERE quantity_unit_code = 12
                   AND quantity > 0
                 GROUP BY {hs_column}
                 """
@@ -652,8 +779,7 @@ def build_quantity_diagnostics(
                     'm3' AS category_2,
                     NULL::VARCHAR AS category_3
                 FROM read_parquet({prepared_sql})
-                WHERE LOWER(TRIM(alt_quantity_unit))
-                    IN ('m3', 'm³')
+                WHERE alt_quantity_unit_code = 12
                   AND alt_quantity > 0
                 GROUP BY {hs_column}
                 """
@@ -699,6 +825,18 @@ def build_quantity_diagnostics(
                             WHERE has_net_weight_kg
                         ) / COUNT(*)
                     FROM read_parquet({prepared_sql})
+
+                    UNION ALL
+
+                    SELECT
+                        'alt_quantity_kg',
+                        COUNT(*) FILTER (
+                            WHERE alt_quantity_kg_candidate > 0
+                        ),
+                        100.0 * COUNT(*) FILTER (
+                            WHERE alt_quantity_kg_candidate > 0
+                        ) / COUNT(*)
+                    FROM read_parquet({evidence_sql})
 
                     UNION ALL
 
@@ -994,7 +1132,320 @@ def build_quantity_diagnostics(
             )
 
         # ==============================================================
-        # 8. Cumulative hierarchy / coverage contribution
+        # 8. Alternate-quantity kg evidence
+        # ==============================================================
+
+        queries.append(
+            f"""
+            SELECT
+                'alt_quantity_kg_candidate_coverage'
+                    AS diagnostic_group,
+                alt_quantity_kg_source AS metric,
+                CAST(COUNT(*) AS DOUBLE) AS value,
+                100.0 * COUNT(*) / SUM(COUNT(*)) OVER ()
+                    AS percentage,
+                NULL::INTEGER AS year,
+                alt_quantity_kg_status AS category_1,
+                NULL::VARCHAR AS category_2,
+                NULL::VARCHAR AS category_3
+            FROM read_parquet({evidence_sql})
+            WHERE alt_quantity_kg_candidate > 0
+            GROUP BY
+                alt_quantity_kg_source,
+                alt_quantity_kg_status
+            """
+        )
+
+        queries.append(
+            f"""
+            WITH population AS (
+                SELECT COUNT(*) AS n_total
+                FROM read_parquet({evidence_sql})
+            )
+            SELECT
+                'alt_quantity_kg_incremental_coverage'
+                    AS diagnostic_group,
+                alt_quantity_kg_source AS metric,
+                CAST(COUNT(*) AS DOUBLE) AS value,
+                100.0 * COUNT(*) / population.n_total
+                    AS percentage,
+                NULL::INTEGER AS year,
+                alt_quantity_kg_status AS category_1,
+                NULL::VARCHAR AS category_2,
+                NULL::VARCHAR AS category_3
+            FROM read_parquet({evidence_sql})
+            CROSS JOIN population
+            WHERE alt_quantity_kg_candidate > 0
+              AND NOT COALESCE(quantity_kg_candidate > 0, FALSE)
+              AND NOT COALESCE(net_weight_kg_candidate > 0, FALSE)
+            GROUP BY
+                alt_quantity_kg_source,
+                alt_quantity_kg_status,
+                population.n_total
+            """
+        )
+
+        # --------------------------------------------------------------
+        # Alt quantity ↔ quantity / net-weight agreement
+        # --------------------------------------------------------------
+
+        queries.append(
+            f"""
+            WITH comparisons AS (
+                SELECT
+                    'alt_vs_quantity' AS comparison,
+                    alt_quantity_kg_candidate AS left_value,
+                    quantity_kg_candidate AS right_value,
+                    alt_quantity_kg_status AS left_status,
+                    quantity_kg_status AS right_status
+                FROM read_parquet({evidence_sql})
+                WHERE alt_quantity_kg_candidate > 0
+                  AND quantity_kg_candidate > 0
+
+                UNION ALL
+
+                SELECT
+                    'alt_vs_net_weight',
+                    alt_quantity_kg_candidate,
+                    net_weight_kg_candidate,
+                    alt_quantity_kg_status,
+                    net_weight_kg_status
+                FROM read_parquet({evidence_sql})
+                WHERE alt_quantity_kg_candidate > 0
+                  AND net_weight_kg_candidate > 0
+            ),
+            measured AS (
+                SELECT
+                    *,
+                    left_value / right_value AS ratio,
+                    ABS(left_value - right_value)
+                    / ((ABS(left_value) + ABS(right_value)) / 2.0)
+                        AS relative_gap
+                FROM comparisons
+            )
+            SELECT
+                'alt_quantity_kg_agreement'
+                    AS diagnostic_group,
+                comparison AS metric,
+                CAST(COUNT(*) AS DOUBLE) AS value,
+                100.0 * AVG(
+                    CASE
+                        WHEN relative_gap <= {agreement_tolerance}
+                            THEN 1.0
+                        ELSE 0.0
+                    END
+                ) AS percentage,
+                NULL::INTEGER AS year,
+                left_status || '_' || right_status
+                    AS category_1,
+                CAST(MEDIAN(ratio) AS VARCHAR)
+                    AS category_2,
+                CAST(MEDIAN(relative_gap) AS VARCHAR)
+                    AS category_3
+            FROM measured
+            GROUP BY
+                comparison,
+                left_status,
+                right_status
+            """
+        )
+
+        queries.append(
+            f"""
+            WITH comparisons AS (
+                SELECT
+                    'alt_vs_quantity' AS comparison,
+                    alt_quantity_kg_candidate AS left_value,
+                    quantity_kg_candidate AS right_value
+                FROM read_parquet({evidence_sql})
+                WHERE alt_quantity_kg_candidate > 0
+                  AND quantity_kg_candidate > 0
+
+                UNION ALL
+
+                SELECT
+                    'alt_vs_net_weight',
+                    alt_quantity_kg_candidate,
+                    net_weight_kg_candidate
+                FROM read_parquet({evidence_sql})
+                WHERE alt_quantity_kg_candidate > 0
+                  AND net_weight_kg_candidate > 0
+            ),
+            measured AS (
+                SELECT
+                    *,
+                    left_value / right_value AS ratio,
+                    ABS(left_value - right_value)
+                    / ((ABS(left_value) + ABS(right_value)) / 2.0)
+                        AS relative_gap
+                FROM comparisons
+            )
+            SELECT
+                'alt_quantity_kg_statistics'
+                    AS diagnostic_group,
+                comparison AS metric,
+                CAST(COUNT(*) AS DOUBLE) AS value,
+                NULL::DOUBLE AS percentage,
+                NULL::INTEGER AS year,
+                CAST(MEDIAN(ratio) AS VARCHAR)
+                    AS category_1,
+                CAST(
+                    100.0 * AVG(
+                        CASE WHEN relative_gap <= 0.01
+                            THEN 1.0 ELSE 0.0 END
+                    ) AS VARCHAR
+                ) AS category_2,
+                CAST(
+                    100.0 * AVG(
+                        CASE WHEN relative_gap <= 0.05
+                            THEN 1.0 ELSE 0.0 END
+                    ) AS VARCHAR
+                ) AS category_3
+            FROM measured
+            GROUP BY comparison
+            """
+        )
+
+        # ==============================================================
+        # 9. Net weight with supplementary physical quantities
+        # ==============================================================
+
+        queries.append(
+            f"""
+            SELECT
+                'net_weight_quantity_supplementary_overlap'
+                    AS diagnostic_group,
+                COALESCE(CAST(quantity_unit AS VARCHAR), '<NULL>')
+                    AS metric,
+                CAST(COUNT(*) AS DOUBLE) AS value,
+                100.0 * COUNT(*) / SUM(COUNT(*)) OVER ()
+                    AS percentage,
+                NULL::INTEGER AS year,
+                CAST(quantity_unit_code AS VARCHAR)
+                    AS category_1,
+                NULL::VARCHAR AS category_2,
+                NULL::VARCHAR AS category_3
+            FROM read_parquet({prepared_sql})
+            WHERE net_weight_kg > 0
+              AND quantity > 0
+              AND quantity_unit_code <> 8
+            GROUP BY
+                quantity_unit,
+                quantity_unit_code
+            """
+        )
+
+        queries.append(
+            f"""
+            SELECT
+                'net_weight_alt_quantity_supplementary_overlap'
+                    AS diagnostic_group,
+                COALESCE(CAST(alt_quantity_unit AS VARCHAR), '<NULL>')
+                    AS metric,
+                CAST(COUNT(*) AS DOUBLE) AS value,
+                100.0 * COUNT(*) / SUM(COUNT(*)) OVER ()
+                    AS percentage,
+                NULL::INTEGER AS year,
+                CAST(alt_quantity_unit_code AS VARCHAR)
+                    AS category_1,
+                NULL::VARCHAR AS category_2,
+                NULL::VARCHAR AS category_3
+            FROM read_parquet({prepared_sql})
+            WHERE net_weight_kg > 0
+              AND alt_quantity > 0
+              AND alt_quantity_unit_code NOT IN (8, 21)
+            GROUP BY
+                alt_quantity_unit,
+                alt_quantity_unit_code
+            """
+        )
+
+        if hs_column is not None:
+            queries.append(
+                f"""
+                SELECT
+                    'net_weight_supplementary_by_hs'
+                        AS diagnostic_group,
+                    CAST({hs_column} AS VARCHAR) AS metric,
+                    CAST(COUNT(*) AS DOUBLE) AS value,
+                    100.0 * COUNT(*)
+                        / SUM(COUNT(*)) OVER (
+                            PARTITION BY quantity_unit_code
+                        ) AS percentage,
+                    NULL::INTEGER AS year,
+                    CAST(quantity_unit_code AS VARCHAR)
+                        AS category_1,
+                    CAST(quantity_unit AS VARCHAR)
+                        AS category_2,
+                    NULL::VARCHAR AS category_3
+                FROM read_parquet({prepared_sql})
+                WHERE net_weight_kg > 0
+                  AND quantity > 0
+                  AND quantity_unit_code IN (2, 5, 12)
+                GROUP BY
+                    {hs_column},
+                    quantity_unit_code,
+                    quantity_unit
+                """
+            )
+
+        # ==============================================================
+        # 10. Net-weight diagnostics
+        # ==============================================================
+
+        queries.append(
+            f"""
+            SELECT
+                'net_weight_by_year' AS diagnostic_group,
+                CASE
+                    WHEN COALESCE(is_net_weight_estimated, FALSE)
+                        THEN 'estimated'
+                    ELSE 'reported'
+                END AS metric,
+                CAST(COUNT(*) FILTER (
+                    WHERE net_weight_kg > 0
+                ) AS DOUBLE) AS value,
+                100.0 * COUNT(*) FILTER (
+                    WHERE net_weight_kg > 0
+                ) / COUNT(*) AS percentage,
+                CAST(year AS INTEGER) AS year,
+                NULL::VARCHAR AS category_1,
+                NULL::VARCHAR AS category_2,
+                NULL::VARCHAR AS category_3
+            FROM read_parquet({prepared_sql})
+            GROUP BY
+                year,
+                CASE
+                    WHEN COALESCE(is_net_weight_estimated, FALSE)
+                        THEN 'estimated'
+                    ELSE 'reported'
+                END
+            """
+        )
+
+        queries.append(
+            f"""
+            SELECT
+                'net_weight_distribution_by_year'
+                    AS diagnostic_group,
+                'log10_net_weight_kg' AS metric,
+                CAST(COUNT(*) AS DOUBLE) AS value,
+                NULL::DOUBLE AS percentage,
+                CAST(year AS INTEGER) AS year,
+                CAST(QUANTILE_CONT(LOG10(net_weight_kg), 0.10)
+                    AS VARCHAR) AS category_1,
+                CAST(MEDIAN(LOG10(net_weight_kg))
+                    AS VARCHAR) AS category_2,
+                CAST(QUANTILE_CONT(LOG10(net_weight_kg), 0.90)
+                    AS VARCHAR) AS category_3
+            FROM read_parquet({prepared_sql})
+            WHERE net_weight_kg > 0
+            GROUP BY year
+            """
+        )
+
+        # ==============================================================
+        # 11. Cumulative hierarchy / coverage contribution
         #
         # This reports the hierarchy actually applied by synchronize.py.
         # ==============================================================
@@ -1084,14 +1535,13 @@ def build_quantity_diagnostics(
         )
 
         # ==============================================================
-        # 9. Gross-weight intervention
+        # 12. Gross-weight diagnostics
         # ==============================================================
 
         queries.append(
             f"""
             SELECT
-                'gross_weight_intervention'
-                    AS diagnostic_group,
+                'gross_weight_intervention' AS diagnostic_group,
                 metric,
                 CAST(metric_value AS DOUBLE) AS value,
                 percentage,
@@ -1100,16 +1550,73 @@ def build_quantity_diagnostics(
                 NULL::VARCHAR AS category_2,
                 NULL::VARCHAR AS category_3
             FROM (
-
                 SELECT
                     'gross_weight_available' AS metric,
                     COUNT(*) FILTER (
-                        WHERE has_gross_weight_kg
+                        WHERE gross_weight_kg > 0
                     ) AS metric_value,
                     100.0 * COUNT(*) FILTER (
-                        WHERE has_gross_weight_kg
+                        WHERE gross_weight_kg > 0
                     ) / COUNT(*) AS percentage
-                FROM read_parquet({synchronized_sql})
+                FROM read_parquet({prepared_sql})
+
+                UNION ALL
+
+                SELECT
+                    'gross_weight_with_net_weight',
+                    COUNT(*) FILTER (
+                        WHERE gross_weight_kg > 0
+                          AND net_weight_kg > 0
+                    ),
+                    100.0 * COUNT(*) FILTER (
+                        WHERE gross_weight_kg > 0
+                          AND net_weight_kg > 0
+                    ) / COUNT(*)
+                FROM read_parquet({prepared_sql})
+
+                UNION ALL
+
+                SELECT
+                    'gross_weight_without_net_weight',
+                    COUNT(*) FILTER (
+                        WHERE gross_weight_kg > 0
+                          AND NOT COALESCE(net_weight_kg > 0, FALSE)
+                    ),
+                    100.0 * COUNT(*) FILTER (
+                        WHERE gross_weight_kg > 0
+                          AND NOT COALESCE(net_weight_kg > 0, FALSE)
+                    ) / COUNT(*)
+                FROM read_parquet({prepared_sql})
+
+                UNION ALL
+
+                SELECT
+                    'gross_weight_available_after_other_sources_missing',
+                    COUNT(*) FILTER (
+                        WHERE gross_weight_kg > 0
+                          AND NOT COALESCE(
+                              quantity_kg_candidate > 0, FALSE
+                          )
+                          AND NOT COALESCE(
+                              net_weight_kg_candidate > 0, FALSE
+                          )
+                          AND NOT COALESCE(
+                              alt_quantity_kg_candidate > 0, FALSE
+                          )
+                    ),
+                    100.0 * COUNT(*) FILTER (
+                        WHERE gross_weight_kg > 0
+                          AND NOT COALESCE(
+                              quantity_kg_candidate > 0, FALSE
+                          )
+                          AND NOT COALESCE(
+                              net_weight_kg_candidate > 0, FALSE
+                          )
+                          AND NOT COALESCE(
+                              alt_quantity_kg_candidate > 0, FALSE
+                          )
+                    ) / COUNT(*)
+                FROM read_parquet({evidence_sql})
 
                 UNION ALL
 
@@ -1124,28 +1631,187 @@ def build_quantity_diagnostics(
                             'gross_weight_proxy'
                     ) / COUNT(*)
                 FROM read_parquet({synchronized_sql})
-
-                UNION ALL
-
-                SELECT
-                    'gross_weight_available_after_other_sources_missing',
-                    COUNT(*) FILTER (
-                        WHERE NOT has_quantity_kg
-                          AND NOT has_net_weight_kg
-                          AND has_gross_weight_kg
-                    ),
-                    100.0 * COUNT(*) FILTER (
-                        WHERE NOT has_quantity_kg
-                          AND NOT has_net_weight_kg
-                          AND has_gross_weight_kg
-                    ) / COUNT(*)
-                FROM read_parquet({synchronized_sql})
             )
             """
         )
 
+        queries.append(
+            f"""
+            SELECT
+                'gross_net_weight_relationship' AS diagnostic_group,
+                metric,
+                value,
+                CASE
+                    WHEN metric = 'gross_below_net_rows'
+                    THEN 100.0 * value / NULLIF(
+                        MAX(CASE WHEN metric = 'comparable_rows'
+                            THEN value END) OVER (),
+                        0
+                    )
+                    ELSE NULL
+                END AS percentage,
+                NULL::INTEGER AS year,
+                NULL::VARCHAR AS category_1,
+                NULL::VARCHAR AS category_2,
+                NULL::VARCHAR AS category_3
+            FROM (
+                SELECT
+                    'comparable_rows' AS metric,
+                    CAST(COUNT(*) AS DOUBLE) AS value
+                FROM read_parquet({prepared_sql})
+                WHERE gross_weight_kg > 0
+                  AND net_weight_kg > 0
+
+                UNION ALL
+
+                SELECT
+                    'gross_below_net_rows',
+                    CAST(COUNT(*) FILTER (
+                        WHERE gross_weight_kg < net_weight_kg
+                    ) AS DOUBLE)
+                FROM read_parquet({prepared_sql})
+                WHERE gross_weight_kg > 0
+                  AND net_weight_kg > 0
+
+                UNION ALL
+
+                SELECT
+                    'median_ratio',
+                    MEDIAN(gross_weight_kg / net_weight_kg)
+                FROM read_parquet({prepared_sql})
+                WHERE gross_weight_kg > 0
+                  AND net_weight_kg > 0
+
+                UNION ALL
+
+                SELECT
+                    'p10_ratio',
+                    QUANTILE_CONT(
+                        gross_weight_kg / net_weight_kg, 0.10
+                    )
+                FROM read_parquet({prepared_sql})
+                WHERE gross_weight_kg > 0
+                  AND net_weight_kg > 0
+
+                UNION ALL
+
+                SELECT
+                    'p90_ratio',
+                    QUANTILE_CONT(
+                        gross_weight_kg / net_weight_kg, 0.90
+                    )
+                FROM read_parquet({prepared_sql})
+                WHERE gross_weight_kg > 0
+                  AND net_weight_kg > 0
+            )
+            """
+        )
+
+        queries.append(
+            f"""
+            SELECT
+                'gross_net_weight_by_evidence_state'
+                    AS diagnostic_group,
+                CASE
+                    WHEN NOT COALESCE(
+                        is_gross_weight_estimated, FALSE
+                    ) AND NOT COALESCE(
+                        is_net_weight_estimated, FALSE
+                    ) THEN 'reported_reported'
+                    WHEN NOT COALESCE(
+                        is_gross_weight_estimated, FALSE
+                    ) AND COALESCE(
+                        is_net_weight_estimated, FALSE
+                    ) THEN 'reported_estimated'
+                    WHEN COALESCE(
+                        is_gross_weight_estimated, FALSE
+                    ) AND NOT COALESCE(
+                        is_net_weight_estimated, FALSE
+                    ) THEN 'estimated_reported'
+                    ELSE 'estimated_estimated'
+                END AS metric,
+                CAST(COUNT(*) AS DOUBLE) AS value,
+                100.0 * COUNT(*) FILTER (
+                    WHERE gross_weight_kg < net_weight_kg
+                ) / COUNT(*) AS percentage,
+                NULL::INTEGER AS year,
+                CAST(MEDIAN(
+                    gross_weight_kg / net_weight_kg
+                ) AS VARCHAR) AS category_1,
+                CAST(QUANTILE_CONT(
+                    gross_weight_kg / net_weight_kg, 0.10
+                ) AS VARCHAR) AS category_2,
+                CAST(QUANTILE_CONT(
+                    gross_weight_kg / net_weight_kg, 0.90
+                ) AS VARCHAR) AS category_3
+            FROM read_parquet({prepared_sql})
+            WHERE gross_weight_kg > 0
+              AND net_weight_kg > 0
+            GROUP BY
+                CASE
+                    WHEN NOT COALESCE(
+                        is_gross_weight_estimated, FALSE
+                    ) AND NOT COALESCE(
+                        is_net_weight_estimated, FALSE
+                    ) THEN 'reported_reported'
+                    WHEN NOT COALESCE(
+                        is_gross_weight_estimated, FALSE
+                    ) AND COALESCE(
+                        is_net_weight_estimated, FALSE
+                    ) THEN 'reported_estimated'
+                    WHEN COALESCE(
+                        is_gross_weight_estimated, FALSE
+                    ) AND NOT COALESCE(
+                        is_net_weight_estimated, FALSE
+                    ) THEN 'estimated_reported'
+                    ELSE 'estimated_estimated'
+                END
+            """
+        )
+
+        queries.append(
+            f"""
+            SELECT
+                'gross_weight_without_net_by_year'
+                    AS diagnostic_group,
+                'gross_without_net' AS metric,
+                CAST(COUNT(*) AS DOUBLE) AS value,
+                100.0 * COUNT(*) / SUM(COUNT(*)) OVER ()
+                    AS percentage,
+                CAST(year AS INTEGER) AS year,
+                NULL::VARCHAR AS category_1,
+                NULL::VARCHAR AS category_2,
+                NULL::VARCHAR AS category_3
+            FROM read_parquet({prepared_sql})
+            WHERE gross_weight_kg > 0
+              AND NOT COALESCE(net_weight_kg > 0, FALSE)
+            GROUP BY year
+            """
+        )
+
+        if hs_column is not None:
+            queries.append(
+                f"""
+                SELECT
+                    'gross_weight_without_net_by_hs'
+                        AS diagnostic_group,
+                    CAST({hs_column} AS VARCHAR) AS metric,
+                    CAST(COUNT(*) AS DOUBLE) AS value,
+                    100.0 * COUNT(*) / SUM(COUNT(*)) OVER ()
+                        AS percentage,
+                    NULL::INTEGER AS year,
+                    NULL::VARCHAR AS category_1,
+                    NULL::VARCHAR AS category_2,
+                    NULL::VARCHAR AS category_3
+                FROM read_parquet({prepared_sql})
+                WHERE gross_weight_kg > 0
+                  AND NOT COALESCE(net_weight_kg > 0, FALSE)
+                GROUP BY {hs_column}
+                """
+            )
+
         # ==============================================================
-        # 10. Synchronization status
+        # 13. Synchronization status
         # ==============================================================
 
         queries.append(
@@ -1171,7 +1837,7 @@ def build_quantity_diagnostics(
         )
 
         # ==============================================================
-        # 11. Synchronization outcome by year
+        # 14. Synchronization outcome by year
         # ==============================================================
 
         queries.append(
@@ -1199,7 +1865,7 @@ def build_quantity_diagnostics(
         )
 
         # ==============================================================
-        # 12. Before-versus-after modification
+        # 15. Before-versus-after modification
         # ==============================================================
 
         queries.append(
@@ -1284,7 +1950,7 @@ def build_quantity_diagnostics(
         )
 
         # ==============================================================
-        # 13. Magnitude of numeric change for reconciled rows
+        # 16. Magnitude of numeric change for reconciled rows
         # ==============================================================
 
         queries.append(
@@ -1370,7 +2036,7 @@ def build_quantity_diagnostics(
         )
 
         # ==============================================================
-        # 14. Remaining kg gaps
+        # 17. Remaining kg gaps
         # ==============================================================
 
         queries.append(
@@ -1413,7 +2079,7 @@ def build_quantity_diagnostics(
         )
 
         # ==============================================================
-        # 15. Unresolved conflict severity
+        # 18. Unresolved conflict severity
         # ==============================================================
 
         queries.append(
@@ -1476,7 +2142,7 @@ def build_quantity_diagnostics(
         )
 
         # ==============================================================
-        # 16. Conflict distribution by HS
+        # 19. Conflict distribution by HS
         # ==============================================================
 
         if hs_column is not None:
@@ -1535,13 +2201,12 @@ def build_quantity_diagnostics(
             COPY (
                 {union_query}
             )
-            TO ?
+            TO {output_sql}
             (
                 FORMAT PARQUET,
                 COMPRESSION ZSTD
             )
-            """,
-            [str(output_path)],
+            """
         )
 
         # ==============================================================

@@ -129,12 +129,19 @@ def build_quantity_reconciliation_evidence(
 
                         CASE
                             WHEN alt_quantity_unit_code = 8
+                                AND LOWER(TRIM(alt_quantity_unit)) = 'kg'
                                 AND alt_quantity > 0
                                 THEN alt_quantity
 
                             WHEN alt_quantity_unit_code = 21
+                                AND UPPER(TRIM(alt_quantity_unit)) = '1000 KG'
                                 AND alt_quantity > 0
                                 THEN alt_quantity * 1000.0
+
+                            WHEN alt_quantity_unit_code = 15
+                                AND LOWER(TRIM(alt_quantity_unit)) = 'g'
+                                AND alt_quantity > 0
+                                THEN alt_quantity * 0.001
 
                             ELSE NULL
                         END AS alt_quantity_kg_candidate,
@@ -147,26 +154,83 @@ def build_quantity_reconciliation_evidence(
 
                         CASE
                             WHEN alt_quantity_unit_code = 8
+                                AND LOWER(TRIM(alt_quantity_unit)) = 'kg'
                                 AND alt_quantity > 0
                                 THEN 'kg'
 
                             WHEN alt_quantity_unit_code = 21
+                                AND UPPER(TRIM(alt_quantity_unit)) = '1000 KG'
                                 AND alt_quantity > 0
                                 THEN '1000kg_converted'
+
+                            WHEN alt_quantity_unit_code = 15
+                                AND LOWER(TRIM(alt_quantity_unit)) = 'g'
+                                AND alt_quantity > 0
+                                THEN 'g_converted'
 
                             ELSE NULL
                         END AS alt_quantity_kg_source,
 
                         CASE
-                            WHEN alt_quantity_unit_code IN (8, 21)
+                            WHEN (
+                                    (
+                                        alt_quantity_unit_code = 8
+                                        AND LOWER(TRIM(alt_quantity_unit)) = 'kg'
+                                    )
+                                    OR
+                                    (
+                                        alt_quantity_unit_code = 21
+                                        AND UPPER(TRIM(alt_quantity_unit)) = '1000 KG'
+                                    )
+                                    OR
+                                    (
+                                        alt_quantity_unit_code = 15
+                                        AND LOWER(TRIM(alt_quantity_unit)) = 'g'
+                                    )
+                                )
                                 AND alt_quantity > 0
-                                AND COALESCE(is_alt_quantity_estimated, FALSE) = FALSE
+                                AND is_alt_quantity_estimated = FALSE
                                 THEN 'reported'
 
-                            WHEN alt_quantity_unit_code IN (8, 21)
+                            WHEN (
+                                    (
+                                        alt_quantity_unit_code = 8
+                                        AND LOWER(TRIM(alt_quantity_unit)) = 'kg'
+                                    )
+                                    OR
+                                    (
+                                        alt_quantity_unit_code = 21
+                                        AND UPPER(TRIM(alt_quantity_unit)) = '1000 KG'
+                                    )
+                                    OR
+                                    (
+                                        alt_quantity_unit_code = 15
+                                        AND LOWER(TRIM(alt_quantity_unit)) = 'g'
+                                    )
+                                )
                                 AND alt_quantity > 0
-                                AND COALESCE(is_alt_quantity_estimated, FALSE) = TRUE
+                                AND is_alt_quantity_estimated = TRUE
                                 THEN 'estimated'
+
+                            WHEN (
+                                    (
+                                        alt_quantity_unit_code = 8
+                                        AND LOWER(TRIM(alt_quantity_unit)) = 'kg'
+                                    )
+                                    OR
+                                    (
+                                        alt_quantity_unit_code = 21
+                                        AND UPPER(TRIM(alt_quantity_unit)) = '1000 KG'
+                                    )
+                                    OR
+                                    (
+                                        alt_quantity_unit_code = 15
+                                        AND LOWER(TRIM(alt_quantity_unit)) = 'g'
+                                    )
+                                )
+                                AND alt_quantity > 0
+                                AND is_alt_quantity_estimated IS NULL
+                                THEN 'unknown'
 
                             ELSE 'unavailable'
                         END AS alt_quantity_kg_status,
