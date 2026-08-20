@@ -1335,6 +1335,175 @@ def build_quantity_diagnostics(
         )
 
         # ==============================================================
+        # Three-source kg consensus diagnostics
+        # ==============================================================
+
+        # ==============================================================
+        # Three-source kg consensus + provenance diagnostics
+        # ==============================================================
+
+        queries.append(
+            f"""
+            WITH three_source AS (
+                SELECT
+                    quantity_kg_candidate AS q,
+                    net_weight_kg_candidate AS n,
+                    alt_quantity_kg_candidate AS a,
+
+                    quantity_kg_status AS q_status,
+                    net_weight_kg_status AS n_status,
+                    alt_quantity_kg_status AS a_status,
+
+                    ABS(
+                        quantity_kg_candidate
+                        - net_weight_kg_candidate
+                    )
+                    / (
+                        (
+                            ABS(quantity_kg_candidate)
+                            + ABS(net_weight_kg_candidate)
+                        ) / 2.0
+                    ) AS q_n_gap,
+
+                    ABS(
+                        quantity_kg_candidate
+                        - alt_quantity_kg_candidate
+                    )
+                    / (
+                        (
+                            ABS(quantity_kg_candidate)
+                            + ABS(alt_quantity_kg_candidate)
+                        ) / 2.0
+                    ) AS q_a_gap,
+
+                    ABS(
+                        net_weight_kg_candidate
+                        - alt_quantity_kg_candidate
+                    )
+                    / (
+                        (
+                            ABS(net_weight_kg_candidate)
+                            + ABS(alt_quantity_kg_candidate)
+                        ) / 2.0
+                    ) AS n_a_gap
+
+                FROM read_parquet({evidence_sql})
+
+                WHERE quantity_kg_candidate > 0
+                  AND net_weight_kg_candidate > 0
+                  AND alt_quantity_kg_candidate > 0
+            ),
+
+            classified AS (
+                SELECT
+                    *,
+                    CASE
+                        WHEN q_n_gap <= {agreement_tolerance}
+                         AND q_a_gap <= {agreement_tolerance}
+                         AND n_a_gap <= {agreement_tolerance}
+                            THEN 'all_three_agree'
+
+                        WHEN q_n_gap <= {agreement_tolerance}
+                         AND q_a_gap > {agreement_tolerance}
+                         AND n_a_gap > {agreement_tolerance}
+                            THEN 'quantity_net_agree_alt_outlier'
+
+                        WHEN q_a_gap <= {agreement_tolerance}
+                         AND q_n_gap > {agreement_tolerance}
+                         AND n_a_gap > {agreement_tolerance}
+                            THEN 'quantity_alt_agree_net_outlier'
+
+                        WHEN n_a_gap <= {agreement_tolerance}
+                         AND q_n_gap > {agreement_tolerance}
+                         AND q_a_gap > {agreement_tolerance}
+                            THEN 'net_alt_agree_quantity_outlier'
+
+                        ELSE 'no_pair_agrees'
+                    END AS consensus_status
+
+                FROM three_source
+            ),
+
+            consensus_summary AS (
+                SELECT
+                    consensus_status,
+                    COUNT(*) AS n_rows
+                FROM classified
+                GROUP BY consensus_status
+            ),
+
+            provenance_summary AS (
+                SELECT
+                    consensus_status,
+                    COALESCE(q_status, 'unknown') AS q_status,
+                    COALESCE(n_status, 'unknown') AS n_status,
+                    COALESCE(a_status, 'unknown') AS a_status,
+                    COUNT(*) AS n_rows
+                FROM classified
+                GROUP BY
+                    consensus_status,
+                    COALESCE(q_status, 'unknown'),
+                    COALESCE(n_status, 'unknown'),
+                    COALESCE(a_status, 'unknown')
+            )
+
+            -- ----------------------------------------------------------
+            -- Overall three-source consensus
+            -- ----------------------------------------------------------
+
+            SELECT
+                'three_source_consensus'
+                    AS diagnostic_group,
+
+                consensus_status AS metric,
+
+                CAST(n_rows AS DOUBLE) AS value,
+
+                100.0 * n_rows
+                    / SUM(n_rows) OVER ()
+                    AS percentage,
+
+                NULL::INTEGER AS year,
+
+                NULL::VARCHAR AS category_1,
+                NULL::VARCHAR AS category_2,
+                NULL::VARCHAR AS category_3
+
+            FROM consensus_summary
+
+            UNION ALL
+
+            -- ----------------------------------------------------------
+            -- Provenance within each consensus outcome
+            -- ----------------------------------------------------------
+
+            SELECT
+                'three_source_consensus_by_evidence_state'
+                    AS diagnostic_group,
+
+                p.consensus_status AS metric,
+
+                CAST(p.n_rows AS DOUBLE) AS value,
+
+                100.0 * p.n_rows
+                    / NULLIF(c.n_rows, 0)
+                    AS percentage,
+
+                NULL::INTEGER AS year,
+
+                p.q_status AS category_1,
+                p.n_status AS category_2,
+                p.a_status AS category_3
+
+            FROM provenance_summary AS p
+
+            INNER JOIN consensus_summary AS c
+                ON p.consensus_status = c.consensus_status
+            """
+        )
+
+
+        # ==============================================================
         # 9. Net weight with supplementary physical quantities
         # ==============================================================
 

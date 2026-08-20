@@ -28,12 +28,30 @@ from vacoda.config.quantity import QuantityConfig
 from vacoda.utils.display import get_symbols
 from vacoda.utils.markdown import markdown_image
 from vacoda.utils.sql import sql_literal
-
+from vacoda.utils.display import get_table_figure_layout, get_table_pair
+from vacoda.visualization.relationships import plot_figure_pair
 
 # ======================================================================
 # Helpers
 # ======================================================================
 
+UNIT_COLORS = {
+    "kg": "tab:orange",
+    "N/A": "tab:blue",
+    "m": "tab:green",
+    "m²": "tab:red",
+    "m³": "tab:purple",
+    "u": "tab:brown",
+    "1000u": "tab:pink",
+    "12u": "tab:gray",
+    "2u": "tab:olive",
+    "BBL": "tab:cyan",
+    "GT": "goldenrod",
+    "U (jeu/pack)": "teal",
+    "ct/l": "slategray",
+    "l": "steelblue",
+    "kg 90% sdt": "darkkhaki",
+}
 
 def valid_output(path: Path) -> bool:
     return path.is_file() and path.stat().st_size > 0
@@ -177,36 +195,69 @@ def _plot_unit_distribution(
     diagnostics: pd.DataFrame,
     diagnostic_group: str,
     title: str,
+    height: float = 4.5,
+    width: float = 10.0,
     output_path: Path,
 ) -> None:
     frame = _diagnostic_group(diagnostics, diagnostic_group)
+
     if frame.empty:
         return
+
     frame = (
         frame.groupby("metric", as_index=False)
         .agg(rows=("value", "sum"))
-        .sort_values("rows", ascending=False)
+        .sort_values("rows", ascending=True)
     )
+
     total = frame["rows"].sum()
+
     if total <= 0:
         return
+
     frame["share"] = 100.0 * frame["rows"] / total
-    figure, axis = plt.subplots(figsize=(10, 6))
-    bars = axis.bar(frame["metric"].astype(str), frame["share"])
+
+    figure_height = max(height, 0.38 * len(frame))
+
+    figure, axis = plt.subplots(
+        figsize=(width, figure_height)
+    )
+
+    bars = axis.barh(
+        frame["metric"].astype(str),
+        frame["share"],
+    )
+
     axis.bar_label(
         bars,
-        labels=[f"{value:.1f}%" for value in frame["share"]],
-        padding=3,
+        labels=[
+            f"{value:.1f}%"
+            if value >= 0.1
+            else f"{value:.3f}%"
+            for value in frame["share"]
+        ],
+        padding=4,
         fontsize=8,
     )
-    axis.set_title(title)
-    axis.set_xlabel("Quantity unit")
-    axis.set_ylabel("Share of observations (%)")
-    axis.tick_params(axis="x", labelrotation=35)
-    axis.grid(axis="y", linestyle="--", alpha=0.4)
-    axis.set_axisbelow(True)
-    _save_figure(figure, output_path)
 
+    axis.set_title(title)
+    axis.set_xlabel("Share of observations (%)")
+    axis.set_ylabel("Quantity unit")
+
+    axis.grid(
+        axis="x",
+        linestyle="--",
+        alpha=0.4,
+    )
+    axis.set_axisbelow(True)
+
+    # Leave room for labels at the end of bars.
+    axis.set_xlim(
+        0,
+        max(frame["share"].max() * 1.15, 5),
+    )
+
+    _save_figure(figure, output_path)
 
 def _plot_unit_share_by_year(
     *,
@@ -217,8 +268,10 @@ def _plot_unit_share_by_year(
 ) -> None:
     frame = _diagnostic_group(diagnostics, diagnostic_group)
     frame = frame.dropna(subset=["year", "metric", "percentage"])
+
     if frame.empty:
         return
+
     pivot = frame.pivot_table(
         index="year",
         columns="metric",
@@ -226,14 +279,33 @@ def _plot_unit_share_by_year(
         aggfunc="sum",
         fill_value=0.0,
     )
+
+    colors = [
+        UNIT_COLORS.get(str(column), "lightgray")
+        for column in pivot.columns
+    ]
+
     figure, axis = plt.subplots(figsize=(11, 6))
-    pivot.plot(kind="bar", stacked=True, ax=axis)
+
+    pivot.plot(
+        kind="bar",
+        stacked=True,
+        ax=axis,
+        color=colors,
+    )
+
     axis.set_title(title)
     axis.set_xlabel("Year")
     axis.set_ylabel("Share of observations (%)")
     axis.set_ylim(0, 100)
     axis.grid(axis="y", linestyle="--", alpha=0.4)
-    axis.legend(title="Unit", bbox_to_anchor=(1.02, 1), loc="upper left")
+
+    axis.legend(
+        title="Unit",
+        bbox_to_anchor=(1.02, 1),
+        loc="upper left",
+    )
+
     _save_figure(figure, output_path)
 
 
@@ -457,32 +529,84 @@ def _plot_m3_by_hs(
     title: str,
     output_path: Path,
     maximum_codes: int = 20,
+    height: float = 6.0,
 ) -> None:
-    frame = _diagnostic_group(diagnostics, diagnostic_group)
+    frame = _diagnostic_group(
+        diagnostics,
+        diagnostic_group,
+    )
+
     if frame.empty:
         return
+
     frame = (
         frame.groupby("metric", as_index=False)
         .agg(rows=("value", "sum"))
         .nlargest(maximum_codes, "rows")
         .sort_values("rows", ascending=True)
     )
+
     if frame.empty:
         return
-    figure_height = max(6.0, 0.32 * len(frame) + 2.0)
-    figure, axis = plt.subplots(figsize=(10, figure_height))
-    bars = axis.barh(frame["metric"].astype(str), frame["rows"])
+
+    # HS codes are categorical labels, even though they look numeric.
+    labels = frame["metric"].astype(str).tolist()
+    values = frame["rows"].astype(float).to_numpy()
+
+    y_positions = range(len(frame))
+
+    figure_height = max(
+        height,
+        0.32 * len(frame) + 2.0,
+    )
+
+    figure, axis = plt.subplots(
+        figsize=(10, figure_height)
+    )
+
+    bars = axis.barh(
+        y_positions,
+        values,
+    )
+
+    axis.set_yticks(
+        list(y_positions)
+    )
+    axis.set_yticklabels(
+        labels
+    )
+
     axis.bar_label(
         bars,
-        labels=[f"{int(value):,}" for value in frame["rows"]],
+        labels=[
+            f"{int(value):,}"
+            for value in values
+        ],
         padding=3,
         fontsize=8,
     )
+
     axis.set_title(title)
     axis.set_xlabel("Number of observations")
     axis.set_ylabel("HS code")
-    axis.grid(axis="x", linestyle="--", alpha=0.4)
-    _save_figure(figure, output_path)
+
+    axis.grid(
+        axis="x",
+        linestyle="--",
+        alpha=0.4,
+    )
+    axis.set_axisbelow(True)
+
+    # Give the labels at the end of the bars some room.
+    axis.set_xlim(
+        0,
+        max(values) * 1.15,
+    )
+
+    _save_figure(
+        figure,
+        output_path,
+    )
 
 
 # ======================================================================
@@ -762,6 +886,153 @@ def build_quantity_report(
                 ["Median ratio", "Within 1%", "Within 5%"],
             )
 
+
+        three_source_consensus = _diagnostic_group(
+            diagnostics,
+            "three_source_consensus",
+        )
+
+        if three_source_consensus.empty:
+            three_source_consensus_display = pd.DataFrame()
+        else:
+            three_source_consensus_display = (
+                three_source_consensus[
+                    ["metric", "value", "percentage"]
+                ].copy()
+            )
+
+            three_source_consensus_display.columns = [
+                "Three-source outcome",
+                "Rows",
+                "Share of three-source rows (%)",
+            ]
+
+            three_source_consensus_display["Rows"] = (
+                three_source_consensus_display["Rows"]
+                .round()
+                .astype("Int64")
+            )
+
+            outcome_labels = {
+                "all_three_agree": "All three agree",
+                "quantity_net_agree_alt_outlier": (
+                    "Quantity + net weight agree; alt quantity differs"
+                ),
+                "quantity_alt_agree_net_outlier": (
+                    "Quantity + alt quantity agree; net weight differs"
+                ),
+                "net_alt_agree_quantity_outlier": (
+                    "Net weight + alt quantity agree; quantity differs"
+                ),
+                "no_pair_agrees": "No clear pairwise consensus",
+            }
+
+            three_source_consensus_display[
+                "Three-source outcome"
+            ] = three_source_consensus_display[
+                "Three-source outcome"
+            ].replace(outcome_labels)
+
+            three_source_consensus_display = (
+                three_source_consensus_display.sort_values(
+                    "Rows",
+                    ascending=False,
+                )
+            )
+
+
+        three_source_provenance = _diagnostic_group(
+            diagnostics,
+            "three_source_consensus_by_evidence_state",
+        )
+
+        if three_source_provenance.empty:
+            three_source_all_agree_provenance_display = pd.DataFrame()
+            three_source_outlier_provenance_display = pd.DataFrame()
+
+        else:
+            three_source_provenance = three_source_provenance[
+                [
+                    "metric",
+                    "category_1",
+                    "category_2",
+                    "category_3",
+                    "value",
+                    "percentage",
+                ]
+            ].copy()
+
+            three_source_provenance.columns = [
+                "Outcome",
+                "Quantity evidence",
+                "Net-weight evidence",
+                "Alt-quantity evidence",
+                "Rows",
+                "Share within outcome (%)",
+            ]
+
+            three_source_provenance["Rows"] = (
+                three_source_provenance["Rows"]
+                .round()
+                .astype("Int64")
+            )
+
+            outcome_labels = {
+                "all_three_agree": "All three agree",
+                "quantity_net_agree_alt_outlier": (
+                    "Quantity + net weight agree; alt quantity differs"
+                ),
+                "quantity_alt_agree_net_outlier": (
+                    "Quantity + alt quantity agree; net weight differs"
+                ),
+                "net_alt_agree_quantity_outlier": (
+                    "Net weight + alt quantity agree; quantity differs"
+                ),
+                "no_pair_agrees": "No clear pairwise consensus",
+            }
+
+            three_source_provenance["Outcome"] = (
+                three_source_provenance["Outcome"]
+                .replace(outcome_labels)
+            )
+
+            three_source_all_agree_provenance_display = (
+                three_source_provenance.loc[
+                    three_source_provenance["Outcome"].eq(
+                        "All three agree"
+                    )
+                ].copy()
+            )
+
+            three_source_all_agree_provenance_display = (
+                three_source_all_agree_provenance_display[
+                    [
+                        "Quantity evidence",
+                        "Net-weight evidence",
+                        "Alt-quantity evidence",
+                        "Rows",
+                        "Share within outcome (%)",
+                    ]
+                ].sort_values(
+                    "Rows",
+                    ascending=False,
+                )
+            )
+
+            three_source_outlier_provenance_display = (
+                three_source_provenance.loc[
+                    ~three_source_provenance["Outcome"].eq(
+                        "All three agree"
+                    )
+                ].copy()
+            )
+
+            three_source_outlier_provenance_display = (
+                three_source_outlier_provenance_display.sort_values(
+                    ["Outcome", "Rows"],
+                    ascending=[True, False],
+                )
+            )
         # --------------------------------------------------------------
         # Supplementary dimensions alongside net weight
         # --------------------------------------------------------------
@@ -1088,14 +1359,12 @@ def build_quantity_report(
             diagnostic_group="quantity_m3_by_hs",
             title="HS codes with quantity reported in cubic metres",
             output_path=figure_paths["quantity_m3_hs"],
-            height=700
         )
         _plot_m3_by_hs(
             diagnostics=diagnostics,
             diagnostic_group="alt_quantity_m3_by_hs",
             title="HS codes with alternate quantity reported in cubic metres",
             output_path=figure_paths["alt_quantity_m3_hs"],
-            height=700
         )
 
         # --------------------------------------------------------------
@@ -1184,18 +1453,29 @@ def build_quantity_report(
             "",
             "### 3.1 `quantity` unit distribution",
             "",
-            _markdown_table(quantity_units),
+            (
+                "The `quantity` field is expected to be reported in kilograms "
+                "or in a unit that is exactly convertible to kilograms. "
+                "Other units are retained for diagnostic purposes."
+            ),
             "",
         ]
-
         if figure_paths["quantity_units"].exists():
             lines.extend([
-                markdown_image(
-                    "Quantity unit distribution",
-                    figure_paths["quantity_units"],
-                    document_path=report_path,
-                    width=750,
+                get_table_figure_layout(
+                    quantity_units,
+                    markdown_image(
+                        "Quantity unit distribution",
+                        figure_paths["quantity_units"],
+                        document_path=report_path,
+                        width=650,
+                    ),
                 ),
+                "",
+            ])
+        else:
+            lines.extend([
+                _markdown_table(quantity_units),
                 "",
             ])
 
@@ -1203,23 +1483,30 @@ def build_quantity_report(
             "### 3.2 Canonical `alt_quantity` unit distribution",
             "",
             (
-                "Alternate quantities expressed as `kg`, `1000 KG`, or `g` are normalized to canonical "
-                "kilograms using exact scale conversions. Special mass bases such as `kg 90% sdt` "
-                "remain separate"
+                "Alternate quantities expressed as `kg`, `1000 KG`, or `g` "
+                "are normalized to canonical kilograms using exact scale "
+                "conversions. Special mass bases such as `kg 90% sdt` "
+                "remain separate."
             ),
-            "",
-            _markdown_table(alt_quantity_units),
             "",
         ])
 
         if figure_paths["alt_quantity_units"].exists():
             lines.extend([
-                markdown_image(
-                    "Canonical alternate quantity unit distribution",
-                    figure_paths["alt_quantity_units"],
-                    document_path=report_path,
-                    width=750,
+                get_table_figure_layout(
+                    alt_quantity_units,
+                    markdown_image(
+                        "Canonical alternate quantity unit distribution",
+                        figure_paths["alt_quantity_units"],
+                        document_path=report_path,
+                        width=650,
+                    ),
                 ),
+                "",
+            ])
+        else:
+            lines.extend([
+                _markdown_table(alt_quantity_units),
                 "",
             ])
 
@@ -1229,53 +1516,76 @@ def build_quantity_report(
             "Unit composition by year is retained to reveal changes in reporting practice.",
             "",
         ])
-        for key, caption in (
-            ("quantity_units_year", "Quantity units by year"),
-            ("alt_quantity_units_year", "Alternate quantity units by year"),
+
+        if (
+            figure_paths["quantity_units_year"].exists()
+            and figure_paths["alt_quantity_units_year"].exists()
         ):
-            if figure_paths[key].exists():
-                lines.extend([
+            lines.extend([
+                plot_figure_pair(
                     markdown_image(
-                        caption,
-                        figure_paths[key],
+                        "Quantity units by year",
+                        figure_paths["quantity_units_year"],
                         document_path=report_path,
-                        width=800,
+                        width=620,
                     ),
-                    "",
-                ])
+                    markdown_image(
+                        "Alternate quantity units by year",
+                        figure_paths["alt_quantity_units_year"],
+                        document_path=report_path,
+                        width=620,
+                    ),
+                ),
+                "",
+            ])
 
         lines.extend([
             "### 3.4 Cubic-metre observations by HS code",
             "",
             "**`quantity` reported in m³**",
             "",
-            _markdown_table(quantity_m3),
-            "",
         ])
+
         if figure_paths["quantity_m3_hs"].exists():
             lines.extend([
-                markdown_image(
-                    "Quantity m³ observations by HS code",
-                    figure_paths["quantity_m3_hs"],
-                    document_path=report_path,
-                    width=750,
+                get_table_figure_layout(
+                    quantity_m3,
+                    markdown_image(
+                        "Quantity m³ observations by HS code",
+                        figure_paths["quantity_m3_hs"],
+                        document_path=report_path,
+                        width=650,
+                    ),
                 ),
                 "",
             ])
+        else:
+            lines.extend([
+                _markdown_table(quantity_m3),
+                "",
+            ])
+
         lines.extend([
             "**`alt_quantity` reported in m³**",
             "",
-            _markdown_table(alt_quantity_m3),
-            "",
         ])
+
         if figure_paths["alt_quantity_m3_hs"].exists():
             lines.extend([
-                markdown_image(
-                    "Alternate quantity m³ observations by HS code",
-                    figure_paths["alt_quantity_m3_hs"],
-                    document_path=report_path,
-                    width=750,
+                get_table_figure_layout(
+                    alt_quantity_m3,
+                    markdown_image(
+                        "Alternate quantity m³ observations by HS code",
+                        figure_paths["alt_quantity_m3_hs"],
+                        document_path=report_path,
+                        width=650,
+                    ),
                 ),
+                "",
+            ])
+        else:
+            lines.extend([
+                _markdown_table(alt_quantity_m3),
                 "",
             ])
 
@@ -1312,6 +1622,52 @@ def build_quantity_report(
             "### 4.3 Alternate-quantity agreement with existing kg evidence",
             "",
             _markdown_table(alt_agreement_display),
+            "",
+        ])
+        lines.extend([
+            "### 4.4 Three-source consensus diagnostics",
+            "",
+            (
+                "For rows where quantity kg, net weight, and canonical "
+                "alternate-quantity kg are all available, the three pairwise "
+                "comparisons are evaluated using the configured agreement "
+                f"tolerance of {100 * agreement_tolerance:.2f}%. "
+                "These diagnostics identify whether all three measurements "
+                "agree or whether two sources form a consensus against a "
+                "single differing source."
+            ),
+            "",
+            _markdown_table(three_source_consensus_display),
+            "",
+        ])
+        lines.extend([
+            "### 4.5 Evidence provenance within three-source agreement",
+            "",
+            (
+                "The all-three-agree population is separated by the "
+                "reported/estimated provenance of each kg candidate. "
+                "Percentages are calculated within the all-three-agree "
+                "population rather than across the full dataset."
+            ),
+            "",
+            _markdown_table(
+                three_source_all_agree_provenance_display
+            ),
+            "",
+        ])
+        lines.extend([
+            "### 4.6 Evidence provenance within three-source disagreements",
+            "",
+            (
+                "For three-source rows that do not show complete "
+                "agreement, provenance is shown separately for each "
+                "pairwise-consensus or no-consensus outcome. "
+                "Percentages are calculated within each outcome."
+            ),
+            "",
+            _markdown_table(
+                three_source_outlier_provenance_display
+            ),
             "",
         ])
         if not alt_stats_display.empty:
@@ -1359,20 +1715,27 @@ def build_quantity_report(
             f"| Within 10% | {_format_percent(agreement_lookup.get('within_10pct_share'))} |",
             "",
         ])
-        for key, caption in (
-            ("agreement_year", "Quantity and net-weight agreement by year"),
-            ("gap_distribution", "Quantity and net-weight relative-gap distribution"),
+        if (
+            figure_paths["agreement_year"].exists()
+            and figure_paths["gap_distribution"].exists()
         ):
-            if figure_paths[key].exists():
-                lines.extend([
+            lines.extend([
+                plot_figure_pair(
                     markdown_image(
-                        caption,
-                        figure_paths[key],
+                        "Quantity and net-weight agreement by year",
+                        figure_paths["agreement_year"],
                         document_path=report_path,
-                        width=800,
+                        width=600,
                     ),
-                    "",
-                ])
+                    markdown_image(
+                        "Quantity and net-weight relative-gap distribution",
+                        figure_paths["gap_distribution"],
+                        document_path=report_path,
+                        width=600,
+                    ),
+                ),
+                "",
+            ])
 
         # Supplementary dimensions
         lines.extend([
@@ -1413,17 +1776,24 @@ def build_quantity_report(
             "",
             "### 7.1 Positive net-weight coverage by year and estimation state",
             "",
-            _markdown_table(net_weight_year_display),
-            "",
         ])
+
         if figure_paths["net_weight_year"].exists():
             lines.extend([
-                markdown_image(
-                    "Net-weight coverage by year",
-                    figure_paths["net_weight_year"],
-                    document_path=report_path,
-                    width=800,
+                get_table_figure_layout(
+                    net_weight_year_display,
+                    markdown_image(
+                        "Net-weight coverage by year",
+                        figure_paths["net_weight_year"],
+                        document_path=report_path,
+                        width=650,
+                    ),
                 ),
+                "",
+            ])
+        else:
+            lines.extend([
+                _markdown_table(net_weight_year_display),
                 "",
             ])
         lines.extend([
@@ -1435,17 +1805,24 @@ def build_quantity_report(
                 "raw linear histogram."
             ),
             "",
-            _markdown_table(net_weight_distribution_display),
-            "",
         ])
+
         if figure_paths["net_weight_distribution"].exists():
             lines.extend([
-                markdown_image(
-                    "Net-weight log distribution by year",
-                    figure_paths["net_weight_distribution"],
-                    document_path=report_path,
-                    width=800,
+                get_table_figure_layout(
+                    net_weight_distribution_display,
+                    markdown_image(
+                        "Net-weight log distribution by year",
+                        figure_paths["net_weight_distribution"],
+                        document_path=report_path,
+                        width=650,
+                    ),
                 ),
+                "",
+            ])
+        else:
+            lines.extend([
+                _markdown_table(net_weight_distribution_display),
                 "",
             ])
 
@@ -1533,28 +1910,43 @@ def build_quantity_report(
         ])
         if figure_paths["hierarchy"].exists():
             lines.extend([
-                markdown_image(
-                    "Cumulative kg coverage by current synchronization step",
-                    figure_paths["hierarchy"],
-                    document_path=report_path,
-                    width=800,
+                get_table_figure_layout(
+                    hierarchy_display,
+                    markdown_image(
+                        "Cumulative kg coverage by current synchronization step",
+                        figure_paths["hierarchy"],
+                        document_path=report_path,
+                        width=650,
+                    ),
                 ),
+                "",
+            ])
+        else:
+            lines.extend([
+                _markdown_table(hierarchy_display),
                 "",
             ])
         lines.extend([
             "### 9.2 Synchronization statuses",
             "",
-            _markdown_table(sync_status_display),
-            "",
         ])
+
         if figure_paths["sync_status_year"].exists():
             lines.extend([
-                markdown_image(
-                    "Quantity synchronization outcomes by year",
-                    figure_paths["sync_status_year"],
-                    document_path=report_path,
-                    width=800,
+                get_table_figure_layout(
+                    sync_status_display,
+                    markdown_image(
+                        "Quantity synchronization outcomes by year",
+                        figure_paths["sync_status_year"],
+                        document_path=report_path,
+                        width=650,
+                    ),
                 ),
+                "",
+            ])
+        else:
+            lines.extend([
+                _markdown_table(sync_status_display),
                 "",
             ])
         lines.extend([
@@ -1585,14 +1977,17 @@ def build_quantity_report(
             f"| p90 relative gap | {_format_percent(conflict_lookup.get('p90_relative_gap'))} |",
             f"| p95 relative gap | {_format_percent(conflict_lookup.get('p95_relative_gap'))} |",
             "",
-            "### 10.2 HS codes with unresolved conflicts",
+        ])
+        lines.extend([
+            "### 10.2 HS structure of unresolved rows",
             "",
-            _markdown_table(conflict_hs_display),
+            get_table_pair(
+                conflict_hs_display,
+                missing_hs_display,
+            ),
             "",
-            "### 10.3 HS codes with missing synchronized kg",
-            "",
-            _markdown_table(missing_hs_display),
-            "",
+        ])
+        lines.extend([
             "## 11. Methodological interpretation",
             "",
             (

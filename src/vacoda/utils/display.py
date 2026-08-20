@@ -122,3 +122,58 @@ def progress_bar(
         dynamic_ncols=True,
         leave=leave,
     )
+
+def get_table_pair(
+    left: pd.DataFrame,
+    right: pd.DataFrame,
+) -> str:
+    return "\n".join([
+        '<table style="width:100%; border-collapse:collapse;">',
+        "<tr>",
+        '<td style="width:50%; vertical-align:top; padding-right:16px;">',
+        left.to_html(index=False, border=0),
+        "</td>",
+        '<td style="width:50%; vertical-align:top; padding-left:16px;">',
+        right.to_html(index=False, border=0),
+        "</td>",
+        "</tr>",
+        "</table>",
+    ])
+
+def get_html_table(dataframe: pd.DataFrame) -> str:
+    if dataframe.empty:
+        return "<em>No rows available.</em>"
+
+    return dataframe.to_html(
+        index=False,
+        border=0,
+        classes="dataframe",
+    )
+
+
+def get_table_figure_layout(
+    dataframe: pd.DataFrame,
+    image_markdown: str,
+    *,
+    table_width: int = 42,
+) -> str:
+    figure_width = 100 - table_width
+
+    return "\n".join([
+        '<table style="width:100%; border-collapse:collapse;">',
+        "<tr>",
+        (
+            f'<td style="width:{table_width}%; vertical-align:top; '
+            'padding-right:16px;">'
+        ),
+        get_html_table(dataframe),
+        "</td>",
+        (
+            f'<td style="width:{figure_width}%; vertical-align:top; '
+            'padding-left:16px;">'
+        ),
+        image_markdown,
+        "</td>",
+        "</tr>",
+        "</table>",
+    ])

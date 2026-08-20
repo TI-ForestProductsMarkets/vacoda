@@ -58,6 +58,51 @@ def _metric_axis_label(
     return label
 
 
+def plot_figure_pair(
+    left: str,
+    right: str,
+) -> str:
+    return "\n".join([
+        '<table style="width:100%; border-collapse:collapse;">',
+        "<tr>",
+        '<td style="width:50%; vertical-align:top; padding-right:8px;">',
+        left,
+        "</td>",
+        '<td style="width:50%; vertical-align:top; padding-left:8px;">',
+        right,
+        "</td>",
+        "</tr>",
+        "</table>",
+    ])
+
+
+def plot_side_by_side(
+    left: str,
+    right: str,
+    *,
+    left_width: int = 50,
+) -> str:
+    right_width = 100 - left_width
+
+    return "\n".join([
+        '<table style="width:100%; border-collapse:collapse;">',
+        "<tr>",
+        (
+            f'<td style="width:{left_width}%; vertical-align:top; '
+            'padding-right:12px;">'
+        ),
+        left,
+        "</td>",
+        (
+            f'<td style="width:{right_width}%; vertical-align:top; '
+            'padding-left:12px;">'
+        ),
+        right,
+        "</td>",
+        "</tr>",
+        "</table>",
+    ])
+
 def plot_observed_vs_predicted_with_tolerance_bands(
     frame: pd.DataFrame,
     *,
