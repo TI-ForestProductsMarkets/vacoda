@@ -1,16 +1,49 @@
 """
 vacoda.quantity.synchronize
 
-Synchronize kg-based quantity evidence into a canonical quantity field.
+Synchronize canonical kg evidence into ``synchronized_quantity_kg``.
 
-The synchronization is deliberately conservative:
+Selection methodology
+---------------------
+1. Exact unit normalization is completed upstream and is not a
+   source-selection decision.
 
-- use the sole available kg source when only one exists;
-- reconcile both sources when they agree within tolerance;
-- leave conflicting observations unresolved when both sources disagree;
-- do not use gross weight as a quantity proxy unless explicitly enabled.
+2. Reported kg evidence always has precedence over estimated evidence.
 
-No fixed quantity-versus-net-weight source hierarchy is imposed.
+3. Among reported candidates:
+   - if quantity, alternate quantity, and net weight are all reported
+     and exactly equal, use the common value;
+   - otherwise, if any two reported candidates are exactly equal,
+     use that common value;
+   - otherwise resolve reported evidence using the fixed source order:
+
+         quantity > alt_quantity > net_weight
+
+4. Estimated evidence is considered only when no reported kg candidate
+   exists. Estimated candidates use the same source order:
+
+         quantity > alt_quantity > net_weight
+
+5. Gross weight does not participate in ordinary quantity synchronization
+   and remains diagnostic-only.
+
+The configured tolerance is retained for diagnostics but does not affect
+source selection.
+
+Supplementary quantity methodology
+-----------------------------------
+Non-kg physical quantities are preserved separately from canonical kg.
+
+- usable non-kg ``quantity`` has precedence;
+- otherwise usable non-kg ``alt_quantity`` is used;
+- canonical kg-equivalent values and unknown-unit values are excluded;
+- original quantity and alternate-quantity fields remain preserved.
+
+The resulting canonical fields are:
+
+    synchronized_quantity_kg
+    supplementary_quantity
+    supplementary_unit
 """
 
 from __future__ import annotations
@@ -22,6 +55,7 @@ import duckdb
 
 from vacoda.config.quantity import QuantityConfig
 from vacoda.utils.sql import sql_literal
+
 
 def synchronize_quantity(
     *,
@@ -119,6 +153,13 @@ def synchronize_quantity(
             f"{source_selection_method!r}"
         )
 
+    if use_gross_weight_proxy:
+        raise ValueError(
+            "Gross weight is diagnostic-only under the adopted "
+            "Quantity synchronization methodology and cannot be "
+            "used as a quantity proxy."
+        )
+
     logger.info(
         "Synchronizing Quantity observations."
     )
@@ -127,8 +168,13 @@ def synchronize_quantity(
         source_selection_method,
     )
     logger.info(
-        "Use gross weight as fallback proxy: %s",
-        use_gross_weight_proxy,
+        "Reported-source precedence: quantity > alt_quantity > net_weight"
+    )
+    logger.info(
+        "Estimated fallback precedence: quantity > alt_quantity > net_weight"
+    )
+    logger.info(
+        "Gross weight participates in synchronization: False"
     )
 
     con = duckdb.connect()
@@ -137,224 +183,364 @@ def synchronize_quantity(
 
         # --------------------------------------------------------------
         # The reconciliation evidence already contains all original
-        # prepared-input columns, so synchronization can operate directly
-        # on that artifact.
+        # prepared-input columns plus canonical Q/A/N kg candidates and
+        # reported/estimated provenance.
         #
+        # Synchronization therefore operates directly on that artifact.
         # No join back to prepared_input is required.
         # --------------------------------------------------------------
 
-        if use_gross_weight_proxy:
-            gross_weight_value_sql = """
-                WHEN NOT has_quantity_kg
-                     AND NOT has_net_weight_kg
-                     AND has_gross_weight_kg
-                THEN gross_weight_kg
-            """
-
-            gross_weight_source_sql = """
-                WHEN NOT has_quantity_kg
-                     AND NOT has_net_weight_kg
-                     AND has_gross_weight_kg
-                THEN 'gross_weight_proxy'
-            """
-
-            gross_weight_status_sql = """
-                WHEN NOT has_quantity_kg
-                     AND NOT has_net_weight_kg
-                     AND has_gross_weight_kg
-                THEN 'gross_weight_proxy'
-            """
-
-            gross_weight_estimated_sql = """
-                WHEN NOT has_quantity_kg
-                     AND NOT has_net_weight_kg
-                     AND has_gross_weight_kg
-                THEN NULL
-            """
-        else:
-            gross_weight_value_sql = ""
-            gross_weight_source_sql = ""
-            gross_weight_status_sql = ""
-            gross_weight_estimated_sql = ""
-
         query = f"""
             COPY (
+                WITH evidence AS (
+                    SELECT
+                        *,
+
+                        -- ------------------------------------------
+                        -- Reported kg candidates
+                        -- ------------------------------------------
+
+                        (
+                            quantity_kg_candidate > 0
+                            AND quantity_kg_status = 'reported'
+                        ) AS q_reported,
+
+                        (
+                            alt_quantity_kg_candidate > 0
+                            AND alt_quantity_kg_status = 'reported'
+                        ) AS a_reported,
+
+                        (
+                            net_weight_kg_candidate > 0
+                            AND net_weight_kg_status = 'reported'
+                        ) AS n_reported,
+
+                        -- ------------------------------------------
+                        -- Estimated kg candidates
+                        -- ------------------------------------------
+
+                        (
+                            quantity_kg_candidate > 0
+                            AND quantity_kg_status = 'estimated'
+                        ) AS q_estimated,
+
+                        (
+                            alt_quantity_kg_candidate > 0
+                            AND alt_quantity_kg_status = 'estimated'
+                        ) AS a_estimated,
+
+                        (
+                            net_weight_kg_candidate > 0
+                            AND net_weight_kg_status = 'estimated'
+                        ) AS n_estimated,
+
+                        -- ------------------------------------------
+                        -- Non-kg supplementary candidates
+                        -- ------------------------------------------
+
+                        (
+                            quantity > 0
+                            AND quantity_unit_code <> 8
+                            AND quantity_unit_code <> -1
+                        ) AS has_quantity_supplementary,
+
+                        (
+                            alt_quantity > 0
+                            AND alt_quantity_unit_code <> -1
+                            AND NOT (
+                                (
+                                    alt_quantity_unit_code = 8
+                                    AND LOWER(TRIM(alt_quantity_unit)) = 'kg'
+                                )
+                                OR (
+                                    alt_quantity_unit_code = 21
+                                    AND UPPER(TRIM(alt_quantity_unit)) = '1000 KG'
+                                )
+                                OR (
+                                    alt_quantity_unit_code = 15
+                                    AND LOWER(TRIM(alt_quantity_unit)) = 'g'
+                                )
+                            )
+                        ) AS has_alt_quantity_supplementary
+                        
+
+                    FROM read_parquet({evidence_sql})
+                ),
+
+                classified AS (
+                    SELECT
+                        *,
+
+                        CASE
+
+                            -- ======================================
+                            -- LEVEL 1: REPORTED EXACT AGREEMENT
+                            -- ======================================
+
+                            -- All three reported and exactly equal.
+                            WHEN q_reported
+                                 AND a_reported
+                                 AND n_reported
+                                 AND quantity_kg_candidate
+                                     = alt_quantity_kg_candidate
+                                 AND quantity_kg_candidate
+                                     = net_weight_kg_candidate
+                            THEN 'reported_three_exact'
+
+                            -- Quantity + alt quantity exactly equal.
+                            WHEN q_reported
+                                 AND a_reported
+                                 AND quantity_kg_candidate
+                                     = alt_quantity_kg_candidate
+                            THEN 'reported_pair_exact_quantity_alt'
+
+                            -- Quantity + net weight exactly equal.
+                            WHEN q_reported
+                                 AND n_reported
+                                 AND quantity_kg_candidate
+                                     = net_weight_kg_candidate
+                            THEN 'reported_pair_exact_quantity_net_weight'
+
+                            -- Alt quantity + net weight exactly equal.
+                            WHEN a_reported
+                                 AND n_reported
+                                 AND alt_quantity_kg_candidate
+                                     = net_weight_kg_candidate
+                            THEN 'reported_pair_exact_alt_net_weight'
+
+                            -- ======================================
+                            -- LEVEL 2: REPORTED SOURCE PRECEDENCE
+                            -- quantity > alt_quantity > net_weight
+                            -- ======================================
+
+                            WHEN q_reported
+                            THEN 'reported_quantity_precedence'
+
+                            WHEN a_reported
+                            THEN 'reported_alt_quantity_precedence'
+
+                            WHEN n_reported
+                            THEN 'reported_net_weight_precedence'
+
+                            -- ======================================
+                            -- LEVEL 3: ESTIMATED FALLBACK
+                            -- quantity > alt_quantity > net_weight
+                            -- ======================================
+
+                            WHEN q_estimated
+                            THEN 'estimated_quantity_fallback'
+
+                            WHEN a_estimated
+                            THEN 'estimated_alt_quantity_fallback'
+
+                            WHEN n_estimated
+                            THEN 'estimated_net_weight_fallback'
+
+                            -- ======================================
+                            -- NO USABLE KG EVIDENCE
+                            -- ======================================
+
+                            ELSE 'no_kg_evidence'
+
+                        END AS quantity_sync_rule
+
+                    FROM evidence
+                )
+
                 SELECT
-                    *,
+                    * EXCLUDE (
+                        q_reported,
+                        a_reported,
+                        n_reported,
+                        q_estimated,
+                        a_estimated,
+                        n_estimated,
+                        has_quantity_supplementary,
+                        has_alt_quantity_supplementary,
+                        quantity_sync_rule
+                    ),
 
                     -- ==============================================
                     -- Canonical synchronized kg quantity
                     -- ==============================================
 
-                    CASE
+                    CASE quantity_sync_rule
 
-                        -- Both sources exist and agree.
-                        --
-                        -- Neither source is treated as intrinsically
-                        -- superior; their mean is used as the
-                        -- reconciled value.
-                        WHEN has_quantity_kg
-                             AND has_net_weight_kg
-                             AND quantity_net_weight_agree = TRUE
-                        THEN
-                            (
-                                quantity_kg_candidate
-                                + net_weight_kg_candidate
-                            ) / 2.0
-
-                        -- Quantity is the only usable kg source.
-                        WHEN has_quantity_kg
-                             AND NOT has_net_weight_kg
+                        WHEN 'reported_three_exact'
                         THEN quantity_kg_candidate
 
-                        -- Net weight is the only usable kg source.
-                        WHEN NOT has_quantity_kg
-                             AND has_net_weight_kg
+                        WHEN 'reported_pair_exact_quantity_alt'
+                        THEN quantity_kg_candidate
+
+                        WHEN 'reported_pair_exact_quantity_net_weight'
+                        THEN quantity_kg_candidate
+
+                        WHEN 'reported_pair_exact_alt_net_weight'
+                        THEN alt_quantity_kg_candidate
+
+                        WHEN 'reported_quantity_precedence'
+                        THEN quantity_kg_candidate
+
+                        WHEN 'reported_alt_quantity_precedence'
+                        THEN alt_quantity_kg_candidate
+
+                        WHEN 'reported_net_weight_precedence'
                         THEN net_weight_kg_candidate
 
-                        {gross_weight_value_sql}
+                        WHEN 'estimated_quantity_fallback'
+                        THEN quantity_kg_candidate
 
-                        -- Both sources exist but disagree:
-                        -- deliberately unresolved.
+                        WHEN 'estimated_alt_quantity_fallback'
+                        THEN alt_quantity_kg_candidate
+
+                        WHEN 'estimated_net_weight_fallback'
+                        THEN net_weight_kg_candidate
+
                         ELSE NULL
 
                     END AS synchronized_quantity_kg,
 
+                    -- ==============================================
+                    -- Canonical supplementary quantity
+                    --
+                    -- Non-kg quantity has precedence over non-kg
+                    -- alt_quantity. Original source fields remain
+                    -- preserved in the output.
+                    -- ==============================================
+
+                    CASE
+                        WHEN has_quantity_supplementary
+                        THEN quantity
+
+                        WHEN has_alt_quantity_supplementary
+                        THEN alt_quantity
+
+                        ELSE NULL
+                    END AS supplementary_quantity,
+
+
+                    -- ==============================================
+                    -- Canonical supplementary unit
+                    -- ==============================================
+
+                    CASE
+                        WHEN has_quantity_supplementary
+                        THEN quantity_unit
+
+                        WHEN has_alt_quantity_supplementary
+                        THEN alt_quantity_unit
+
+                        ELSE NULL
+                    END AS supplementary_unit,
+
+
+                    -- ==============================================
+                    -- Supplementary source provenance
+                    -- ==============================================
+
+                    CASE
+                        WHEN has_quantity_supplementary
+                        THEN 'quantity'
+
+                        WHEN has_alt_quantity_supplementary
+                        THEN 'alt_quantity'
+
+                        ELSE 'unavailable'
+                    END AS supplementary_quantity_source,
+
+
+                    -- ==============================================
+                    -- Supplementary estimated-state provenance
+                    -- ==============================================
+
+                    CASE
+                        WHEN has_quantity_supplementary
+                        THEN COALESCE(
+                            is_quantity_estimated,
+                            FALSE
+                        )
+
+                        WHEN has_alt_quantity_supplementary
+                        THEN COALESCE(
+                            is_alt_quantity_estimated,
+                            FALSE
+                        )
+
+                        ELSE NULL
+                    END AS is_supplementary_quantity_estimated,
 
                     -- ==============================================
                     -- Source provenance
                     -- ==============================================
 
-                    CASE
+                    CASE quantity_sync_rule
 
-                        WHEN has_quantity_kg
-                             AND has_net_weight_kg
-                             AND quantity_net_weight_agree = TRUE
-                        THEN 'quantity_and_net_weight'
+                        WHEN 'reported_three_exact'
+                        THEN 'quantity_alt_quantity_net_weight'
 
-                        WHEN has_quantity_kg
-                             AND NOT has_net_weight_kg
+                        WHEN 'reported_pair_exact_quantity_alt'
+                        THEN 'quantity_alt_quantity'
+
+                        WHEN 'reported_pair_exact_quantity_net_weight'
+                        THEN 'quantity_net_weight'
+
+                        WHEN 'reported_pair_exact_alt_net_weight'
+                        THEN 'alt_quantity_net_weight'
+
+                        WHEN 'reported_quantity_precedence'
                         THEN 'quantity'
 
-                        WHEN NOT has_quantity_kg
-                             AND has_net_weight_kg
+                        WHEN 'reported_alt_quantity_precedence'
+                        THEN 'alt_quantity'
+
+                        WHEN 'reported_net_weight_precedence'
                         THEN 'net_weight'
 
-                        {gross_weight_source_sql}
+                        WHEN 'estimated_quantity_fallback'
+                        THEN 'quantity'
 
-                        WHEN has_quantity_kg
-                             AND has_net_weight_kg
-                             AND quantity_net_weight_agree = FALSE
-                        THEN 'conflict'
+                        WHEN 'estimated_alt_quantity_fallback'
+                        THEN 'alt_quantity'
+
+                        WHEN 'estimated_net_weight_fallback'
+                        THEN 'net_weight'
 
                         ELSE 'unavailable'
 
                     END AS synchronized_quantity_source,
 
-
                     -- ==============================================
-                    -- Synchronization status
+                    -- Synchronization status / applied rule
                     -- ==============================================
 
-                    CASE
-
-                        WHEN has_quantity_kg
-                             AND has_net_weight_kg
-                             AND quantity_net_weight_agree = TRUE
-                        THEN 'reconciled_agreement'
-
-                        WHEN has_quantity_kg
-                             AND NOT has_net_weight_kg
-                        THEN 'quantity_only'
-
-                        WHEN NOT has_quantity_kg
-                             AND has_net_weight_kg
-                        THEN 'net_weight_only'
-
-                        {gross_weight_status_sql}
-
-                        WHEN has_quantity_kg
-                             AND has_net_weight_kg
-                             AND quantity_net_weight_agree = FALSE
-                        THEN 'unresolved_conflict'
-
-                        ELSE 'no_kg_evidence'
-
-                    END AS quantity_sync_status,
-
+                    quantity_sync_rule AS quantity_sync_status,
 
                     -- ==============================================
                     -- Estimated-state provenance
                     -- ==============================================
 
                     CASE
+                        WHEN quantity_sync_rule LIKE 'reported_%'
+                        THEN FALSE
 
-                        -- Both candidates are present and reconciled.
-                        WHEN has_quantity_kg
-                             AND has_net_weight_kg
-                             AND quantity_net_weight_agree = TRUE
-                        THEN
-                            (
-                                coalesce(
-                                    is_quantity_estimated,
-                                    FALSE
-                                )
-                                OR
-                                coalesce(
-                                    is_net_weight_estimated,
-                                    FALSE
-                                )
-                            )
-
-                        -- Sole quantity source.
-                        WHEN has_quantity_kg
-                             AND NOT has_net_weight_kg
-                        THEN
-                            coalesce(
-                                is_quantity_estimated,
-                                FALSE
-                            )
-
-                        -- Sole net-weight source.
-                        WHEN NOT has_quantity_kg
-                             AND has_net_weight_kg
-                        THEN
-                            coalesce(
-                                is_net_weight_estimated,
-                                FALSE
-                            )
-
-                        {gross_weight_estimated_sql}
+                        WHEN quantity_sync_rule LIKE 'estimated_%'
+                        THEN TRUE
 
                         ELSE NULL
-
                     END AS is_synchronized_quantity_estimated,
-
 
                     -- ==============================================
                     -- Resolution flag
                     -- ==============================================
 
                     CASE
-
-                        WHEN has_quantity_kg
-                             AND has_net_weight_kg
-                             AND quantity_net_weight_agree = FALSE
+                        WHEN quantity_sync_rule = 'no_kg_evidence'
                         THEN FALSE
 
-                        WHEN has_quantity_kg
-                             OR has_net_weight_kg
-                        THEN TRUE
-
-                        {"WHEN has_gross_weight_kg THEN TRUE"
-                         if use_gross_weight_proxy
-                         else ""}
-
-                        ELSE FALSE
-
+                        ELSE TRUE
                     END AS quantity_sync_resolved
 
-                FROM read_parquet({evidence_sql})
+                FROM classified
             )
             TO {output_sql}
             (
@@ -380,28 +566,41 @@ def synchronize_quantity(
 
                 count(*) FILTER (
                     WHERE quantity_sync_status =
-                          'reconciled_agreement'
-                ) AS n_reconciled_agreement,
+                          'reported_three_exact'
+                ) AS n_reported_three_exact,
 
                 count(*) FILTER (
-                    WHERE quantity_sync_status =
-                          'quantity_only'
-                ) AS n_quantity_only,
+                    WHERE quantity_sync_status LIKE
+                          'reported_pair_exact_%'
+                ) AS n_reported_pair_exact,
 
                 count(*) FILTER (
-                    WHERE quantity_sync_status =
-                          'net_weight_only'
-                ) AS n_net_weight_only,
+                    WHERE quantity_sync_status LIKE
+                          'reported_%_precedence'
+                ) AS n_reported_precedence,
 
                 count(*) FILTER (
-                    WHERE quantity_sync_status =
-                          'unresolved_conflict'
-                ) AS n_unresolved_conflict,
+                    WHERE quantity_sync_status LIKE
+                          'estimated_%_fallback'
+                ) AS n_estimated_fallback,
 
                 count(*) FILTER (
                     WHERE quantity_sync_status =
                           'no_kg_evidence'
-                ) AS n_no_kg_evidence
+                ) AS n_no_kg_evidence,
+
+                count(*) FILTER (
+                    WHERE supplementary_quantity > 0
+                      AND supplementary_unit IS NOT NULL
+                ) AS n_supplementary,
+
+                count(*) FILTER (
+                    WHERE supplementary_quantity_source = 'quantity'
+                ) AS n_supplementary_from_quantity,
+
+                count(*) FILTER (
+                    WHERE supplementary_quantity_source = 'alt_quantity'
+                ) AS n_supplementary_from_alt_quantity
 
             FROM read_parquet(?)
             """,
@@ -411,11 +610,14 @@ def synchronize_quantity(
         (
             n_rows,
             n_synchronized,
-            n_reconciled_agreement,
-            n_quantity_only,
-            n_net_weight_only,
-            n_unresolved_conflict,
+            n_reported_three_exact,
+            n_reported_pair_exact,
+            n_reported_precedence,
+            n_estimated_fallback,
             n_no_kg_evidence,
+            n_supplementary,
+            n_supplementary_from_quantity,
+            n_supplementary_from_alt_quantity,
         ) = summary
 
         synchronized_pct = (
@@ -424,11 +626,65 @@ def synchronize_quantity(
             else 0.0
         )
 
-        conflict_pct = (
-            100.0 * n_unresolved_conflict / n_rows
+        no_kg_pct = (
+            100.0 * n_no_kg_evidence / n_rows
             if n_rows
             else 0.0
         )
+
+        supplementary_pct = (
+            100.0 * n_supplementary / n_rows
+            if n_rows
+            else 0.0
+        )
+
+        supplementary_source_rows = (
+            n_supplementary_from_quantity
+            + n_supplementary_from_alt_quantity
+        )
+
+        if supplementary_source_rows != n_supplementary:
+            raise RuntimeError(
+                "Supplementary source accounting failed: "
+                f"{supplementary_source_rows:,} sourced rows for "
+                f"{n_supplementary:,} populated supplementary rows."
+            )
+
+        supplementary_null_mismatch = con.execute(
+            """
+            SELECT COUNT(*)
+            FROM read_parquet(?)
+            WHERE (
+                supplementary_quantity IS NULL
+                AND supplementary_unit IS NOT NULL
+            )
+            OR (
+                supplementary_quantity IS NOT NULL
+                AND supplementary_unit IS NULL
+            )
+            """,
+            [str(output_path)],
+        ).fetchone()[0]
+
+        if supplementary_null_mismatch:
+            raise RuntimeError(
+                "Supplementary quantity/unit null-consistency failed: "
+                f"{supplementary_null_mismatch:,} mismatched rows."
+            )
+
+        classified_rows = (
+            n_reported_three_exact
+            + n_reported_pair_exact
+            + n_reported_precedence
+            + n_estimated_fallback
+            + n_no_kg_evidence
+        )
+
+        if classified_rows != n_rows:
+            raise RuntimeError(
+                "Quantity synchronization accounting failed: "
+                f"classified {classified_rows:,} of {n_rows:,} rows."
+            )
 
         logger.info(
             "Quantity rows: %s",
@@ -440,25 +696,38 @@ def synchronize_quantity(
             synchronized_pct,
         )
         logger.info(
-            "Reconciled agreeing sources: %s",
-            f"{n_reconciled_agreement:,}",
+            "Reported three-source exact agreement: %s",
+            f"{n_reported_three_exact:,}",
         )
         logger.info(
-            "Quantity-only rows: %s",
-            f"{n_quantity_only:,}",
+            "Reported exact pair agreement: %s",
+            f"{n_reported_pair_exact:,}",
         )
         logger.info(
-            "Net-weight-only rows: %s",
-            f"{n_net_weight_only:,}",
+            "Reported source-precedence resolutions: %s",
+            f"{n_reported_precedence:,}",
         )
         logger.info(
-            "Unresolved conflicts: %s (%.4f%%)",
-            f"{n_unresolved_conflict:,}",
-            conflict_pct,
+            "Estimated fallback resolutions: %s",
+            f"{n_estimated_fallback:,}",
         )
         logger.info(
-            "Rows unresolved by current quantity/net-weight synchronization: %s",
+            "Rows with no usable Q/A/N kg evidence: %s (%.4f%%)",
             f"{n_no_kg_evidence:,}",
+            no_kg_pct,
+        )
+        logger.info(
+            "Rows with supplementary quantity: %s (%.2f%%)",
+            f"{n_supplementary:,}",
+            supplementary_pct,
+        )
+        logger.info(
+            "Supplementary quantity selected from quantity: %s",
+            f"{n_supplementary_from_quantity:,}",
+        )
+        logger.info(
+            "Supplementary quantity selected from alt_quantity: %s",
+            f"{n_supplementary_from_alt_quantity:,}",
         )
         logger.info(
             "Synchronized Quantity output: %s",
@@ -482,20 +751,38 @@ def synchronize_quantity(
 
         "n_rows": int(n_rows),
         "n_synchronized": int(n_synchronized),
-        "n_reconciled_agreement": int(
-            n_reconciled_agreement
+        "n_reported_three_exact": int(
+            n_reported_three_exact
         ),
-        "n_quantity_only": int(n_quantity_only),
-        "n_net_weight_only": int(n_net_weight_only),
-        "n_unresolved_conflict": int(
-            n_unresolved_conflict
+        "n_reported_pair_exact": int(
+            n_reported_pair_exact
         ),
-        "n_no_kg_evidence": int(n_no_kg_evidence),
+        "n_reported_precedence": int(
+            n_reported_precedence
+        ),
+        "n_estimated_fallback": int(
+            n_estimated_fallback
+        ),
+        "n_no_kg_evidence": int(
+            n_no_kg_evidence
+        ),
+        "n_supplementary": int(
+            n_supplementary
+        ),
+        "n_supplementary_from_quantity": int(
+            n_supplementary_from_quantity
+        ),
+        "n_supplementary_from_alt_quantity": int(
+            n_supplementary_from_alt_quantity
+        ),
 
         "synchronized_pct": float(
             synchronized_pct
         ),
-        "conflict_pct": float(conflict_pct),
+        "no_kg_pct": float(no_kg_pct),
+        "supplementary_pct": float(
+            supplementary_pct
+        ),
 
         "ready_for_diagnostics": True,
     }

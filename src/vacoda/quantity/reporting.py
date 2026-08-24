@@ -690,7 +690,7 @@ def _plot_hierarchy_coverage(
     diagnostics: pd.DataFrame,
     output_path: Path,
 ) -> None:
-    frame = _diagnostic_group(diagnostics, "hierarchy_coverage")
+    frame = _diagnostic_group(diagnostics, "methodology_funnel")
     if frame.empty:
         return
     frame["step_order"] = pd.to_numeric(frame["category_1"], errors="coerce")
@@ -703,8 +703,8 @@ def _plot_hierarchy_coverage(
         padding=3,
         fontsize=8,
     )
-    axis.set_title("Cumulative kg coverage by current synchronization step")
-    axis.set_xlabel("Current synchronization outcome")
+    axis.set_title("Cumulative kg coverage by synchronization methodology step")
+    axis.set_xlabel("Methodology step")
     axis.set_ylabel("Cumulative population coverage (%)")
     axis.set_ylim(0, 100)
     axis.tick_params(axis="x", labelrotation=25)
@@ -920,23 +920,43 @@ def build_quantity_report(
             f"""
             SELECT
                 COUNT(*) AS n_rows,
+
                 COUNT(*) FILTER (
                     WHERE synchronized_quantity_kg > 0
                 ) AS n_synchronized,
+
                 COUNT(*) FILTER (
-                    WHERE quantity_sync_status = 'unresolved_conflict'
-                ) AS n_conflicts,
+                    WHERE quantity_sync_status =
+                        'reported_three_exact'
+                ) AS n_reported_three_exact,
+
                 COUNT(*) FILTER (
-                    WHERE quantity_sync_status = 'no_kg_evidence'
+                    WHERE quantity_sync_status LIKE
+                        'reported_pair_exact_%'
+                ) AS n_reported_pair_exact,
+
+                COUNT(*) FILTER (
+                    WHERE quantity_sync_status LIKE
+                        'reported_%_precedence'
+                ) AS n_reported_precedence,
+
+                COUNT(*) FILTER (
+                    WHERE quantity_sync_status LIKE
+                        'estimated_%_fallback'
+                ) AS n_estimated_fallback,
+
+                COUNT(*) FILTER (
+                    WHERE quantity_sync_status =
+                        'no_kg_evidence'
                 ) AS n_no_kg,
+
                 COUNT(*) FILTER (
-                    WHERE synchronized_quantity_source = 'gross_weight_proxy'
-                ) AS n_gross_weight_proxy,
-                COUNT(*) FILTER (
-                    WHERE NOT COALESCE(has_quantity_kg, FALSE)
-                      AND NOT COALESCE(has_net_weight_kg, FALSE)
+                    WHERE NOT COALESCE(quantity_kg_candidate > 0, FALSE)
+                      AND NOT COALESCE(alt_quantity_kg_candidate > 0, FALSE)
+                      AND NOT COALESCE(net_weight_kg_candidate > 0, FALSE)
                       AND COALESCE(has_gross_weight_kg, FALSE)
                 ) AS n_potential_gross_weight_fallback
+
             FROM read_parquet({synchronized_sql})
             """
         ).fetchone()
@@ -944,18 +964,16 @@ def build_quantity_report(
         (
             n_rows,
             n_synchronized,
-            n_conflicts,
+            n_reported_three_exact,
+            n_reported_pair_exact,
+            n_reported_precedence,
+            n_estimated_fallback,
             n_no_kg,
-            n_gross_weight_proxy,
             n_potential_gross_weight_fallback,
         ) = population_row
 
         synchronized_share = n_synchronized / n_rows if n_rows else None
-        conflict_share = n_conflicts / n_rows if n_rows else None
         no_kg_share = n_no_kg / n_rows if n_rows else None
-        gross_weight_proxy_share = (
-            n_gross_weight_proxy / n_rows if n_rows else None
-        )
 
         # --------------------------------------------------------------
         # Inventory
@@ -1710,6 +1728,228 @@ def build_quantity_report(
                 ).head(15)
 
         # --------------------------------------------------------------
+        # Supplementary candidate overlap
+        #
+        # These diagnostics inspect whether one final
+        # supplementary_quantity / supplementary_unit pair is sufficient
+        # to preserve the non-kg physical information carried by
+        # quantity and alt_quantity.
+        # --------------------------------------------------------------
+
+        supplementary_candidate_overlap = _diagnostic_group(
+            diagnostics,
+            "supplementary_candidate_overlap",
+        )
+
+        if supplementary_candidate_overlap.empty:
+            supplementary_candidate_overlap_display = pd.DataFrame()
+        else:
+            supplementary_candidate_overlap_display = (
+                supplementary_candidate_overlap[
+                    ["metric", "value", "percentage"]
+                ].copy()
+            )
+
+            supplementary_candidate_overlap_display.columns = [
+                "Candidate pattern",
+                "Rows",
+                "Population share (%)",
+            ]
+
+            supplementary_pattern_labels = {
+                "quantity_only":
+                    "Non-kg quantity only",
+                "alt_quantity_only":
+                    "Non-kg alt_quantity only",
+                "both_same_unit":
+                    "Both non-kg candidates, same unit",
+                "both_different_unit":
+                    "Both non-kg candidates, different units",
+                "neither":
+                    "No usable non-kg supplementary candidate",
+            }
+
+            supplementary_candidate_overlap_display[
+                "Candidate pattern"
+            ] = supplementary_candidate_overlap_display[
+                "Candidate pattern"
+            ].replace(supplementary_pattern_labels)
+
+            supplementary_candidate_overlap_display["Rows"] = (
+                supplementary_candidate_overlap_display["Rows"]
+                .round()
+                .astype("Int64")
+            )
+
+            supplementary_candidate_overlap_display = _as_numeric(
+                supplementary_candidate_overlap_display,
+                ["Population share (%)"],
+            )
+
+            supplementary_candidate_overlap_display = (
+                supplementary_candidate_overlap_display
+                .sort_values(
+                    "Rows",
+                    ascending=False,
+                )
+            )
+
+        supplementary_unit_pairs = _diagnostic_group(
+            diagnostics,
+            "supplementary_unit_pair",
+        )
+
+        if supplementary_unit_pairs.empty:
+            supplementary_unit_pairs_display = pd.DataFrame()
+        else:
+            supplementary_unit_pairs_display = (
+                supplementary_unit_pairs[
+                    [
+                        "metric",
+                        "category_1",
+                        "category_2",
+                        "category_3",
+                        "value",
+                        "percentage",
+                    ]
+                ].copy()
+            )
+
+            supplementary_unit_pairs_display.columns = [
+                "Quantity unit + alt-quantity unit",
+                "Quantity unit code",
+                "Alt-quantity unit code",
+                "Relationship",
+                "Rows",
+                "Population share (%)",
+            ]
+
+            supplementary_unit_pairs_display[
+                "Relationship"
+            ] = supplementary_unit_pairs_display[
+                "Relationship"
+            ].replace(
+                {
+                    "same_unit": "Same unit",
+                    "different_unit": "Different units",
+                }
+            )
+
+            supplementary_unit_pairs_display["Rows"] = (
+                supplementary_unit_pairs_display["Rows"]
+                .round()
+                .astype("Int64")
+            )
+
+            supplementary_unit_pairs_display = _as_numeric(
+                supplementary_unit_pairs_display,
+                ["Population share (%)"],
+            )
+
+            supplementary_unit_pairs_display = (
+                supplementary_unit_pairs_display
+                .sort_values(
+                    "Rows",
+                    ascending=False,
+                )
+                .head(30)
+            )
+
+        # --------------------------------------------------------------
+        # Final supplementary output
+        # --------------------------------------------------------------
+
+        supplementary_output_summary = _diagnostic_group(
+            diagnostics,
+            "supplementary_output_summary",
+        )
+
+        if supplementary_output_summary.empty:
+            supplementary_output_summary_display = pd.DataFrame()
+        else:
+            supplementary_output_summary_display = (
+                supplementary_output_summary[
+                    ["metric", "value", "percentage"]
+                ].copy()
+            )
+            supplementary_output_summary_display.columns = [
+                "Final supplementary outcome",
+                "Rows",
+                "Population share (%)",
+            ]
+            supplementary_output_summary_display[
+                "Final supplementary outcome"
+            ] = supplementary_output_summary_display[
+                "Final supplementary outcome"
+            ].replace(
+                {
+                    "supplementary_positive_rows":
+                        "Rows with supplementary quantity",
+                    "supplementary_missing_rows":
+                        "Rows without supplementary quantity",
+                    "selected_from_quantity":
+                        "Selected from quantity",
+                    "selected_from_alt_quantity":
+                        "Selected from alt_quantity",
+                    "reported_supplementary":
+                        "Reported supplementary quantity",
+                    "estimated_supplementary":
+                        "Estimated supplementary quantity",
+                    "quantity_unit_null_mismatch":
+                        "Quantity/unit null mismatch",
+                }
+            )
+            supplementary_output_summary_display["Rows"] = (
+                supplementary_output_summary_display["Rows"]
+                .round()
+                .astype("Int64")
+            )
+            supplementary_output_summary_display = _as_numeric(
+                supplementary_output_summary_display,
+                ["Population share (%)"],
+            )
+
+        supplementary_output_units = _diagnostic_group(
+            diagnostics,
+            "supplementary_output_unit_distribution",
+        )
+
+        if supplementary_output_units.empty:
+            supplementary_output_units_display = pd.DataFrame()
+        else:
+            supplementary_output_units_display = (
+                supplementary_output_units[
+                    [
+                        "metric",
+                        "category_1",
+                        "category_2",
+                        "value",
+                        "percentage",
+                    ]
+                ].copy()
+            )
+            supplementary_output_units_display.columns = [
+                "Supplementary unit",
+                "Selected source",
+                "Evidence state",
+                "Rows",
+                "Population share (%)",
+            ]
+            supplementary_output_units_display["Rows"] = (
+                supplementary_output_units_display["Rows"]
+                .round()
+                .astype("Int64")
+            )
+            supplementary_output_units_display = _as_numeric(
+                supplementary_output_units_display,
+                ["Population share (%)"],
+            )
+            supplementary_output_units_display = (
+                supplementary_output_units_display
+                .sort_values("Rows", ascending=False)
+            )
+
+        # --------------------------------------------------------------
         # Net-weight diagnostics
         # --------------------------------------------------------------
         net_weight_year = _diagnostic_group(diagnostics, "net_weight_by_year")
@@ -1871,72 +2111,212 @@ def build_quantity_report(
         )
 
         # --------------------------------------------------------------
-        # Current synchronization diagnostics
+        # Adopted synchronization methodology diagnostics
         # --------------------------------------------------------------
-        hierarchy = _diagnostic_group(diagnostics, "hierarchy_coverage")
-        if hierarchy.empty:
-            hierarchy_display = pd.DataFrame()
+
+        methodology_funnel = _diagnostic_group(
+            diagnostics,
+            "methodology_funnel",
+        )
+
+        if methodology_funnel.empty:
+            methodology_funnel_display = pd.DataFrame()
         else:
-            hierarchy = hierarchy.copy()
-            hierarchy["Step"] = pd.to_numeric(hierarchy["category_1"], errors="coerce")
-            hierarchy["Cumulative rows"] = pd.to_numeric(
-                hierarchy["category_2"], errors="coerce"
+            methodology_funnel = methodology_funnel.copy()
+            methodology_funnel["Step"] = pd.to_numeric(
+                methodology_funnel["category_1"],
+                errors="coerce",
             )
-            hierarchy["Incremental coverage (%)"] = pd.to_numeric(
-                hierarchy["category_3"], errors="coerce"
+            methodology_funnel["Cumulative rows"] = pd.to_numeric(
+                methodology_funnel["category_2"],
+                errors="coerce",
             )
-            hierarchy_display = hierarchy[
+            methodology_funnel["Incremental population share (%)"] = pd.to_numeric(
+                methodology_funnel["category_3"],
+                errors="coerce",
+            )
+
+            methodology_funnel_display = methodology_funnel[
                 [
                     "Step",
                     "metric",
                     "value",
+                    "Incremental population share (%)",
                     "Cumulative rows",
                     "percentage",
-                    "Incremental coverage (%)",
                 ]
             ].copy()
-            hierarchy_display.columns = [
-                "Step",
-                "Current outcome",
-                "New rows",
-                "Cumulative rows",
-                "Cumulative coverage (%)",
-                "Incremental coverage (%)",
-            ]
-            hierarchy_display["New rows"] = hierarchy_display["New rows"].round().astype("Int64")
-            hierarchy_display["Cumulative rows"] = hierarchy_display["Cumulative rows"].round().astype("Int64")
-            hierarchy_display = hierarchy_display.sort_values("Step")
 
-        sync_status = _diagnostic_group(diagnostics, "synchronization_status")
+            methodology_funnel_display.columns = [
+                "Step",
+                "Methodology step",
+                "Rows resolved at step",
+                "Population share (%)",
+                "Cumulative rows resolved",
+                "Cumulative coverage (%)",
+            ]
+
+            methodology_labels = {
+                "reported_three_exact":
+                    "Reported three-source exact agreement",
+                "reported_pair_exact":
+                    "Reported exact pair agreement",
+                "reported_precedence":
+                    "Reported source precedence (Q > A > N)",
+                "estimated_fallback":
+                    "Estimated fallback (Q > A > N)",
+            }
+
+            methodology_funnel_display[
+                "Methodology step"
+            ] = methodology_funnel_display[
+                "Methodology step"
+            ].replace(methodology_labels)
+
+            methodology_funnel_display[
+                "Rows resolved at step"
+            ] = methodology_funnel_display[
+                "Rows resolved at step"
+            ].round().astype("Int64")
+
+            methodology_funnel_display[
+                "Cumulative rows resolved"
+            ] = methodology_funnel_display[
+                "Cumulative rows resolved"
+            ].round().astype("Int64")
+
+            methodology_funnel_display = (
+                methodology_funnel_display.sort_values("Step")
+            )
+
+        methodology_rules = _diagnostic_group(
+            diagnostics,
+            "methodology_rule_detail",
+        )
+
+        if methodology_rules.empty:
+            methodology_rules_display = pd.DataFrame()
+        else:
+            methodology_rules_display = methodology_rules[
+                [
+                    "metric",
+                    "category_1",
+                    "category_2",
+                    "category_3",
+                    "value",
+                    "percentage",
+                ]
+            ].copy()
+
+            methodology_rules_display.columns = [
+                "Applied rule",
+                "Final source",
+                "Evidence tier",
+                "Resolution type",
+                "Rows",
+                "Population share (%)",
+            ]
+
+            methodology_rules_display["Rows"] = (
+                methodology_rules_display["Rows"]
+                .round()
+                .astype("Int64")
+            )
+
+            methodology_rules_display = (
+                methodology_rules_display.sort_values(
+                    "Rows",
+                    ascending=False,
+                )
+            )
+
+        methodology_summary = _diagnostic_group(
+            diagnostics,
+            "methodology_summary",
+        )
+
+        if methodology_summary.empty:
+            methodology_summary_display = pd.DataFrame()
+        else:
+            methodology_summary_display = methodology_summary[
+                ["metric", "value", "percentage"]
+            ].copy()
+
+            methodology_summary_display.columns = [
+                "Evidence-quality summary",
+                "Rows",
+                "Population share (%)",
+            ]
+
+            methodology_summary_labels = {
+                "resolved_by_reported_evidence":
+                    "Resolved using reported evidence",
+                "resolved_by_exact_reported_agreement":
+                    "Resolved by exact reported agreement",
+                "resolved_by_reported_precedence":
+                    "Resolved by reported source precedence",
+                "resolved_by_estimated_fallback":
+                    "Resolved using estimated fallback",
+                "no_usable_kg_evidence":
+                    "No usable Q/A/N kg evidence",
+            }
+
+            methodology_summary_display[
+                "Evidence-quality summary"
+            ] = methodology_summary_display[
+                "Evidence-quality summary"
+            ].replace(methodology_summary_labels)
+
+            methodology_summary_display["Rows"] = (
+                methodology_summary_display["Rows"]
+                .round()
+                .astype("Int64")
+            )
+
+        sync_status = _diagnostic_group(
+            diagnostics,
+            "synchronization_status",
+        )
+
         if sync_status.empty:
             sync_status_display = pd.DataFrame()
         else:
             sync_status_display = sync_status[
                 ["metric", "category_1", "value", "percentage"]
             ].copy()
-            sync_status_display.columns = ["Status", "Final source", "Rows", "Share (%)"]
-            sync_status_display["Rows"] = sync_status_display["Rows"].round().astype("Int64")
-            sync_status_display = sync_status_display.sort_values("Rows", ascending=False)
+
+            sync_status_display.columns = [
+                "Status",
+                "Final source",
+                "Rows",
+                "Population share (%)",
+            ]
+
+            sync_status_display["Rows"] = (
+                sync_status_display["Rows"]
+                .round()
+                .astype("Int64")
+            )
+
+            sync_status_display = sync_status_display.sort_values(
+                "Rows",
+                ascending=False,
+            )
 
         remaining_gap_display = _simple_rows_table(
-            _diagnostic_group(diagnostics, "remaining_kg_gap"),
+            _diagnostic_group(
+                diagnostics,
+                "remaining_kg_gap",
+            ),
             metric_name="Outcome",
-            percentage_name="Share (%)",
+            percentage_name="Population share (%)",
         )
 
-        conflict_stats = _diagnostic_group(
-            diagnostics,
-            "unresolved_conflict_statistics",
-        )
-        conflict_lookup = {
-            row.metric: row.value for row in conflict_stats.itertuples()
-        }
-        conflict_hs_display = _top_hs_table(
-            _diagnostic_group(diagnostics, "unresolved_conflicts_by_hs"),
-            n=20,
-        )
         missing_hs_display = _top_hs_table(
-            _diagnostic_group(diagnostics, "missing_kg_by_hs"),
+            _diagnostic_group(
+                diagnostics,
+                "missing_kg_by_hs",
+            ),
             n=20,
         )
 
@@ -2036,34 +2416,48 @@ def build_quantity_report(
         # Candidate alt-quantity diagnostics do not silently change it.
         # --------------------------------------------------------------
         population_partition_passed = bool(
-            n_rows == n_synchronized + n_conflicts + n_no_kg
+            n_rows == n_synchronized + n_no_kg
         )
+
+        methodology_partition_passed = bool(
+            n_rows
+            == (
+                n_reported_three_exact
+                + n_reported_pair_exact
+                + n_reported_precedence
+                + n_estimated_fallback
+                + n_no_kg
+            )
+        )
+
         synchronized_output_valid = bool(
             synchronized_quantity_path.is_file()
             and synchronized_quantity_path.stat().st_size > 0
         )
+
         ready_for_cif_fob = bool(
-            synchronized_output_valid and population_partition_passed
+            synchronized_output_valid
+            and population_partition_passed
+            and methodology_partition_passed
         )
-        decision = "APPROVED" if ready_for_cif_fob else "REVIEW REQUIRED"
 
-        if n_gross_weight_proxy > 0:
-            gross_weight_statement = (
-                f"Gross weight was used as a proxy for `{n_gross_weight_proxy:,}` "
-                f"rows ({_format_percent(gross_weight_proxy_share)} of the full "
-                "input). These rows remain explicitly identified by provenance."
-            )
-        else:
-            gross_weight_statement = (
-                "Gross weight was not used in the synchronized kg quantity."
-            )
+        decision = (
+            "APPROVED"
+            if ready_for_cif_fob
+            else "REVIEW REQUIRED"
+        )
 
-        if n_potential_gross_weight_fallback > 0 and n_gross_weight_proxy == 0:
+        gross_weight_statement = (
+            "Gross weight is diagnostic-only and is not used in the "
+            "synchronized kg quantity."
+        )
+
+        if n_potential_gross_weight_fallback > 0:
             gross_weight_statement += (
                 f" Gross weight nevertheless exists for "
-                f"`{n_potential_gross_weight_fallback:,}` rows where the "
-                "currently admitted quantity-in-kg and net-weight sources are "
-                "unavailable."
+                f"`{n_potential_gross_weight_fallback:,}` rows where "
+                "quantity, alternate-quantity, and net-weight kg candidates "
+                "are all unavailable."
             )
 
         # --------------------------------------------------------------
@@ -2297,10 +2691,11 @@ def build_quantity_report(
             "### 4.2 Alternate quantity as kg-equivalent candidate evidence",
             "",
             (
-                "Alternate quantity is evaluated here as candidate evidence only. "
-                "These diagnostics do not yet imply that `synchronize.py` has "
-                "admitted the source into the final hierarchy. "
-                "Population shares use the full Quantity input population."
+                "Alternate quantity is evaluated as canonical kg evidence when it is "
+                "directly expressed in kg or exactly convertible to kg. It participates "
+                "in the adopted synchronization hierarchy with source precedence "
+                "`quantity > alt_quantity > net_weight`. Population shares use the full "
+                "Quantity input population."
             ),
             "",
             _markdown_table(alt_candidate_display),
@@ -2502,6 +2897,81 @@ def build_quantity_report(
                 "",
             ])
 
+        lines.extend([
+            "### 6.5 Candidate structure for the final supplementary fields",
+            "",
+            (
+                "The intended main physical output contains three fields: "
+                "`synchronized_quantity_kg`, `supplementary_quantity`, and "
+                "`supplementary_unit`. Before collapsing the original non-kg "
+                "`quantity` and `alt_quantity` information into a single "
+                "supplementary pair, the overlap between the two candidate "
+                "sources is inspected explicitly."
+            ),
+            "",
+            (
+                "Canonical kg candidates are excluded from this diagnostic. "
+                "Rows with an unavailable/unknown unit are also not treated as "
+                "usable supplementary candidates because their physical "
+                "dimension cannot be identified."
+            ),
+            "",
+            _markdown_table(supplementary_candidate_overlap_display),
+            "",
+            (
+                "The key distinction is between rows where both non-kg "
+                "candidates describe the same unit and rows where they describe "
+                "different units. A material share of different-unit overlap "
+                "would mean that forcing both fields into one supplementary "
+                "quantity/unit pair could discard a genuine second physical "
+                "dimension."
+            ),
+            "",
+            "### 6.6 Unit pairs when both non-kg candidates are present",
+            "",
+            (
+                "The table below shows the most frequent `quantity` / "
+                "`alt_quantity` unit combinations among rows where both fields "
+                "contain usable non-kg candidates. Population shares use the "
+                "full Quantity input population."
+            ),
+            "",
+            _markdown_table(supplementary_unit_pairs_display),
+            "",
+        ])
+
+        lines.extend([
+            "### 6.7 Final supplementary output",
+            "",
+            (
+                "The adopted supplementary rule is now applied directly in "
+                "`synchronize.py`: a usable non-kg `quantity` is selected first; "
+                "otherwise a usable non-kg `alt_quantity` is selected. Canonical "
+                "kg-equivalent values and unknown-unit values are excluded."
+            ),
+            "",
+            (
+                "The resulting canonical supplementary fields are "
+                "`supplementary_quantity` and `supplementary_unit`; "
+                "`supplementary_quantity_source` and "
+                "`is_supplementary_quantity_estimated` preserve provenance."
+            ),
+            "",
+            "**Final supplementary coverage and provenance**",
+            "",
+            _markdown_table(supplementary_output_summary_display),
+            "",
+            "**Final supplementary-unit distribution**",
+            "",
+            _markdown_table(supplementary_output_units_display),
+            "",
+            (
+                "The quantity/unit null-mismatch count is a structural invariant "
+                "and should remain zero."
+            ),
+            "",
+        ])
+
         # Net weight
         lines.extend([
             "## 7. Net-weight diagnostics",
@@ -2625,27 +3095,52 @@ def build_quantity_report(
             "",
         ])
 
-        # Current synchronization
+        # Adopted synchronization methodology
         lines.extend([
-            "## 9. Current synchronization outcome",
+            "## 9. Synchronization methodology",
             "",
             (
-                "The following tables describe the hierarchy currently implemented "
-                "by `synchronize.py`. Candidate alt-quantity evidence shown above "
-                "has not been silently inserted into this hierarchy."
+                "The synchronization hierarchy is now explicit. Reported kg "
+                "evidence is used before estimated evidence. Within reported "
+                "evidence, exact agreement is resolved first; remaining reported "
+                "rows use the adopted source precedence "
+                "`quantity > alt_quantity > net_weight`. Estimated evidence is "
+                "used only when no reported kg candidate is available."
             ),
             "",
-            "### 9.1 Current contribution and cumulative kg coverage",
+            "**Applied hierarchy**",
             "",
-            _markdown_table(hierarchy_display),
+            "```text",
+            "reported kg evidence available",
+            "    ↓",
+            "exact 3-way agreement",
+            "    ↓",
+            "exact pair agreement",
+            "    ↓",
+            "quantity > alt_quantity > net_weight",
+            "    ↓",
+            "estimated quantity > alt_quantity > net_weight",
+            "    ↓",
+            "no_kg_evidence",
+            "```",
+            "",
+            (
+                "The configured 5% tolerance remains a diagnostic statistic and "
+                "does not participate in source selection."
+            ),
+            "",
+            "### 9.1 Methodology funnel",
+            "",
+            _markdown_table(methodology_funnel_display),
             "",
         ])
+
         if figure_paths["hierarchy"].exists():
             lines.extend([
                 get_table_figure_layout(
-                    hierarchy_display,
+                    methodology_funnel_display,
                     markdown_image(
-                        "Cumulative kg coverage by current synchronization step",
+                        "Cumulative kg coverage by methodology step",
                         figure_paths["hierarchy"],
                         document_path=report_path,
                         width=650,
@@ -2653,13 +3148,29 @@ def build_quantity_report(
                 ),
                 "",
             ])
-        else:
-            lines.extend([
-                _markdown_table(hierarchy_display),
-                "",
-            ])
+
         lines.extend([
-            "### 9.2 Synchronization statuses",
+            "### 9.2 Detailed applied synchronization rules",
+            "",
+            (
+                "This table is a mutually exclusive row-level partition: every "
+                "observation receives exactly one synchronization rule."
+            ),
+            "",
+            _markdown_table(methodology_rules_display),
+            "",
+            "### 9.3 Evidence quality of the final synchronized values",
+            "",
+            _markdown_table(methodology_summary_display),
+            "",
+            (
+                "Exact reported agreement consists of three-source exact matches "
+                "plus exact reported-pair matches. Reported precedence represents "
+                "rows where reported evidence existed but exact agreement did not "
+                "resolve the row."
+            ),
+            "",
+            "### 9.4 Synchronization status by year",
             "",
         ])
 
@@ -2668,7 +3179,7 @@ def build_quantity_report(
                 get_table_figure_layout(
                     sync_status_display,
                     markdown_image(
-                        "Quantity synchronization outcomes by year",
+                        "Quantity synchronization rules by year",
                         figure_paths["sync_status_year"],
                         document_path=report_path,
                         width=650,
@@ -2681,61 +3192,52 @@ def build_quantity_report(
                 _markdown_table(sync_status_display),
                 "",
             ])
+
         lines.extend([
-            "### 9.3 Final current coverage",
+            "### 9.5 Final synchronized coverage",
             "",
             (
                 f"`{n_synchronized:,}` of `{n_rows:,}` rows "
                 f"({_format_percent(synchronized_share)}) receive a positive "
-                "synchronized kg quantity under the current synchronization logic."
+                "synchronized kg quantity under the adopted methodology."
             ),
             "",
-            "## 10. Remaining gaps and conflicts",
+            "## 10. Remaining kg gaps",
             "",
             _markdown_table(remaining_gap_display),
             "",
             (
-                f"`{n_conflicts:,}` rows ({_format_percent(conflict_share)}) are "
-                f"currently unresolved conflicts; `{n_no_kg:,}` rows "
-                f"({_format_percent(no_kg_share)}) currently have no resolved kg value."
+                f"`{n_no_kg:,}` rows "
+                f"({_format_percent(no_kg_share)}) have no usable Q/A/N kg "
+                "candidate after canonicalization. Reported disagreements are "
+                "not classified as unresolved conflicts because the adopted "
+                "source precedence resolves them."
             ),
             "",
-            "### 10.1 Conflict severity",
+            "### 10.1 HS structure of rows with no synchronized kg",
             "",
-            "| Statistic | Value |",
-            "|---|---:|",
-            f"| Conflict rows | {_format_integer(conflict_lookup.get('n_conflicts'))} |",
-            f"| Median relative gap | {_format_percent(conflict_lookup.get('median_relative_gap'))} |",
-            f"| p90 relative gap | {_format_percent(conflict_lookup.get('p90_relative_gap'))} |",
-            f"| p95 relative gap | {_format_percent(conflict_lookup.get('p95_relative_gap'))} |",
+            _markdown_table(missing_hs_display),
             "",
-        ])
-        lines.extend([
-            "### 10.2 HS structure of unresolved rows",
-            "",
-            get_table_pair(
-                conflict_hs_display,
-                missing_hs_display,
-            ),
-            "",
-        ])
-        lines.extend([
             "## 11. Methodological interpretation",
             "",
             (
-                "This report distinguishes measurement interpretation from source "
-                "selection. Exact unit conversions create canonical kg candidates; "
-                "reported/estimated provenance and cross-source agreement are then "
-                "used to evaluate whether those candidates should participate in "
-                "future synchronization. Supplementary non-kg quantities remain "
-                "separate physical dimensions."
+                "The Quantity synchronization now separates three concepts. "
+                "First, exact unit normalization creates comparable canonical kg "
+                "candidates. Second, provenance establishes the primary evidence "
+                "hierarchy: reported evidence precedes estimated evidence. Third, "
+                "row-level synchronization uses exact agreement before applying "
+                "source precedence."
             ),
             "",
             (
-                "The present run still reports the existing two-source "
-                "synchronization outcome. The new alternate-quantity diagnostics "
-                "provide the evidence required for a subsequent explicit decision "
-                "on admission and precedence."
+                "The adopted reported-source order is "
+                "`quantity > alt_quantity > net_weight`. If three reported "
+                "candidates are exactly equal, the common value is used. If any "
+                "reported pair is exactly equal, the common pair value is used. "
+                "If reported evidence remains without exact agreement, the "
+                "highest-priority reported source is selected. Estimated evidence "
+                "uses the same source order only when no reported kg candidate is "
+                "available. Gross weight remains diagnostic-only."
             ),
             "",
             "## 12. Validation and decision",
@@ -2744,6 +3246,7 @@ def build_quantity_report(
             "|---|---|",
             f"| Synchronized output exists and is non-empty | {'PASS' if synchronized_output_valid else 'FAIL'} |",
             f"| Population accounting is complete | {'PASS' if population_partition_passed else 'FAIL'} |",
+            f"| Methodology-rule accounting is complete | {'PASS' if methodology_partition_passed else 'FAIL'} |",
             f"| Final current Quantity decision | **{decision}** |",
             "",
             "## 13. Downstream recommendation",
@@ -2753,10 +3256,10 @@ def build_quantity_report(
         if ready_for_cif_fob:
             lines.extend([
                 (
-                    f"{ok} The current Quantity output is structurally ready for "
-                    "downstream CIF/FOB processing. This structural approval does "
-                    "not pre-empt the pending methodological decision on admitting "
-                    "alternate-quantity kg candidates."
+                    f"{ok} The Quantity output is structurally consistent with "
+                    "the adopted synchronization methodology and is ready for "
+                    "downstream use when pipeline integration is intentionally "
+                    "enabled."
                 ),
                 "",
             ])
@@ -2801,7 +3304,17 @@ def build_quantity_report(
         "ready_for_cif_fob": ready_for_cif_fob,
         "n_rows": int(n_rows),
         "n_synchronized": int(n_synchronized),
-        "n_unresolved_conflict": int(n_conflicts),
+        "n_reported_three_exact": int(
+            n_reported_three_exact
+        ),
+        "n_reported_pair_exact": int(
+            n_reported_pair_exact
+        ),
+        "n_reported_precedence": int(
+            n_reported_precedence
+        ),
+        "n_estimated_fallback": int(
+            n_estimated_fallback
+        ),
         "n_no_kg_evidence": int(n_no_kg),
-        "n_gross_weight_proxy": int(n_gross_weight_proxy),
     }

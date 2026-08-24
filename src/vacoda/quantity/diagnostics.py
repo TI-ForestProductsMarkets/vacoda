@@ -10,10 +10,11 @@ This module summarizes:
 - cubic-metre reporting by HS code;
 - reported-versus-estimated kg evidence;
 - quantity-versus-net-weight agreement;
-- cumulative coverage contributed by synchronization sources;
-- gross-weight proxy contribution;
+- the adopted synchronization-methodology funnel;
+- detailed row counts for each applied synchronization rule;
+- gross-weight diagnostics;
 - changes introduced by synchronization;
-- unresolved conflicts and remaining missing kg evidence;
+- remaining missing kg evidence;
 - annual synchronization behaviour.
 
 The output is a long-format diagnostics Parquet designed to feed the
@@ -1902,6 +1903,139 @@ def build_quantity_diagnostics(
                 """
             )
 
+
+        # ==============================================================
+        # Supplementary quantity candidate overlap
+        # ==============================================================
+
+        queries.append(
+            f"""
+            WITH population AS (
+                SELECT COUNT(*) AS n_total
+                FROM read_parquet({evidence_sql})
+            ),
+
+            candidates AS (
+                SELECT
+                    *,
+                    (
+                        quantity > 0
+                        AND quantity_unit_code <> 8
+                        AND quantity_unit_code <> -1
+                    ) AS has_quantity_nonkg,
+
+                    (
+                        alt_quantity > 0
+                        AND alt_quantity_unit_code <> -1
+                        AND NOT (
+                            (
+                                alt_quantity_unit_code = 8
+                                AND LOWER(TRIM(alt_quantity_unit)) = 'kg'
+                            )
+                            OR (
+                                alt_quantity_unit_code = 21
+                                AND UPPER(TRIM(alt_quantity_unit)) = '1000 KG'
+                            )
+                            OR (
+                                alt_quantity_unit_code = 15
+                                AND LOWER(TRIM(alt_quantity_unit)) = 'g'
+                            )
+                        )
+                    ) AS has_alt_nonkg
+                FROM read_parquet({evidence_sql})
+            ),
+
+            classified AS (
+                SELECT
+                    *,
+                    CASE
+                        WHEN has_quantity_nonkg
+                             AND has_alt_nonkg
+                             AND quantity_unit_code = alt_quantity_unit_code
+                            THEN 'both_same_unit'
+                        WHEN has_quantity_nonkg
+                             AND has_alt_nonkg
+                             AND quantity_unit_code <> alt_quantity_unit_code
+                            THEN 'both_different_unit'
+                        WHEN has_quantity_nonkg
+                             AND NOT has_alt_nonkg
+                            THEN 'quantity_only'
+                        WHEN NOT has_quantity_nonkg
+                             AND has_alt_nonkg
+                            THEN 'alt_quantity_only'
+                        ELSE 'neither'
+                    END AS supplementary_overlap_status
+                FROM candidates
+            )
+
+            SELECT
+                'supplementary_candidate_overlap' AS diagnostic_group,
+                supplementary_overlap_status AS metric,
+                CAST(COUNT(*) AS DOUBLE) AS value,
+                100.0 * COUNT(*) / population.n_total AS percentage,
+                NULL::INTEGER AS year,
+                NULL::VARCHAR AS category_1,
+                NULL::VARCHAR AS category_2,
+                NULL::VARCHAR AS category_3
+            FROM classified
+            CROSS JOIN population
+            GROUP BY supplementary_overlap_status, population.n_total
+            """
+        )
+
+        queries.append(
+            f"""
+            WITH population AS (
+                SELECT COUNT(*) AS n_total
+                FROM read_parquet({evidence_sql})
+            )
+
+            SELECT
+                'supplementary_unit_pair' AS diagnostic_group,
+                COALESCE(quantity_unit, '<NULL>')
+                    || ' + '
+                    || COALESCE(alt_quantity_unit, '<NULL>') AS metric,
+                CAST(COUNT(*) AS DOUBLE) AS value,
+                100.0 * COUNT(*) / population.n_total AS percentage,
+                NULL::INTEGER AS year,
+                CAST(quantity_unit_code AS VARCHAR) AS category_1,
+                CAST(alt_quantity_unit_code AS VARCHAR) AS category_2,
+                CASE
+                    WHEN quantity_unit_code = alt_quantity_unit_code
+                        THEN 'same_unit'
+                    ELSE 'different_unit'
+                END AS category_3
+            FROM read_parquet({evidence_sql})
+            CROSS JOIN population
+            WHERE quantity > 0
+              AND quantity_unit_code <> 8
+              AND quantity_unit_code <> -1
+              AND alt_quantity > 0
+              AND alt_quantity_unit_code <> -1
+              AND NOT (
+                    (
+                        alt_quantity_unit_code = 8
+                        AND LOWER(TRIM(alt_quantity_unit)) = 'kg'
+                    )
+                    OR (
+                        alt_quantity_unit_code = 21
+                        AND UPPER(TRIM(alt_quantity_unit)) = '1000 KG'
+                    )
+                    OR (
+                        alt_quantity_unit_code = 15
+                        AND LOWER(TRIM(alt_quantity_unit)) = 'g'
+                    )
+              )
+            GROUP BY
+                quantity_unit,
+                quantity_unit_code,
+                alt_quantity_unit,
+                alt_quantity_unit_code,
+                population.n_total
+            ORDER BY COUNT(*) DESC
+            """
+        )
+
         # ==============================================================
         # 10. Net-weight diagnostics
         # ==============================================================
@@ -1958,9 +2092,17 @@ def build_quantity_diagnostics(
         )
 
         # ==============================================================
-        # 11. Cumulative hierarchy / coverage contribution
+        # 11. Synchronization methodology performance
         #
-        # This reports the hierarchy actually applied by synchronize.py.
+        # The adopted hierarchy is:
+        #
+        #   reported exact 3-way agreement
+        #       -> reported exact pair agreement
+        #       -> reported source precedence (Q > A > N)
+        #       -> estimated fallback (Q > A > N)
+        #       -> no usable Q/A/N kg evidence
+        #
+        # All percentages below use the full Quantity population.
         # ==============================================================
 
         queries.append(
@@ -1969,14 +2111,14 @@ def build_quantity_diagnostics(
                 SELECT COUNT(*) AS n_total
                 FROM read_parquet({synchronized_sql})
             ),
-            steps AS (
 
+            steps AS (
                 SELECT
                     1 AS step_order,
-                    'reconciled_agreement' AS step_name,
+                    'reported_three_exact' AS step_name,
                     COUNT(*) FILTER (
                         WHERE quantity_sync_status =
-                            'reconciled_agreement'
+                            'reported_three_exact'
                     ) AS newly_covered
                 FROM read_parquet({synchronized_sql})
 
@@ -1984,10 +2126,10 @@ def build_quantity_diagnostics(
 
                 SELECT
                     2,
-                    'quantity_only',
+                    'reported_pair_exact',
                     COUNT(*) FILTER (
-                        WHERE quantity_sync_status =
-                            'quantity_only'
+                        WHERE quantity_sync_status LIKE
+                            'reported_pair_exact_%'
                     )
                 FROM read_parquet({synchronized_sql})
 
@@ -1995,10 +2137,10 @@ def build_quantity_diagnostics(
 
                 SELECT
                     3,
-                    'net_weight_only',
+                    'reported_precedence',
                     COUNT(*) FILTER (
-                        WHERE quantity_sync_status =
-                            'net_weight_only'
+                        WHERE quantity_sync_status LIKE
+                            'reported_%_precedence'
                     )
                 FROM read_parquet({synchronized_sql})
 
@@ -2006,13 +2148,14 @@ def build_quantity_diagnostics(
 
                 SELECT
                     4,
-                    'gross_weight_proxy',
+                    'estimated_fallback',
                     COUNT(*) FILTER (
-                        WHERE quantity_sync_status =
-                            'gross_weight_proxy'
+                        WHERE quantity_sync_status LIKE
+                            'estimated_%_fallback'
                     )
                 FROM read_parquet({synchronized_sql})
             ),
+
             cumulative AS (
                 SELECT
                     step_order,
@@ -2023,8 +2166,9 @@ def build_quantity_diagnostics(
                     ) AS cumulative_covered
                 FROM steps
             )
+
             SELECT
-                'hierarchy_coverage'
+                'methodology_funnel'
                     AS diagnostic_group,
                 step_name AS metric,
                 CAST(newly_covered AS DOUBLE) AS value,
@@ -2041,9 +2185,148 @@ def build_quantity_diagnostics(
                     / population.n_total
                     AS VARCHAR
                 ) AS category_3
+
             FROM cumulative
             CROSS JOIN population
             ORDER BY step_order
+            """
+        )
+
+        # --------------------------------------------------------------
+        # Exact synchronization rule used on every row
+        # --------------------------------------------------------------
+
+        queries.append(
+            f"""
+            WITH population AS (
+                SELECT COUNT(*) AS n_total
+                FROM read_parquet({synchronized_sql})
+            )
+
+            SELECT
+                'methodology_rule_detail'
+                    AS diagnostic_group,
+
+                quantity_sync_status AS metric,
+
+                CAST(COUNT(*) AS DOUBLE) AS value,
+
+                100.0 * COUNT(*) / population.n_total
+                    AS percentage,
+
+                NULL::INTEGER AS year,
+
+                synchronized_quantity_source
+                    AS category_1,
+
+                CASE
+                    WHEN quantity_sync_status LIKE 'reported_%'
+                        THEN 'reported'
+                    WHEN quantity_sync_status LIKE 'estimated_%'
+                        THEN 'estimated'
+                    ELSE 'unresolved'
+                END AS category_2,
+
+                CASE
+                    WHEN quantity_sync_status =
+                        'reported_three_exact'
+                        THEN 'exact_three'
+                    WHEN quantity_sync_status LIKE
+                        'reported_pair_exact_%'
+                        THEN 'exact_pair'
+                    WHEN quantity_sync_status LIKE
+                        'reported_%_precedence'
+                        THEN 'precedence'
+                    WHEN quantity_sync_status LIKE
+                        'estimated_%_fallback'
+                        THEN 'fallback'
+                    ELSE 'missing'
+                END AS category_3
+
+            FROM read_parquet({synchronized_sql})
+            CROSS JOIN population
+
+            GROUP BY
+                quantity_sync_status,
+                synchronized_quantity_source,
+                population.n_total
+            """
+        )
+
+        # --------------------------------------------------------------
+        # High-level evidence quality of the final synchronized values
+        # --------------------------------------------------------------
+
+        queries.append(
+            f"""
+            WITH population AS (
+                SELECT COUNT(*) AS n_total
+                FROM read_parquet({synchronized_sql})
+            )
+
+            SELECT
+                'methodology_summary'
+                    AS diagnostic_group,
+                metric,
+                CAST(metric_value AS DOUBLE) AS value,
+                100.0 * metric_value / population.n_total
+                    AS percentage,
+                NULL::INTEGER AS year,
+                NULL::VARCHAR AS category_1,
+                NULL::VARCHAR AS category_2,
+                NULL::VARCHAR AS category_3
+
+            FROM (
+                SELECT
+                    'resolved_by_reported_evidence' AS metric,
+                    COUNT(*) FILTER (
+                        WHERE quantity_sync_status LIKE 'reported_%'
+                    ) AS metric_value
+                FROM read_parquet({synchronized_sql})
+
+                UNION ALL
+
+                SELECT
+                    'resolved_by_exact_reported_agreement',
+                    COUNT(*) FILTER (
+                        WHERE quantity_sync_status =
+                            'reported_three_exact'
+                           OR quantity_sync_status LIKE
+                            'reported_pair_exact_%'
+                    )
+                FROM read_parquet({synchronized_sql})
+
+                UNION ALL
+
+                SELECT
+                    'resolved_by_reported_precedence',
+                    COUNT(*) FILTER (
+                        WHERE quantity_sync_status LIKE
+                            'reported_%_precedence'
+                    )
+                FROM read_parquet({synchronized_sql})
+
+                UNION ALL
+
+                SELECT
+                    'resolved_by_estimated_fallback',
+                    COUNT(*) FILTER (
+                        WHERE quantity_sync_status LIKE
+                            'estimated_%_fallback'
+                    )
+                FROM read_parquet({synchronized_sql})
+
+                UNION ALL
+
+                SELECT
+                    'no_usable_kg_evidence',
+                    COUNT(*) FILTER (
+                        WHERE quantity_sync_status =
+                            'no_kg_evidence'
+                    )
+                FROM read_parquet({synchronized_sql})
+            ) AS summary
+            CROSS JOIN population
             """
         )
 
@@ -2382,327 +2665,297 @@ def build_quantity_diagnostics(
         )
 
         # ==============================================================
-        # 15. Before-versus-after modification
+        # 15. Selection audit
+        #
+        # These diagnostics show which canonical candidate the final
+        # synchronized value equals. Counts can overlap on exact-agreement
+        # rows and are therefore diagnostic rather than a partition.
         # ==============================================================
 
         queries.append(
             f"""
+            WITH population AS (
+                SELECT COUNT(*) AS n_total
+                FROM read_parquet({synchronized_sql})
+            )
+
             SELECT
-                'synchronization_change'
+                'selection_audit'
                     AS diagnostic_group,
                 metric,
                 CAST(metric_value AS DOUBLE) AS value,
-                percentage,
-                NULL::INTEGER AS year,
-                NULL::VARCHAR AS category_1,
-                NULL::VARCHAR AS category_2,
-                NULL::VARCHAR AS category_3
-            FROM (
-
-                SELECT
-                    'synchronized_positive_rows' AS metric,
-                    COUNT(*) FILTER (
-                        WHERE synchronized_quantity_kg > 0
-                    ) AS metric_value,
-                    100.0 * COUNT(*) FILTER (
-                        WHERE synchronized_quantity_kg > 0
-                    ) / COUNT(*) AS percentage
-                FROM read_parquet({synchronized_sql})
-
-                UNION ALL
-
-                SELECT
-                    'unchanged_from_quantity',
-                    COUNT(*) FILTER (
-                        WHERE synchronized_quantity_kg IS NOT NULL
-                          AND quantity_kg_candidate IS NOT NULL
-                          AND synchronized_quantity_kg =
-                              quantity_kg_candidate
-                    ),
-                    100.0 * COUNT(*) FILTER (
-                        WHERE synchronized_quantity_kg IS NOT NULL
-                          AND quantity_kg_candidate IS NOT NULL
-                          AND synchronized_quantity_kg =
-                              quantity_kg_candidate
-                    ) / COUNT(*)
-                FROM read_parquet({synchronized_sql})
-
-                UNION ALL
-
-                SELECT
-                    'unchanged_from_net_weight',
-                    COUNT(*) FILTER (
-                        WHERE synchronized_quantity_kg IS NOT NULL
-                          AND net_weight_kg_candidate IS NOT NULL
-                          AND synchronized_quantity_kg =
-                              net_weight_kg_candidate
-                    ),
-                    100.0 * COUNT(*) FILTER (
-                        WHERE synchronized_quantity_kg IS NOT NULL
-                          AND net_weight_kg_candidate IS NOT NULL
-                          AND synchronized_quantity_kg =
-                              net_weight_kg_candidate
-                    ) / COUNT(*)
-                FROM read_parquet({synchronized_sql})
-
-                UNION ALL
-
-                SELECT
-                    'reconciled_mean_rows',
-                    COUNT(*) FILTER (
-                        WHERE quantity_sync_status =
-                            'reconciled_agreement'
-                          AND quantity_kg_candidate <>
-                              net_weight_kg_candidate
-                    ),
-                    100.0 * COUNT(*) FILTER (
-                        WHERE quantity_sync_status =
-                            'reconciled_agreement'
-                          AND quantity_kg_candidate <>
-                              net_weight_kg_candidate
-                    ) / COUNT(*)
-                FROM read_parquet({synchronized_sql})
-            )
-            """
-        )
-
-        # ==============================================================
-        # 16. Magnitude of numeric change for reconciled rows
-        # ==============================================================
-
-        queries.append(
-            f"""
-            SELECT
-                'reconciliation_change_statistics'
-                    AS diagnostic_group,
-                metric,
-                value,
-                NULL::DOUBLE AS percentage,
-                NULL::INTEGER AS year,
-                NULL::VARCHAR AS category_1,
-                NULL::VARCHAR AS category_2,
-                NULL::VARCHAR AS category_3
-            FROM (
-
-                SELECT
-                    'median_relative_change_from_quantity'
-                        AS metric,
-                    MEDIAN(
-                        ABS(
-                            synchronized_quantity_kg
-                            - quantity_kg_candidate
-                        )
-                        / quantity_kg_candidate
-                    ) AS value
-                FROM read_parquet({synchronized_sql})
-                WHERE quantity_sync_status =
-                    'reconciled_agreement'
-                  AND quantity_kg_candidate > 0
-
-                UNION ALL
-
-                SELECT
-                    'p95_relative_change_from_quantity',
-                    QUANTILE_CONT(
-                        ABS(
-                            synchronized_quantity_kg
-                            - quantity_kg_candidate
-                        )
-                        / quantity_kg_candidate,
-                        0.95
-                    )
-                FROM read_parquet({synchronized_sql})
-                WHERE quantity_sync_status =
-                    'reconciled_agreement'
-                  AND quantity_kg_candidate > 0
-
-                UNION ALL
-
-                SELECT
-                    'median_relative_change_from_net_weight',
-                    MEDIAN(
-                        ABS(
-                            synchronized_quantity_kg
-                            - net_weight_kg_candidate
-                        )
-                        / net_weight_kg_candidate
-                    )
-                FROM read_parquet({synchronized_sql})
-                WHERE quantity_sync_status =
-                    'reconciled_agreement'
-                  AND net_weight_kg_candidate > 0
-
-                UNION ALL
-
-                SELECT
-                    'p95_relative_change_from_net_weight',
-                    QUANTILE_CONT(
-                        ABS(
-                            synchronized_quantity_kg
-                            - net_weight_kg_candidate
-                        )
-                        / net_weight_kg_candidate,
-                        0.95
-                    )
-                FROM read_parquet({synchronized_sql})
-                WHERE quantity_sync_status =
-                    'reconciled_agreement'
-                  AND net_weight_kg_candidate > 0
-            )
-            """
-        )
-
-        # ==============================================================
-        # 17. Remaining kg gaps
-        # ==============================================================
-
-        queries.append(
-            f"""
-            SELECT
-                'remaining_kg_gap'
-                    AS diagnostic_group,
-                gap_type AS metric,
-                CAST(COUNT(*) AS DOUBLE) AS value,
-                100.0 * COUNT(*)
-                    / SUM(COUNT(*)) OVER ()
+                100.0 * metric_value / population.n_total
                     AS percentage,
                 NULL::INTEGER AS year,
                 NULL::VARCHAR AS category_1,
                 NULL::VARCHAR AS category_2,
                 NULL::VARCHAR AS category_3
+
             FROM (
                 SELECT
-                    CASE
-                        WHEN quantity_sync_status =
-                            'unresolved_conflict'
-                        THEN 'unresolved_conflict'
-
-                        WHEN synchronized_quantity_kg IS NULL
-                             AND (
-                                 has_alt_quantity
-                                 OR has_quantity
-                             )
-                        THEN 'supplementary_quantity_but_no_kg'
-
-                        WHEN synchronized_quantity_kg IS NULL
-                        THEN 'no_physical_quantity_evidence'
-
-                        ELSE 'resolved'
-                    END AS gap_type
+                    'synchronized_positive_rows' AS metric,
+                    COUNT(*) FILTER (
+                        WHERE synchronized_quantity_kg > 0
+                    ) AS metric_value
                 FROM read_parquet({synchronized_sql})
-            )
-            GROUP BY gap_type
+
+                UNION ALL
+
+                SELECT
+                    'final_equals_quantity_candidate',
+                    COUNT(*) FILTER (
+                        WHERE synchronized_quantity_kg > 0
+                          AND quantity_kg_candidate > 0
+                          AND synchronized_quantity_kg =
+                              quantity_kg_candidate
+                    )
+                FROM read_parquet({synchronized_sql})
+
+                UNION ALL
+
+                SELECT
+                    'final_equals_alt_quantity_candidate',
+                    COUNT(*) FILTER (
+                        WHERE synchronized_quantity_kg > 0
+                          AND alt_quantity_kg_candidate > 0
+                          AND synchronized_quantity_kg =
+                              alt_quantity_kg_candidate
+                    )
+                FROM read_parquet({synchronized_sql})
+
+                UNION ALL
+
+                SELECT
+                    'final_equals_net_weight_candidate',
+                    COUNT(*) FILTER (
+                        WHERE synchronized_quantity_kg > 0
+                          AND net_weight_kg_candidate > 0
+                          AND synchronized_quantity_kg =
+                              net_weight_kg_candidate
+                    )
+                FROM read_parquet({synchronized_sql})
+            ) AS audit
+            CROSS JOIN population
             """
         )
 
         # ==============================================================
-        # 18. Unresolved conflict severity
+        # 16. Remaining kg gaps
+        #
+        # Disagreement among usable Q/A/N candidates is no longer left
+        # unresolved: it is handled by the adopted source precedence.
+        # Therefore the only unresolved rows are rows with no usable Q/A/N
+        # kg evidence.
         # ==============================================================
 
         queries.append(
             f"""
+            WITH population AS (
+                SELECT COUNT(*) AS n_total
+                FROM read_parquet({synchronized_sql})
+            )
+
             SELECT
-                'unresolved_conflict_statistics'
+                'remaining_kg_gap'
                     AS diagnostic_group,
-                metric,
-                value,
-                NULL::DOUBLE AS percentage,
+                gap_type AS metric,
+                CAST(COUNT(*) AS DOUBLE) AS value,
+                100.0 * COUNT(*) / population.n_total
+                    AS percentage,
                 NULL::INTEGER AS year,
                 NULL::VARCHAR AS category_1,
                 NULL::VARCHAR AS category_2,
                 NULL::VARCHAR AS category_3
+
             FROM (
-
                 SELECT
-                    'n_conflicts' AS metric,
-                    CAST(COUNT(*) AS DOUBLE) AS value
+                    CASE
+                        WHEN synchronized_quantity_kg > 0
+                            THEN 'resolved'
+
+                        WHEN (
+                            COALESCE(has_alt_quantity, FALSE)
+                            OR COALESCE(has_quantity, FALSE)
+                        )
+                            THEN 'supplementary_quantity_but_no_kg'
+
+                        ELSE 'no_physical_quantity_evidence'
+                    END AS gap_type
                 FROM read_parquet({synchronized_sql})
-                WHERE quantity_sync_status =
-                    'unresolved_conflict'
+            ) AS gaps
 
-                UNION ALL
-
-                SELECT
-                    'median_relative_gap',
-                    MEDIAN(
-                        quantity_net_weight_relative_gap
-                    )
-                FROM read_parquet({synchronized_sql})
-                WHERE quantity_sync_status =
-                    'unresolved_conflict'
-
-                UNION ALL
-
-                SELECT
-                    'p90_relative_gap',
-                    QUANTILE_CONT(
-                        quantity_net_weight_relative_gap,
-                        0.90
-                    )
-                FROM read_parquet({synchronized_sql})
-                WHERE quantity_sync_status =
-                    'unresolved_conflict'
-
-                UNION ALL
-
-                SELECT
-                    'p95_relative_gap',
-                    QUANTILE_CONT(
-                        quantity_net_weight_relative_gap,
-                        0.95
-                    )
-                FROM read_parquet({synchronized_sql})
-                WHERE quantity_sync_status =
-                    'unresolved_conflict'
-            )
+            CROSS JOIN population
+            GROUP BY
+                gap_type,
+                population.n_total
             """
         )
 
         # ==============================================================
-        # 19. Conflict distribution by HS
+        # 17. Missing kg distribution by HS
         # ==============================================================
 
         if hs_column is not None:
             queries.append(
                 f"""
-                SELECT
-                    'unresolved_conflicts_by_hs'
-                        AS diagnostic_group,
-                    CAST({hs_column} AS VARCHAR) AS metric,
-                    CAST(COUNT(*) AS DOUBLE) AS value,
-                    100.0 * COUNT(*)
-                        / SUM(COUNT(*)) OVER ()
-                        AS percentage,
-                    NULL::INTEGER AS year,
-                    NULL::VARCHAR AS category_1,
-                    NULL::VARCHAR AS category_2,
-                    NULL::VARCHAR AS category_3
-                FROM read_parquet({synchronized_sql})
-                WHERE quantity_sync_status =
-                    'unresolved_conflict'
-                GROUP BY {hs_column}
-                """
-            )
+                WITH population AS (
+                    SELECT COUNT(*) AS n_total
+                    FROM read_parquet({synchronized_sql})
+                )
 
-            queries.append(
-                f"""
                 SELECT
                     'missing_kg_by_hs'
                         AS diagnostic_group,
                     CAST({hs_column} AS VARCHAR) AS metric,
                     CAST(COUNT(*) AS DOUBLE) AS value,
-                    100.0 * COUNT(*)
-                        / SUM(COUNT(*)) OVER ()
+                    100.0 * COUNT(*) / population.n_total
                         AS percentage,
                     NULL::INTEGER AS year,
                     NULL::VARCHAR AS category_1,
                     NULL::VARCHAR AS category_2,
                     NULL::VARCHAR AS category_3
+
                 FROM read_parquet({synchronized_sql})
-                WHERE synchronized_quantity_kg IS NULL
-                GROUP BY {hs_column}
+                CROSS JOIN population
+
+                WHERE quantity_sync_status =
+                    'no_kg_evidence'
+
+                GROUP BY
+                    {hs_column},
+                    population.n_total
                 """
             )
+
+
+        # ==============================================================
+        # Final supplementary output
+        # ==============================================================
+
+        queries.append(
+            f"""
+            WITH population AS (
+                SELECT COUNT(*) AS n_total
+                FROM read_parquet({synchronized_sql})
+            )
+
+            SELECT
+                'supplementary_output_summary' AS diagnostic_group,
+                metric,
+                CAST(metric_value AS DOUBLE) AS value,
+                100.0 * metric_value / population.n_total AS percentage,
+                NULL::INTEGER AS year,
+                NULL::VARCHAR AS category_1,
+                NULL::VARCHAR AS category_2,
+                NULL::VARCHAR AS category_3
+            FROM (
+                SELECT
+                    'supplementary_positive_rows' AS metric,
+                    COUNT(*) FILTER (
+                        WHERE supplementary_quantity > 0
+                          AND supplementary_unit IS NOT NULL
+                    ) AS metric_value
+                FROM read_parquet({synchronized_sql})
+
+                UNION ALL
+
+                SELECT
+                    'supplementary_missing_rows',
+                    COUNT(*) FILTER (
+                        WHERE supplementary_quantity IS NULL
+                          AND supplementary_unit IS NULL
+                    )
+                FROM read_parquet({synchronized_sql})
+
+                UNION ALL
+
+                SELECT
+                    'selected_from_quantity',
+                    COUNT(*) FILTER (
+                        WHERE supplementary_quantity_source = 'quantity'
+                    )
+                FROM read_parquet({synchronized_sql})
+
+                UNION ALL
+
+                SELECT
+                    'selected_from_alt_quantity',
+                    COUNT(*) FILTER (
+                        WHERE supplementary_quantity_source = 'alt_quantity'
+                    )
+                FROM read_parquet({synchronized_sql})
+
+                UNION ALL
+
+                SELECT
+                    'reported_supplementary',
+                    COUNT(*) FILTER (
+                        WHERE supplementary_quantity > 0
+                          AND is_supplementary_quantity_estimated = FALSE
+                    )
+                FROM read_parquet({synchronized_sql})
+
+                UNION ALL
+
+                SELECT
+                    'estimated_supplementary',
+                    COUNT(*) FILTER (
+                        WHERE supplementary_quantity > 0
+                          AND is_supplementary_quantity_estimated = TRUE
+                    )
+                FROM read_parquet({synchronized_sql})
+
+                UNION ALL
+
+                SELECT
+                    'quantity_unit_null_mismatch',
+                    COUNT(*) FILTER (
+                        WHERE (
+                            supplementary_quantity IS NULL
+                            AND supplementary_unit IS NOT NULL
+                        )
+                        OR (
+                            supplementary_quantity IS NOT NULL
+                            AND supplementary_unit IS NULL
+                        )
+                    )
+                FROM read_parquet({synchronized_sql})
+            ) AS summary
+            CROSS JOIN population
+            """
+        )
+
+        queries.append(
+            f"""
+            WITH population AS (
+                SELECT COUNT(*) AS n_total
+                FROM read_parquet({synchronized_sql})
+            )
+
+            SELECT
+                'supplementary_output_unit_distribution' AS diagnostic_group,
+                supplementary_unit AS metric,
+                CAST(COUNT(*) AS DOUBLE) AS value,
+                100.0 * COUNT(*) / population.n_total AS percentage,
+                NULL::INTEGER AS year,
+                supplementary_quantity_source AS category_1,
+                CASE
+                    WHEN is_supplementary_quantity_estimated
+                        THEN 'estimated'
+                    ELSE 'reported'
+                END AS category_2,
+                NULL::VARCHAR AS category_3
+            FROM read_parquet({synchronized_sql})
+            CROSS JOIN population
+            WHERE supplementary_quantity > 0
+              AND supplementary_unit IS NOT NULL
+            GROUP BY
+                supplementary_unit,
+                supplementary_quantity_source,
+                is_supplementary_quantity_estimated,
+                population.n_total
+            """
+        )
 
         # ==============================================================
         # Write diagnostics
@@ -2741,18 +2994,28 @@ def build_quantity_diagnostics(
 
                 COUNT(*) FILTER (
                     WHERE quantity_sync_status =
-                        'unresolved_conflict'
-                ) AS n_unresolved_conflict,
+                        'reported_three_exact'
+                ) AS n_reported_three_exact,
+
+                COUNT(*) FILTER (
+                    WHERE quantity_sync_status LIKE
+                        'reported_pair_exact_%'
+                ) AS n_reported_pair_exact,
+
+                COUNT(*) FILTER (
+                    WHERE quantity_sync_status LIKE
+                        'reported_%_precedence'
+                ) AS n_reported_precedence,
+
+                COUNT(*) FILTER (
+                    WHERE quantity_sync_status LIKE
+                        'estimated_%_fallback'
+                ) AS n_estimated_fallback,
 
                 COUNT(*) FILTER (
                     WHERE quantity_sync_status =
                         'no_kg_evidence'
-                ) AS n_no_kg_evidence,
-
-                COUNT(*) FILTER (
-                    WHERE synchronized_quantity_source =
-                        'gross_weight_proxy'
-                ) AS n_gross_weight_proxy
+                ) AS n_no_kg_evidence
 
             FROM read_parquet({synchronized_sql})
             """
@@ -2761,9 +3024,11 @@ def build_quantity_diagnostics(
         (
             n_rows,
             n_synchronized,
-            n_unresolved_conflict,
+            n_reported_three_exact,
+            n_reported_pair_exact,
+            n_reported_precedence,
+            n_estimated_fallback,
             n_no_kg_evidence,
-            n_gross_weight_proxy,
         ) = summary
 
         synchronized_pct = (
@@ -2772,17 +3037,26 @@ def build_quantity_diagnostics(
             else 0.0
         )
 
-        unresolved_pct = (
-            100.0 * n_unresolved_conflict / n_rows
+        no_kg_pct = (
+            100.0 * n_no_kg_evidence / n_rows
             if n_rows
             else 0.0
         )
 
-        gross_weight_proxy_pct = (
-            100.0 * n_gross_weight_proxy / n_rows
-            if n_rows
-            else 0.0
+        methodology_partition = (
+            n_reported_three_exact
+            + n_reported_pair_exact
+            + n_reported_precedence
+            + n_estimated_fallback
+            + n_no_kg_evidence
         )
+
+        if methodology_partition != n_rows:
+            raise RuntimeError(
+                "Quantity methodology accounting failed: "
+                f"{methodology_partition:,} classified rows for "
+                f"{n_rows:,} input rows."
+            )
 
         n_diagnostic_rows = con.execute(
             """
@@ -2803,18 +3077,25 @@ def build_quantity_diagnostics(
             synchronized_pct,
         )
         logger.info(
-            "Unresolved conflicts: %s (%.4f%%)",
-            f"{n_unresolved_conflict:,}",
-            unresolved_pct,
+            "Reported three-source exact agreement: %s",
+            f"{n_reported_three_exact:,}",
         )
         logger.info(
-            "Rows unresolved by current quantity/net-weight synchronization: %s",
+            "Reported exact pair agreement: %s",
+            f"{n_reported_pair_exact:,}",
+        )
+        logger.info(
+            "Reported precedence resolutions: %s",
+            f"{n_reported_precedence:,}",
+        )
+        logger.info(
+            "Estimated fallback resolutions: %s",
+            f"{n_estimated_fallback:,}",
+        )
+        logger.info(
+            "Rows with no usable Q/A/N kg evidence: %s (%.4f%%)",
             f"{n_no_kg_evidence:,}",
-        )
-        logger.info(
-            "Gross-weight proxy rows: %s (%.4f%%)",
-            f"{n_gross_weight_proxy:,}",
-            gross_weight_proxy_pct,
+            no_kg_pct,
         )
         logger.info(
             "Quantity diagnostics: %s",
@@ -2838,24 +3119,27 @@ def build_quantity_diagnostics(
 
         "n_rows": int(n_rows),
         "n_synchronized": int(n_synchronized),
-        "n_unresolved_conflict": int(
-            n_unresolved_conflict
+        "n_reported_three_exact": int(
+            n_reported_three_exact
+        ),
+        "n_reported_pair_exact": int(
+            n_reported_pair_exact
+        ),
+        "n_reported_precedence": int(
+            n_reported_precedence
+        ),
+        "n_estimated_fallback": int(
+            n_estimated_fallback
         ),
         "n_no_kg_evidence": int(
             n_no_kg_evidence
-        ),
-        "n_gross_weight_proxy": int(
-            n_gross_weight_proxy
         ),
 
         "synchronized_pct": float(
             synchronized_pct
         ),
-        "unresolved_conflict_pct": float(
-            unresolved_pct
-        ),
-        "gross_weight_proxy_pct": float(
-            gross_weight_proxy_pct
+        "no_kg_pct": float(
+            no_kg_pct
         ),
 
         "ready_for_reporting": True,
