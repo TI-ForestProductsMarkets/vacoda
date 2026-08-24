@@ -4,8 +4,8 @@
 cif_fob:
   input:
     stage: "interim"
-    subdir: "hs_sync/target_{target_hs_lower}/applied"
-    filename: "comtrade_target_{target_hs_lower}_hs_synced.parquet"
+    subdir: "quantity/target_{target_hs_lower}"
+    filename: "comtrade_target_{target_hs_lower}_quantity_synced.parquet"
     format: "parquet"
 
   output:
@@ -40,6 +40,13 @@ cif_fob:
       direct_cif_value: "cif_value_usd"
       direct_fob_value: "fob_value_usd"
       allocation_weight: "allocation_weight"
+
+      synchronized_quantity: "synchronized_quantity_kg"
+      synchronized_quantity_source: "synchronized_quantity_source"
+      synchronized_quantity_estimated: "is_synchronized_quantity_estimated"
+
+      supplementary_quantity: "supplementary_quantity"
+      supplementary_unit: "supplementary_unit"
 
       quantity: "quantity"
       quantity_unit: "quantity_unit"

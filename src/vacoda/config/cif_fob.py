@@ -173,6 +173,10 @@ class CifFobSourceColumnsConfig:
     quantity_unit: str
     quantity_estimated: str
 
+    synchronized_quantity: str
+    synchronized_quantity_source: str
+    synchronized_quantity_estimated: str
+
     alt_quantity: str
     alt_quantity_unit: str
     alt_quantity_estimated: str
@@ -216,6 +220,21 @@ class CifFobSourceColumnsConfig:
             quantity=require_str(cfg.get("quantity"), key="cif_fob.source_data.columns.quantity"),
             quantity_unit=require_str(cfg.get("quantity_unit"), key="cif_fob.source_data.columns.quantity_unit"),
             quantity_estimated=require_str(cfg.get("quantity_estimated"), key="cif_fob.source_data.columns.quantity_estimated"),
+
+            synchronized_quantity=require_str(
+                cfg.get("synchronized_quantity"),
+                key="cif_fob.source_data.columns.synchronized_quantity",
+            ),
+
+            synchronized_quantity_source=require_str(
+                cfg.get("synchronized_quantity_source"),
+                key="cif_fob.source_data.columns.synchronized_quantity_source",
+            ),
+
+            synchronized_quantity_estimated=require_str(
+                cfg.get("synchronized_quantity_estimated"),
+                key="cif_fob.source_data.columns.synchronized_quantity_estimated",
+            ),
 
             alt_quantity=require_str(cfg.get("alt_quantity"), key="cif_fob.source_data.columns.alt_quantity"),
             alt_quantity_unit=require_str(cfg.get("alt_quantity_unit"), key="cif_fob.source_data.columns.alt_quantity_unit"),

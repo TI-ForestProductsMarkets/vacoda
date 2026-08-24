@@ -1,12 +1,12 @@
 """
 vacoda.cif_fob.prepare_input
 
-Prepare HS-synced trade data for CIF/FOB analysis.
+Prepare Quantity-synchronized trade data for CIF/FOB analysis.
 
 Policy
 ------
-The source Comtrade table contains multiple dimensional representations
-of annual trade flows. For CIF/FOB analysis, this module:
+The source trade table has already passed HS synchronization and Quantity
+synchronization. For CIF/FOB analysis, this module:
 
 1. keeps only rows that are:
    - within the configured year scope;
@@ -14,12 +14,16 @@ of annual trade flows. For CIF/FOB analysis, this module:
    - explicitly reported;
    - non-aggregate;
 
-2. derives a canonical kilogram measure for every retained source row;
+2. consumes the canonical kilogram measure produced upstream by the
+   Quantity module, together with its source and estimated-state provenance;
 
-3. derives paired direct CIF/FOB values only when both values are positive
+3. applies the configured HS allocation weight to the synchronized kilogram
+   measure where required, producing the physical measure used by CIF/FOB;
+
+4. derives paired direct CIF/FOB values only when both values are positive
    on the same source row;
 
-4. aggregates reported additive components to exactly one row per:
+5. aggregates reported additive components to exactly one row per:
 
        year
        reporter
@@ -27,8 +31,14 @@ of annual trade flows. For CIF/FOB analysis, this module:
        flow
        target commodity
 
-5. audits source selection, aggregation, value preservation, and key
-   uniqueness.
+6. preserves and summarizes physical-quantity provenance across aggregated
+   components;
+
+7. audits source selection, aggregation, value preservation, physical-weight
+   coverage, direct CIF/FOB consistency, and canonical-key uniqueness.
+
+The CIF/FOB module does not independently reconstruct a quantity hierarchy.
+Canonical kilogram source selection is owned by the upstream Quantity module.
 """
 
 from __future__ import annotations
@@ -201,6 +211,18 @@ def prepare_cif_fob_input(
     )
     quantity_estimated_col = _quote_identifier(
         columns.quantity_estimated
+    )
+
+    synchronized_quantity_col = _quote_identifier(
+        columns.synchronized_quantity
+    )
+
+    synchronized_quantity_source_col = _quote_identifier(
+        columns.synchronized_quantity_source
+    )
+
+    synchronized_quantity_estimated_col = _quote_identifier(
+        columns.synchronized_quantity_estimated
     )
 
     alt_quantity_col = _quote_identifier(
@@ -545,267 +567,26 @@ def prepare_cif_fob_input(
 
                 -- --------------------------------------------------
                 -- Canonical weight value
+                --
+                -- Quantity synchronization is performed upstream by
+                -- the Quantity module. CIF/FOB therefore consumes the
+                -- approved synchronized kg value rather than deriving
+                -- an independent weight hierarchy.
                 -- --------------------------------------------------
 
-                CASE
-                    -- 1. Reported net weight
-                    WHEN CAST(
-                        {net_weight_col}
-                        AS DOUBLE
-                    ) > 0
-                     AND COALESCE(
-                         CAST(
-                             {net_weight_estimated_col}
-                             AS BOOLEAN
-                         ),
-                         FALSE
-                     ) = FALSE
-                        THEN CAST(
-                            {net_weight_col}
-                            AS DOUBLE
-                        )
-
-                    -- 2. Reported quantity in kg
-                    WHEN CAST(
-                        {quantity_col}
-                        AS DOUBLE
-                    ) > 0
-                     AND LOWER(
-                         TRIM(
-                             CAST(
-                                 {quantity_unit_col}
-                                 AS VARCHAR
-                             )
-                         )
-                     ) = 'kg'
-                     AND COALESCE(
-                         CAST(
-                             {quantity_estimated_col}
-                             AS BOOLEAN
-                         ),
-                         FALSE
-                     ) = FALSE
-                        THEN CAST(
-                            {quantity_col}
-                            AS DOUBLE
-                        )
-
-                    -- 3. Reported alternative quantity in kg
-                    WHEN CAST(
-                        {alt_quantity_col}
-                        AS DOUBLE
-                    ) > 0
-                     AND LOWER(
-                         TRIM(
-                             CAST(
-                                 {alt_quantity_unit_col}
-                                 AS VARCHAR
-                             )
-                         )
-                     ) = 'kg'
-                     AND COALESCE(
-                         CAST(
-                             {alt_quantity_estimated_col}
-                             AS BOOLEAN
-                         ),
-                         FALSE
-                     ) = FALSE
-                        THEN CAST(
-                            {alt_quantity_col}
-                            AS DOUBLE
-                        )
-
-                    -- 4. Estimated net weight
-                    WHEN CAST(
-                        {net_weight_col}
-                        AS DOUBLE
-                    ) > 0
-                        THEN CAST(
-                            {net_weight_col}
-                            AS DOUBLE
-                        )
-
-                    -- 5. Estimated quantity in kg
-                    WHEN CAST(
-                        {quantity_col}
-                        AS DOUBLE
-                    ) > 0
-                     AND LOWER(
-                         TRIM(
-                             CAST(
-                                 {quantity_unit_col}
-                                 AS VARCHAR
-                             )
-                         )
-                     ) = 'kg'
-                        THEN CAST(
-                            {quantity_col}
-                            AS DOUBLE
-                        )
-
-                    -- 6. Estimated alternative quantity in kg
-                    WHEN CAST(
-                        {alt_quantity_col}
-                        AS DOUBLE
-                    ) > 0
-                     AND LOWER(
-                         TRIM(
-                             CAST(
-                                 {alt_quantity_unit_col}
-                                 AS VARCHAR
-                             )
-                         )
-                     ) = 'kg'
-                        THEN CAST(
-                            {alt_quantity_col}
-                            AS DOUBLE
-                        )
-
-                    -- 7. Reported gross weight proxy
-                    WHEN CAST(
-                        {gross_weight_col}
-                        AS DOUBLE
-                    ) > 0
-                     AND COALESCE(
-                         CAST(
-                             {gross_weight_estimated_col}
-                             AS BOOLEAN
-                         ),
-                         FALSE
-                     ) = FALSE
-                        THEN CAST(
-                            {gross_weight_col}
-                            AS DOUBLE
-                        )
-
-                    -- 8. Estimated gross weight proxy
-                    WHEN CAST(
-                        {gross_weight_col}
-                        AS DOUBLE
-                    ) > 0
-                        THEN CAST(
-                            {gross_weight_col}
-                            AS DOUBLE
-                        )
-
-                    ELSE NULL
-                END AS row_canonical_weight_kg,
+                CAST(
+                    {synchronized_quantity_col}
+                    AS DOUBLE
+                ) AS row_canonical_weight_kg,
 
                 -- --------------------------------------------------
                 -- Canonical weight source
                 -- --------------------------------------------------
 
-                CASE
-                    WHEN CAST(
-                        {net_weight_col}
-                        AS DOUBLE
-                    ) > 0
-                     AND COALESCE(
-                         CAST(
-                             {net_weight_estimated_col}
-                             AS BOOLEAN
-                         ),
-                         FALSE
-                     ) = FALSE
-                        THEN 'reported_net_weight_kg'
-
-                    WHEN CAST(
-                        {quantity_col}
-                        AS DOUBLE
-                    ) > 0
-                     AND LOWER(
-                         TRIM(
-                             CAST(
-                                 {quantity_unit_col}
-                                 AS VARCHAR
-                             )
-                         )
-                     ) = 'kg'
-                     AND COALESCE(
-                         CAST(
-                             {quantity_estimated_col}
-                             AS BOOLEAN
-                         ),
-                         FALSE
-                     ) = FALSE
-                        THEN 'reported_quantity_kg'
-
-                    WHEN CAST(
-                        {alt_quantity_col}
-                        AS DOUBLE
-                    ) > 0
-                     AND LOWER(
-                         TRIM(
-                             CAST(
-                                 {alt_quantity_unit_col}
-                                 AS VARCHAR
-                             )
-                         )
-                     ) = 'kg'
-                     AND COALESCE(
-                         CAST(
-                             {alt_quantity_estimated_col}
-                             AS BOOLEAN
-                         ),
-                         FALSE
-                     ) = FALSE
-                        THEN 'reported_alt_quantity_kg'
-
-                    WHEN CAST(
-                        {net_weight_col}
-                        AS DOUBLE
-                    ) > 0
-                        THEN 'estimated_net_weight_kg'
-
-                    WHEN CAST(
-                        {quantity_col}
-                        AS DOUBLE
-                    ) > 0
-                     AND LOWER(
-                         TRIM(
-                             CAST(
-                                 {quantity_unit_col}
-                                 AS VARCHAR
-                             )
-                         )
-                     ) = 'kg'
-                        THEN 'estimated_quantity_kg'
-
-                    WHEN CAST(
-                        {alt_quantity_col}
-                        AS DOUBLE
-                    ) > 0
-                     AND LOWER(
-                         TRIM(
-                             CAST(
-                                 {alt_quantity_unit_col}
-                                 AS VARCHAR
-                             )
-                         )
-                     ) = 'kg'
-                        THEN 'estimated_alt_quantity_kg'
-
-                    WHEN CAST(
-                        {gross_weight_col}
-                        AS DOUBLE
-                    ) > 0
-                     AND COALESCE(
-                         CAST(
-                             {gross_weight_estimated_col}
-                             AS BOOLEAN
-                         ),
-                         FALSE
-                     ) = FALSE
-                        THEN 'reported_gross_weight_kg'
-
-                    WHEN CAST(
-                        {gross_weight_col}
-                        AS DOUBLE
-                    ) > 0
-                        THEN 'estimated_gross_weight_kg'
-
-                    ELSE 'missing'
-                END AS row_canonical_weight_source,
+                CAST(
+                    {synchronized_quantity_source_col}
+                    AS VARCHAR
+                ) AS row_canonical_weight_source,
 
                 -- --------------------------------------------------
                 -- Paired direct CIF/FOB values
@@ -877,30 +658,12 @@ def prepare_cif_fob_input(
             SELECT
                 *,
 
-                CASE
-                    WHEN row_canonical_weight_source IN (
-                        'reported_net_weight_kg',
-                        'reported_quantity_kg',
-                        'reported_alt_quantity_kg',
-                        'reported_gross_weight_kg'
-                    )
-                        THEN FALSE
+                CAST(
+                    {synchronized_quantity_estimated_col}
+                    AS BOOLEAN
+                ) AS row_canonical_weight_estimated,
 
-                    WHEN row_canonical_weight_source IN (
-                        'estimated_net_weight_kg',
-                        'estimated_quantity_kg',
-                        'estimated_alt_quantity_kg',
-                        'estimated_gross_weight_kg'
-                    )
-                        THEN TRUE
-
-                    ELSE NULL
-                END AS row_canonical_weight_estimated,
-
-                row_canonical_weight_source IN (
-                    'reported_gross_weight_kg',
-                    'estimated_gross_weight_kg'
-                ) AS row_canonical_weight_is_proxy,
+                FALSE AS row_canonical_weight_is_proxy,
 
                 CASE
                     WHEN row_canonical_weight_kg > 0
