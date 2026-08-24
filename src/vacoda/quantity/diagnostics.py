@@ -1151,7 +1151,11 @@ def build_quantity_diagnostics(
                             quantity_net_weight_relative_gap
                         ) AS VARCHAR
                     ) AS category_2,
-                    NULL::VARCHAR AS category_3
+                    CAST(
+                        COUNT(*) FILTER (
+                            WHERE quantity_kg_candidate = net_weight_kg_candidate
+                        ) AS VARCHAR
+                    ) AS category_3
                 FROM read_parquet({evidence_sql})
                 WHERE quantity_net_weight_relative_gap
                     IS NOT NULL
@@ -1271,6 +1275,43 @@ def build_quantity_diagnostics(
                 CAST(MEDIAN(relative_gap) AS VARCHAR)
                     AS category_3
             FROM measured
+            GROUP BY
+                comparison,
+                left_status,
+                right_status
+
+            UNION ALL
+            SELECT
+                'alt_quantity_kg_exact_match'
+                    AS diagnostic_group,
+
+                comparison AS metric,
+
+                CAST(
+                    COUNT(*) FILTER (
+                        WHERE left_value = right_value
+                    ) AS DOUBLE
+                ) AS value,
+
+                100.0 * AVG(
+                    CASE
+                        WHEN left_value = right_value
+                            THEN 1.0
+                        ELSE 0.0
+                    END
+                ) AS percentage,
+
+                NULL::INTEGER AS year,
+
+                left_status || '_' || right_status
+                    AS category_1,
+
+                NULL::VARCHAR AS category_2,
+
+                NULL::VARCHAR AS category_3
+
+            FROM measured
+
             GROUP BY
                 comparison,
                 left_status,

@@ -53,6 +53,13 @@ UNIT_COLORS = {
     "kg 90% sdt": "darkkhaki",
 }
 
+QUANTITY_FIELD_ORDER = [
+    "quantity",
+    "alt_quantity",
+    "net_weight_kg",
+    "gross_weight_kg",
+]
+
 def valid_output(path: Path) -> bool:
     return path.is_file() and path.stat().st_size > 0
 
@@ -86,6 +93,15 @@ def _format_number(
         return "NA"
     return f"{float(value):,.{digits}f}"
 
+def _population_share(
+    rows: float | int | None,
+    population: float | int,
+) -> float | None:
+    """Return rows as percentage of the full Quantity input population."""
+    if rows is None or pd.isna(rows) or not population:
+        return None
+
+    return 100.0 * float(rows) / float(population)
 
 def _markdown_table(dataframe: pd.DataFrame, *, index: bool = False) -> str:
     if dataframe.empty:
@@ -148,28 +164,6 @@ def _source_state_table(
     return out.sort_values(["Candidate source", "Evidence state"])
 
 
-def _agreement_state_table(
-    frame: pd.DataFrame,
-    agreement_tolerance: float,
-) -> pd.DataFrame:
-    if frame.empty:
-        return pd.DataFrame()
-    out = frame[
-        ["metric", "category_1", "value", "percentage", "category_2", "category_3"]
-    ].copy()
-    out.columns = [
-        "Comparison",
-        "Evidence state",
-        "Comparable rows",
-        f"Within {100 * agreement_tolerance:.0f}%",
-        "Median ratio",
-        "Median relative gap",
-    ]
-    out["Comparable rows"] = out["Comparable rows"].round().astype("Int64")
-    out = _as_numeric(out, ["Median ratio", "Median relative gap"])
-    return out.sort_values(["Comparison", "Evidence state"])
-
-
 def _top_hs_table(frame: pd.DataFrame, *, n: int = 20) -> pd.DataFrame:
     if frame.empty:
         return pd.DataFrame()
@@ -178,6 +172,126 @@ def _top_hs_table(frame: pd.DataFrame, *, n: int = 20) -> pd.DataFrame:
     out["Rows"] = out["Rows"].round().astype("Int64")
     return out.sort_values("Rows", ascending=False).head(n)
 
+def _agreement_state_table(
+    frame: pd.DataFrame,
+    exact_frame: pd.DataFrame,
+    agreement_tolerance: float,
+) -> pd.DataFrame:
+
+    if frame.empty:
+        return pd.DataFrame()
+
+    out = frame[
+        [
+            "metric",
+            "category_1",
+            "value",
+            "percentage",
+            "category_2",
+            "category_3",
+        ]
+    ].copy()
+
+    out.columns = [
+        "Comparison",
+        "Evidence state",
+        "Rows compared",
+        f"Agreement within {100 * agreement_tolerance:.0f}% (%)",
+        "Median ratio",
+        "Median relative gap",
+    ]
+
+    # ----------------------------------------------------------
+    # Exact-match statistics
+    # ----------------------------------------------------------
+    if not exact_frame.empty:
+        exact = exact_frame[
+            [
+                "metric",
+                "category_1",
+                "value",
+                "percentage",
+            ]
+        ].copy()
+
+        exact.columns = [
+            "Comparison",
+            "Evidence state",
+            "Exact-match rows",
+            "Exact match (%)",
+        ]
+
+        out = out.merge(
+            exact,
+            on=["Comparison", "Evidence state"],
+            how="left",
+        )
+
+    # ----------------------------------------------------------
+    # Evidence-state labels
+    # ----------------------------------------------------------
+    out = _split_evidence_state(
+        out,
+        column="Evidence state",
+        left_name="First-source evidence",
+        right_name="Second-source evidence",
+    )
+
+    out["Rows compared"] = (
+        out["Rows compared"]
+        .round()
+        .astype("Int64")
+    )
+
+    if "Exact-match rows" in out.columns:
+        out["Exact-match rows"] = (
+            out["Exact-match rows"]
+            .round()
+            .astype("Int64")
+        )
+
+    out = _as_numeric(
+        out,
+        [
+            f"Agreement within {100 * agreement_tolerance:.0f}% (%)",
+            "Exact match (%)",
+            "Median ratio",
+            "Median relative gap",
+        ],
+    )
+
+    return out.sort_values(
+        [
+            "Comparison",
+            "First-source evidence",
+            "Second-source evidence",
+        ]
+    )
+
+def _split_evidence_state(
+    frame: pd.DataFrame,
+    *,
+    column: str,
+    left_name: str,
+    right_name: str,
+) -> pd.DataFrame:
+    """Split states such as 'reported_estimated' into explicit columns."""
+    frame = frame.copy()
+
+    split = frame[column].astype(str).str.split("_", n=1, expand=True)
+
+    frame.insert(
+        frame.columns.get_loc(column),
+        left_name,
+        split[0].str.replace("_", " ").str.capitalize(),
+    )
+    frame.insert(
+        frame.columns.get_loc(column) + 1,
+        right_name,
+        split[1].str.replace("_", " ").str.capitalize(),
+    )
+
+    return frame.drop(columns=[column])
 
 # ======================================================================
 # Figures
@@ -362,25 +476,59 @@ def _plot_alt_agreement_by_evidence_state(
     diagnostics: pd.DataFrame,
     output_path: Path,
 ) -> None:
-    frame = _diagnostic_group(diagnostics, "alt_quantity_kg_agreement")
-    frame = frame.dropna(subset=["metric", "category_1", "percentage"])
+    frame = _diagnostic_group(
+        diagnostics,
+        "alt_quantity_kg_agreement",
+    )
+
+    frame = frame.dropna(
+        subset=["metric", "category_1", "percentage"]
+    )
+
     if frame.empty:
         return
+
+    frame["evidence_state"] = (
+        frame["category_1"]
+        .astype(str)
+        .str.replace("_", " / ")
+        .str.title()
+    )
+
     pivot = frame.pivot_table(
-        index="category_1",
+        index="evidence_state",
         columns="metric",
         values="percentage",
         aggfunc="first",
     ).sort_index()
+
     figure, axis = plt.subplots(figsize=(11, 6))
-    pivot.plot(kind="bar", ax=axis)
-    axis.set_title("Alternate-quantity kg agreement by evidence state")
+
+    pivot.plot(
+        kind="bar",
+        ax=axis,
+    )
+
+    axis.set_title(
+        "Alternate-quantity kg agreement by evidence state"
+    )
+
     axis.set_xlabel("Evidence state")
-    axis.set_ylabel("Rows within configured tolerance (%)")
+    axis.set_ylabel(
+        "Rows within configured tolerance (%)"
+    )
     axis.set_ylim(0, 100)
-    axis.grid(axis="y", linestyle="--", alpha=0.4)
+    axis.grid(
+        axis="y",
+        linestyle="--",
+        alpha=0.4,
+    )
     axis.legend(title="Comparison")
-    _save_figure(figure, output_path)
+
+    _save_figure(
+        figure,
+        output_path,
+    )
 
 
 def _plot_net_weight_coverage_by_year(
@@ -745,7 +893,8 @@ def build_quantity_report(
         # --------------------------------------------------------------
         inventory = _diagnostic_group(diagnostics, "field_inventory")
         inventory_rows = []
-        for field_name in sorted(inventory["metric"].unique()) if not inventory.empty else []:
+
+        for field_name in QUANTITY_FIELD_ORDER if not inventory.empty else []:
             field_frame = inventory.loc[inventory["metric"].eq(field_name)]
 
             def get_stat(statistic: str, column: str):
@@ -816,26 +965,117 @@ def build_quantity_report(
             diagnostics,
             "quantity_net_weight_by_evidence_state",
         )
+
         if evidence_state.empty:
             evidence_state_display = pd.DataFrame()
+
         else:
+            # 1. Select raw diagnostic columns.
             evidence_state_display = evidence_state[
-                ["metric", "value", "percentage", "category_1", "category_2"]
+                [
+                    "metric",
+                    "value",
+                    "category_3",
+                    "percentage",
+                    "category_1",
+                    "category_2",
+                ]
             ].copy()
+
+            # 2. Give them human-readable names.
             evidence_state_display.columns = [
                 "Evidence state",
-                "Comparable rows",
-                f"Within {100 * agreement_tolerance:.0f}%",
+                "Rows compared",
+                "Exact-match rows",
+                f"Agreement within {100 * agreement_tolerance:.0f}% (%)",
                 "Median q/net-weight ratio",
                 "Median relative gap",
             ]
-            evidence_state_display["Comparable rows"] = (
-                evidence_state_display["Comparable rows"].round().astype("Int64")
+
+            # 3. Convert row counts.
+            evidence_state_display["Rows compared"] = (
+                evidence_state_display["Rows compared"]
+                .round()
+                .astype("Int64")
             )
+
+            evidence_state_display["Exact-match rows"] = (
+                pd.to_numeric(
+                    evidence_state_display["Exact-match rows"],
+                    errors="coerce",
+                )
+                .round()
+                .astype("Int64")
+            )
+
+            # 4. Calculate exact-match percentage within each evidence group.
+            evidence_state_display["Exact match (%)"] = (
+                100.0
+                * evidence_state_display["Exact-match rows"]
+                / evidence_state_display["Rows compared"]
+            )
+
+            # 5. Convert remaining statistics to numeric.
             evidence_state_display = _as_numeric(
                 evidence_state_display,
-                ["Median q/net-weight ratio", "Median relative gap"],
+                [
+                    f"Agreement within {100 * agreement_tolerance:.0f}% (%)",
+                    "Median q/net-weight ratio",
+                    "Median relative gap",
+                ],
             )
+
+            # 6. Split reported_estimated etc. into explicit evidence columns.
+            evidence_state_display = _split_evidence_state(
+                evidence_state_display,
+                column="Evidence state",
+                left_name="Quantity evidence",
+                right_name="Net-weight evidence",
+            )
+
+            # 7. Sort Reported before Estimated.
+            evidence_order = {
+                "Reported": 0,
+                "Estimated": 1,
+            }
+
+            evidence_state_display = (
+                evidence_state_display
+                .assign(
+                    _quantity_order=evidence_state_display[
+                        "Quantity evidence"
+                    ].map(evidence_order),
+                    _net_weight_order=evidence_state_display[
+                        "Net-weight evidence"
+                    ].map(evidence_order),
+                )
+                .sort_values(
+                    [
+                        "_quantity_order",
+                        "_net_weight_order",
+                    ]
+                )
+                .drop(
+                    columns=[
+                        "_quantity_order",
+                        "_net_weight_order",
+                    ]
+                )
+            )
+
+            # 8. Final visible column order.
+            evidence_state_display = evidence_state_display[
+                [
+                    "Quantity evidence",
+                    "Net-weight evidence",
+                    "Rows compared",
+                    "Exact-match rows",
+                    "Exact match (%)",
+                    f"Agreement within {100 * agreement_tolerance:.0f}% (%)",
+                    "Median q/net-weight ratio",
+                    "Median relative gap",
+                ]
+            ]
 
         agreement_stats = _diagnostic_group(
             diagnostics,
@@ -857,7 +1097,14 @@ def build_quantity_report(
             percentage_name="Incremental population coverage (%)",
         )
         alt_agreement_display = _agreement_state_table(
-            _diagnostic_group(diagnostics, "alt_quantity_kg_agreement"),
+            _diagnostic_group(
+                diagnostics,
+                "alt_quantity_kg_agreement",
+            ),
+            _diagnostic_group(
+                diagnostics,
+                "alt_quantity_kg_exact_match",
+            ),
             agreement_tolerance,
         )
 
@@ -897,15 +1144,26 @@ def build_quantity_report(
         else:
             three_source_consensus_display = (
                 three_source_consensus[
-                    ["metric", "value", "percentage"]
+                    ["metric", "value"]
                 ].copy()
             )
 
             three_source_consensus_display.columns = [
                 "Three-source outcome",
                 "Rows",
-                "Share of three-source rows (%)",
             ]
+
+            three_source_consensus_display["Rows"] = (
+                three_source_consensus_display["Rows"]
+                .round()
+                .astype("Int64")
+            )
+
+            three_source_consensus_display[
+                "Population share (%)"
+            ] = three_source_consensus_display["Rows"].apply(
+                lambda value: _population_share(value, n_rows)
+            )
 
             three_source_consensus_display["Rows"] = (
                 three_source_consensus_display["Rows"]
@@ -958,7 +1216,6 @@ def build_quantity_report(
                     "category_2",
                     "category_3",
                     "value",
-                    "percentage",
                 ]
             ].copy()
 
@@ -968,8 +1225,19 @@ def build_quantity_report(
                 "Net-weight evidence",
                 "Alt-quantity evidence",
                 "Rows",
-                "Share within outcome (%)",
             ]
+
+            three_source_provenance["Rows"] = (
+                three_source_provenance["Rows"]
+                .round()
+                .astype("Int64")
+            )
+
+            three_source_provenance[
+                "Population share (%)"
+            ] = three_source_provenance["Rows"].apply(
+                lambda value: _population_share(value, n_rows)
+            )
 
             three_source_provenance["Rows"] = (
                 three_source_provenance["Rows"]
@@ -1011,7 +1279,7 @@ def build_quantity_report(
                         "Net-weight evidence",
                         "Alt-quantity evidence",
                         "Rows",
-                        "Share within outcome (%)",
+                        "Population share (%)",
                     ]
                 ].sort_values(
                     "Rows",
@@ -1157,12 +1425,21 @@ def build_quantity_report(
             diagnostics,
             "gross_net_weight_by_evidence_state",
         )
+
         if gross_evidence.empty:
             gross_evidence_display = pd.DataFrame()
         else:
             gross_evidence_display = gross_evidence[
-                ["metric", "value", "percentage", "category_1", "category_2", "category_3"]
+                [
+                    "metric",
+                    "value",
+                    "percentage",
+                    "category_1",
+                    "category_2",
+                    "category_3",
+                ]
             ].copy()
+
             gross_evidence_display.columns = [
                 "Evidence state",
                 "Comparable rows",
@@ -1171,12 +1448,27 @@ def build_quantity_report(
                 "p10 ratio",
                 "p90 ratio",
             ]
-            gross_evidence_display["Comparable rows"] = (
-                gross_evidence_display["Comparable rows"].round().astype("Int64")
+
+            gross_evidence_display = _split_evidence_state(
+                gross_evidence_display,
+                column="Evidence state",
+                left_name="Gross-weight evidence",
+                right_name="Net-weight evidence",
             )
+
+            gross_evidence_display["Comparable rows"] = (
+                gross_evidence_display["Comparable rows"]
+                .round()
+                .astype("Int64")
+            )
+
             gross_evidence_display = _as_numeric(
                 gross_evidence_display,
-                ["Median gross/net ratio", "p10 ratio", "p90 ratio"],
+                [
+                    "Median gross/net ratio",
+                    "p10 ratio",
+                    "p90 ratio",
+                ],
             )
 
         gross_without_net_year = _diagnostic_group(
@@ -1433,6 +1725,19 @@ def build_quantity_report(
             "",
             f"Quantity received `{n_rows:,}` observations from the HS Sync output.",
             "",
+            (
+                "**Reporting convention:** unless explicitly labelled as a "
+                "conditional statistic, every percentage in this report is "
+                f"calculated relative to the full input population of "
+                f"`{n_rows:,}` observations, which represents 100%."
+            ),
+            "",
+            (
+                "Conditional statistics, such as agreement rates among comparable "
+                "observations, are labelled separately and state their comparison "
+                "population explicitly."
+            ),
+            "",
             "| Property | Value |",
             "|---|---|",
             "| Upstream module | HS Sync |",
@@ -1593,15 +1898,21 @@ def build_quantity_report(
         lines.extend([
             "## 4. Canonical kg evidence",
             "",
+            "Three kg-equivalent evidence families are evaluated:",
+            "",
+            "1. `quantity` reported directly in `kg`.",
+            "2. `net_weight_kg`.",
             (
-                "Three kg-equivalent evidence families are evaluated: `quantity` "
-                "reported directly in `kg`, `net_weight_kg`, and `alternate quantity` "
-                "that is either directly expressed in kg or exactly convertible "
-                "to kg (for example `1000 KG`). Special mass bases such as "
-                "`kg 90% sdt` are not treated as ordinary net kg."
+                "3. `alt_quantity` that is either directly expressed in `kg` "
+                "or exactly convertible to kg (for example `1000 KG`)."
             ),
             "",
-            "### 4.1 Quantity and net-weight reported/estimated evidence",
+            (
+                "Special mass bases such as `kg 90% sdt` are not treated "
+                "as ordinary net kg."
+            ),
+            "",
+            "### 4.1 Quantity vs. net-weight evidence",
             "",
             _markdown_table(evidence_state_display),
             "",
@@ -1628,13 +1939,12 @@ def build_quantity_report(
             "### 4.4 Three-source consensus diagnostics",
             "",
             (
-                "For rows where quantity kg, net weight, and canonical "
-                "alternate-quantity kg are all available, the three pairwise "
+                "For rows where `quantity kg`, `net weight`, and `canonical "
+                "alternate-quantity kg` are all available, the three pairwise "
                 "comparisons are evaluated using the configured agreement "
                 f"tolerance of {100 * agreement_tolerance:.2f}%. "
-                "These diagnostics identify whether all three measurements "
-                "agree or whether two sources form a consensus against a "
-                "single differing source."
+                "Row counts are shown together with their share of the full "
+                "Quantity input population."
             ),
             "",
             _markdown_table(three_source_consensus_display),
@@ -1644,10 +1954,10 @@ def build_quantity_report(
             "### 4.5 Evidence provenance within three-source agreement",
             "",
             (
-                "The all-three-agree population is separated by the "
-                "reported/estimated provenance of each kg candidate. "
-                "Percentages are calculated within the all-three-agree "
-                "population rather than across the full dataset."
+                "For three-source rows that do not show complete "
+                "agreement, provenance is shown separately for each "
+                "pairwise-consensus or no-consensus outcome. "
+                "Percentages are calculated within each outcome."
             ),
             "",
             _markdown_table(
@@ -1658,12 +1968,13 @@ def build_quantity_report(
         lines.extend([
             "### 4.6 Evidence provenance within three-source disagreements",
             "",
-            (
-                "For three-source rows that do not show complete "
-                "agreement, provenance is shown separately for each "
-                "pairwise-consensus or no-consensus outcome. "
-                "Percentages are calculated within each outcome."
-            ),
+                (
+                    "For three-source rows that do not show complete "
+                    "agreement, provenance is shown separately for each "
+                    "pairwise-consensus or no-consensus outcome. "
+                    "Population shares use the full Quantity input population "
+                    "as the denominator."
+                ),
             "",
             _markdown_table(
                 three_source_outlier_provenance_display
