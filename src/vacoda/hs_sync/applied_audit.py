@@ -954,15 +954,15 @@ def run_hs_sync_applied_output_audit(
         audit = pd.DataFrame(audit_rows)
 
         failed = audit[audit["status"] == "fail"]
-        ready_for_cif_fob = failed.empty
+        ready_for_quantity = failed.empty
 
         audit_rows.append(
             _audit_row(
-                    check="ready_for_cif_fob",
+                    check="ready_for_quantity",
                     expected=True,
-                    actual=ready_for_cif_fob,
-                    status="pass" if ready_for_cif_fob else "fail",
-                    detail="HS-sync output passed integrity audit and is ready for CIF-FOB correction.",
+                    actual=ready_for_quantity,
+                    status="pass" if ready_for_quantity else "fail",
+                    detail="HS-sync output passed integrity audit and is ready for quantity.",
                 )
             )  
 
@@ -1007,8 +1007,8 @@ def run_hs_sync_applied_output_audit(
             "applied_path": applied_path,
             "weights_path": weights_path,
 
-            "ready_for_cif_fob": ready_for_cif_fob,
-            "audit_passed": ready_for_cif_fob,
+            "ready_for_quantity": ready_for_quantity,
+            "audit_passed": ready_for_quantity,
             "n_failed_audit_rows": len(failed),
 
             "raw_file_size": raw_size,

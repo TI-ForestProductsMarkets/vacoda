@@ -338,14 +338,14 @@ def run_hs_sync_workflow(
                 producer_product="applied HS Sync audit",
             )
 
-        ready_for_cif_fob = (
-            applied_audit_result.get("ready_for_cif_fob") is True
+        ready_for_quantity = (
+            applied_audit_result.get("ready_for_quantity") is True
         )
 
-        if not ready_for_cif_fob:
+        if not ready_for_quantity:
             raise RuntimeError(
                 "HS Sync applied-output audit did not approve "
-                "the output for CIF/FOB."
+                "the output for quantity."
             )
 
         n_failed_audit_rows = int(
@@ -358,9 +358,9 @@ def run_hs_sync_workflow(
         logger.info("HS Sync workflow finished.")
         logger.info("Applied output: %s", applied_path)
         logger.info("Applied-output audit: %s", audit_path)
-        logger.info("Audit passed: %s", ready_for_cif_fob)
+        logger.info("Audit passed: %s", ready_for_quantity)
         logger.info("Failed audit rows: %s", n_failed_audit_rows)
-        logger.info("Ready for CIF/FOB: %s", ready_for_cif_fob)
+        logger.info("Ready for quantity: %s", ready_for_quantity)
         logger.info("Workflow elapsed time: %.2f seconds", workflow_elapsed)
 
     return {
@@ -368,10 +368,10 @@ def run_hs_sync_workflow(
             "run_id": run_id,
 
             # Master-pipeline readiness contract.
-            "ready_for_cif_fob": ready_for_cif_fob,
+            "ready_for_quantity": ready_for_quantity,
 
             # Compatibility alias.
-            "ready_for_next_step": ready_for_cif_fob,
+            "ready_for_next_step": ready_for_quantity,
 
             # Canonical primary output and audit keys used by the master
             # pipeline and checkpoint system.
@@ -383,7 +383,7 @@ def run_hs_sync_workflow(
             "final_audit": audit_path,
 
             # Final validation outcome.
-            "audit_passed": ready_for_cif_fob,
+            "audit_passed": ready_for_quantity,
             "n_failed_audit_rows": n_failed_audit_rows,
 
             # Useful final workflow metadata.

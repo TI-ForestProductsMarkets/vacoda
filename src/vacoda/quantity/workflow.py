@@ -21,6 +21,7 @@ from vacoda.quantity.reconciliation_evidence import (
 )
 from vacoda.quantity.reporting import build_quantity_report
 from vacoda.quantity.synchronize import synchronize_quantity
+from vacoda.quantity.audit import run_quantity_output_audit
 from vacoda.utils.artifacts import (
     require_artifact,
     require_enabled_products,
@@ -48,6 +49,7 @@ WORKFLOW_STEPS = [
     "Build Quantity reconciliation evidence",
     "Synchronize quantity",
     "Build Quantity diagnostics",
+    "Audit Quantity Output",
     "Write Quantity decision report",
 ]
 
@@ -275,14 +277,38 @@ def run_quantity_workflow(
         )
 
         # ==================================================================
-        # Step 5 — Write Quantity decision report
+        # Step 5 — Audit Quantity output
         # ==================================================================
 
-        report_result = run_step(
+        audit_result = run_step(
             logger=logger,
             step_number=5,
             total_steps=TOTAL_WORKFLOW_STEPS,
             title=WORKFLOW_STEPS[4],
+            runner=lambda: run_quantity_output_audit(
+                cfg=cfg,
+                synchronized_quantity_path=synchronized_path,
+                run_id=run_id,
+                logger=logger,
+            ),
+        )
+
+        audit_path = require_artifact(
+            result=audit_result,
+            path_key="audit_path",
+            consumer_step=WORKFLOW_STEPS[5],
+            producer_product="Quantity audit Parquet",
+        )
+
+        # ==================================================================
+        # Step 6 — Write Quantity decision report
+        # ==================================================================
+
+        report_result = run_step(
+            logger=logger,
+            step_number=6,
+            total_steps=TOTAL_WORKFLOW_STEPS,
+            title=WORKFLOW_STEPS[5],
             runner=lambda: build_quantity_report(
                 cfg=cfg,
                 prepared_input_path=prepared_path,

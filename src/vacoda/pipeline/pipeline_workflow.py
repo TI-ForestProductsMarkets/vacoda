@@ -22,6 +22,9 @@ from vacoda.config.hs_sync import HsSyncConfig
 from vacoda.config.paths import resolve_log_path
 from vacoda.config.pipeline import PipelineConfig
 from vacoda.trade_sync.workflow import run_trade_sync_workflow
+from vacoda.config.quantity import QuantityConfig
+from vacoda.quantity.audit import quantity_audit_path
+from vacoda.quantity.workflow import run_quantity_workflow
 from vacoda.cif_fob.workflow import run_cif_fob_workflow
 from vacoda.dataset.staging import build_comtrade_staging_dataset
 from vacoda.hs_sync.workflow import run_hs_sync_workflow
@@ -338,6 +341,26 @@ def _run_hs_sync_step(
     )
 
 
+def _run_quantity_step(
+    *,
+    config_path: Path,
+    pipeline_cfg: PipelineConfig,
+    run_id: str,
+    force: bool = False,
+) -> dict[str, Any]:
+    cfg = QuantityConfig.from_yaml(
+        config_path,
+        scope=pipeline_cfg.scope,
+        engine=pipeline_cfg.engine,
+    )
+
+    return run_quantity_workflow(
+        cfg=cfg,
+        run_id=run_id,
+        logger=get_logger("PIPELINE.QUANTITY"),
+        force=force,
+    )
+
 def _run_cif_fob_step(
     *,
     config_path: Path,
@@ -490,6 +513,64 @@ def _build_hs_sync_plan(
         ),
     )
 
+def _build_quantity_plan(
+    *,
+    step_name: str,
+    config_path: Path,
+    pipeline_cfg: PipelineConfig,
+) -> StepPlan:
+    cfg = QuantityConfig.from_yaml(
+        config_path,
+        scope=pipeline_cfg.scope,
+        engine=pipeline_cfg.engine,
+    )
+
+    input_path = cfg.input_path()
+
+    quantity_source_dir = Path(
+        run_quantity_workflow.__code__.co_filename
+    ).parent
+
+    implementation_fp = source_files_fingerprint(
+        paths=list(
+            quantity_source_dir.rglob("*.py")
+        ),
+        label="quantity_implementation",
+    )
+
+    input_fp = {
+        "quantity_input": file_list_fingerprint(
+            paths=[input_path],
+            label="quantity_required_input",
+        ),
+        "implementation": implementation_fp,
+    }
+
+    output_path = cfg.product_path(
+        "synchronized_quantity"
+    )
+
+    audit_path = quantity_audit_path(cfg)
+
+    return StepPlan(
+        step_name=step_name,
+        config_path=config_path,
+        config_fingerprint=_step_config_fingerprint(
+            config_path=config_path,
+            resolved_config=cfg,
+            pipeline_cfg=pipeline_cfg,
+            include_scope=True,
+        ),
+        input_fingerprint=input_fp,
+        output_path=output_path,
+        audit_path=audit_path,
+        runner=lambda run_id, force: _run_quantity_step(
+            config_path=config_path,
+            pipeline_cfg=pipeline_cfg,
+            run_id=run_id,
+            force=force,
+        ),
+    )
 
 def _build_cif_fob_plan(
     *,
@@ -743,6 +824,13 @@ def _build_step_plan(
 
     if step_name == "hs_sync":
         return _build_hs_sync_plan(
+            step_name=step_name,
+            config_path=config_path,
+            pipeline_cfg=pipeline_cfg,
+        )
+
+    if step_name == "quantity":
+        return _build_quantity_plan(
             step_name=step_name,
             config_path=config_path,
             pipeline_cfg=pipeline_cfg,

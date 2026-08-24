@@ -13,6 +13,7 @@ pipeline:
   enabled_steps:
     - "staging"
     - "hs_sync"
+    - "quantity"
     #- "cif_fob"
     #- "trade_sync"
     # - "processed_export"
@@ -52,17 +53,24 @@ steps:
     config: "configs/steps/hs_sync.yaml"
     expected_status:
       - "completed"
+    required_ready_flag: "ready_for_quantity"
+
+  quantity:
+    enabled: true
+    config: "configs/steps/quantity.yaml"
+    expected_status:
+      - "completed"
     required_ready_flag: "ready_for_cif_fob"
 
   cif_fob:
-    enabled: true
+    enabled: false
     config: "configs/steps/cif_fob.yaml"
     expected_status:
       - "completed"
     required_ready_flag: "ready_for_trade_sync"
 
   trade_sync:
-    enabled: true
+    enabled: false
     config: "configs/steps/trade_sync.yaml"
     expected_status:
       - "completed"
