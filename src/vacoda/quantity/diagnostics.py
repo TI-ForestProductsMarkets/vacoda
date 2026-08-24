@@ -1036,54 +1036,93 @@ def build_quantity_diagnostics(
                     FROM read_parquet({evidence_sql})
                     WHERE quantity_net_weight_relative_gap
                         IS NOT NULL
+                        )
+                """
+            )
+
+            queries.append(
+                f"""
+                WITH population AS (
+                    SELECT COUNT(*) AS n_total
+                    FROM read_parquet({evidence_sql})
+                ),
+
+                comparison AS (
+                    SELECT
+                        quantity_net_weight_relative_gap
+                    FROM read_parquet({evidence_sql})
+                    WHERE quantity_net_weight_relative_gap IS NOT NULL
+                )
+
+                SELECT
+                    'quantity_net_weight_population_agreement'
+                        AS diagnostic_group,
+                    metric,
+                    value,
+                    percentage,
+                    NULL::INTEGER AS year,
+                    NULL::VARCHAR AS category_1,
+                    NULL::VARCHAR AS category_2,
+                    NULL::VARCHAR AS category_3
+
+                FROM (
+
+                    SELECT
+                        'comparable' AS metric,
+                        CAST(COUNT(*) AS DOUBLE) AS value,
+                        100.0 * COUNT(*) / population.n_total
+                            AS percentage
+                    FROM comparison
+                    CROSS JOIN population
+                    GROUP BY population.n_total
 
                     UNION ALL
 
                     SELECT
-                        'within_1pct_share',
-                        AVG(
-                            CASE
-                                WHEN quantity_net_weight_relative_gap
-                                    <= 0.01
-                                THEN 1.0
-                                ELSE 0.0
-                            END
-                        )
-                    FROM read_parquet({evidence_sql})
-                    WHERE quantity_net_weight_relative_gap
-                        IS NOT NULL
+                        'within_1pct',
+                        CAST(
+                            COUNT(*) FILTER (
+                                WHERE quantity_net_weight_relative_gap <= 0.01
+                            ) AS DOUBLE
+                        ),
+                        100.0 * COUNT(*) FILTER (
+                            WHERE quantity_net_weight_relative_gap <= 0.01
+                        ) / population.n_total
+                    FROM comparison
+                    CROSS JOIN population
+                    GROUP BY population.n_total
 
                     UNION ALL
 
                     SELECT
-                        'within_5pct_share',
-                        AVG(
-                            CASE
-                                WHEN quantity_net_weight_relative_gap
-                                    <= 0.05
-                                THEN 1.0
-                                ELSE 0.0
-                            END
-                        )
-                    FROM read_parquet({evidence_sql})
-                    WHERE quantity_net_weight_relative_gap
-                        IS NOT NULL
+                        'within_5pct',
+                        CAST(
+                            COUNT(*) FILTER (
+                                WHERE quantity_net_weight_relative_gap <= 0.05
+                            ) AS DOUBLE
+                        ),
+                        100.0 * COUNT(*) FILTER (
+                            WHERE quantity_net_weight_relative_gap <= 0.05
+                        ) / population.n_total
+                    FROM comparison
+                    CROSS JOIN population
+                    GROUP BY population.n_total
 
                     UNION ALL
 
                     SELECT
-                        'within_10pct_share',
-                        AVG(
-                            CASE
-                                WHEN quantity_net_weight_relative_gap
-                                    <= 0.10
-                                THEN 1.0
-                                ELSE 0.0
-                            END
-                        )
-                    FROM read_parquet({evidence_sql})
-                    WHERE quantity_net_weight_relative_gap
-                        IS NOT NULL
+                        'within_10pct',
+                        CAST(
+                            COUNT(*) FILTER (
+                                WHERE quantity_net_weight_relative_gap <= 0.10
+                            ) AS DOUBLE
+                        ),
+                        100.0 * COUNT(*) FILTER (
+                            WHERE quantity_net_weight_relative_gap <= 0.10
+                        ) / population.n_total
+                    FROM comparison
+                    CROSS JOIN population
+                    GROUP BY population.n_total
                 )
                 """
             )
@@ -1094,97 +1133,227 @@ def build_quantity_diagnostics(
 
             queries.append(
                 f"""
+                WITH population AS (
+                    SELECT COUNT(*) AS n_total
+                    FROM read_parquet({evidence_sql})
+                )
+
                 SELECT
                     'quantity_net_weight_by_year'
                         AS diagnostic_group,
-                    'agreement' AS metric,
-                    CAST(COUNT(*) AS DOUBLE) AS value,
-                    100.0 * AVG(
-                        CASE
-                            WHEN quantity_net_weight_relative_gap
+
+                    'within_tolerance' AS metric,
+
+                    CAST(
+                        COUNT(*) FILTER (
+                            WHERE quantity_net_weight_relative_gap
                                 <= {agreement_tolerance}
-                            THEN 1.0
-                            ELSE 0.0
-                        END
-                    ) AS percentage,
+                        ) AS DOUBLE
+                    ) AS value,
+
+                    100.0 * COUNT(*) FILTER (
+                        WHERE quantity_net_weight_relative_gap
+                            <= {agreement_tolerance}
+                    ) / population.n_total
+                        AS percentage,
+
                     CAST(year AS INTEGER) AS year,
+
                     CAST(
                         MEDIAN(
                             quantity_net_weight_relative_gap
                         ) AS VARCHAR
                     ) AS category_1,
-                    NULL::VARCHAR AS category_2,
+
+                    CAST(COUNT(*) AS VARCHAR)
+                        AS category_2,
+
                     NULL::VARCHAR AS category_3
+
                 FROM read_parquet({evidence_sql})
-                WHERE quantity_net_weight_relative_gap
-                    IS NOT NULL
-                GROUP BY year
+                CROSS JOIN population
+
+                WHERE quantity_net_weight_relative_gap IS NOT NULL
+
+                GROUP BY
+                    year,
+                    population.n_total
                 """
             )
 
             # ----------------------------------------------------------
-            # Agreement by reported / estimated state
+            # Quantity/net-weight comparison by evidence state
+            # All percentages use the full Quantity population.
             # ----------------------------------------------------------
 
             queries.append(
                 f"""
+                WITH population AS (
+                    SELECT COUNT(*) AS n_total
+                    FROM read_parquet({evidence_sql})
+                )
+
                 SELECT
                     'quantity_net_weight_by_evidence_state'
                         AS diagnostic_group,
+
                     kg_evidence_status AS metric,
+
                     CAST(COUNT(*) AS DOUBLE) AS value,
-                    100.0 * AVG(
-                        CASE
-                            WHEN quantity_net_weight_relative_gap
-                                <= {agreement_tolerance}
-                            THEN 1.0
-                            ELSE 0.0
-                        END
-                    ) AS percentage,
+
+                    100.0 * COUNT(*) / population.n_total
+                        AS percentage,
+
                     NULL::INTEGER AS year,
+
                     CAST(
                         MEDIAN(quantity_net_weight_ratio)
                         AS VARCHAR
                     ) AS category_1,
+
                     CAST(
                         MEDIAN(
                             quantity_net_weight_relative_gap
                         ) AS VARCHAR
                     ) AS category_2,
-                    CAST(
-                        COUNT(*) FILTER (
-                            WHERE quantity_kg_candidate = net_weight_kg_candidate
-                        ) AS VARCHAR
-                    ) AS category_3
+
+                    NULL::VARCHAR AS category_3
+
                 FROM read_parquet({evidence_sql})
-                WHERE quantity_net_weight_relative_gap
-                    IS NOT NULL
-                GROUP BY kg_evidence_status
+                CROSS JOIN population
+
+                WHERE quantity_net_weight_relative_gap IS NOT NULL
+
+                GROUP BY
+                    kg_evidence_status,
+                    population.n_total
                 """
             )
 
+            queries.append(
+                f"""
+                WITH population AS (
+                    SELECT COUNT(*) AS n_total
+                    FROM read_parquet({evidence_sql})
+                )
+
+                SELECT
+                    'quantity_net_weight_exact_match_by_evidence_state'
+                        AS diagnostic_group,
+
+                    kg_evidence_status AS metric,
+
+                    CAST(
+                        COUNT(*) FILTER (
+                            WHERE quantity_kg_candidate
+                                = net_weight_kg_candidate
+                        ) AS DOUBLE
+                    ) AS value,
+
+                    100.0 * COUNT(*) FILTER (
+                        WHERE quantity_kg_candidate
+                            = net_weight_kg_candidate
+                    ) / population.n_total
+                        AS percentage,
+
+                    NULL::INTEGER AS year,
+
+                    NULL::VARCHAR AS category_1,
+                    NULL::VARCHAR AS category_2,
+                    NULL::VARCHAR AS category_3
+
+                FROM read_parquet({evidence_sql})
+                CROSS JOIN population
+
+                WHERE quantity_net_weight_relative_gap IS NOT NULL
+
+                GROUP BY
+                    kg_evidence_status,
+                    population.n_total
+                """
+            )
+
+
+            queries.append(
+                f"""
+                WITH population AS (
+                    SELECT COUNT(*) AS n_total
+                    FROM read_parquet({evidence_sql})
+                )
+
+                SELECT
+                    'quantity_net_weight_within_tolerance_by_evidence_state'
+                        AS diagnostic_group,
+
+                    kg_evidence_status AS metric,
+
+                    CAST(
+                        COUNT(*) FILTER (
+                            WHERE quantity_net_weight_relative_gap
+                                <= {agreement_tolerance}
+                        ) AS DOUBLE
+                    ) AS value,
+
+                    100.0 * COUNT(*) FILTER (
+                        WHERE quantity_net_weight_relative_gap
+                            <= {agreement_tolerance}
+                    ) / population.n_total
+                        AS percentage,
+
+                    NULL::INTEGER AS year,
+
+                    NULL::VARCHAR AS category_1,
+                    NULL::VARCHAR AS category_2,
+                    NULL::VARCHAR AS category_3
+
+                FROM read_parquet({evidence_sql})
+                CROSS JOIN population
+
+                WHERE quantity_net_weight_relative_gap IS NOT NULL
+
+                GROUP BY
+                    kg_evidence_status,
+                    population.n_total
+                """
+            )
         # ==============================================================
         # 8. Alternate-quantity kg evidence
         # ==============================================================
 
         queries.append(
             f"""
+            WITH population AS (
+                SELECT COUNT(*) AS n_total
+                FROM read_parquet({evidence_sql})
+            )
+
             SELECT
                 'alt_quantity_kg_candidate_coverage'
                     AS diagnostic_group,
+
                 alt_quantity_kg_source AS metric,
+
                 CAST(COUNT(*) AS DOUBLE) AS value,
-                100.0 * COUNT(*) / SUM(COUNT(*)) OVER ()
+
+                100.0 * COUNT(*) / population.n_total
                     AS percentage,
+
                 NULL::INTEGER AS year,
+
                 alt_quantity_kg_status AS category_1,
+
                 NULL::VARCHAR AS category_2,
                 NULL::VARCHAR AS category_3
+
             FROM read_parquet({evidence_sql})
+            CROSS JOIN population
+
             WHERE alt_quantity_kg_candidate > 0
+
             GROUP BY
                 alt_quantity_kg_source,
-                alt_quantity_kg_status
+                alt_quantity_kg_status,
+                population.n_total
             """
         )
 
@@ -1223,7 +1392,12 @@ def build_quantity_diagnostics(
 
         queries.append(
             f"""
-            WITH comparisons AS (
+            WITH population AS (
+                SELECT COUNT(*) AS n_total
+                FROM read_parquet({evidence_sql})
+            ),
+
+            comparisons AS (
                 SELECT
                     'alt_vs_quantity' AS comparison,
                     alt_quantity_kg_candidate AS left_value,
@@ -1232,7 +1406,7 @@ def build_quantity_diagnostics(
                     quantity_kg_status AS right_status
                 FROM read_parquet({evidence_sql})
                 WHERE alt_quantity_kg_candidate > 0
-                  AND quantity_kg_candidate > 0
+                AND quantity_kg_candidate > 0
 
                 UNION ALL
 
@@ -1244,8 +1418,9 @@ def build_quantity_diagnostics(
                     net_weight_kg_status
                 FROM read_parquet({evidence_sql})
                 WHERE alt_quantity_kg_candidate > 0
-                  AND net_weight_kg_candidate > 0
+                AND net_weight_kg_candidate > 0
             ),
+
             measured AS (
                 SELECT
                     *,
@@ -1255,18 +1430,17 @@ def build_quantity_diagnostics(
                         AS relative_gap
                 FROM comparisons
             )
+
+            -- ----------------------------------------------------------
+            -- Rows available for comparison
+            -- ----------------------------------------------------------
             SELECT
                 'alt_quantity_kg_agreement'
                     AS diagnostic_group,
                 comparison AS metric,
                 CAST(COUNT(*) AS DOUBLE) AS value,
-                100.0 * AVG(
-                    CASE
-                        WHEN relative_gap <= {agreement_tolerance}
-                            THEN 1.0
-                        ELSE 0.0
-                    END
-                ) AS percentage,
+                100.0 * COUNT(*) / population.n_total
+                    AS percentage,
                 NULL::INTEGER AS year,
                 left_status || '_' || right_status
                     AS category_1,
@@ -1274,110 +1448,83 @@ def build_quantity_diagnostics(
                     AS category_2,
                 CAST(MEDIAN(relative_gap) AS VARCHAR)
                     AS category_3
+
             FROM measured
+            CROSS JOIN population
+
             GROUP BY
                 comparison,
                 left_status,
-                right_status
+                right_status,
+                population.n_total
 
             UNION ALL
+
+            -- ----------------------------------------------------------
+            -- Exact matches
+            -- ----------------------------------------------------------
             SELECT
                 'alt_quantity_kg_exact_match'
                     AS diagnostic_group,
-
                 comparison AS metric,
-
                 CAST(
                     COUNT(*) FILTER (
                         WHERE left_value = right_value
                     ) AS DOUBLE
                 ) AS value,
-
-                100.0 * AVG(
-                    CASE
-                        WHEN left_value = right_value
-                            THEN 1.0
-                        ELSE 0.0
-                    END
-                ) AS percentage,
-
+                100.0 * COUNT(*) FILTER (
+                    WHERE left_value = right_value
+                ) / population.n_total
+                    AS percentage,
                 NULL::INTEGER AS year,
-
                 left_status || '_' || right_status
                     AS category_1,
-
                 NULL::VARCHAR AS category_2,
-
                 NULL::VARCHAR AS category_3
 
             FROM measured
+            CROSS JOIN population
 
             GROUP BY
                 comparison,
                 left_status,
-                right_status
-            """
-        )
+                right_status,
+                population.n_total
 
-        queries.append(
-            f"""
-            WITH comparisons AS (
-                SELECT
-                    'alt_vs_quantity' AS comparison,
-                    alt_quantity_kg_candidate AS left_value,
-                    quantity_kg_candidate AS right_value
-                FROM read_parquet({evidence_sql})
-                WHERE alt_quantity_kg_candidate > 0
-                  AND quantity_kg_candidate > 0
+            UNION ALL
 
-                UNION ALL
-
-                SELECT
-                    'alt_vs_net_weight',
-                    alt_quantity_kg_candidate,
-                    net_weight_kg_candidate
-                FROM read_parquet({evidence_sql})
-                WHERE alt_quantity_kg_candidate > 0
-                  AND net_weight_kg_candidate > 0
-            ),
-            measured AS (
-                SELECT
-                    *,
-                    left_value / right_value AS ratio,
-                    ABS(left_value - right_value)
-                    / ((ABS(left_value) + ABS(right_value)) / 2.0)
-                        AS relative_gap
-                FROM comparisons
-            )
+            -- ----------------------------------------------------------
+            -- Agreement within configured tolerance
+            -- ----------------------------------------------------------
             SELECT
-                'alt_quantity_kg_statistics'
+                'alt_quantity_kg_within_tolerance'
                     AS diagnostic_group,
                 comparison AS metric,
-                CAST(COUNT(*) AS DOUBLE) AS value,
-                NULL::DOUBLE AS percentage,
+                CAST(
+                    COUNT(*) FILTER (
+                        WHERE relative_gap <= {agreement_tolerance}
+                    ) AS DOUBLE
+                ) AS value,
+                100.0 * COUNT(*) FILTER (
+                    WHERE relative_gap <= {agreement_tolerance}
+                ) / population.n_total
+                    AS percentage,
                 NULL::INTEGER AS year,
-                CAST(MEDIAN(ratio) AS VARCHAR)
+                left_status || '_' || right_status
                     AS category_1,
-                CAST(
-                    100.0 * AVG(
-                        CASE WHEN relative_gap <= 0.01
-                            THEN 1.0 ELSE 0.0 END
-                    ) AS VARCHAR
-                ) AS category_2,
-                CAST(
-                    100.0 * AVG(
-                        CASE WHEN relative_gap <= 0.05
-                            THEN 1.0 ELSE 0.0 END
-                    ) AS VARCHAR
-                ) AS category_3
+                NULL::VARCHAR AS category_2,
+                NULL::VARCHAR AS category_3
+
             FROM measured
-            GROUP BY comparison
+            CROSS JOIN population
+
+            GROUP BY
+                comparison,
+                left_status,
+                right_status,
+                population.n_total
             """
         )
-
-        # ==============================================================
-        # Three-source kg consensus diagnostics
-        # ==============================================================
 
         # ==============================================================
         # Three-source kg consensus + provenance diagnostics
@@ -1550,48 +1697,126 @@ def build_quantity_diagnostics(
 
         queries.append(
             f"""
+            WITH population AS (
+                SELECT COUNT(*) AS n_total
+                FROM read_parquet({prepared_sql})
+            ),
+
+            overlap AS (
+                SELECT
+                    quantity_unit,
+                    quantity_unit_code,
+                    COUNT(*) AS n_rows
+                FROM read_parquet({prepared_sql})
+                WHERE net_weight_kg > 0
+                AND quantity > 0
+                AND quantity_unit_code <> 8
+                GROUP BY
+                    quantity_unit,
+                    quantity_unit_code
+            ),
+
+            overlap_total AS (
+                SELECT SUM(n_rows) AS n_overlap
+                FROM overlap
+            )
+
             SELECT
                 'net_weight_quantity_supplementary_overlap'
                     AS diagnostic_group,
-                COALESCE(CAST(quantity_unit AS VARCHAR), '<NULL>')
-                    AS metric,
-                CAST(COUNT(*) AS DOUBLE) AS value,
-                100.0 * COUNT(*) / SUM(COUNT(*)) OVER ()
+
+                COALESCE(
+                    CAST(quantity_unit AS VARCHAR),
+                    '<NULL>'
+                ) AS metric,
+
+                CAST(n_rows AS DOUBLE) AS value,
+
+                100.0 * n_rows / population.n_total
                     AS percentage,
+
                 NULL::INTEGER AS year,
+
                 CAST(quantity_unit_code AS VARCHAR)
                     AS category_1,
-                NULL::VARCHAR AS category_2,
+
+                CAST(
+                    100.0 * n_rows
+                    / NULLIF(overlap_total.n_overlap, 0)
+                    AS VARCHAR
+                ) AS category_2,
+
                 NULL::VARCHAR AS category_3
-            FROM read_parquet({prepared_sql})
-            WHERE net_weight_kg > 0
-              AND quantity > 0
-              AND quantity_unit_code <> 8
-            GROUP BY
-                quantity_unit,
-                quantity_unit_code
+
+            FROM overlap
+            CROSS JOIN population
+            CROSS JOIN overlap_total
             """
         )
 
         queries.append(
             f"""
+            WITH examples AS (
+                SELECT
+                    CAST({hs_column} AS VARCHAR) AS hs_code,
+                    CAST(year AS INTEGER) AS year,
+                    net_weight_kg,
+                    quantity,
+                    quantity_unit,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY quantity_unit_code
+                        ORDER BY
+                            year DESC,
+                            {hs_column},
+                            net_weight_kg DESC
+                    ) AS rn
+                FROM read_parquet({prepared_sql})
+                WHERE net_weight_kg > 0
+                AND quantity > 0
+                AND quantity_unit_code IN (2, 5, 12)
+            )
+
             SELECT
-                'net_weight_alt_quantity_supplementary_overlap'
+                'net_weight_quantity_supplementary_examples'
                     AS diagnostic_group,
-                COALESCE(CAST(alt_quantity_unit AS VARCHAR), '<NULL>')
-                    AS metric,
-                CAST(COUNT(*) AS DOUBLE) AS value,
-                100.0 * COUNT(*) / SUM(COUNT(*)) OVER ()
-                    AS percentage,
-                NULL::INTEGER AS year,
-                CAST(alt_quantity_unit_code AS VARCHAR)
-                    AS category_1,
-                NULL::VARCHAR AS category_2,
-                NULL::VARCHAR AS category_3
-            FROM read_parquet({prepared_sql})
-            WHERE net_weight_kg > 0
-              AND alt_quantity > 0
-              AND NOT (
+
+                COALESCE(quantity_unit, '<NULL>') AS metric,
+
+                CAST(quantity AS DOUBLE) AS value,
+
+                NULL::DOUBLE AS percentage,
+
+                year,
+
+                hs_code AS category_1,
+
+                CAST(net_weight_kg AS VARCHAR)
+                    AS category_2,
+
+                CAST(quantity AS VARCHAR)
+                    AS category_3
+
+            FROM examples
+            WHERE rn = 1
+            """
+        )
+
+        queries.append(
+            f"""
+            WITH population AS (
+                SELECT COUNT(*) AS n_total
+                FROM read_parquet({prepared_sql})
+            ),
+
+            overlap AS (
+                SELECT
+                    alt_quantity_unit,
+                    alt_quantity_unit_code,
+                    COUNT(*) AS n_rows
+                FROM read_parquet({prepared_sql})
+                WHERE net_weight_kg > 0
+                AND alt_quantity > 0
+                AND NOT (
                     (
                         alt_quantity_unit_code = 8
                         AND LOWER(TRIM(alt_quantity_unit)) = 'kg'
@@ -1605,9 +1830,46 @@ def build_quantity_diagnostics(
                         AND LOWER(TRIM(alt_quantity_unit)) = 'g'
                     )
                 )
-            GROUP BY
-                alt_quantity_unit,
-                alt_quantity_unit_code
+                GROUP BY
+                    alt_quantity_unit,
+                    alt_quantity_unit_code
+            ),
+
+            overlap_total AS (
+                SELECT SUM(n_rows) AS n_overlap
+                FROM overlap
+            )
+
+            SELECT
+                'net_weight_alt_quantity_supplementary_overlap'
+                    AS diagnostic_group,
+
+                COALESCE(
+                    CAST(alt_quantity_unit AS VARCHAR),
+                    '<NULL>'
+                ) AS metric,
+
+                CAST(n_rows AS DOUBLE) AS value,
+
+                100.0 * n_rows / population.n_total
+                    AS percentage,
+
+                NULL::INTEGER AS year,
+
+                CAST(alt_quantity_unit_code AS VARCHAR)
+                    AS category_1,
+
+                CAST(
+                    100.0 * n_rows
+                    / NULLIF(overlap_total.n_overlap, 0)
+                    AS VARCHAR
+                ) AS category_2,
+
+                NULL::VARCHAR AS category_3
+
+            FROM overlap
+            CROSS JOIN population
+            CROSS JOIN overlap_total
             """
         )
 
