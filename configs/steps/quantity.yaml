@@ -34,7 +34,7 @@ quantity:
 
     reconciliation_evidence:
       enable: true
-      filename: "diagnostics/target_{target_hs_lower}_quantity_reconciliation_evidence.parquet"
+      filename: "target_{target_hs_lower}_quantity_reconciliation_evidence.parquet"
 
     synchronized_quantity:
       enable: true

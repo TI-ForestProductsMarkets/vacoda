@@ -18,7 +18,12 @@ from typing import Any
 import duckdb
 from vacoda.config.quantity import QuantityConfig
 from vacoda.utils.sql import sql_literal
-
+from vacoda.pipeline.checkpoint import (
+    validate_local_checkpoint,
+    file_fingerprint,
+    write_local_checkpoint,
+    semantic_config_fingerprint,
+)
 
 def build_quantity_reconciliation_evidence(
     *,
@@ -58,27 +63,60 @@ def build_quantity_reconciliation_evidence(
             f"{input_path}"
         )
 
-    output_path = cfg.product_path(
-        "reconciliation_evidence"
-    )
-
-    if output_path.is_file() and not force:
-        logger.info(
-            "Reusing existing Quantity reconciliation evidence: %s",
-            output_path,
-        )
-
-        return {
-            "status": "skipped_existing",
-            "run_id": run_id,
-            "output_path": output_path,
-            "reconciliation_evidence_path": output_path,
-        }
+    output_path = cfg.product_path("reconciliation_evidence")
 
     output_path.parent.mkdir(
         parents=True,
         exist_ok=True,
     )
+
+    ### Local checkpointing
+    checkpoint_path = (
+        cfg.output_dir()
+        / "checkpoints"
+        / "reconciliation_evidence.json"
+    )
+
+    config_fp = semantic_config_fingerprint(config=cfg,
+                                            excluded_paths=(
+                                                ("engine", "threads"),
+                                            ),
+    )
+
+    input_fp = {
+        "prepared_input": file_fingerprint(
+            input_path,
+            hash_file=True,
+        ),
+    }
+
+    reusable, reason = validate_local_checkpoint(
+        checkpoint_path=checkpoint_path,
+        current_config=config_fp,
+        current_input=input_fp,
+        output_path=output_path,
+    )
+
+    if not force and reusable:
+        logger.info(
+            "REUSE — Quantity reconciliation evidence local checkpoint matches: %s",
+            output_path,
+        )
+
+        return {
+            "status": "reused",
+            "run_id": run_id,
+            "output_path": output_path,
+            "reconciliation_evidence_path": output_path,
+            "audit_passed": True,
+            "ready_for_synchronization": True,
+        }
+
+    logger.info(
+        "REBUILD — Quantity reconciliation evidence: %s",
+        "forced" if force else reason,
+    )
+
 
     quantity_unit = (
         cfg.method.kg_reconciliation.quantity_unit
@@ -503,6 +541,15 @@ def build_quantity_reconciliation_evidence(
             "Quantity reconciliation evidence was not created: "
             f"{output_path}"
         )
+
+    write_local_checkpoint(
+        checkpoint_path=checkpoint_path,
+        step_name="reconciliation_evidence",
+        run_id=run_id,
+        config=config_fp,
+        input_fingerprint=input_fp,
+        output_path=output_path,
+    )    
 
     return {
         "status": "completed",

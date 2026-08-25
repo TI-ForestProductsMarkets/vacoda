@@ -19,6 +19,12 @@ import duckdb
 
 from vacoda.config.quantity import QuantityConfig
 from vacoda.utils.sql import sql_literal
+from vacoda.pipeline.checkpoint import (
+    validate_local_checkpoint,
+    file_fingerprint,
+    write_local_checkpoint,
+    semantic_config_fingerprint,
+)
 
 REQUIRED_QUANTITY_COLUMNS = (
     "quantity",
@@ -121,36 +127,64 @@ def prepare_quantity_input(
         )
 
     output_path = cfg.product_path("prepared_input")
-
-    quantity_unit = (
-        cfg.method.kg_reconciliation.quantity_unit
-    )
-
-    require_positive = (
-        cfg.method.kg_reconciliation.require_positive_values
-    )
+    quantity_unit = (cfg.method.kg_reconciliation.quantity_unit)
+    require_positive = (cfg.method.kg_reconciliation.require_positive_values)
 
     input_sql = sql_literal(input_path)
     output_sql = sql_literal(output_path)
     quantity_unit_sql = sql_literal(quantity_unit.lower())
 
+    output_path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
-    if output_path.is_file() and not force:
+    ### Local checkpointing for prepared input
+    checkpoint_path = (
+            cfg.output_dir()
+            / "checkpoints"
+            / "prepared_input.json"
+        )
+
+    config_fp = semantic_config_fingerprint(
+        config=cfg,
+        excluded_paths=(
+            ("engine", "threads"),
+        ),
+    )
+
+    input_fp = {
+        "source": file_fingerprint(
+            input_path,
+            hash_file=True,
+        ),
+    }
+
+    reusable, reason = validate_local_checkpoint(
+            checkpoint_path=checkpoint_path,
+            current_config=config_fp,
+            current_input=input_fp,
+            output_path=output_path,
+        )
+
+    if not force and reusable:
         logger.info(
-            "Reusing existing prepared Quantity input: %s",
+            "REUSE — Prepared Quantity input local checkpoint matches: %s",
             output_path,
         )
 
         return {
-            "status": "skipped_existing",
+            "status": "reused",
             "run_id": run_id,
             "output_path": output_path,
             "prepared_input_path": output_path,
+            "audit_passed": True,
+            "ready_for_reconciliation_evidence": True,
         }
 
-    output_path.parent.mkdir(
-        parents=True,
-        exist_ok=True,
+    logger.info(
+        "REBUILD — Prepared Quantity input: %s",
+        "forced" if force else reason,
     )
 
     con = duckdb.connect()
@@ -163,14 +197,6 @@ def prepare_quantity_input(
 
         _validate_required_columns(
             available_columns,
-        )
-
-        quantity_unit = (
-            cfg.method.kg_reconciliation.quantity_unit
-        )
-
-        require_positive = (
-            cfg.method.kg_reconciliation.require_positive_values
         )
 
         logger.info(
@@ -347,6 +373,15 @@ def prepare_quantity_input(
             "Prepared Quantity output was not created: "
             f"{output_path}"
         )
+
+    write_local_checkpoint(
+        checkpoint_path=checkpoint_path,
+        step_name="prepared_input",
+        run_id=run_id,
+        config=config_fp,
+        input_fingerprint=input_fp,
+        output_path=output_path,
+    )
 
     return {
         "status": "completed",

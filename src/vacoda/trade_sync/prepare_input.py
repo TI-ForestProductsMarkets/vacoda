@@ -31,17 +31,11 @@ import duckdb
 from vacoda.config.trade_sync import TradeSyncConfig
 from vacoda.utils.display import get_symbols, color_text
 from vacoda.pipeline.checkpoint import validate_local_checkpoint, file_fingerprint, write_local_checkpoint, semantic_config_fingerprint
-
+from vacoda.utils.sql import sql_literal
 
 # ======================================================================
 # Small helpers
 # ======================================================================
-
-
-def _sql_literal(value: str | Path) -> str:
-    """Return a safely quoted SQL string literal."""
-    return "'" + str(value).replace("'", "''") + "'"
-
 
 def valid_output(path: Path) -> bool:
     """Return True when an existing output appears usable."""
@@ -80,6 +74,7 @@ def prepare_trade_sync_input(
             f"Trade Sync source parquet not found: {input_path}"
         )
 
+    ## Local Checkpoint 
     checkpoint_path = (
         cfg.output_dir()
         / "checkpoints"
@@ -131,8 +126,8 @@ def prepare_trade_sync_input(
         exist_ok=True,
     )
 
-    input_sql = _sql_literal(input_path)
-    output_sql = _sql_literal(output_path)
+    input_sql = sql_literal(input_path)
+    output_sql = sql_literal(output_path)
 
     info = color_text(get_symbols("info"), "red")
     ok = get_symbols("check")
