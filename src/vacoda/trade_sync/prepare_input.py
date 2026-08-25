@@ -180,6 +180,14 @@ def prepare_trade_sync_input(
             "import_value_cif",
             "import_value_fob_corrected",
             "cif_fob_factor_applied_source",
+
+            # Physical quantities propagated from Quantity through CIF/FOB.
+            "export_weight_kg",
+            "import_weight_kg",
+            "export_weight_source",
+            "import_weight_source",
+            "export_weight_estimated",
+            "import_weight_estimated",
         }
 
         missing_columns = sorted(
