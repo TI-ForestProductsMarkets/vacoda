@@ -3734,8 +3734,19 @@ def estimate_cif_fob_rates(
         )
     )
 
+    checkpoint_dir = (
+        output_path.parent
+        / "checkpoints"
+    )
+
+    checkpoint_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
     estimated_rates_manifest_path = (
-        manifest_path_for(output_path)
+        checkpoint_dir
+        / manifest_path_for(output_path).name
     )
 
     if prediction_rows.empty:

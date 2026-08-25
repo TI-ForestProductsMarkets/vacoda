@@ -195,7 +195,7 @@ cif_fob:
         # robust_adaptive_cap
         #   maximum_factor = min(fixed_value, max(Q3 + iqr_multiplier * IQR, p99))
         #
-        method: iqr_cap
+        method: robust_adaptive_cap
         fixed_value: 3.0
         iqr_multiplier: 2.5
         percentile: 0.99
@@ -293,7 +293,7 @@ cif_fob:
       models:
         primary: "hist_gradient_boosting"
         model_checkpoints:
-          subdir: model_checkpoints
+          subdir: "checkpoints/models"
 
         candidates:
           hist_gradient_boosting_squared:

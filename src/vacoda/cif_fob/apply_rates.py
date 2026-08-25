@@ -869,8 +869,21 @@ def apply_cif_fob_weights(
         raise FileNotFoundError(f"Estimated-rates artifact not found: {estimated_rates_path}")
 
     levels = _normalize_coverage_levels(coverage_levels)
-    manifest_path = manifest_path_for(
-        output_path
+
+
+    checkpoint_dir = (
+        output_path.parent
+        / "checkpoints"
+    )
+
+    checkpoint_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    manifest_path = (
+        checkpoint_dir
+        / manifest_path_for(output_path).name
     )
 
     semantic_payload = {
