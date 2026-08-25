@@ -188,6 +188,8 @@ def prepare_trade_sync_input(
             "import_weight_source",
             "export_weight_estimated",
             "import_weight_estimated",
+            "export_weight_is_proxy",
+            "import_weight_is_proxy",
         }
 
         missing_columns = sorted(
