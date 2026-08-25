@@ -348,31 +348,157 @@ def prepare_quantity_input(
 
         con.execute(query)
 
-        row_count = con.execute(
+        # ==============================================================
+        # OUTPUT EXISTENCE
+        # ==============================================================
+
+        if not output_path.is_file():
+            raise FileNotFoundError(
+                "Prepared Quantity output was not created: "
+                f"{output_path}"
+            )
+
+        # ==============================================================
+        # INPUT / OUTPUT AUDIT
+        # ==============================================================
+
+        input_audit_row = con.execute(
             """
-            SELECT count(*)
+            SELECT COUNT(*) AS n_input_rows
+            FROM read_parquet(?)
+            """,
+            [str(input_path)],
+        ).fetchone()
+
+        if input_audit_row is None:
+            raise RuntimeError(
+                "Could not inspect Quantity input."
+            )
+
+        output_audit_row = con.execute(
+            """
+            SELECT
+                COUNT(*) AS n_output_rows,
+
+                COUNT(*) FILTER (
+                    WHERE has_quantity_kg
+                      AND NOT has_quantity
+                ) AS n_invalid_quantity_kg,
+
+                COUNT(*) FILTER (
+                    WHERE has_reported_quantity_kg
+                      AND NOT has_quantity_kg
+                ) AS n_invalid_reported_quantity_kg,
+
+                COUNT(*) FILTER (
+                    WHERE has_estimated_quantity_kg
+                      AND NOT has_quantity_kg
+                ) AS n_invalid_estimated_quantity_kg,
+
+                COUNT(*) FILTER (
+                    WHERE has_reported_quantity_kg
+                      AND has_estimated_quantity_kg
+                ) AS n_quantity_kg_state_overlap
+
             FROM read_parquet(?)
             """,
             [str(output_path)],
-        ).fetchone()[0]
+        ).fetchone()
+
+        if output_audit_row is None:
+            raise RuntimeError(
+                "Could not inspect prepared Quantity output."
+            )
+
+        n_input_rows = int(input_audit_row[0])
+
+        (
+            n_output_rows,
+            n_invalid_quantity_kg,
+            n_invalid_reported_quantity_kg,
+            n_invalid_estimated_quantity_kg,
+            n_quantity_kg_state_overlap,
+        ) = output_audit_row
+
+        n_output_rows = int(n_output_rows)
+        n_invalid_quantity_kg = int(n_invalid_quantity_kg)
+        n_invalid_reported_quantity_kg = int(
+            n_invalid_reported_quantity_kg
+        )
+        n_invalid_estimated_quantity_kg = int(
+            n_invalid_estimated_quantity_kg
+        )
+        n_quantity_kg_state_overlap = int(
+            n_quantity_kg_state_overlap
+        )
+
+        # ==============================================================
+        # HARD AUDIT CONDITIONS
+        # ==============================================================
+
+        if n_input_rows == 0:
+            raise RuntimeError(
+                "Quantity input contains no rows."
+            )
+
+        if n_output_rows != n_input_rows:
+            raise RuntimeError(
+                "Quantity preparation did not preserve the full "
+                "input population: "
+                f"input={n_input_rows:,}, "
+                f"output={n_output_rows:,}."
+            )
+
+        if n_invalid_quantity_kg > 0:
+            raise RuntimeError(
+                "Prepared Quantity output contains "
+                f"{n_invalid_quantity_kg:,} rows where "
+                "has_quantity_kg=True but has_quantity=False."
+            )
+
+        if n_invalid_reported_quantity_kg > 0:
+            raise RuntimeError(
+                "Prepared Quantity output contains "
+                f"{n_invalid_reported_quantity_kg:,} invalid "
+                "reported-kg states."
+            )
+
+        if n_invalid_estimated_quantity_kg > 0:
+            raise RuntimeError(
+                "Prepared Quantity output contains "
+                f"{n_invalid_estimated_quantity_kg:,} invalid "
+                "estimated-kg states."
+            )
+
+        if n_quantity_kg_state_overlap > 0:
+            raise RuntimeError(
+                "Prepared Quantity output contains "
+                f"{n_quantity_kg_state_overlap:,} rows classified "
+                "as both reported and estimated kg quantity."
+            )
+
+        audit_passed = True
+        ready_for_reconciliation_evidence = audit_passed
 
         logger.info(
             "Prepared Quantity rows: %s",
-            f"{row_count:,}",
+            f"{n_output_rows:,}",
         )
         logger.info(
             "Prepared Quantity input: %s",
             output_path,
         )
+        logger.info(
+            "  Step 1 audit passed: %s",
+            audit_passed,
+        )
+        logger.info(
+            "  Ready for reconciliation evidence: %s",
+            ready_for_reconciliation_evidence,
+        )
 
     finally:
         con.close()
-
-    if not output_path.is_file():
-        raise FileNotFoundError(
-            "Prepared Quantity output was not created: "
-            f"{output_path}"
-        )
 
     write_local_checkpoint(
         checkpoint_path=checkpoint_path,
@@ -388,7 +514,9 @@ def prepare_quantity_input(
         "run_id": run_id,
         "output_path": output_path,
         "prepared_input_path": output_path,
-        "n_rows": int(row_count),
+        "audit_passed": audit_passed,
+        "ready_for_reconciliation_evidence": ready_for_reconciliation_evidence,
+        "n_input_rows": n_input_rows,
+        "n_output_rows": int(n_output_rows),
         "required_columns": REQUIRED_QUANTITY_COLUMNS,
-        "ready_for_reconciliation_evidence": True,
     }
