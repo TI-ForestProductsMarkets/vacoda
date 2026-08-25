@@ -488,8 +488,10 @@ def prepare_quantity_input(
             "Prepared Quantity input: %s",
             output_path,
         )
+
+        logger.info("  Output: %s", output_path)
         logger.info(
-            "  Step 1 audit passed: %s",
+            "  Step audit passed: %s",
             audit_passed,
         )
         logger.info(

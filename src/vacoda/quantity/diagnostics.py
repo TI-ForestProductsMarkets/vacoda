@@ -3113,6 +3113,117 @@ def build_quantity_diagnostics(
             [str(output_path)],
         ).fetchone()[0]
 
+
+        # ==============================================================
+        # DIAGNOSTICS AUDIT
+        # ==============================================================
+
+        if not output_path.is_file():
+            raise FileNotFoundError(
+                "Quantity diagnostics were not created: "
+                f"{output_path}"
+            )
+
+        diagnostic_columns = {
+            str(row[0])
+            for row in con.execute(
+                """
+                DESCRIBE
+                SELECT *
+                FROM read_parquet(?)
+                """,
+                [str(output_path)],
+            ).fetchall()
+        }
+
+        required_diagnostic_columns = {
+            "diagnostic_group",
+            "metric",
+            "value",
+            "percentage",
+            "year",
+            "category_1",
+            "category_2",
+            "category_3",
+        }
+
+        missing_diagnostic_columns = sorted(
+            required_diagnostic_columns - diagnostic_columns
+        )
+
+        if missing_diagnostic_columns:
+            raise RuntimeError(
+                "Quantity diagnostics are missing required columns: "
+                + ", ".join(missing_diagnostic_columns)
+            )
+
+        diagnostic_audit_row = con.execute(
+            """
+            SELECT
+                COUNT(*) AS n_diagnostic_rows,
+
+                COUNT(*) FILTER (
+                    WHERE diagnostic_group IS NULL
+                       OR TRIM(diagnostic_group) = ''
+                ) AS n_missing_diagnostic_group,
+
+                COUNT(*) FILTER (
+                    WHERE metric IS NULL
+                       OR TRIM(metric) = ''
+                ) AS n_missing_metric
+
+            FROM read_parquet(?)
+            """,
+            [str(output_path)],
+        ).fetchone()
+
+        if diagnostic_audit_row is None:
+            raise RuntimeError(
+                "Could not inspect Quantity diagnostics."
+            )
+
+        (
+            n_diagnostic_rows,
+            n_missing_diagnostic_group,
+            n_missing_metric,
+        ) = diagnostic_audit_row
+
+        n_diagnostic_rows = int(n_diagnostic_rows)
+        n_missing_diagnostic_group = int(
+            n_missing_diagnostic_group
+        )
+        n_missing_metric = int(n_missing_metric)
+
+        # ==============================================================
+        # HARD AUDIT CONDITIONS
+        # ==============================================================
+
+        if int(n_rows) == 0:
+            raise RuntimeError(
+                "Synchronized Quantity input contains no rows."
+            )
+
+        if n_diagnostic_rows == 0:
+            raise RuntimeError(
+                "Quantity diagnostics contain no rows."
+            )
+
+        if n_missing_diagnostic_group > 0:
+            raise RuntimeError(
+                "Quantity diagnostics contain "
+                f"{n_missing_diagnostic_group:,} rows without "
+                "a diagnostic_group."
+            )
+
+        if n_missing_metric > 0:
+            raise RuntimeError(
+                "Quantity diagnostics contain "
+                f"{n_missing_metric:,} rows without a metric."
+            )
+
+        audit_passed = True
+        ready_for_reporting = audit_passed
+
         logger.info(
             "Quantity diagnostic rows written: %s",
             f"{n_diagnostic_rows:,}",
@@ -3149,6 +3260,10 @@ def build_quantity_diagnostics(
             output_path,
         )
 
+        logger.info("  Output: %s", output_path)
+        logger.info("  Step audit passed: %s", audit_passed,)
+        logger.info("  Ready for reporting: %s", ready_for_reporting,)
+
     finally:
         con.close()
 
@@ -3173,7 +3288,11 @@ def build_quantity_diagnostics(
         "output_path": output_path,
         "diagnostics_path": output_path,
 
+        "audit_passed": audit_passed,
+        "ready_for_reporting": ready_for_reporting,
+
         "n_rows": int(n_rows),
+        "n_diagnostic_rows": n_diagnostic_rows,
         "n_synchronized": int(n_synchronized),
         "n_reported_three_exact": int(
             n_reported_three_exact
@@ -3197,6 +3316,4 @@ def build_quantity_diagnostics(
         "no_kg_pct": float(
             no_kg_pct
         ),
-
-        "ready_for_reporting": True,
     }

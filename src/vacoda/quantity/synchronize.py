@@ -728,6 +728,159 @@ def synchronize_quantity(
                 f"classified {classified_rows:,} of {n_rows:,} rows."
             )
 
+        # ==============================================================
+        # SYNCHRONIZATION AUDIT
+        # ==============================================================
+
+        input_audit_row = con.execute(
+            """
+            SELECT COUNT(*)
+            FROM read_parquet(?)
+            """,
+            [str(reconciliation_evidence_path)],
+        ).fetchone()
+
+        if input_audit_row is None:
+            raise RuntimeError(
+                "Could not inspect Quantity reconciliation evidence."
+            )
+
+        n_input_rows = int(input_audit_row[0])
+
+        synchronization_audit_row = con.execute(
+            """
+            SELECT
+
+                COUNT(*) FILTER (
+                    WHERE quantity_sync_resolved
+                      AND (
+                          synchronized_quantity_kg IS NULL
+                          OR synchronized_quantity_kg <= 0
+                      )
+                ) AS n_resolved_without_positive_kg,
+
+                COUNT(*) FILTER (
+                    WHERE quantity_sync_status = 'no_kg_evidence'
+                      AND synchronized_quantity_kg IS NOT NULL
+                ) AS n_no_kg_with_value,
+
+                COUNT(*) FILTER (
+                    WHERE quantity_sync_status LIKE 'reported_%'
+                      AND is_synchronized_quantity_estimated IS DISTINCT FROM FALSE
+                ) AS n_reported_estimated_mismatch,
+
+                COUNT(*) FILTER (
+                    WHERE quantity_sync_status LIKE 'estimated_%'
+                      AND is_synchronized_quantity_estimated IS DISTINCT FROM TRUE
+                ) AS n_estimated_flag_mismatch,
+
+                COUNT(*) FILTER (
+                    WHERE quantity_sync_status = 'no_kg_evidence'
+                      AND quantity_sync_resolved
+                ) AS n_no_kg_marked_resolved,
+
+                COUNT(*) FILTER (
+                    WHERE quantity_sync_status <> 'no_kg_evidence'
+                      AND NOT quantity_sync_resolved
+                ) AS n_resolved_status_mismatch
+
+            FROM read_parquet(?)
+            """,
+            [str(output_path)],
+        ).fetchone()
+
+        if synchronization_audit_row is None:
+            raise RuntimeError(
+                "Could not inspect synchronized Quantity output."
+            )
+
+        (
+            n_resolved_without_positive_kg,
+            n_no_kg_with_value,
+            n_reported_estimated_mismatch,
+            n_estimated_flag_mismatch,
+            n_no_kg_marked_resolved,
+            n_resolved_status_mismatch,
+        ) = synchronization_audit_row
+
+
+        n_resolved_without_positive_kg = int(
+            n_resolved_without_positive_kg
+        )
+        n_no_kg_with_value = int(n_no_kg_with_value)
+        n_reported_estimated_mismatch = int(
+            n_reported_estimated_mismatch
+        )
+        n_estimated_flag_mismatch = int(
+            n_estimated_flag_mismatch
+        )
+        n_no_kg_marked_resolved = int(
+            n_no_kg_marked_resolved
+        )
+        n_resolved_status_mismatch = int(
+            n_resolved_status_mismatch
+        )
+
+        # ==============================================================
+        # HARD AUDIT CONDITIONS
+        # ==============================================================
+
+        if n_input_rows == 0:
+            raise RuntimeError(
+                "Quantity reconciliation evidence contains no rows."
+            )
+
+        if int(n_rows) != n_input_rows:
+            raise RuntimeError(
+                "Quantity synchronization did not preserve the full "
+                "input population: "
+                f"input={n_input_rows:,}, "
+                f"output={int(n_rows):,}."
+            )
+
+        if n_resolved_without_positive_kg > 0:
+            raise RuntimeError(
+                "Quantity synchronization contains "
+                f"{n_resolved_without_positive_kg:,} resolved rows "
+                "without a positive synchronized kg quantity."
+            )
+
+        if n_no_kg_with_value > 0:
+            raise RuntimeError(
+                "Quantity synchronization contains "
+                f"{n_no_kg_with_value:,} no_kg_evidence rows "
+                "with a synchronized quantity."
+            )
+
+        if n_reported_estimated_mismatch > 0:
+            raise RuntimeError(
+                "Reported synchronization rules contain "
+                f"{n_reported_estimated_mismatch:,} rows with an "
+                "incorrect estimated-state flag."
+            )
+
+        if n_estimated_flag_mismatch > 0:
+            raise RuntimeError(
+                "Estimated fallback rules contain "
+                f"{n_estimated_flag_mismatch:,} rows with an "
+                "incorrect estimated-state flag."
+            )
+
+        if n_no_kg_marked_resolved > 0:
+            raise RuntimeError(
+                "Rows classified as no_kg_evidence were incorrectly "
+                "marked as resolved."
+            )
+
+        if n_resolved_status_mismatch > 0:
+            raise RuntimeError(
+                "Resolved synchronization rules contain rows marked "
+                "as unresolved."
+            )
+
+        audit_passed = True
+        ready_for_diagnostics = audit_passed
+
         logger.info(
             "Quantity rows: %s",
             f"{n_rows:,}",
@@ -776,6 +929,16 @@ def synchronize_quantity(
             output_path,
         )
 
+        logger.info("  Output: %s", output_path)
+        logger.info(
+            "  Step audit passed: %s",
+            audit_passed,
+        )
+        logger.info(
+            "  Ready for diagnostics: %s",
+            ready_for_diagnostics,
+        )
+
     finally:
         con.close()
 
@@ -794,11 +957,16 @@ def synchronize_quantity(
         output_path=output_path,
     )
 
+    logger.info("Local checkpoint written: %s", checkpoint_path)
+
     return {
         "status": "completed",
         "run_id": run_id,
         "output_path": output_path,
         "synchronized_quantity_path": output_path,
+
+        "audit_passed": audit_passed,
+        "ready_for_diagnostics": ready_for_diagnostics,
 
         "n_rows": int(n_rows),
         "n_synchronized": int(n_synchronized),
@@ -834,6 +1002,4 @@ def synchronize_quantity(
         "supplementary_pct": float(
             supplementary_pct
         ),
-
-        "ready_for_diagnostics": True,
     }

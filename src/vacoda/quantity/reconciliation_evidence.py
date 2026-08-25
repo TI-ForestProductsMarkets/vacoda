@@ -440,6 +440,173 @@ def build_quantity_reconciliation_evidence(
 
         con.execute(query)
 
+        # ==============================================================
+        # INPUT / OUTPUT AUDIT
+        # ==============================================================
+
+        input_audit_row = con.execute(
+            """
+            SELECT COUNT(*) AS n_input_rows
+            FROM read_parquet(?)
+            """,
+            [str(input_path)],
+        ).fetchone()
+
+        if input_audit_row is None:
+            raise RuntimeError(
+                "Could not inspect prepared Quantity input."
+            )
+
+        output_audit_row = con.execute(
+            """
+            SELECT
+                COUNT(*) AS n_output_rows,
+
+                COUNT(*) FILTER (
+                    WHERE kg_evidence_availability NOT IN (
+                        'both',
+                        'quantity_only',
+                        'net_weight_only',
+                        'neither'
+                    )
+                    OR kg_evidence_availability IS NULL
+                ) AS n_invalid_availability,
+
+                COUNT(*) FILTER (
+                    WHERE kg_evidence_status NOT IN (
+                        'reported_reported',
+                        'reported_estimated',
+                        'estimated_reported',
+                        'estimated_estimated',
+                        'reported_quantity_only',
+                        'estimated_quantity_only',
+                        'reported_net_weight_only',
+                        'estimated_net_weight_only',
+                        'no_kg_evidence'
+                    )
+                    OR kg_evidence_status IS NULL
+                ) AS n_invalid_evidence_status,
+
+                COUNT(*) FILTER (
+                    WHERE quantity_net_weight_agree IS NOT NULL
+                      AND quantity_net_weight_relative_gap IS NULL
+                ) AS n_invalid_agreement_without_gap,
+
+                COUNT(*) FILTER (
+                    WHERE quantity_net_weight_agree IS NULL
+                      AND quantity_net_weight_relative_gap IS NOT NULL
+                ) AS n_missing_agreement_with_gap,
+
+                COUNT(*) FILTER (
+                    WHERE quantity_kg_candidate IS NOT NULL
+                      AND NOT has_quantity_kg
+                ) AS n_invalid_quantity_candidate,
+
+                COUNT(*) FILTER (
+                    WHERE net_weight_kg_candidate IS NOT NULL
+                      AND NOT has_net_weight_kg
+                ) AS n_invalid_net_weight_candidate
+
+            FROM read_parquet(?)
+            """,
+            [str(output_path)],
+        ).fetchone()
+
+        if output_audit_row is None:
+            raise RuntimeError(
+                "Could not inspect Quantity reconciliation evidence."
+            )
+
+        n_input_rows = int(input_audit_row[0])
+
+        (
+            n_output_rows,
+            n_invalid_availability,
+            n_invalid_evidence_status,
+            n_invalid_agreement_without_gap,
+            n_missing_agreement_with_gap,
+            n_invalid_quantity_candidate,
+            n_invalid_net_weight_candidate,
+        ) = output_audit_row
+
+        n_output_rows = int(n_output_rows)
+        n_invalid_availability = int(n_invalid_availability)
+        n_invalid_evidence_status = int(n_invalid_evidence_status)
+        n_invalid_agreement_without_gap = int(
+            n_invalid_agreement_without_gap
+        )
+        n_missing_agreement_with_gap = int(
+            n_missing_agreement_with_gap
+        )
+        n_invalid_quantity_candidate = int(
+            n_invalid_quantity_candidate
+        )
+        n_invalid_net_weight_candidate = int(
+            n_invalid_net_weight_candidate
+        )
+
+        # ==============================================================
+        # HARD AUDIT CONDITIONS
+        # ==============================================================
+
+        if n_input_rows == 0:
+            raise RuntimeError(
+                "Prepared Quantity input contains no rows."
+            )
+
+        if n_output_rows != n_input_rows:
+            raise RuntimeError(
+                "Quantity reconciliation evidence did not preserve "
+                "the full input population: "
+                f"input={n_input_rows:,}, "
+                f"output={n_output_rows:,}."
+            )
+
+        if n_invalid_availability > 0:
+            raise RuntimeError(
+                "Quantity reconciliation evidence contains "
+                f"{n_invalid_availability:,} invalid availability "
+                "classifications."
+            )
+
+        if n_invalid_evidence_status > 0:
+            raise RuntimeError(
+                "Quantity reconciliation evidence contains "
+                f"{n_invalid_evidence_status:,} invalid evidence "
+                "status classifications."
+            )
+
+        if n_invalid_agreement_without_gap > 0:
+            raise RuntimeError(
+                "Quantity reconciliation evidence contains "
+                f"{n_invalid_agreement_without_gap:,} rows with an "
+                "agreement flag but no relative gap."
+            )
+
+        if n_missing_agreement_with_gap > 0:
+            raise RuntimeError(
+                "Quantity reconciliation evidence contains "
+                f"{n_missing_agreement_with_gap:,} rows with a "
+                "relative gap but no agreement classification."
+            )
+
+        if n_invalid_quantity_candidate > 0:
+            raise RuntimeError(
+                "Quantity reconciliation evidence contains "
+                f"{n_invalid_quantity_candidate:,} quantity kg "
+                "candidates inconsistent with has_quantity_kg."
+            )
+
+        if n_invalid_net_weight_candidate > 0:
+            raise RuntimeError(
+                "Quantity reconciliation evidence contains "
+                f"{n_invalid_net_weight_candidate:,} net-weight kg "
+                "candidates inconsistent with has_net_weight_kg."
+            )
+
+        audit_passed = True
+        ready_for_synchronization = audit_passed
+
         # --------------------------------------------------------------
         # Basic run statistics
         # --------------------------------------------------------------
@@ -533,6 +700,16 @@ def build_quantity_reconciliation_evidence(
             output_path,
         )
 
+        logger.info("  Output: %s", output_path)
+        logger.info(
+            "  Step audit passed: %s",
+            audit_passed,
+        )
+        logger.info(
+            "  Ready for synchronization: %s",
+            ready_for_synchronization,
+        )
+
     finally:
         con.close()
 
@@ -556,7 +733,10 @@ def build_quantity_reconciliation_evidence(
         "run_id": run_id,
         "output_path": output_path,
         "reconciliation_evidence_path": output_path,
-        "n_rows": int(n_rows),
+        "audit_passed": audit_passed,
+        "ready_for_synchronization": ready_for_synchronization,
+        "n_input_rows": n_input_rows,
+        "n_rows": n_output_rows,
         "n_quantity_kg": int(n_quantity_kg),
         "n_net_weight_kg": int(n_net_weight_kg),
         "n_alt_quantity_kg": int(n_alt_quantity_kg),
@@ -564,5 +744,4 @@ def build_quantity_reconciliation_evidence(
         "n_both": int(n_both),
         "n_agree": int(n_agree),
         "n_disagree": int(n_disagree),
-        "ready_for_synchronization": True,
     }

@@ -868,10 +868,7 @@ def estimate_trade_sync_country_reliability(
         )
         logger.info("  Output: %s", output_path)
         logger.info("  Step audit passed: %s", audit_passed)
-        logger.info(
-            "  Ready for reconciliation: %s",
-            ready_for_reconciliation,
-        )
+        logger.info("  Ready for reconciliation: %s", ready_for_reconciliation,)
 
         return {
             "status": "completed",
