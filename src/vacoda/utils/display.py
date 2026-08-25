@@ -46,6 +46,8 @@ _SYMBOLS = {
     "manifest": "\U0001F4C3",         # 📃
     "skip": "\u2298",                 # ⏭
     "flag": "\U0001F6A9",             # 🚩
+    "reuse": "\u267B\uFE0F",          # ♻️
+    "rebuild": "\U0001F528",          # 🔨
 
 }
 
