@@ -125,6 +125,70 @@ def _corrected_trade_audit_path(
         ".audit.csv"
     )
 
+
+def _publish_trade_sync_handoff(
+    *,
+    cfg: CifFobConfig,
+    corrected_trade_path: Path,
+) -> Path:
+    """
+    Publish the successfully audited CIF/FOB corrected trade artifact
+    at the canonical path consumed by Trade Sync.
+    """
+    corrected_trade_path = Path(
+        corrected_trade_path
+    ).resolve()
+
+    if not corrected_trade_path.is_file():
+        raise FileNotFoundError(
+            "Cannot publish Trade Sync handoff because "
+            "the corrected CIF/FOB artifact does not exist: "
+            f"{corrected_trade_path}"
+        )
+
+    handoff_path = (
+        cfg.output_dir()
+        / cfg.product_path("corrected_trade").name
+    )
+
+    handoff_path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    relative_target = corrected_trade_path.relative_to(
+        handoff_path.parent.resolve()
+    )
+
+    temporary_path = handoff_path.with_name(
+        handoff_path.name + ".tmp"
+    )
+
+    temporary_path.unlink(
+        missing_ok=True
+    )
+
+    temporary_path.symlink_to(
+        relative_target
+    )
+
+    temporary_path.replace(
+        handoff_path
+    )
+
+    if (
+        not handoff_path.is_file()
+        or handoff_path.resolve()
+        != corrected_trade_path
+    ):
+        raise RuntimeError(
+            "Trade Sync handoff publication failed: "
+            f"{handoff_path} does not resolve to "
+            f"{corrected_trade_path}."
+        )
+
+    return handoff_path
+
 def _read_columns(con: duckdb.DuckDBPyConnection, path: Path) -> set[str]:
     rows = con.execute(
         "DESCRIBE SELECT * FROM read_parquet(?)", [str(path)]
@@ -943,7 +1007,25 @@ def apply_cif_fob_weights(
             )
         )
 
+        trade_sync_handoff_path = None
+
+        if result["ready_for_trade_sync"]:
+            trade_sync_handoff_path = (
+                _publish_trade_sync_handoff(
+                    cfg=cfg,
+                    corrected_trade_path=output_path,
+                )
+            )
+
+        result["trade_sync_handoff_path"] = (
+            trade_sync_handoff_path
+        )
+
+        if logger is not None:
+            logger.info("  Trade Sync handoff: %s", trade_sync_handoff_path,)
+
         return result
+
 
     if logger is not None:
         logger.info(
@@ -1124,6 +1206,16 @@ def apply_cif_fob_weights(
             },
         )
 
+    trade_sync_handoff_path = None
+
+    if ready_for_trade_sync:
+        trade_sync_handoff_path = (
+            _publish_trade_sync_handoff(
+                cfg=cfg,
+                corrected_trade_path=output_path,
+            )
+        )
+
     if logger is not None:
         logger.info(
             "Applied primary CIF/FOB factors."
@@ -1162,11 +1254,18 @@ def apply_cif_fob_weights(
         )
 
         logger.info(
+            "  Trade Sync handoff: %s",
+            trade_sync_handoff_path,
+        )
+
+        logger.info(
             "  Failed audit rows: %s",
             audit_file_result[
                 "n_failed_audit_rows"
             ],
         )
+
+
 
     return {
         "status": "completed",
@@ -1175,6 +1274,9 @@ def apply_cif_fob_weights(
         "ready_for_trade_sync": ready_for_trade_sync,
         "output_path": output_path,
         "audit_path": audit_path,
+        "trade_sync_handoff_path": (
+            trade_sync_handoff_path
+        ),
 
         "manifest_path": manifest_path,
         "semantic_fingerprint": (
