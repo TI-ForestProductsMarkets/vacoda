@@ -3463,10 +3463,10 @@ def estimate_cif_fob_rates(
     output_path = run_dir / cfg.product_path("estimated_rates").name
 
     checkpoint_path = (
-        cfg.output_dir()
-        / "checkpoints"
-        / "estimated_rates.json"
-    )
+            run_dir
+            / "checkpoints"
+            / "estimated_rates.json"
+        )
 
     reason = "local checkpoint missing"
 

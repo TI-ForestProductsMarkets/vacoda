@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 from datetime import datetime
+from vacoda.utils.symbols import get_symbols
 
 def get_logger(name: str) -> logging.Logger:
     """
@@ -105,3 +106,35 @@ def make_timestamped_log_path(
 
     return path.with_name(f"{path.stem}_{timestamp}{path.suffix}")
 
+
+def log_reuse(logger, description, cached_output_path):
+    logger.info(
+        "%s REUSE — %s local checkpoint matches: %s",
+        get_symbols("recycle"),
+        description,
+        cached_output_path,
+    )
+
+def log_rebuild(logger, description, output_path):
+    logger.info(
+        "%s REBUILD — %s local checkpoint missing or outdated: %s",
+        get_symbols("rebuild"),
+        description,
+        output_path,
+    )
+
+def log_skip(logger, description, output_path):
+    logger.info(
+        "%s SKIP — %s local checkpoint matches: %s",
+        get_symbols("skip"),
+        description,
+        output_path,
+    )
+
+def log_semantic_check(logger, name, reason):
+    logger.info(
+        "%s CHECK — %s requires semantic validation: %s",
+        get_symbols("warning"),
+        name,
+        reason,
+    )
