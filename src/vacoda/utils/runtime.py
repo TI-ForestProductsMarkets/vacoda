@@ -146,7 +146,8 @@ def run_step(
 
     elapsed = perf_counter() - started
     logger.info(
-        "DONE — %s (%s)",
+        "%s DONE — %s (%s)",
+        get_symbols("check"),
         title,
         format_seconds(elapsed),
     )

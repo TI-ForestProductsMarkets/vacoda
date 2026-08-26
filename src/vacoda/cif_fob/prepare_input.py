@@ -50,7 +50,7 @@ import duckdb
 
 from vacoda.config.cif_fob import CifFobConfig
 from vacoda.pipeline.checkpoint import validate_local_checkpoint, file_fingerprint, write_local_checkpoint, semantic_config_fingerprint
-from vacoda.utils.logger import log_checkpoint_reuse, log_checkpoint_rebuild
+from vacoda.utils.logger import log_checkpoint_reuse, log_checkpoint_rebuild, log_audit_info
 from vacoda.utils.display import get_symbols
 
 # ======================================================================
@@ -1253,6 +1253,12 @@ def prepare_cif_fob_input(
 
         audit_passed = True
         ready_for_mirror_pairs = audit_passed
+
+        log_audit_info(
+                logger,
+                "CIF/FOB input preparation passed.",
+            )
+
 
         write_local_checkpoint(
                 checkpoint_path=checkpoint_path,

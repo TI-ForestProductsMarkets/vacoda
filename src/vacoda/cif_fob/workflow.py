@@ -31,7 +31,6 @@ from vacoda.utils.display import get_symbols
 from vacoda.utils.logger import get_logger
 from vacoda.utils.runtime import run_step, timed_workflow
 from vacoda.utils.artifacts import artifact_result, require_artifact, require_enabled_products, require_product_dependency
-from vacoda.pipeline.checkpoint import file_sha256
 
 WORKFLOW_STEPS = [
     "Prepare CIF/FOB input",
@@ -208,18 +207,6 @@ def run_cif_fob_workflow(
                 ),
         )
 
-        if prepared_result.get("audit_passed", False):
-            logger.info(
-                        "%s CIF/FOB input preparation audit passed.",
-                        get_symbols("check"),
-                    )
-        else:
-            logger.warning(
-                    "%s CIF/FOB input preparation audit did not pass. "
-                    "Check the Step 1 logs.",
-                    get_symbols("warn"),
-                )
-
         # ==================================================================
         # STEP 2 — Build bilateral mirror pairs
         # ==================================================================
@@ -323,17 +310,6 @@ def run_cif_fob_workflow(
                     )
                 )
 
-        logger.info(
-                    "%s CIF/FOB training-evidence audit written: %s",
-                    get_symbols("check"),
-                    training_evidence_audit_result[
-                        "training_evidence_audit_path"
-                    ],
-                )
-        logger.info(
-                    "Training-evidence audit rows: %s",
-                    training_evidence_audit_result["n_rows"],
-                )
         
         # ==================================================================
         # STEP 6 — Estimate CIF/FOB correction rates
@@ -385,12 +361,6 @@ def run_cif_fob_workflow(
         )
 
         logger.info(
-                        "%s CIF/FOB diagnostics written: %s",
-                        get_symbols("check"),
-                        diagnostics_result["diagnostics_path"],
-                    )
-
-        logger.info(
                         "Diagnostics rows: %s; years: %s-%s; "
                         "median APE: %.4f; mean APE: %.4f; P90 APE: %.4f",
                         diagnostics_result["n_rows"],
@@ -424,13 +394,6 @@ def run_cif_fob_workflow(
                     logger=logger,
                 )
         )
-
-        # Placeholder for the trade-correction step
-        logger.info(
-                        "%s Corrected CIF/FOB trade written: %s",
-                        get_symbols("check"),
-                        corrected_trade_result["output_path"],
-                    )
 
 
         # ==================================================================

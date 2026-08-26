@@ -139,3 +139,10 @@ def log_semantic_check(logger, name, reason):
         name,
         reason,
     )
+
+def log_audit_info(logger, description):
+    logger.info(
+        "%s AUDIT — %s",
+        get_symbols("check_mark"),
+        description,
+    )
