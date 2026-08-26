@@ -51,7 +51,7 @@ import duckdb
 from vacoda.config.cif_fob import CifFobConfig
 from vacoda.pipeline.checkpoint import validate_local_checkpoint, file_fingerprint, write_local_checkpoint, semantic_config_fingerprint
 from vacoda.utils.logger import log_checkpoint_reuse, log_checkpoint_rebuild
-
+from vacoda.utils.display import get_symbols
 
 # ======================================================================
 # Small SQL helpers

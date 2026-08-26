@@ -186,16 +186,16 @@ cif_fob:
       maximum_factor_rule:
         # Supported methods:
         #
-        # fixed_cap
+        # 1. fixed_cap
         #   maximum_factor = fixed_cap
         #
-        # iqr_cap
+        # 2. iqr_cap
         #   maximum_factor = Q3 + iqr_multiplier * IQR
         #
-        # robust_adaptive_cap
+        # 3. robust_adaptive_cap
         #   maximum_factor = min(fixed_value, max(Q3 + iqr_multiplier * IQR, p99))
         #
-        method: robust_adaptive_cap
+        method: iqr_cap
         fixed_value: 3.0
         iqr_multiplier: 2.5
         percentile: 0.99

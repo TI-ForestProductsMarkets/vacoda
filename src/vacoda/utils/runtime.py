@@ -112,6 +112,7 @@ def log_step_header(
         total_steps,
         title,
     )
+    separator(logger)
 
 def run_step(
     *,
