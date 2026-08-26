@@ -112,8 +112,6 @@ def log_step_header(
         total_steps,
         title,
     )
-    separator(logger)
-
 
 def run_step(
     *,
@@ -142,6 +140,7 @@ def run_step(
             title,
             format_seconds(elapsed),
         )
+        print("")
         raise
 
     elapsed = perf_counter() - started
@@ -150,6 +149,7 @@ def run_step(
         title,
         format_seconds(elapsed),
     )
+    print("")
 
     return result
 

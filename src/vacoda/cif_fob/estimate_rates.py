@@ -32,7 +32,7 @@ from scipy.stats import spearmanr
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from vacoda.pipeline.checkpoint import load_checkpoint, file_fingerprint, write_estimation_local_checkpoint, semantic_config_fingerprint
-from vacoda.utils.display import get_symbols
+from vacoda.utils.logger import log_checkpoint_reuse, log_checkpoint_rebuild, log_semantic_check, log_checkpoint_skip
 try:
     import statsmodels.api as sm
 except ImportError as exc:  # pragma: no cover - environment guard
@@ -3503,11 +3503,13 @@ def estimate_cif_fob_rates(
                         reason = "cached output fingerprint changed"
 
                     else:
-                        logger.info(
-                            "%s REUSE — CIF/FOB estimated rates "
-                            "local checkpoint matches: %s",
-                            get_symbols("reuse"),
-                            cached_output_path,
+                        reason = "local checkpoint matches"
+
+                        log_checkpoint_reuse(
+                            logger,
+                            "CIF/FOB estimated rates",
+                            reason=reason,
+                            cached_output_path=cached_output_path,
                         )
 
                         return _inspect_existing_estimated_rates(
@@ -3519,10 +3521,11 @@ def estimate_cif_fob_rates(
     else:
         reason = "forced"
 
-    logger.info(
-        "%s CHECK — CIF/FOB estimation requires semantic validation: %s",
-        get_symbols("warning"),
-        reason,
+
+    log_semantic_check(
+        logger,
+        "CIF/FOB estimation",
+        reason=reason,
     )
     
     logger.info(
@@ -3770,12 +3773,13 @@ def estimate_cif_fob_rates(
         )
 
         if aggregate_reusable:
-            logger.info(
-                "%s  REUSE — CIF/FOB estimated rates manifest "
-                "matches: %s",
-                get_symbols("reuse"),
+            log_checkpoint_reuse(
+                logger,
+                "CIF/FOB estimated rates manifest matches",
                 output_path,
+                reason="manifest matches",
             )
+            
 
             result = _inspect_existing_estimated_rates(
                 cfg=cfg,
@@ -3803,10 +3807,12 @@ def estimate_cif_fob_rates(
 
             return result
 
-        logger.info(
-            f"{get_symbols('rebuild')} REBUILD — CIF/FOB estimated rates: %s",
+        log_checkpoint_rebuild(
+            logger,
+            "CIF/FOB estimated rates",
             aggregate_reason,
         )
+
 
     # ==================================================================
     # Run or reuse one checkpoint per model × predictor-set run
@@ -3878,10 +3884,9 @@ def estimate_cif_fob_rates(
             )
 
         if checkpoint_reusable:
-            logger.info(
-                "%s  REUSE estimation run checkpoint: %s (%s)",
-                get_symbols("reuse"),
-                run_spec.run_name,
+            log_checkpoint_reuse(
+                logger,
+                f"estimation run checkpoint: {run_spec.run_name}",
                 checkpoint_reason,
             )
 

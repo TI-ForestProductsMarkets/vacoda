@@ -107,23 +107,24 @@ def make_timestamped_log_path(
     return path.with_name(f"{path.stem}_{timestamp}{path.suffix}")
 
 
-def log_reuse(logger, description, cached_output_path):
+def log_checkpoint_reuse(logger, description, reason, cached_output_path=None):
     logger.info(
-        "%s REUSE — %s local checkpoint matches: %s",
+        "%s REUSE — %s:%s %s",
         get_symbols("recycle"),
         description,
+        f" ({reason})" if reason is not None else "",
         cached_output_path,
     )
 
-def log_rebuild(logger, description, output_path):
+def log_checkpoint_rebuild(logger, description=None, reason=None):
     logger.info(
-        "%s REBUILD — %s local checkpoint missing or outdated: %s",
+        "%s REBUILD — %s: %s",
         get_symbols("rebuild"),
         description,
-        output_path,
+        reason,
     )
 
-def log_skip(logger, description, output_path):
+def log_checkpoint_skip(logger, description, output_path):
     logger.info(
         "%s SKIP — %s local checkpoint matches: %s",
         get_symbols("skip"),

@@ -47,9 +47,8 @@ from typing import Any
 import duckdb
 
 from vacoda.config.cif_fob import CifFobConfig
-from vacoda.cif_fob.prepare_input import valid_output
 from vacoda.pipeline.checkpoint import validate_local_checkpoint, file_fingerprint, write_local_checkpoint, semantic_config_fingerprint
-
+from vacoda.utils.logger import log_checkpoint_reuse, log_checkpoint_rebuild, log_semantic_check, log_checkpoint_skip
 
 # ======================================================================
 # SQL helpers
@@ -278,19 +277,24 @@ def build_mirror_pairs(
     )
 
     if not force and reusable:
-        logger.info(
-            "REUSE — Mirror-pair local checkpoint matches: %s",
-            output_path,
-        )
+        log_checkpoint_reuse(
+                    logger,
+                    "CIF/FOB mirror Pair",
+                    reason=reason,
+                    cached_output_path=output_path,
+                )
+
 
         return _inspect_existing_mirror_pairs(
             output_path=output_path,
             threads=cfg.engine.threads,
         )
 
-    logger.info(
-        "REBUILD — Mirror-pair output: %s",
-        "forced" if force else reason,
+
+    log_checkpoint_rebuild(
+        logger,
+        "CIF/FOB Mirror Pair",
+        reason=reason if not force else "forced",
     )
 
     output_path.parent.mkdir(

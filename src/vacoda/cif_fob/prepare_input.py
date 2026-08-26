@@ -49,8 +49,8 @@ from typing import Any
 import duckdb
 
 from vacoda.config.cif_fob import CifFobConfig
-from vacoda.utils.display import get_symbols, color_text
 from vacoda.pipeline.checkpoint import validate_local_checkpoint, file_fingerprint, write_local_checkpoint, semantic_config_fingerprint
+from vacoda.utils.logger import log_checkpoint_reuse, log_checkpoint_rebuild
 
 
 # ======================================================================
@@ -132,9 +132,11 @@ def prepare_cif_fob_input(
     )
 
     if not force and reusable:
-        logger.info(
-            "REUSE — Prepared CIF/FOB input checkpoint matches: %s",
-            output_path,
+        log_checkpoint_reuse(
+            logger,
+            "CIF/FOB prepared input",
+            reason=reason,
+            cached_output_path=output_path,
         )
 
         return {
@@ -145,12 +147,11 @@ def prepare_cif_fob_input(
             "ready_for_mirror_pairs": True,
         }
 
-    logger.info(
-        "%s REBUILD — Prepared CIF/FOB input: %s",
-        "forced" if force else reason,
-        get_symbols("recycle"),
+    log_checkpoint_rebuild(
+        logger,
+        "CIF/FOB prepared input",
+        reason=reason if not force else "forced",
     )
-
 
     output_path.parent.mkdir(
         parents=True,

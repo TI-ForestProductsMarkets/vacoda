@@ -78,8 +78,8 @@ from typing import Any
 
 import duckdb
 from vacoda.config.cif_fob import CifFobConfig
-from vacoda.cif_fob.prepare_input import valid_output
 from vacoda.pipeline.checkpoint import validate_local_checkpoint, file_fingerprint, write_local_checkpoint, semantic_config_fingerprint
+from vacoda.utils.logger import log_checkpoint_reuse, log_checkpoint_rebuild, log_semantic_check, log_checkpoint_skip
 
 
 # ======================================================================
@@ -1163,10 +1163,13 @@ def build_training_features(
                 ", ".join(missing_required_features),
             )
         else:
-            logger.info(
-                "REUSE — CIF/FOB training features local checkpoint matches: %s",
-                output_path,
+            log_checkpoint_reuse(
+                logger,
+                "CIF/FOB training features",
+                reason,
+                cached_output_path=output_path,
             )
+
 
             return _inspect_existing_training_features(
                 output_path=output_path,
@@ -1174,10 +1177,12 @@ def build_training_features(
             )
 
     else:
-        logger.info(
-            "REBUILD — CIF/FOB training features: %s",
-            "forced" if force else reason,
+        log_checkpoint_rebuild(
+            logger,
+            "CIF/FOB training features",
+            reason = reason if not force else "forced",
         )
+
 
     output_path.parent.mkdir(
         parents=True,
