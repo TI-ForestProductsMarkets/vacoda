@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 from datetime import datetime
-from vacoda.utils.symbols import get_symbols
+from vacoda.utils.display import get_symbols
 
 def get_logger(name: str) -> logging.Logger:
     """

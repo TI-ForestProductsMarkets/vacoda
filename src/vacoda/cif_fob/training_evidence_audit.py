@@ -25,6 +25,7 @@ imbalance by geography, product group, value band, distance band, and year.
 from __future__ import annotations
 
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 import duckdb
@@ -223,10 +224,15 @@ def build_training_evidence_audit(
             f"Training-features artifact not found: {input_path}"
         )
 
+    t0 = perf_counter()
+
     base = _load_base_audit_frame(
         input_path=input_path,
         threads=threads,
     )
+
+    print(f"AUDIT TIMING — load base: {perf_counter() - t0:.2f}s")
+    t1 = perf_counter()
 
     if base.empty:
         raise RuntimeError(
@@ -236,6 +242,8 @@ def build_training_evidence_audit(
 
     base = _add_audit_bands(base)
 
+    print(f"AUDIT TIMING — add bands: {perf_counter() - t1:.2f}s")
+    
     dimensions = [
         "year",
         "exporter_continent",
