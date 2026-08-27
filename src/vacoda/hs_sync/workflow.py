@@ -19,6 +19,7 @@ from vacoda.hs_sync.allocation import run_equal_split_allocation
 from vacoda.hs_sync.weights import run_complete_mapping_weights
 from vacoda.hs_sync.apply import run_hs_sync_apply
 from vacoda.hs_sync.applied_audit import run_hs_sync_applied_output_audit
+from vacoda.hs_sync.reporting import build_hs_sync_report
 from vacoda.utils.runtime import (
     timed_workflow,
     run_step,
@@ -42,6 +43,7 @@ WORKFLOW_STEPS = [
     "Build complete HS mapping weights",
     "Apply HS-sync to target HS",
     "Audit applied HS-sync output",
+    "Write HS-sync decision report",
 ]
 TOTAL_WORKFLOW_STEPS = len(WORKFLOW_STEPS)
 
@@ -351,6 +353,30 @@ def run_hs_sync_workflow(
         n_failed_audit_rows = int(
                     applied_audit_result.get("n_failed_audit_rows", 0)
                 )
+
+        # ==================================================================
+        # Step 10 — Write HS-sync decision report
+        # ==================================================================
+        decision_report_result = run_step(
+            logger=logger,
+            step_number=10,
+            total_steps=TOTAL_WORKFLOW_STEPS,
+            title=WORKFLOW_STEPS[9],
+            runner=lambda: build_hs_sync_report(
+                    cfg=cfg,
+                    tables={
+                        "hs_sync_decision_report": applied_audit_result.get(
+                            "decision_report"
+                        )
+                    },
+                    run_id=run_id,
+                    force=force,
+                    logger=logger,
+                ),
+            )
+
+
+
        ########################################################################################
         
         workflow_elapsed = perf_counter() - workflow_start

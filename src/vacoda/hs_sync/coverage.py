@@ -3,8 +3,36 @@ vacoda.hs_sync.coverage
 Functions for calculating and summarizing the coverage of the HS concordance.
 """
 from __future__ import annotations
-
+from pathlib import Path
 import pandas as pd
+import duckdb
+import pandas as pd
+import polars as pl
+from vacoda.io.duckdb_scan import duckdb_scan_relation
+from vacoda.utils.display import progress_bar
+
+
+# ======================================================================
+# Helpers
+# ======================================================================
+
+def _quote_ident(name: str) -> str:
+    """Quote a SQL identifier for DuckDB."""
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _find_csv_files(data_dir: str | Path, pattern: str = "*.csv") -> list[Path]:
+    data_dir = Path(data_dir)
+
+    if not data_dir.exists():
+        raise FileNotFoundError(f"Data directory does not exist: {data_dir}")
+
+    files = sorted(data_dir.glob(pattern))
+
+    if not files:
+        raise FileNotFoundError(f"No files matching {pattern!r} found in {data_dir}")
+
+    return files
 
 
 def _dataframe_to_markdown_table(df: pd.DataFrame) -> str:
@@ -69,6 +97,564 @@ def _format_compact_number(value: float) -> str:
 
     return f"{value:.2f}"
 
+
+
+
+def add_reporter_year_shares(
+    df: pd.DataFrame,
+    *,
+    reporter_col: str = "ReporterCode",
+    year_col: str = "RefYear",
+    value_col: str = "primary_value_total",
+    weight_col: str = "netwgt_total",
+    row_share_col: str = "share_rows_in_reporter_year",
+) -> pd.DataFrame:
+    """
+    Add value and net-weight shares within each reporter-year.
+
+    This enriches the reporter-year-classification table with:
+
+    - share_value_in_reporter_year
+    - share_netwgt_in_reporter_year
+
+    Parameters
+    ----------
+    df:
+        Reporter-year-classification coverage table.
+    reporter_col:
+        Reporter identifier column.
+    year_col:
+        Year column.
+    value_col:
+        Trade value column.
+    weight_col:
+        Net weight column.
+    row_share_col:
+        Existing row-share column. Kept unchanged if already present.
+
+    Returns
+    -------
+    pd.DataFrame
+        Copy of input dataframe with added share columns.
+    """
+
+    out = df.copy()
+
+    group_cols = [reporter_col, year_col]
+
+    if value_col in out.columns:
+        total_value = out.groupby(group_cols)[value_col].transform("sum")
+        out["share_value_in_reporter_year"] = out[value_col].where(
+            total_value.ne(0), pd.NA
+        ) / total_value.where(total_value.ne(0), pd.NA)
+
+    if weight_col in out.columns:
+        total_weight = out.groupby(group_cols)[weight_col].transform("sum")
+        out["share_netwgt_in_reporter_year"] = out[weight_col].where(
+            total_weight.ne(0), pd.NA
+        ) / total_weight.where(total_weight.ne(0), pd.NA)
+
+    if row_share_col not in out.columns and "n_rows" in out.columns:
+        total_rows = out.groupby(group_cols)["n_rows"].transform("sum")
+        out[row_share_col] = out["n_rows"] / total_rows
+
+    return out
+
+def build_reporter_hs_timeline(
+    df: pd.DataFrame,
+    *,
+    reporter_col: str = "ReporterCode",
+    reporter_iso_col: str = "ReporterISO",
+    reporter_name_col: str = "ReporterDesc",
+    year_col: str = "RefYear",
+    classification_col: str = "ClassificationCode",
+    dominance_metric: str = "share_rows_in_reporter_year",
+) -> pd.DataFrame:
+    """
+    Build continuous HS-classification timelines per reporter.
+
+    The function first selects the dominant classification for each
+    reporter-year, then compresses consecutive years with the same
+    classification into periods.
+
+    Parameters
+    ----------
+    df:
+        Reporter-year-classification coverage table.
+    reporter_col:
+        Reporter identifier column.
+    reporter_iso_col:
+        Reporter ISO column.
+    reporter_name_col:
+        Reporter name column.
+    year_col:
+        Year column.
+    classification_col:
+        HS classification system column, e.g. H0, H1, H2.
+    dominance_metric:
+        Column used to choose the dominant classification in a reporter-year.
+        Usually one of:
+
+        - share_rows_in_reporter_year
+        - share_value_in_reporter_year
+        - share_netwgt_in_reporter_year
+
+    Returns
+    -------
+    pd.DataFrame
+        Timeline table with one row per continuous classification period.
+    """
+
+    required = {
+        reporter_col,
+        reporter_iso_col,
+        reporter_name_col,
+        year_col,
+        classification_col,
+        dominance_metric,
+    }
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(f"Missing required columns: {sorted(missing)}")
+
+    dominant = (
+        df.sort_values(
+            [reporter_col, year_col, dominance_metric],
+            ascending=[True, True, False],
+        )
+        .drop_duplicates([reporter_col, year_col])
+        .copy()
+    )
+
+    dominant = dominant.sort_values([reporter_col, year_col]).reset_index(drop=True)
+
+    # Start a new period when reporter changes, classification changes,
+    # or the years are not consecutive.
+    dominant["_prev_reporter"] = dominant[reporter_col].shift()
+    dominant["_prev_classification"] = dominant[classification_col].shift()
+    dominant["_prev_year"] = dominant[year_col].shift()
+
+    dominant["_new_period"] = (
+        dominant[reporter_col].ne(dominant["_prev_reporter"])
+        | dominant[classification_col].ne(dominant["_prev_classification"])
+        | dominant[year_col].ne(dominant["_prev_year"] + 1)
+    )
+
+    dominant["_period_id"] = dominant["_new_period"].cumsum()
+
+    timeline = (
+        dominant.groupby(
+            [
+                reporter_col,
+                reporter_iso_col,
+                reporter_name_col,
+                classification_col,
+                "_period_id",
+            ],
+            dropna=False,
+        )
+        .agg(
+            start_year=(year_col, "min"),
+            end_year=(year_col, "max"),
+            n_years=(year_col, "nunique"),
+        )
+        .reset_index()
+        .drop(columns="_period_id")
+        .sort_values([reporter_col, "start_year"])
+        .reset_index(drop=True)
+    )
+
+    return timeline
+
+
+def build_reporter_year_dominant_hs(
+    df: pd.DataFrame,
+    *,
+    reporter_col: str = "ReporterCode",
+    reporter_iso_col: str = "ReporterISO",
+    reporter_name_col: str = "ReporterDesc",
+    year_col: str = "RefYear",
+    classification_col: str = "ClassificationCode",
+    original_col: str = "IsOriginalClassification",
+    rows_col: str = "n_rows",
+    cmd_codes_col: str = "n_cmd_codes",
+    flows_col: str = "n_flows",
+    value_col: str = "primary_value_total",
+    weight_col: str = "netwgt_total",
+    row_share_col: str = "share_rows_in_reporter_year",
+    dominance_metric: str = "share_rows_in_reporter_year",
+) -> pd.DataFrame:
+    """
+    Build one-row-per-reporter-year table with the dominant HS classification.
+
+    This table is useful as a decision layer before HS-sync.
+
+    Parameters
+    ----------
+    df:
+        Reporter-year-classification coverage table.
+    dominance_metric:
+        Column used to decide the dominant classification.
+        Common choices:
+
+        - share_rows_in_reporter_year
+        - share_value_in_reporter_year
+        - share_netwgt_in_reporter_year
+
+    Returns
+    -------
+    pd.DataFrame
+        Reporter-year decision table.
+    """
+
+    enriched = add_reporter_year_shares(
+        df,
+        reporter_col=reporter_col,
+        year_col=year_col,
+        value_col=value_col,
+        weight_col=weight_col,
+        row_share_col=row_share_col,
+    )
+
+    required = {
+        reporter_col,
+        reporter_iso_col,
+        reporter_name_col,
+        year_col,
+        classification_col,
+        rows_col,
+        cmd_codes_col,
+        flows_col,
+        row_share_col,
+        dominance_metric,
+    }
+    missing = required - set(enriched.columns)
+    if missing:
+        raise ValueError(f"Missing required columns: {sorted(missing)}")
+
+    group_cols = [reporter_col, year_col]
+
+    totals = (
+        enriched.groupby(group_cols, dropna=False)
+        .agg(
+            ReporterISO=(reporter_iso_col, "first"),
+            ReporterDesc=(reporter_name_col, "first"),
+            n_classifications=(classification_col, "nunique"),
+            n_rows_total=(rows_col, "sum"),
+            n_cmd_codes_total=(cmd_codes_col, "sum"),
+            n_flows_total=(flows_col, "sum"),
+            primary_value_total=(value_col, "sum")
+            if value_col in enriched.columns
+            else (rows_col, "size"),
+            netwgt_total=(weight_col, "sum")
+            if weight_col in enriched.columns
+            else (rows_col, "size"),
+        )
+        .reset_index()
+    )
+
+    # Select dominant classification per reporter-year.
+    dominant = (
+        enriched.sort_values(
+            [reporter_col, year_col, dominance_metric],
+            ascending=[True, True, False],
+        )
+        .drop_duplicates(group_cols)
+        .copy()
+    )
+
+    keep_cols = [
+        reporter_col,
+        year_col,
+        classification_col,
+        row_share_col,
+        dominance_metric,
+    ]
+
+    optional_cols = [
+        "share_value_in_reporter_year",
+        "share_netwgt_in_reporter_year",
+        original_col,
+    ]
+
+    keep_cols += [c for c in optional_cols if c in dominant.columns]
+    keep_cols = list(dict.fromkeys(keep_cols))
+
+    dominant = dominant[keep_cols].rename(
+        columns={
+            classification_col: "dominant_classification_code",
+            row_share_col: "dominant_row_share",
+            "share_value_in_reporter_year": "dominant_value_share",
+            "share_netwgt_in_reporter_year": "dominant_netwgt_share",
+            original_col: "dominant_is_original_classification",
+        }
+    )
+
+    out = totals.merge(dominant, on=group_cols, how="left")
+
+    out["mixed_hs"] = out["n_classifications"] > 1
+
+    # Simple first-pass risk label.
+    out["hs_sync_risk_level"] = "low"
+
+    out.loc[out["mixed_hs"], "hs_sync_risk_level"] = "medium"
+
+    if "dominant_row_share" in out.columns:
+        out.loc[out["dominant_row_share"].lt(0.95), "hs_sync_risk_level"] = "high"
+
+    if "dominant_is_original_classification" in out.columns:
+        out.loc[
+            out["dominant_is_original_classification"].eq(False),
+            "hs_sync_risk_level",
+        ] = "medium"
+
+    out = out.sort_values([reporter_col, year_col]).reset_index(drop=True)
+
+    return out
+
+
+def build_hs_transition_events(
+    df: pd.DataFrame,
+    *,
+    reporter_col: str = "ReporterCode",
+    reporter_iso_col: str = "ReporterISO",
+    reporter_name_col: str = "ReporterDesc",
+    year_col: str = "RefYear",
+    classification_col: str = "ClassificationCode",
+    dominance_metric: str = "share_rows_in_reporter_year",
+) -> pd.DataFrame:
+    """
+    Build table of HS classification transition events per reporter.
+
+    The function first identifies the dominant classification for each
+    reporter-year, then detects year-to-year changes.
+
+    Parameters
+    ----------
+    df:
+        Reporter-year-classification coverage table.
+    dominance_metric:
+        Column used to select dominant classification.
+
+    Returns
+    -------
+    pd.DataFrame
+        Transition-event table.
+    """
+
+    required = {
+        reporter_col,
+        reporter_iso_col,
+        reporter_name_col,
+        year_col,
+        classification_col,
+        dominance_metric,
+    }
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(f"Missing required columns: {sorted(missing)}")
+
+    dominant = (
+        df.sort_values(
+            [reporter_col, year_col, dominance_metric],
+            ascending=[True, True, False],
+        )
+        .drop_duplicates([reporter_col, year_col])
+        .sort_values([reporter_col, year_col])
+        .copy()
+    )
+
+    dominant["previous_year"] = dominant.groupby(reporter_col)[year_col].shift()
+    dominant["previous_classification_code"] = dominant.groupby(reporter_col)[
+        classification_col
+    ].shift()
+
+    dominant["year_gap"] = dominant[year_col] - dominant["previous_year"]
+
+    transitions = dominant[
+        dominant["previous_classification_code"].notna()
+        & dominant[classification_col].ne(dominant["previous_classification_code"])
+    ].copy()
+
+    transitions = transitions.rename(
+        columns={
+            year_col: "transition_year",
+            classification_col: "to_classification_code",
+            "previous_classification_code": "from_classification_code",
+        }
+    )
+
+    transitions = transitions[
+        [
+            reporter_col,
+            reporter_iso_col,
+            reporter_name_col,
+            "previous_year",
+            "transition_year",
+            "year_gap",
+            "from_classification_code",
+            "to_classification_code",
+        ]
+    ]
+
+    transitions = transitions.sort_values(
+        [reporter_col, "transition_year"]
+    ).reset_index(drop=True)
+
+    return transitions
+
+def build_mixed_classification_reporter_years(
+    df: pd.DataFrame,
+    *,
+    reporter_col: str = "ReporterCode",
+    reporter_iso_col: str = "ReporterISO",
+    reporter_name_col: str = "ReporterDesc",
+    year_col: str = "RefYear",
+    classification_col: str = "ClassificationCode",
+    rows_col: str = "n_rows",
+    value_col: str = "primary_value_total",
+    weight_col: str = "netwgt_total",
+    row_share_col: str = "share_rows_in_reporter_year",
+    dominance_metric: str = "share_rows_in_reporter_year",
+) -> pd.DataFrame:
+    """
+    Build table of reporter-years that contain multiple HS classifications.
+
+    This is useful for inspecting mixed-classification cases before HS-sync.
+
+    Parameters
+    ----------
+    df:
+        Reporter-year-classification coverage table.
+    dominance_metric:
+        Column used to identify the top classification in mixed years.
+
+    Returns
+    -------
+    pd.DataFrame
+        Mixed reporter-year diagnostic table.
+    """
+
+    enriched = add_reporter_year_shares(
+        df,
+        reporter_col=reporter_col,
+        year_col=year_col,
+        value_col=value_col,
+        weight_col=weight_col,
+        row_share_col=row_share_col,
+    )
+
+    required = {
+        reporter_col,
+        reporter_iso_col,
+        reporter_name_col,
+        year_col,
+        classification_col,
+        rows_col,
+        row_share_col,
+        dominance_metric,
+    }
+    missing = required - set(enriched.columns)
+    if missing:
+        raise ValueError(f"Missing required columns: {sorted(missing)}")
+
+    group_cols = [reporter_col, year_col]
+
+    counts = (
+        enriched.groupby(group_cols, dropna=False)
+        .agg(
+            ReporterISO=(reporter_iso_col, "first"),
+            ReporterDesc=(reporter_name_col, "first"),
+            n_classifications=(classification_col, "nunique"),
+            n_rows_total=(rows_col, "sum"),
+            primary_value_total=(value_col, "sum")
+            if value_col in enriched.columns
+            else (rows_col, "size"),
+            netwgt_total=(weight_col, "sum")
+            if weight_col in enriched.columns
+            else (rows_col, "size"),
+        )
+        .reset_index()
+    )
+
+    mixed_keys = counts[counts["n_classifications"] > 1][group_cols]
+
+    if mixed_keys.empty:
+        return pd.DataFrame(
+            columns=[
+                reporter_col,
+                "ReporterISO",
+                "ReporterDesc",
+                year_col,
+                "n_classifications",
+                "top_classification_code",
+                "top_row_share",
+                "top_value_share",
+                "top_netwgt_share",
+                "n_rows_total",
+                "primary_value_total",
+                "netwgt_total",
+            ]
+        )
+
+    mixed_detail = enriched.merge(mixed_keys, on=group_cols, how="inner")
+
+    top = (
+        mixed_detail.sort_values(
+            [reporter_col, year_col, dominance_metric],
+            ascending=[True, True, False],
+        )
+        .drop_duplicates(group_cols)
+        .copy()
+    )
+
+    keep_cols = [
+        reporter_col,
+        year_col,
+        classification_col,
+        row_share_col,
+    ]
+
+    optional_cols = [
+        "share_value_in_reporter_year",
+        "share_netwgt_in_reporter_year",
+    ]
+
+    keep_cols += [c for c in optional_cols if c in top.columns]
+    keep_cols = list(dict.fromkeys(keep_cols))
+
+    top = top[keep_cols].rename(
+        columns={
+            classification_col: "top_classification_code",
+            row_share_col: "top_row_share",
+            "share_value_in_reporter_year": "top_value_share",
+            "share_netwgt_in_reporter_year": "top_netwgt_share",
+        }
+    )
+
+    out = counts.merge(top, on=group_cols, how="inner")
+
+    out = out[
+        [
+            reporter_col,
+            "ReporterISO",
+            "ReporterDesc",
+            year_col,
+            "n_classifications",
+            "top_classification_code",
+            "top_row_share",
+            *([c for c in ["top_value_share", "top_netwgt_share"] if c in out.columns]),
+            "n_rows_total",
+            "primary_value_total",
+            "netwgt_total",
+        ]
+    ]
+
+    out = out.sort_values(
+        [reporter_col, year_col]
+    ).reset_index(drop=True)
+
+    return out
 
 def build_target_hs_mapping_interpretation_display_report(
     report: pd.DataFrame,
@@ -1293,3 +1879,845 @@ def build_hs_concordance_coverage(
     ).reset_index(drop=True)
 
     return out
+
+def add_cmd4(
+    df: pd.DataFrame,
+    *,
+    cmd_col: str = "CmdCode",
+    output_col: str = "cmd4",
+) -> pd.DataFrame:
+    """
+    Add a 4-digit HS heading column from a commodity code column.
+    """
+    out = df.copy()
+
+    out[output_col] = (
+        out[cmd_col]
+        .astype("string")
+        .str.strip()
+        .str.replace(r"\.0$", "", regex=True)
+        .str.zfill(6)
+        .str[:4]
+    )
+
+    return out
+
+
+
+def build_year_hs_cmd4_coverage_duckdb(
+    data_dir: str | Path,
+    *,
+    pattern: str = "*.csv",
+    year_col: str = "RefYear",
+    hs_col: str = "ClassificationCode",
+    cmd_col: str = "CmdCode",
+    threads: int = 16) -> pd.DataFrame:
+    """
+    Build year × HS classification × HS4 commodity-family coverage using DuckDB.
+
+    Output level:
+        year × ClassificationCode × cmd4
+
+    Notes
+    -----
+    CmdCode is normalized as text, left-padded to 6 characters, and truncated
+    to the first 4 characters.
+    """
+    data_dir = Path(data_dir)
+    files_glob = str(data_dir / pattern)
+
+    con = duckdb.connect(database=":memory:")
+
+    try:
+        con.execute(f"PRAGMA threads={int(threads)}")
+
+        query = f"""
+        WITH base AS (
+            SELECT
+                "{year_col}" AS year,
+                "{hs_col}" AS hs,
+                LPAD(CAST("{cmd_col}" AS VARCHAR), 6, '0') AS cmd6
+            FROM read_csv_auto(
+                ?,
+                union_by_name = true,
+                ignore_errors = true
+            )
+            WHERE "{year_col}" IS NOT NULL
+              AND "{hs_col}" IS NOT NULL
+              AND "{cmd_col}" IS NOT NULL
+        ),
+
+        grouped AS (
+            SELECT
+                year,
+                hs,
+                SUBSTR(cmd6, 1, 4) AS cmd4,
+                COUNT(*) AS n_rows,
+                COUNT(DISTINCT cmd6) AS n_cmd6
+            FROM base
+            GROUP BY
+                year,
+                hs,
+                cmd4
+        ),
+
+        with_totals AS (
+            SELECT
+                *,
+                SUM(n_rows) OVER (
+                    PARTITION BY year, hs
+                ) AS total_rows_in_year_hs
+            FROM grouped
+        )
+
+        SELECT
+            year AS "{year_col}",
+            hs AS "{hs_col}",
+            cmd4,
+            n_rows,
+            n_cmd6,
+            ROUND(
+                CAST(n_rows AS DOUBLE)
+                / NULLIF(CAST(total_rows_in_year_hs AS DOUBLE), 0),
+                4
+            ) AS share_rows_in_year_hs
+        FROM with_totals
+        ORDER BY
+            "{year_col}",
+            "{hs_col}",
+            n_rows DESC
+        """
+
+        return con.execute(query, [files_glob]).fetchdf()
+
+    finally:
+        con.close()
+
+
+def build_year_hs_cmd4_coverage_pandas(
+    data_dir: str | Path,
+    *,
+    pattern: str = "*.csv",
+    year_col: str = "RefYear",
+    hs_col: str = "ClassificationCode",
+    cmd_col: str = "CmdCode") -> pd.DataFrame:
+    """
+    Build coverage of HS4 commodity families by year and HS classification.
+
+    Output level:
+        year × HS classification × cmd4
+
+    This helps identify which commodity families appear under each HS system
+    in each year.
+    """
+    files = sorted(Path(data_dir).glob(pattern))
+
+    if not files:
+        raise FileNotFoundError(
+            f"No files found in {data_dir} matching pattern {pattern!r}"
+        )
+
+    parts: list[pd.DataFrame] = []
+
+    for path in files:
+        df = pd.read_csv(
+            path,
+            usecols=[year_col, hs_col, cmd_col],
+            dtype={
+                year_col: "Int64",
+                hs_col: "string",
+                cmd_col: "string",
+            },
+        )
+
+        if df.empty:
+            continue
+
+        df = add_cmd4(df, cmd_col=cmd_col)
+
+        grouped = (
+            df.groupby([year_col, hs_col, "cmd4"], dropna=False)
+            .agg(
+                n_rows=(cmd_col, "size"),
+                n_cmd6=(cmd_col, "nunique"),
+            )
+            .reset_index()
+        )
+
+        parts.append(grouped)
+
+    if not parts:
+        return pd.DataFrame(
+            columns=[
+                year_col,
+                hs_col,
+                "cmd4",
+                "n_rows",
+                "n_cmd6",
+                "share_rows_in_year_hs",
+            ]
+        )
+
+    out = pd.concat(parts, ignore_index=True)
+
+    out = (
+        out.groupby([year_col, hs_col, "cmd4"], dropna=False)
+        .agg(
+            n_rows=("n_rows", "sum"),
+            n_cmd6=("n_cmd6", "sum"),
+        )
+        .reset_index()
+    )
+
+    totals = out.groupby([year_col, hs_col], dropna=False)["n_rows"].transform("sum")
+
+    out["share_rows_in_year_hs"] = (
+        out["n_rows"] / totals.replace(0, pd.NA)
+    ).round(4)
+
+    return out.sort_values(
+        [year_col, hs_col, "n_rows"],
+        ascending=[True, True, False],
+    ).reset_index(drop=True)
+
+
+def build_year_hs_cmd4_coverage(
+     data_dir: str | Path,
+    *,
+    pattern: str = "*.csv",
+    engine: str = "duckdb",
+    year_col: str = "RefYear",
+    hs_col: str = "ClassificationCode",
+    cmd_col: str = "CmdCode",
+    threads: int = 16,
+    show_progress: bool = False,
+) -> pd.DataFrame:
+    """
+    Build year × HS classification × HS4 commodity-family coverage using selected backend.
+
+    Supported engines:
+    - duckdb
+    - pandas
+    """
+    engine = engine.strip().lower()
+
+    if engine == "duckdb":
+        return build_year_hs_cmd4_coverage_duckdb(
+            data_dir,
+            pattern=pattern,
+            year_col=year_col,
+            hs_col=hs_col,
+            cmd_col=cmd_col,
+            threads=threads,
+        )
+
+    if engine == "pandas":
+        return build_year_hs_cmd4_coverage_pandas(
+            data_dir,
+            pattern=pattern,
+            year_col=year_col,
+            hs_col=hs_col,
+            cmd_col=cmd_col,
+        )
+
+
+    raise ValueError(
+        f"Unknown engine: {engine!r}. "
+        "Valid engines are: duckdb, pandas."
+    )
+
+def build_top_cmd4_by_year_hs(
+    year_hs_cmd4: pd.DataFrame,
+    *,
+    year_col: str = "RefYear",
+    hs_col: str = "ClassificationCode",
+    n: int = 10,
+) -> pd.DataFrame:
+    """
+    Return top N cmd4 families within each year × HS classification.
+    """
+    return (
+        year_hs_cmd4.sort_values(
+            [year_col, hs_col, "n_rows"],
+            ascending=[True, True, False],
+        )
+        .groupby([year_col, hs_col], group_keys=False)
+        .head(n)
+        .reset_index(drop=True)
+    )
+
+def build_cmd4_hs_timeline(
+    year_hs_cmd4: pd.DataFrame,
+    *,
+    year_col: str = "RefYear",
+    hs_col: str = "ClassificationCode",
+) -> pd.DataFrame:
+    """
+    Build cmd4 × year timeline showing row counts by HS system.
+    """
+    pivot = year_hs_cmd4.pivot_table(
+        index=["cmd4", year_col],
+        columns=hs_col,
+        values="n_rows",
+        aggfunc="sum",
+        fill_value=0,
+    )
+
+    return pivot.reset_index()
+
+def build_cmd4_hs_diversity_summary(
+    year_hs_cmd4: pd.DataFrame,
+    *,
+    year_col: str = "RefYear",
+    hs_col: str = "ClassificationCode",
+) -> pd.DataFrame:
+    """
+    Summarize how many HS systems and years each cmd4 appears in.
+    """
+    summary = (
+        year_hs_cmd4.groupby("cmd4", dropna=False)
+        .agg(
+            first_year=(year_col, "min"),
+            last_year=(year_col, "max"),
+            n_years=(year_col, "nunique"),
+            n_hs_systems=(hs_col, "nunique"),
+            total_rows=("n_rows", "sum"),
+            total_cmd6=("n_cmd6", "sum"),
+        )
+        .reset_index()
+    )
+
+    return summary.sort_values(
+        ["n_hs_systems", "total_rows"],
+        ascending=[False, False],
+    ).reset_index(drop=True)
+
+def build_cmd4_hs_transition_events(
+    year_hs_cmd4: pd.DataFrame,
+    *,
+    year_col: str = "RefYear",
+    hs_col: str = "ClassificationCode",
+) -> pd.DataFrame:
+    """
+    Detect years where a cmd4 heading changes dominant HS system.
+    """
+    yearly = (
+        year_hs_cmd4.sort_values("n_rows", ascending=False)
+        .groupby(["cmd4", year_col], as_index=False)
+        .first()
+    )
+
+    yearly = yearly.sort_values(["cmd4", year_col])
+
+    yearly["previous_hs"] = yearly.groupby("cmd4")[hs_col].shift(1)
+    yearly["previous_year"] = yearly.groupby("cmd4")[year_col].shift(1)
+
+    transitions = yearly[
+        yearly["previous_hs"].notna()
+        & (yearly[hs_col] != yearly["previous_hs"])
+    ].copy()
+
+    return transitions[
+        [
+            "cmd4",
+            "previous_year",
+            year_col,
+            "previous_hs",
+            hs_col,
+            "n_rows",
+            "n_cmd6",
+            "share_rows_in_year_hs",
+        ]
+    ].reset_index(drop=True)
+
+def build_reporter_year_hs_coverage(
+    data_dir: str | Path,
+    *,
+    pattern: str = "*.csv",
+    engine: str = "duckdb",
+    threads: int = 16,
+    columns: dict[str, str] | None = None,
+) -> pd.DataFrame:
+    """
+    Build reporter × year × HS classification coverage.
+    """
+    engine = engine.strip().lower()
+
+    if engine == "duckdb":
+        return build_reporter_year_hs_coverage_duckdb(
+            data_dir,
+            pattern=pattern,
+            threads=threads,
+            columns=columns,
+        )
+
+    raise ValueError(
+        f"Unknown engine for reporter-year coverage: {engine!r}. "
+        "Currently supported: duckdb."
+    )
+
+    
+def build_hs_system_overall_summary(
+    year_hs_counts: pd.DataFrame,
+    *,
+    year_col: str = "RefYear",
+    hs_col: str = "ClassificationCode",
+    value_col: str = "n_rows",
+) -> pd.DataFrame:
+    """
+    Build overall HS-system coverage summary across all years.
+
+    Output columns:
+        ClassificationCode
+        n_rows
+        share_pct
+        first_year
+        last_year
+        n_years
+    """
+    total_rows = year_hs_counts[value_col].sum()
+
+    summary = (
+        year_hs_counts.groupby(hs_col, dropna=False)
+        .agg(
+            n_rows=(value_col, "sum"),
+            first_year=(year_col, "min"),
+            last_year=(year_col, "max"),
+            n_years=(year_col, "nunique"),
+        )
+        .reset_index()
+    )
+
+    summary["share_pct"] = (summary["n_rows"] / total_rows * 100).round(2)
+
+    summary = summary.sort_values("n_rows", ascending=False).reset_index(drop=True)
+
+    return summary
+    
+def build_year_hs_counts(
+    data_dir: str | Path,
+    *,
+    pattern: str = "*.csv",
+    engine: str = "duckdb",
+    year_col: str = "RefYear",
+    hs_col: str = "ClassificationCode",
+    threads: int = 16,
+    show_progress: bool = False,
+) -> pd.DataFrame:
+    """
+    Build year × HS-system row counts using selected backend.
+
+    Supported engines:
+    - duckdb
+    - polars
+    - pandas
+    """
+    engine = engine.strip().lower()
+
+    if engine == "duckdb":
+        return build_year_hs_counts_duckdb(
+            data_dir,
+            pattern=pattern,
+            year_col=year_col,
+            hs_col=hs_col,
+            threads=threads,
+        )
+
+    if engine == "polars":
+        return build_year_hs_counts_polars(
+            data_dir,
+            pattern=pattern,
+            year_col=year_col,
+            hs_col=hs_col,
+        )
+
+    if engine == "pandas":
+        return build_year_hs_counts_pandas(
+            data_dir,
+            pattern=pattern,
+            year_col=year_col,
+            hs_col=hs_col,
+            progress_every=1000,
+            show_progress=show_progress,
+        )
+
+    raise ValueError(
+        f"Unknown engine: {engine!r}. "
+        "Valid engines are: duckdb, polars, pandas."
+    )
+
+
+def make_year_hs_count_pivot(
+    year_hs_counts: pd.DataFrame,
+    *,
+    year_col: str = "RefYear",
+    hs_col: str = "ClassificationCode",
+    value_col: str = "n_rows",
+) -> pd.DataFrame:
+    """
+    Convert long-format year × HS counts into a wide count pivot.
+    """
+    pivot = year_hs_counts.pivot_table(
+        index=year_col,
+        columns=hs_col,
+        values=value_col,
+        aggfunc="sum",
+        fill_value=0,
+    )
+
+    pivot = pivot.sort_index()
+    pivot = pivot.reindex(sorted(pivot.columns), axis=1)
+
+    return pivot
+
+
+def make_year_hs_percentage_pivot(
+    count_pivot: pd.DataFrame,
+    *,
+    decimals: int = 2,
+    suffix: str = "_pct",
+) -> pd.DataFrame:
+    """
+    Convert a year × HS count pivot into row-wise percentages.
+    """
+    totals = count_pivot.sum(axis=1)
+    pct = count_pivot.div(totals.replace(0, pd.NA), axis=0) * 100
+
+    pct.columns = [f"{col}{suffix}" for col in pct.columns]
+
+    return pct.round(decimals)
+
+
+def build_year_hs_mix_summary(
+    count_pivot: pd.DataFrame,
+    *,
+    clean_threshold: float = 95.0,
+    mostly_clean_threshold: float = 90.0,
+) -> pd.DataFrame:
+    """
+    Build a compact summary of HS-system dominance by year.
+    """
+    summary = pd.DataFrame(index=count_pivot.index)
+
+    summary["total_rows"] = count_pivot.sum(axis=1)
+    summary["dominant_hs"] = count_pivot.idxmax(axis=1)
+    summary["dominant_rows"] = count_pivot.max(axis=1)
+    summary["n_active_hs"] = (count_pivot > 0).sum(axis=1)
+
+    summary["dominant_share_pct"] = (
+        summary["dominant_rows"] / summary["total_rows"] * 100
+    ).round(2)
+
+    def classify(share: float) -> str:
+        if share >= clean_threshold:
+            return "clean"
+        if share >= mostly_clean_threshold:
+            return "mostly_clean"
+        return "mixed_transition"
+
+    summary["mix_status"] = summary["dominant_share_pct"].apply(classify)
+
+    return summary.reset_index()
+
+def build_hs_coverage_summary_tables(
+    df: pd.DataFrame,
+    *,
+    dominance_metric: str = "share_rows_in_reporter_year",
+) -> dict[str, pd.DataFrame]:
+    """
+    Build all main HS-coverage summary tables.
+
+    Returns
+    -------
+    dict[str, pd.DataFrame]
+        Dictionary with:
+
+        - reporter_hs_timeline
+        - reporter_year_dominant_hs
+        - hs_transition_events
+        - mixed_classification_reporter_years
+    """
+
+    enriched = add_reporter_year_shares(df)
+
+    return {
+        "reporter_hs_timeline": build_reporter_hs_timeline(
+            enriched,
+            dominance_metric=dominance_metric,
+        ),
+        "reporter_year_dominant_hs": build_reporter_year_dominant_hs(
+            enriched,
+            dominance_metric=dominance_metric,
+        ),
+        "hs_transition_events": build_hs_transition_events(
+            enriched,
+            dominance_metric=dominance_metric,
+        ),
+        "mixed_classification_reporter_years": build_mixed_classification_reporter_years(
+            enriched,
+            dominance_metric=dominance_metric,
+        ),
+    }
+
+
+
+
+
+def build_year_hs_counts_duckdb(
+    data_dir: str | Path,
+    *,
+    pattern: str = "*.csv",
+    input_format: str,
+    year_col: str = "RefYear",
+    hs_col: str = "ClassificationCode",
+    threads: int = 16,
+) -> pd.DataFrame:
+    """
+    Build year × HS-system counts using DuckDB.
+    """
+    data_dir = Path(data_dir)
+    #input_format = cfg.coverage.input.format
+
+    if not data_dir.exists():
+        raise FileNotFoundError(f"Data directory does not exist: {data_dir}")
+
+    glob_path = str(data_dir / pattern)
+    year_id = _quote_ident(year_col)
+    hs_id = _quote_ident(hs_col)
+
+    scan = duckdb_scan_relation(
+        path=glob_path,
+        file_format=input_format,
+        alias = "src")
+
+    con = duckdb.connect(database=":memory:")
+    con.execute(f"PRAGMA threads={int(threads)}")
+
+    query = f"""
+        SELECT
+            CAST({year_id} AS INTEGER) AS {year_id},
+            CAST({hs_id} AS VARCHAR) AS {hs_id},
+            COUNT(*) AS n_rows
+        FROM {scan}
+        GROUP BY 1, 2
+        ORDER BY 1, 2
+    """
+
+    try:
+        return con.execute(query, [glob_path]).df()
+    finally:
+        con.close()
+
+
+def build_year_hs_counts_polars(
+    data_dir: str | Path,
+    *,
+    pattern: str = "*.csv",
+    year_col: str = "RefYear",
+    hs_col: str = "ClassificationCode",
+) -> pd.DataFrame:
+    """
+    Build year × HS-system counts using Polars lazy scanning.
+    """
+    data_dir = Path(data_dir)
+    glob_path = str(data_dir / pattern)
+
+    result = (
+        pl.scan_csv(
+            glob_path,
+            infer_schema_length=1000,
+        )
+        .select([
+            pl.col(year_col).cast(pl.Int32, strict=False),
+            pl.col(hs_col).cast(pl.Utf8, strict=False),
+        ])
+        .group_by([year_col, hs_col])
+        .len()
+        .rename({"len": "n_rows"})
+        .sort([year_col, hs_col])
+        .collect()
+    )
+
+    return result.to_pandas()
+
+
+
+
+
+def build_year_hs_counts_pandas(
+    data_dir: str | Path,
+    *,
+    pattern: str = "*.csv",
+    year_col: str = "RefYear",
+    hs_col: str = "ClassificationCode",
+    progress_every: int = 1000,
+    show_progress: bool = False,
+) -> pd.DataFrame:
+    """
+    Build year × HS-system counts using pandas.
+
+    This is the transparent/debug backend.
+    """
+    files = _find_csv_files(data_dir, pattern=pattern)
+
+    parts: list[pd.DataFrame] = []
+    errors: list[tuple[str, str, str]] = []
+
+    for path in progress_bar(files, enabled=show_progress):
+        try:
+            df = pd.read_csv(
+                path,
+                usecols=[year_col, hs_col],
+                dtype={
+                    year_col: "Int64",
+                    hs_col: "string",
+                },
+            )
+
+            if df.empty:
+                continue
+
+            grouped = (
+                df.groupby([year_col, hs_col], dropna=False)
+                .size()
+                .reset_index(name="n_rows")
+            )
+
+            parts.append(grouped)
+
+        except Exception as exc:
+            errors.append((str(path), type(exc).__name__, str(exc)[:300])) 
+
+    if not parts:
+        raise ValueError("No non-empty data found while building year-HS counts.")
+
+    year_hs = pd.concat(parts, ignore_index=True)
+
+    result = (
+        year_hs.groupby([year_col, hs_col], dropna=False)["n_rows"]
+        .sum()
+        .reset_index()
+        .sort_values([year_col, hs_col])
+        .reset_index(drop=True)
+    )
+
+    if errors:
+        print(f"WARNING: {len(errors)} file(s) failed while building counts.")
+        for error in errors[:10]:
+            print(error)
+
+    return result
+
+
+def build_reporter_year_hs_coverage_duckdb(
+    data_dir: str | Path,
+    *,
+    pattern: str = "*.csv",
+    threads: int = 16,
+    columns: dict[str, str] | None = None,
+) -> pd.DataFrame:
+    """
+    Build reporter × year × HS classification coverage using DuckDB.
+
+    The `columns` dict maps logical names to source column names.
+
+    Expected logical keys:
+        reporter_code
+        reporter_iso
+        reporter_desc
+        year
+        hs
+        hs_search
+        original
+        cmd
+        flow
+        value
+        netweight
+    """
+    data_dir = Path(data_dir)
+
+    if not data_dir.exists():
+        raise FileNotFoundError(f"Data directory does not exist: {data_dir}")
+
+    columns = columns or {}
+
+    reporter_code_col = columns.get("reporter_code", "ReporterCode")
+    reporter_iso_col = columns.get("reporter_iso", "ReporterISO")
+    reporter_desc_col = columns.get("reporter_desc", "ReporterDesc")
+    year_col = columns.get("year", "RefYear")
+    hs_col = columns.get("hs", "ClassificationCode")
+    hs_search_col = columns.get("hs_search", "ClassificationSearchCode")
+    original_col = columns.get("original", "IsOriginalClassification")
+    cmd_col = columns.get("cmd", "CmdCode")
+    flow_col = columns.get("flow", "FlowCode")
+    value_col = columns.get("value", "PrimaryValue")
+    netweight_col = columns.get("netweight", "NetWgt")
+
+    glob_path = str(data_dir / pattern)
+
+    con = duckdb.connect(database=":memory:")
+    con.execute(f"PRAGMA threads={int(threads)}")
+
+    query = f"""
+        WITH base AS (
+            SELECT
+                CAST({_quote_ident(reporter_code_col)} AS INTEGER) AS ReporterCode,
+                CAST({_quote_ident(reporter_iso_col)} AS VARCHAR) AS ReporterISO,
+                CAST({_quote_ident(reporter_desc_col)} AS VARCHAR) AS ReporterDesc,
+                CAST({_quote_ident(year_col)} AS INTEGER) AS RefYear,
+                CAST({_quote_ident(hs_col)} AS VARCHAR) AS ClassificationCode,
+                CAST({_quote_ident(hs_search_col)} AS VARCHAR) AS ClassificationSearchCode,
+                CAST({_quote_ident(original_col)} AS BOOLEAN) AS IsOriginalClassification,
+                CAST({_quote_ident(cmd_col)} AS VARCHAR) AS CmdCode,
+                CAST({_quote_ident(flow_col)} AS VARCHAR) AS FlowCode,
+                CAST({_quote_ident(value_col)} AS DOUBLE) AS PrimaryValue,
+                CAST({_quote_ident(netweight_col)} AS DOUBLE) AS NetWgt
+            FROM read_csv_auto(
+                ?,
+                union_by_name=true,
+                filename=true
+            )
+        ),
+
+        grouped AS (
+            SELECT
+                ReporterCode,
+                ReporterISO,
+                ReporterDesc,
+                RefYear,
+                ClassificationCode,
+                ClassificationSearchCode,
+                IsOriginalClassification,
+                COUNT(*) AS n_rows,
+                COUNT(DISTINCT CmdCode) AS n_cmd_codes,
+                COUNT(DISTINCT FlowCode) AS n_flows,
+                SUM(PrimaryValue) AS primary_value_total,
+                SUM(NetWgt) AS netwgt_total
+            FROM base
+            GROUP BY
+                ReporterCode,
+                ReporterISO,
+                ReporterDesc,
+                RefYear,
+                ClassificationCode,
+                ClassificationSearchCode,
+                IsOriginalClassification
+        )
+
+        SELECT
+            *,
+            n_rows * 1.0
+            / SUM(n_rows) OVER (
+                PARTITION BY ReporterCode, RefYear
+            ) AS share_rows_in_reporter_year
+        FROM grouped
+        ORDER BY
+            ReporterCode,
+            RefYear,
+            ClassificationCode
+    """
+
+    try:
+        return con.execute(query, [glob_path]).df()
+    finally:
+        con.close()

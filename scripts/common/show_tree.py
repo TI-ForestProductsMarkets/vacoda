@@ -1,12 +1,15 @@
 """
-scripts.common.show_tree: A simple script to show the structure of Python files in a directory.
+scripts.common.show_tree: A simple script to show the structure of Python files
+in a directory or a single Python file.
 
 How to use:
     python show_tree.py <path>
 """
+
 import ast
 import sys
 from pathlib import Path
+
 
 if len(sys.argv) < 2:
     print("Usage: python show_tree.py <path>")
@@ -18,7 +21,18 @@ if not root.exists():
     print(f"Path does not exist: {root}")
     sys.exit(1)
 
-for pyfile in root.rglob("*.py"):
+if root.is_file():
+    if root.suffix != ".py":
+        print(f"Expected a Python file (.py), but got: {root}")
+        sys.exit(1)
+
+    pyfiles = [root]
+
+else:
+    pyfiles = root.rglob("*.py")
+
+
+for pyfile in pyfiles:
     print(f"├── {pyfile}")
 
     try:
