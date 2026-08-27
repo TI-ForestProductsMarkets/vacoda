@@ -16,7 +16,7 @@ pipeline:
     - "quantity"
     - "cif_fob"
     - "trade_sync"
-    # - "processed_export"
+  # - "processed_export"
 
   # Stop immediately if a step fails or reports ready_for_next_step=false.
   fail_fast: true

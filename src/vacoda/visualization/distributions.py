@@ -958,7 +958,71 @@ def plot_nebula_boxplot(
 
     return fig, axes, stats
 
+def plot_net_weight_distribution(
+    df,
+    weight_col="net_weight_kg",
+    bins=80,
+    title="Distribution of positive net weight",
+):
+    """
+    Plot the distribution of positive net-weight observations
+    on a log10 kilogram scale.
+    """
+    values = pd.to_numeric(
+        df[weight_col],
+        errors="coerce",
+    )
 
+    values = values[
+        values.notna()
+        & np.isfinite(values)
+        & (values > 0)
+    ]
+
+    if values.empty:
+        raise ValueError(
+            f"No positive values available in {weight_col!r}."
+        )
+
+    log_values = np.log10(values)
+
+    fig, ax = plt.subplots(
+        figsize=(12, 6)
+    )
+
+    ax.hist(
+        log_values,
+        bins=bins,
+    )
+
+    median = float(values.median())
+
+    ax.axvline(
+        np.log10(median),
+        linestyle="--",
+        linewidth=1.5,
+        label=f"Median = {median:,.0f} kg",
+    )
+
+    ax.set_xlabel("Net weight (kg, log10 scale)")
+    ax.set_ylabel("Number of observations")
+    ax.set_title(title)
+    ax.legend()
+
+    fig.tight_layout()
+
+    stats = {
+        "n_positive": int(len(values)),
+        "median_kg": median,
+        "q1_kg": float(values.quantile(0.25)),
+        "q3_kg": float(values.quantile(0.75)),
+        "p90_kg": float(values.quantile(0.90)),
+        "p95_kg": float(values.quantile(0.95)),
+        "p99_kg": float(values.quantile(0.99)),
+        "maximum_kg": float(values.max()),
+    }
+
+    return fig, ax, stats
 
 def plot_cif_fob_corrected_agreement_bands(
     frame: pd.DataFrame,

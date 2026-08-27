@@ -630,6 +630,226 @@ def _plot_net_weight_coverage_by_year(
     axis.legend(title="Evidence state")
     _save_figure(figure, output_path)
 
+def _plot_synchronized_quantity_distribution(
+    *,
+    con: duckdb.DuckDBPyConnection,
+    synchronized_sql: str,
+    output_path: Path,
+    bin_width: float = 0.25,
+) -> None:
+    """
+    Plot the distribution of positive synchronized_quantity_kg
+    on a log10 scale.
+
+    Histogram bins are calculated in DuckDB so the full synchronized
+    population does not need to be loaded into pandas.
+    """
+
+    frame = con.execute(
+        f"""
+        WITH positive AS (
+            SELECT
+                LOG10(synchronized_quantity_kg) AS log_weight
+            FROM read_parquet({synchronized_sql})
+            WHERE synchronized_quantity_kg > 0
+              AND isfinite(synchronized_quantity_kg)
+        )
+
+        SELECT
+            FLOOR(log_weight / {bin_width}) * {bin_width}
+                AS log_bin,
+            COUNT(*) AS n_rows
+
+        FROM positive
+        GROUP BY log_bin
+        ORDER BY log_bin
+        """
+    ).fetchdf()
+
+    if frame.empty:
+        return
+
+    median_log_weight = con.execute(
+        f"""
+        SELECT MEDIAN(LOG10(synchronized_quantity_kg))
+        FROM read_parquet({synchronized_sql})
+        WHERE synchronized_quantity_kg > 0
+          AND isfinite(synchronized_quantity_kg)
+        """
+    ).fetchone()[0]
+
+    figure, axis = plt.subplots(figsize=(11, 6))
+
+    axis.bar(
+        frame["log_bin"],
+        frame["n_rows"],
+        width=bin_width * 0.95,
+        align="edge",
+    )
+
+    if median_log_weight is not None:
+        median_weight = 10 ** float(median_log_weight)
+
+        axis.axvline(
+            median_log_weight,
+            linestyle="--",
+            linewidth=1.5,
+            label=f"Median = {median_weight:,.0f} kg",
+        )
+
+        axis.legend()
+
+    axis.set_title(
+        "Distribution of positive synchronized quantity"
+    )
+    axis.set_xlabel(
+        "Synchronized quantity (kg, log10 scale)"
+    )
+    axis.set_ylabel("Number of observations")
+
+    minimum_tick = int(frame["log_bin"].min())
+    maximum_tick = int(frame["log_bin"].max()) + 1
+
+    ticks = list(
+        range(minimum_tick, maximum_tick + 1)
+    )
+
+    def tick_label(power: int) -> str:
+        value = 10 ** power
+
+        if power < 0:
+            return f"{value:g}"
+        if value >= 1_000_000_000:
+            return f"{value / 1_000_000_000:g}B"
+        if value >= 1_000_000:
+            return f"{value / 1_000_000:g}M"
+        if value >= 1_000:
+            return f"{value / 1_000:g}k"
+
+        return f"{value:g}"
+
+    axis.set_xticks(ticks)
+    axis.set_xticklabels(
+        [tick_label(tick) for tick in ticks]
+    )
+
+    axis.grid(
+        axis="y",
+        linestyle="--",
+        alpha=0.35,
+    )
+
+    _save_figure(
+        figure,
+        output_path,
+    )
+
+def _plot_net_weight_distribution(
+    *,
+    con: duckdb.DuckDBPyConnection,
+    prepared_sql: str,
+    output_path: Path,
+    bin_width: float = 0.25,
+) -> None:
+    """
+    Plot the distribution of positive net_weight_kg on a log10 scale.
+
+    Histogram bins are calculated in DuckDB so the full Quantity
+    population does not need to be loaded into pandas.
+    """
+
+    frame = con.execute(
+        f"""
+        WITH positive AS (
+            SELECT
+                LOG10(net_weight_kg) AS log_weight
+            FROM read_parquet({prepared_sql})
+            WHERE net_weight_kg > 0
+              AND isfinite(net_weight_kg)
+        )
+
+        SELECT
+            FLOOR(log_weight / {bin_width}) * {bin_width}
+                AS log_bin,
+            COUNT(*) AS n_rows
+
+        FROM positive
+        GROUP BY log_bin
+        ORDER BY log_bin
+        """
+    ).fetchdf()
+
+    if frame.empty:
+        return
+
+    median_log_weight = con.execute(
+        f"""
+        SELECT MEDIAN(LOG10(net_weight_kg))
+        FROM read_parquet({prepared_sql})
+        WHERE net_weight_kg > 0
+          AND isfinite(net_weight_kg)
+        """
+    ).fetchone()[0]
+
+    figure, axis = plt.subplots(figsize=(11, 6))
+
+    axis.bar(
+        frame["log_bin"],
+        frame["n_rows"],
+        width=bin_width * 0.95,
+        align="edge",
+    )
+
+    if median_log_weight is not None:
+        median_weight = 10 ** float(median_log_weight)
+
+        axis.axvline(
+            median_log_weight,
+            linestyle="--",
+            linewidth=1.5,
+            label=f"Median = {median_weight:,.0f} kg",
+        )
+
+        axis.legend()
+
+    axis.set_title("Distribution of positive net weight")
+    axis.set_xlabel("Net weight (kg, log10 scale)")
+    axis.set_ylabel("Number of observations")
+
+    minimum_tick = int(frame["log_bin"].min())
+    maximum_tick = int(frame["log_bin"].max()) + 1
+
+    ticks = list(range(minimum_tick, maximum_tick + 1))
+
+    def tick_label(power: int) -> str:
+        value = 10 ** power
+
+        if power < 0:
+            return f"{value:g}"
+        if value >= 1_000_000_000:
+            return f"{value / 1_000_000_000:g}B"
+        if value >= 1_000_000:
+            return f"{value / 1_000_000:g}M"
+        if value >= 1_000:
+            return f"{value / 1_000:g}k"
+
+        return f"{value:g}"
+
+    axis.set_xticks(ticks)
+    axis.set_xticklabels(
+        [tick_label(tick) for tick in ticks]
+    )
+
+    axis.grid(
+        axis="y",
+        linestyle="--",
+        alpha=0.35,
+    )
+
+    _save_figure(
+        figure,
+        output_path,
+    )
 
 def _plot_net_weight_log_distribution_by_year(
     *,
@@ -2614,6 +2834,8 @@ def build_quantity_report(
             "alt_agreement_state": figure_dir / "alt_quantity_kg_agreement_by_evidence_state.png",
             "net_weight_year": figure_dir / "net_weight_coverage_by_year.png",
             "net_weight_distribution": figure_dir / "net_weight_log_distribution_by_year.png",
+            "synchronized_quantity_distribution": figure_dir  / "synchronized_quantity_kg_distribution.png",
+            "net_weight_input_distribution":  figure_dir / "net_weight_input_distribution.png",
             "gross_net_ratio": figure_dir / "gross_net_weight_ratio_distribution.png",
             "hierarchy": figure_dir / "kg_coverage_by_reconciliation_step.png",
             "sync_status_year": figure_dir / "quantity_sync_status_by_year.png",
@@ -2659,6 +2881,21 @@ def build_quantity_report(
         _plot_alt_agreement_by_evidence_state(
             diagnostics=diagnostics,
             output_path=figure_paths["alt_agreement_state"],
+        )
+        _plot_net_weight_distribution(
+            con=con,
+            prepared_sql=prepared_sql,
+            output_path=figure_paths[
+                "net_weight_input_distribution"
+            ],
+        )
+
+        _plot_synchronized_quantity_distribution(
+            con=con,
+            synchronized_sql=synchronized_sql,
+            output_path=figure_paths[
+                "synchronized_quantity_distribution"
+            ],
         )
         _plot_net_weight_coverage_by_year(
             diagnostics=diagnostics,
@@ -2823,6 +3060,22 @@ def build_quantity_report(
             "### 2.1 Quantity-field inventory",
             "",
             _markdown_table(inventory_display),
+            "### 2.2 Net-weight distribution",
+            "",
+            (
+                "The distribution below shows the scale of positive `net_weight_kg` "
+                "observations entering the Quantity module. Because trade weights span "
+                "several orders of magnitude, the horizontal scale is expressed as "
+                "`log10(net_weight_kg)`."
+            ),
+            "",
+            markdown_image(
+                "Distribution of positive net weight",
+                figure_paths["net_weight_input_distribution"],
+                document_path=report_path,
+                width=850,
+            ),
+            "",
             "",
             "## 3. Physical-unit structure",
             "",
@@ -3674,7 +3927,24 @@ def build_quantity_report(
                 "source precedence resolves them."
             ),
             "",
-            "### 10.2 HS structure of rows with no synchronized kg",
+            "### 10.2 Distribution of synchronized kg",
+            "",
+            (
+                "Among rows receiving a positive `synchronized_quantity_kg`, "
+                "the distribution below shows the scale of the final canonical "
+                "physical quantity. Because synchronized trade quantities span "
+                "several orders of magnitude, the horizontal scale is expressed "
+                "as `log10(synchronized_quantity_kg)`."
+            ),
+            "",
+            markdown_image(
+                "Distribution of positive synchronized quantity",
+                figure_paths["synchronized_quantity_distribution"],
+                document_path=report_path,
+                width=850,
+            ),
+            "",
+            "### 10.3 HS structure of rows with no synchronized kg",
             "",
             _markdown_table(missing_hs_display),
             "",
