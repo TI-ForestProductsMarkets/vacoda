@@ -1920,6 +1920,60 @@ def build_quantity_diagnostics(
             """
         )
 
+
+        # --------------------------------------------------------------
+        # Net-weight relationship for quantity reported in m³, by HS6
+        # --------------------------------------------------------------
+
+        if hs_column is not None:
+            queries.append(
+                f"""
+                WITH comparable AS (
+                    SELECT
+                        CAST({hs_column} AS VARCHAR) AS hs_code,
+                        net_weight_kg / quantity AS kg_per_m3
+                    FROM read_parquet({prepared_sql})
+                    WHERE net_weight_kg > 0
+                    AND quantity > 0
+                    AND quantity_unit_code = 12
+                    AND isfinite(net_weight_kg / quantity)
+                )
+
+                SELECT
+                    'net_weight_quantity_m3_by_hs'
+                        AS diagnostic_group,
+
+                    hs_code AS metric,
+
+                    CAST(COUNT(*) AS DOUBLE) AS value,
+
+                    100.0 * COUNT(*)
+                        / SUM(COUNT(*)) OVER ()
+                        AS percentage,
+
+                    NULL::INTEGER AS year,
+
+                    CAST(
+                        MEDIAN(kg_per_m3)
+                        AS VARCHAR
+                    ) AS category_1,
+
+                    CAST(
+                        QUANTILE_CONT(kg_per_m3, 0.10)
+                        AS VARCHAR
+                    ) AS category_2,
+
+                    CAST(
+                        QUANTILE_CONT(kg_per_m3, 0.90)
+                        AS VARCHAR
+                    ) AS category_3
+
+                FROM comparable
+                GROUP BY hs_code
+                """
+            )
+
+
         queries.append(
             f"""
             WITH population AS (
@@ -2021,6 +2075,59 @@ def build_quantity_diagnostics(
                 """
             )
 
+
+        # --------------------------------------------------------------
+        # Net-weight relationship for alt_quantity reported in m³,
+        # by HS6
+        # --------------------------------------------------------------
+
+        if hs_column is not None:
+            queries.append(
+                f"""
+                WITH comparable AS (
+                    SELECT
+                        CAST({hs_column} AS VARCHAR) AS hs_code,
+                        net_weight_kg / alt_quantity AS kg_per_m3
+                    FROM read_parquet({prepared_sql})
+                    WHERE net_weight_kg > 0
+                    AND alt_quantity > 0
+                    AND alt_quantity_unit_code = 12
+                    AND isfinite(net_weight_kg / alt_quantity)
+                )
+
+                SELECT
+                    'net_weight_alt_quantity_m3_by_hs'
+                        AS diagnostic_group,
+
+                    hs_code AS metric,
+
+                    CAST(COUNT(*) AS DOUBLE) AS value,
+
+                    100.0 * COUNT(*)
+                        / SUM(COUNT(*)) OVER ()
+                        AS percentage,
+
+                    NULL::INTEGER AS year,
+
+                    CAST(
+                        MEDIAN(kg_per_m3)
+                        AS VARCHAR
+                    ) AS category_1,
+
+                    CAST(
+                        QUANTILE_CONT(kg_per_m3, 0.10)
+                        AS VARCHAR
+                    ) AS category_2,
+
+                    CAST(
+                        QUANTILE_CONT(kg_per_m3, 0.90)
+                        AS VARCHAR
+                    ) AS category_3
+
+                FROM comparable
+                GROUP BY hs_code
+                """
+            )
 
         # ==============================================================
         # Supplementary quantity candidate overlap
@@ -2949,6 +3056,60 @@ def build_quantity_diagnostics(
         # ==============================================================
         # Final supplementary output
         # ==============================================================
+
+        queries.append(
+            f"""
+            WITH population AS (
+                SELECT COUNT(*) AS n_total
+                FROM read_parquet({synchronized_sql})
+            ),
+
+            coverage AS (
+                SELECT
+                    CASE
+                        WHEN synchronized_quantity_kg > 0
+                            THEN 'canonical_kg'
+
+                        WHEN (
+                            NOT COALESCE(
+                                synchronized_quantity_kg > 0,
+                                FALSE
+                            )
+                            AND supplementary_quantity > 0
+                            AND supplementary_unit IS NOT NULL
+                        )
+                            THEN 'supplementary_without_kg'
+
+                        ELSE 'no_physical_quantity'
+                    END AS coverage_state,
+
+                    COUNT(*) AS n_rows
+
+                FROM read_parquet({synchronized_sql})
+
+                GROUP BY coverage_state
+            )
+
+            SELECT
+                'final_physical_information_coverage'
+                    AS diagnostic_group,
+
+                coverage_state AS metric,
+
+                CAST(n_rows AS DOUBLE) AS value,
+
+                100.0 * n_rows / population.n_total
+                    AS percentage,
+
+                NULL::INTEGER AS year,
+                NULL::VARCHAR AS category_1,
+                NULL::VARCHAR AS category_2,
+                NULL::VARCHAR AS category_3
+
+            FROM coverage
+            CROSS JOIN population
+            """
+        )
 
         queries.append(
             f"""

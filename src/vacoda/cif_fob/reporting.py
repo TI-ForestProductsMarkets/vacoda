@@ -43,6 +43,10 @@ from vacoda.visualization.distributions import (
     plot_model_error_by_group,
     plot_cif_fob_corrected_agreement_bands
 )
+from vacoda.utils.markdown import (
+    insert_markdown_toc,
+    markdown_image,
+)
 from vacoda.visualization.relationships import (
     plot_central_vs_tail_tradeoff,
     plot_observed_vs_predicted_density,
@@ -6569,6 +6573,9 @@ def write_cif_fob_decision_report(
     lines = [
         f"# VACODA CIF/FOB Decision Report — {cfg.scope.target_hs}",
         "",
+        "__TOC__",
+        "",
+        "",
         "## 1. Run overview",
         "",
         f"- **Run ID:** `{run_id}`",
@@ -7328,6 +7335,14 @@ def write_cif_fob_decision_report(
     insertion_index = lines.index(primary_validation_header)
     lines[insertion_index:insertion_index] = value_band_section
 
+
+    ## Add a table of contents to the report
+    insert_markdown_toc(
+            lines,
+            min_level=2,
+            max_level=3,
+        )
+    
     report_text = "\n".join(lines)
     report_path.write_text(
         report_text,

@@ -1811,6 +1811,75 @@ def build_quantity_report(
                 ],
             )
 
+
+            def m3_relationship_table(
+                diagnostic_group: str,
+            ) -> pd.DataFrame:
+                frame = _diagnostic_group(
+                    diagnostics,
+                    diagnostic_group,
+                )
+
+                if frame.empty:
+                    return pd.DataFrame()
+
+                out = frame[
+                    [
+                        "metric",
+                        "value",
+                        "percentage",
+                        "category_1",
+                        "category_2",
+                        "category_3",
+                    ]
+                ].copy()
+
+                out.columns = [
+                    "HS6",
+                    "Comparable rows",
+                    "Share of comparable m³ rows (%)",
+                    "Median kg/m³",
+                    "P10 kg/m³",
+                    "P90 kg/m³",
+                ]
+
+                out["Comparable rows"] = (
+                    pd.to_numeric(
+                        out["Comparable rows"],
+                        errors="coerce",
+                    )
+                    .round()
+                    .astype("Int64")
+                )
+
+                out = _as_numeric(
+                    out,
+                    [
+                        "Share of comparable m³ rows (%)",
+                        "Median kg/m³",
+                        "P10 kg/m³",
+                        "P90 kg/m³",
+                    ],
+                )
+
+                return (
+                    out
+                    .sort_values(
+                        "Comparable rows",
+                        ascending=False,
+                    )
+                    .head(30)
+                )
+
+
+        quantity_m3_net_relationship = m3_relationship_table(
+            "net_weight_quantity_m3_by_hs",
+        )
+
+        alt_quantity_m3_net_relationship = m3_relationship_table(
+            "net_weight_alt_quantity_m3_by_hs",
+        )
+
         supplementary_hs = _diagnostic_group(
             diagnostics,
             "net_weight_supplementary_by_hs",
@@ -1958,6 +2027,118 @@ def build_quantity_report(
         # --------------------------------------------------------------
         # Final supplementary output
         # --------------------------------------------------------------
+
+        final_physical_coverage = _diagnostic_group(
+            diagnostics,
+            "final_physical_information_coverage",
+        )
+
+        canonical_kg_rows = _metric_value(
+            final_physical_coverage,
+            "canonical_kg",
+        )
+        supplementary_without_kg_rows = _metric_value(
+            final_physical_coverage,
+            "supplementary_without_kg",
+        )
+        no_physical_quantity_rows = _metric_value(
+            final_physical_coverage,
+            "no_physical_quantity",
+        )
+
+        canonical_kg_share = (
+            100.0 * canonical_kg_rows / n_rows
+            if n_rows and canonical_kg_rows is not None
+            else None
+        )
+
+        supplementary_without_kg_share = (
+            100.0 * supplementary_without_kg_rows / n_rows
+            if n_rows and supplementary_without_kg_rows is not None
+            else None
+        )
+
+        no_physical_quantity_share = (
+            100.0 * no_physical_quantity_rows / n_rows
+            if n_rows and no_physical_quantity_rows is not None
+            else None
+        )
+
+        non_canonical_rows = (
+            float(supplementary_without_kg_rows or 0)
+            + float(no_physical_quantity_rows or 0)
+        )
+
+        supplementary_rescue_rate = (
+            100.0 * float(supplementary_without_kg_rows or 0) / non_canonical_rows
+            if non_canonical_rows > 0
+            else None
+        )
+
+        if final_physical_coverage.empty:
+            final_physical_coverage_display = pd.DataFrame()
+
+        else:
+            final_physical_coverage_display = (
+                final_physical_coverage[
+                    [
+                        "metric",
+                        "value",
+                        "percentage",
+                    ]
+                ].copy()
+            )
+
+            final_physical_coverage_display.columns = [
+                "Final physical-information state",
+                "Rows",
+                "Population share (%)",
+            ]
+
+            final_physical_coverage_display[
+                "Final physical-information state"
+            ] = final_physical_coverage_display[
+                "Final physical-information state"
+            ].replace(
+                {
+                    "canonical_kg":
+                        "Canonical kg available",
+
+                    "supplementary_without_kg":
+                        "No kg; supplementary quantity retained",
+
+                    "no_physical_quantity":
+                        "Neither kg nor supplementary quantity",
+                }
+            )
+
+            final_physical_coverage_display["Rows"] = (
+                final_physical_coverage_display["Rows"]
+                .round()
+                .astype("Int64")
+            )
+
+            final_physical_coverage_display = _as_numeric(
+                final_physical_coverage_display,
+                ["Population share (%)"],
+            )
+
+            coverage_order = {
+                "Canonical kg available": 0,
+                "No kg; supplementary quantity retained": 1,
+                "Neither kg nor supplementary quantity": 2,
+            }
+
+            final_physical_coverage_display = (
+                final_physical_coverage_display
+                .assign(
+                    _order=final_physical_coverage_display[
+                        "Final physical-information state"
+                    ].map(coverage_order)
+                )
+                .sort_values("_order")
+                .drop(columns="_order")
+            )
 
         supplementary_output_summary = _diagnostic_group(
             diagnostics,
@@ -3082,13 +3263,44 @@ def build_quantity_report(
             "",
             _markdown_table(alt_supplementary_display),
             "",
-            "### 6.3 Example observations",
+            "### 6.3 Example observations and net-weight relationships",
             "",
             (
-                "Some examples illustration: "
+                "The examples below illustrate how a positive net weight can coexist "
+                "with a supplementary physical quantity expressed in another unit."
             ),
             "",
             _markdown_table(supplementary_examples_display),
+            "",
+            (
+                "For cubic-metre observations, the coexistence of volume and net weight "
+                "also permits an exploratory product-level comparison. The ratio "
+                "`net_weight_kg / quantity_m3` is therefore summarized by HS6 below. "
+                "A relatively narrow P10–P90 range around the median would indicate a "
+                "more stable relationship between reported volume and net weight; a wide "
+                "range would indicate substantial within-product variation."
+            ),
+            "",
+            "#### 6.3.1 `quantity` m³ versus net weight by HS6",
+            "",
+            (
+                "The table shows the 30 HS6 codes with the largest number of observations "
+                "for which both positive net weight and positive `quantity` reported in m³ "
+                "are available. `Share of comparable m³ rows (%)` uses all such comparable "
+                "m³ observations as its denominator."
+            ),
+            "",
+            _markdown_table(quantity_m3_net_relationship),
+            "",
+            "#### 6.3.2 `alt_quantity` m³ versus net weight by HS6",
+            "",
+            (
+                "The same diagnostic is applied to positive `alt_quantity` observations "
+                "reported in m³. The relationship is exploratory and is not currently used "
+                "as a synchronization rule."
+            ),
+            "",
+            _markdown_table(alt_quantity_m3_net_relationship),
             "",
             "### 6.4 HS structure of major supplementary units",
             "",
@@ -3410,6 +3622,48 @@ def build_quantity_report(
             "",
             "## 10. Remaining kg gaps",
             "",
+            "### 10.1 Final physical-information coverage",
+            "",
+            (
+                "The Quantity module produces three final physical-information fields: "
+                "`synchronized_quantity_kg`, `supplementary_quantity`, and "
+                "`supplementary_unit`."
+            ),
+            "",
+            (
+                "The table below summarizes the mutually exclusive final coverage "
+                "states across the complete trade population."
+            ),
+            "",
+            _markdown_table(final_physical_coverage_display),
+            "",
+            (
+                "Canonical kg is available for "
+                f"{_format_percent(canonical_kg_share, already_percent=True)} "
+                "of observations. A further "
+                f"{_format_percent(
+                    supplementary_without_kg_share,
+                    already_percent=True,
+                )} "
+                "cannot be represented in kg but retain a usable supplementary "
+                "physical quantity. Only "
+                f"{_format_percent(
+                    no_physical_quantity_share,
+                    already_percent=True,
+                )} "
+                "have neither canonical kg nor supplementary physical information."
+            ),
+            "",
+            (
+                "Among observations without canonical kg, the supplementary fields "
+                "preserve usable physical information for "
+                f"**{_format_percent(
+                    supplementary_rescue_rate,
+                    already_percent=True,
+                )}**."
+            ),
+            "",
+            "",
             _markdown_table(remaining_gap_display),
             "",
             (
@@ -3420,7 +3674,7 @@ def build_quantity_report(
                 "source precedence resolves them."
             ),
             "",
-            "### 10.1 HS structure of rows with no synchronized kg",
+            "### 10.2 HS structure of rows with no synchronized kg",
             "",
             _markdown_table(missing_hs_display),
             "",
@@ -3487,6 +3741,7 @@ def build_quantity_report(
             "",
         ])
 
+        ## Add a table of contents to the report
         insert_markdown_toc(
             lines,
             min_level=2,

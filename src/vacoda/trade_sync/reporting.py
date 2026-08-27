@@ -30,7 +30,10 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 from vacoda.config.paths import get_figure_dir
-from vacoda.utils.markdown import markdown_image
+from vacoda.utils.markdown import (
+    insert_markdown_toc,
+    markdown_image,
+)
 from vacoda.config.trade_sync import TradeSyncConfig
 from vacoda.utils.display import get_symbols
 
@@ -1753,6 +1756,9 @@ def build_trade_sync_report(
             f"**Generated:** {datetime.now().isoformat(timespec='seconds')}"
         ),
         "",
+        "__TOC__",
+        "",
+        "",
         "## 1. Purpose of Trade Sync",
         "",
         (
@@ -2468,6 +2474,14 @@ def build_trade_sync_report(
         f"- Report: `{report_path}`",
         "",
     ]
+
+    
+        insert_markdown_toc(
+            lines,
+            min_level=2,
+            max_level=3,
+        )
+
         report_path.write_text(
             "\n".join(lines),
             encoding="utf-8",
