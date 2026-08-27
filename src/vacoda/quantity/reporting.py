@@ -26,7 +26,10 @@ import pandas as pd
 from vacoda.config.paths import get_figure_dir
 from vacoda.config.quantity import QuantityConfig
 from vacoda.utils.display import get_symbols
-from vacoda.utils.markdown import markdown_image
+from vacoda.utils.markdown import (
+    insert_markdown_toc,
+    markdown_image,
+)
 from vacoda.utils.sql import sql_literal
 from vacoda.utils.display import get_table_figure_layout, get_table_pair
 from vacoda.visualization.relationships import plot_figure_pair
@@ -745,8 +748,9 @@ def _plot_m3_by_hs(
     diagnostic_group: str,
     title: str,
     output_path: Path,
-    maximum_codes: int = 20,
+    maximum_codes: int = 30,
     height: float = 6.0,
+    hs_level: str = "HS6",
 ) -> None:
     frame = _diagnostic_group(
         diagnostics,
@@ -758,17 +762,19 @@ def _plot_m3_by_hs(
 
     frame = (
         frame.groupby("metric", as_index=False)
-        .agg(rows=("value", "sum"))
+        .agg(
+            rows=("value", "sum"),
+            share=("percentage", "sum"),
+        )
         .nlargest(maximum_codes, "rows")
-        .sort_values("rows", ascending=True)
+        .sort_values("share", ascending=True)
     )
 
     if frame.empty:
         return
 
-    # HS codes are categorical labels, even though they look numeric.
     labels = frame["metric"].astype(str).tolist()
-    values = frame["rows"].astype(float).to_numpy()
+    values = frame["share"].astype(float).to_numpy()
 
     y_positions = range(len(frame))
 
@@ -786,17 +792,13 @@ def _plot_m3_by_hs(
         values,
     )
 
-    axis.set_yticks(
-        list(y_positions)
-    )
-    axis.set_yticklabels(
-        labels
-    )
+    axis.set_yticks(list(y_positions))
+    axis.set_yticklabels(labels)
 
     axis.bar_label(
         bars,
         labels=[
-            f"{int(value):,}"
+            f"{value:.2f}%"
             for value in values
         ],
         padding=3,
@@ -804,9 +806,8 @@ def _plot_m3_by_hs(
     )
 
     axis.set_title(title)
-    axis.set_xlabel("Number of observations")
-    axis.set_ylabel("HS code")
-
+    axis.set_xlabel("Share of m³ observations (%)")
+    axis.set_ylabel(f"{hs_level} code")
     axis.grid(
         axis="x",
         linestyle="--",
@@ -814,7 +815,6 @@ def _plot_m3_by_hs(
     )
     axis.set_axisbelow(True)
 
-    # Give the labels at the end of the bars some room.
     axis.set_xlim(
         0,
         max(values) * 1.15,
@@ -1043,6 +1043,106 @@ def build_quantity_report(
         )
         alt_quantity_m3 = _top_hs_table(
             _diagnostic_group(diagnostics, "alt_quantity_m3_by_hs"), n=30
+        )
+
+        quantity_m3_hs4 = _top_hs_table(
+            _diagnostic_group(
+                diagnostics,
+                "quantity_m3_by_hs4",
+            ),
+            n=100,
+        )
+
+        alt_quantity_m3_hs4 = _top_hs_table(
+            _diagnostic_group(
+                diagnostics,
+                "alt_quantity_m3_by_hs4",
+            ),
+            n=100,
+        )
+
+        def add_cumulative_share(frame: pd.DataFrame) -> pd.DataFrame:
+            if frame.empty:
+                return frame
+
+            frame = frame.copy()
+            frame = frame.sort_values("Rows", ascending=False)
+
+            frame["Cumulative share (%)"] = (
+                frame["Share (%)"].cumsum()
+            )
+
+            return frame
+
+
+        quantity_m3_hs4 = add_cumulative_share(
+            quantity_m3_hs4
+        )
+
+        alt_quantity_m3_hs4 = add_cumulative_share(alt_quantity_m3_hs4)
+
+        def unit_share_by_code(
+            frame: pd.DataFrame,
+            unit_code: int,
+        ) -> float | None:
+            """Return full-population share for one quantity unit."""
+            if frame.empty:
+                return None
+
+            match = frame.loc[
+                frame["Unit code"].astype(str).eq(str(unit_code))
+            ]
+
+            if match.empty:
+                return None
+
+            return float(match.iloc[0]["Share (%)"])
+
+
+        # Full-population share reported in m³.
+        quantity_m3_population_share = unit_share_by_code(
+            quantity_units,
+            12,
+        )
+        alt_quantity_m3_population_share = unit_share_by_code(
+            alt_quantity_units,
+            12,
+        )
+
+        # Share of all m³ observations covered by the displayed top HS codes.
+        quantity_m3_top_share = (
+            float(quantity_m3["Share (%)"].sum())
+            if not quantity_m3.empty
+            else None
+        )
+
+        alt_quantity_m3_top_share = (
+            float(alt_quantity_m3["Share (%)"].sum())
+            if not alt_quantity_m3.empty
+            else None
+        )
+
+        # Share of the FULL Quantity population represented by those top HS codes.
+        quantity_m3_top_population_share = (
+            quantity_m3_population_share
+            * quantity_m3_top_share
+            / 100.0
+            if (
+                quantity_m3_population_share is not None
+                and quantity_m3_top_share is not None
+            )
+            else None
+        )
+
+        alt_quantity_m3_top_population_share = (
+            alt_quantity_m3_population_share
+            * alt_quantity_m3_top_share
+            / 100.0
+            if (
+                alt_quantity_m3_population_share is not None
+                and alt_quantity_m3_top_share is not None
+            )
+            else None
         )
 
         # --------------------------------------------------------------
@@ -2338,6 +2438,8 @@ def build_quantity_report(
             "sync_status_year": figure_dir / "quantity_sync_status_by_year.png",
             "quantity_m3_hs": figure_dir / "quantity_m3_by_hs_code.png",
             "alt_quantity_m3_hs": figure_dir / "alt_quantity_m3_by_hs_code.png",
+            "quantity_m3_hs4": figure_dir / "quantity_m3_by_hs4_code.png",
+            "alt_quantity_m3_hs4": figure_dir / "alt_quantity_m3_by_hs4_code.png",
         }
 
         _plot_unit_distribution(
@@ -2402,13 +2504,32 @@ def build_quantity_report(
             diagnostics=diagnostics,
             diagnostic_group="quantity_m3_by_hs",
             title="HS codes with quantity reported in cubic metres",
+            hs_level="HS6",
             output_path=figure_paths["quantity_m3_hs"],
         )
         _plot_m3_by_hs(
             diagnostics=diagnostics,
             diagnostic_group="alt_quantity_m3_by_hs",
             title="HS codes with alternate quantity reported in cubic metres",
+            hs_level="HS6",
             output_path=figure_paths["alt_quantity_m3_hs"],
+        )
+        _plot_m3_by_hs(
+            diagnostics=diagnostics,
+            diagnostic_group="quantity_m3_by_hs4",
+            title="HS4 distribution of quantity reported in cubic metres",
+            output_path=figure_paths["quantity_m3_hs4"],
+            maximum_codes=100,
+            hs_level="HS4",
+        )
+
+        _plot_m3_by_hs(
+            diagnostics=diagnostics,
+            diagnostic_group="alt_quantity_m3_by_hs4",
+            title="HS4 distribution of alternate quantity reported in cubic metres",
+            output_path=figure_paths["alt_quantity_m3_hs4"],
+            maximum_codes=100,
+            hs_level="HS4",
         )
 
         # --------------------------------------------------------------
@@ -2471,6 +2592,8 @@ def build_quantity_report(
             f"**Target HS:** {cfg.scope.target_hs}  ",
             f"**Input period:** {cfg.scope.min_year}–{cfg.scope.max_year}  ",
             f"**Generated:** {datetime.now().isoformat(timespec='seconds')}",
+            "",
+            "__TOC__",
             "",
             "## 1. Purpose of Quantity synchronization",
             "",
@@ -2610,12 +2733,82 @@ def build_quantity_report(
                 "",
             ])
 
-        lines.extend([
-            "### 3.4 Cubic-metre observations by HS code",
-            "",
-            "**`quantity` reported in m³**",
-            "",
-        ])
+            lines.extend([
+                "### 3.4 Cubic-metre observations by HS code",
+                "",
+                (
+                    "Cubic-metre reporting is first summarized at the broader "
+                    "four-digit HS heading level and then examined at the detailed "
+                    "six-digit product level."
+                ),
+                "",
+                "#### 3.4.1 Broad HS4 concentration",
+                "",
+                "**`quantity` reported in m³**",
+                "",
+            ])
+
+            if figure_paths["quantity_m3_hs4"].exists():
+                lines.extend([
+                    get_table_figure_layout(
+                        quantity_m3_hs4,
+                        markdown_image(
+                            "Quantity m³ observations by HS4 code",
+                            figure_paths["quantity_m3_hs4"],
+                            document_path=report_path,
+                            width=650,
+                        ),
+                    ),
+                    "",
+                ])
+            else:
+                lines.extend([
+                    _markdown_table(quantity_m3_hs4),
+                    "",
+                ])
+
+            lines.extend([
+                "**`alt_quantity` reported in m³**",
+                "",
+            ])
+
+            if figure_paths["alt_quantity_m3_hs4"].exists():
+                lines.extend([
+                    get_table_figure_layout(
+                        alt_quantity_m3_hs4,
+                        markdown_image(
+                            "Alternate quantity m³ observations by HS4 code",
+                            figure_paths["alt_quantity_m3_hs4"],
+                            document_path=report_path,
+                            width=650,
+                            height=700
+                        ),
+                    ),
+                    "",
+                ])
+            else:
+                lines.extend([
+                    _markdown_table(alt_quantity_m3_hs4),
+                    "",
+                ])
+
+            lines.extend([
+                "#### 3.4.2 Detailed HS6 concentration",
+                "",
+                "**`quantity` reported in m³**",
+                "",
+                (
+                f"The {len(quantity_m3)} most frequent HS codes shown below "
+                f"account for {_format_percent(quantity_m3_top_share, already_percent=True)} "
+                "of all positive `quantity` observations reported in m³. "
+                "Together, these displayed HS codes represent approximately "
+                f"{_format_percent(quantity_m3_top_population_share, already_percent=True)} "
+                "of the full Quantity population, out of the total "
+                f"{_format_percent(quantity_m3_population_share, already_percent=True)} "
+                "reported in m³."
+                ),
+                "",
+            ])
 
         if figure_paths["quantity_m3_hs"].exists():
             lines.extend([
@@ -2626,6 +2819,7 @@ def build_quantity_report(
                         figure_paths["quantity_m3_hs"],
                         document_path=report_path,
                         width=650,
+                        height=700
                     ),
                 ),
                 "",
@@ -2639,6 +2833,17 @@ def build_quantity_report(
         lines.extend([
             "**`alt_quantity` reported in m³**",
             "",
+            (
+                f"The {len(alt_quantity_m3)} most frequent HS codes shown below "
+                f"account for {_format_percent(alt_quantity_m3_top_share, already_percent=True)} "
+                "of all positive `alt_quantity` observations reported in m³. "
+                "Together, these displayed HS codes represent approximately "
+                f"{_format_percent(alt_quantity_m3_top_population_share, already_percent=True)} "
+                "of the full Quantity population, out of the total "
+                f"{_format_percent(alt_quantity_m3_population_share, already_percent=True)} "
+                "reported in m³."
+            ),
+            "",
         ])
 
         if figure_paths["alt_quantity_m3_hs"].exists():
@@ -2650,6 +2855,7 @@ def build_quantity_report(
                         figure_paths["alt_quantity_m3_hs"],
                         document_path=report_path,
                         width=650,
+                        height=700
                     ),
                 ),
                 "",
@@ -3280,6 +3486,12 @@ def build_quantity_report(
             f"| Diagnostics | `{diagnostics_path}` |",
             "",
         ])
+
+        insert_markdown_toc(
+            lines,
+            min_level=2,
+            max_level=3,
+        )
 
         report_text = "\n".join(lines)
         report_path.write_text(report_text, encoding="utf-8")

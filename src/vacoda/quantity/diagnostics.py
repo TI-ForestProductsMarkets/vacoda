@@ -816,9 +816,15 @@ def build_quantity_diagnostics(
 
         # ==============================================================
         # 4. m³ distribution by HS code
+        #    - HS6 detailed composition
+        #    - HS4 broad product-family composition
         # ==============================================================
 
         if hs_column is not None:
+
+            # ----------------------------------------------------------
+            # 4a. quantity: m³ distribution by HS6
+            # ----------------------------------------------------------
             queries.append(
                 f"""
                 SELECT
@@ -832,14 +838,17 @@ def build_quantity_diagnostics(
                     NULL::INTEGER AS year,
                     'quantity' AS category_1,
                     'm3' AS category_2,
-                    NULL::VARCHAR AS category_3
+                    'hs6' AS category_3
                 FROM read_parquet({prepared_sql})
                 WHERE quantity_unit_code = 12
-                  AND quantity > 0
+                AND quantity > 0
                 GROUP BY {hs_column}
                 """
             )
 
+            # ----------------------------------------------------------
+            # 4b. alt_quantity: m³ distribution by HS6
+            # ----------------------------------------------------------
             queries.append(
                 f"""
                 SELECT
@@ -853,11 +862,73 @@ def build_quantity_diagnostics(
                     NULL::INTEGER AS year,
                     'alt_quantity' AS category_1,
                     'm3' AS category_2,
-                    NULL::VARCHAR AS category_3
+                    'hs6' AS category_3
                 FROM read_parquet({prepared_sql})
                 WHERE alt_quantity_unit_code = 12
-                  AND alt_quantity > 0
+                AND alt_quantity > 0
                 GROUP BY {hs_column}
+                """
+            )
+
+            # ----------------------------------------------------------
+            # 4c. quantity: m³ distribution by HS4
+            # ----------------------------------------------------------
+            queries.append(
+                f"""
+                SELECT
+                    'quantity_m3_by_hs4'
+                        AS diagnostic_group,
+                    LEFT(
+                        LPAD(CAST({hs_column} AS VARCHAR), 6, '0'),
+                        4
+                    ) AS metric,
+                    CAST(COUNT(*) AS DOUBLE) AS value,
+                    100.0 * COUNT(*)
+                        / SUM(COUNT(*)) OVER ()
+                        AS percentage,
+                    NULL::INTEGER AS year,
+                    'quantity' AS category_1,
+                    'm3' AS category_2,
+                    'hs4' AS category_3
+                FROM read_parquet({prepared_sql})
+                WHERE quantity_unit_code = 12
+                AND quantity > 0
+                GROUP BY
+                    LEFT(
+                        LPAD(CAST({hs_column} AS VARCHAR), 6, '0'),
+                        4
+                    )
+                """
+            )
+
+            # ----------------------------------------------------------
+            # 4d. alt_quantity: m³ distribution by HS4
+            # ----------------------------------------------------------
+            queries.append(
+                f"""
+                SELECT
+                    'alt_quantity_m3_by_hs4'
+                        AS diagnostic_group,
+                    LEFT(
+                        LPAD(CAST({hs_column} AS VARCHAR), 6, '0'),
+                        4
+                    ) AS metric,
+                    CAST(COUNT(*) AS DOUBLE) AS value,
+                    100.0 * COUNT(*)
+                        / SUM(COUNT(*)) OVER ()
+                        AS percentage,
+                    NULL::INTEGER AS year,
+                    'alt_quantity' AS category_1,
+                    'm3' AS category_2,
+                    'hs4' AS category_3
+                FROM read_parquet({prepared_sql})
+                WHERE alt_quantity_unit_code = 12
+                AND alt_quantity > 0
+                GROUP BY
+                    LEFT(
+                        LPAD(CAST({hs_column} AS VARCHAR), 6, '0'),
+                        4
+                    )
                 """
             )
 

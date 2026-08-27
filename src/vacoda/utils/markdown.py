@@ -7,7 +7,7 @@ Utilities for working with Markdown content.
 from __future__ import annotations
 
 from pathlib import Path
-
+import re
 from vacoda.config.paths import get_markdown_relative_path
 
 DEFAULT_MARKDOWN_IMAGE_WIDTH = 700
@@ -44,3 +44,82 @@ def markdown_image(
         attributes.append(f'height="{int(height)}"')
 
     return f"<img {' '.join(attributes)} />"
+
+
+def markdown_anchor(text: str) -> str:
+    """Return a Markdown-compatible anchor for a heading."""
+    text = text.strip().lower()
+
+    # Remove Markdown formatting characters and punctuation.
+    text = re.sub(r"[^\w\s-]", "", text)
+
+    # Collapse whitespace into hyphens.
+    text = re.sub(r"\s+", "-", text)
+
+    return text
+
+
+def build_markdown_toc(
+    lines: list[str],
+    *,
+    min_level: int = 2,
+    max_level: int = 3,
+    title: str = "Table of contents",
+) -> list[str]:
+    """Build a Markdown table of contents from report heading lines."""
+    toc = [
+        f"{'#' * min_level} {title}",
+        "",
+    ]
+
+    heading_pattern = re.compile(r"^(#{1,6})\s+(.+)$")
+
+    for line in lines:
+        match = heading_pattern.match(line)
+
+        if match is None:
+            continue
+
+        hashes, heading = match.groups()
+        level = len(hashes)
+
+        if not min_level <= level <= max_level:
+            continue
+
+        anchor = markdown_anchor(heading)
+
+        indent = "  " * (level - min_level)
+
+        toc.append(
+            f"{indent}- [{heading}](#{anchor})"
+        )
+
+    toc.append("")
+
+    return toc
+
+
+def insert_markdown_toc(
+    lines: list[str],
+    *,
+    placeholder: str = "__TOC__",
+    min_level: int = 2,
+    max_level: int = 3,
+    title: str = "Table of contents",
+) -> None:
+    """Replace a TOC placeholder with a generated Markdown TOC."""
+    try:
+        toc_index = lines.index(placeholder)
+    except ValueError:
+        raise ValueError(
+            f"Markdown TOC placeholder not found: {placeholder!r}"
+        ) from None
+
+    toc = build_markdown_toc(
+        lines,
+        min_level=min_level,
+        max_level=max_level,
+        title=title,
+    )
+
+    lines[toc_index:toc_index + 1] = toc
