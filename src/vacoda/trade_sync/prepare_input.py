@@ -182,12 +182,14 @@ def prepare_trade_sync_input(
             "cif_fob_factor_applied_source",
 
             # Physical quantities propagated from Quantity through CIF/FOB.
+            "export_synchronized_quantity_kg",
+            "import_synchronized_quantity_kg",
             "export_weight_kg",
             "import_weight_kg",
-            "export_weight_source",
-            "import_weight_source",
-            "export_weight_estimated",
-            "import_weight_estimated",
+            "export_synchronized_quantity_source",
+            "import_synchronized_quantity_source",
+            "export_is_synchronized_quantity_estimated",
+            "import_is_synchronized_quantity_estimated",
             "export_weight_is_proxy",
             "import_weight_is_proxy",
         }

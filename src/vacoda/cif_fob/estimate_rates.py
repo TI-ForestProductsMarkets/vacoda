@@ -1350,7 +1350,7 @@ def _validate_input_columns(
         "import_value_cif",
         "pair_uses_weight_proxy",
         "pair_uses_estimated_weight",
-        "import_weight_estimated",
+        "import_is_synchronized_quantity_estimated",
         "lagged_pair_factor_observations",
         "lagged_pair_factor_years",
         "lagged_pair_factor_found",
@@ -1384,7 +1384,9 @@ def _source_weight(
 
     direct_estimated = (
         direct
-        & frame["import_weight_estimated"].fillna(False).astype(bool)
+        & frame[
+            "import_is_synchronized_quantity_estimated"
+        ].fillna(False).astype(bool)
     )
     direct_reported = direct & ~direct_estimated
 
@@ -3385,14 +3387,14 @@ def estimate_cif_fob_rates(
             "import_value_cif",
 
             # Physical quantity and provenance propagated from Quantity.
-            "export_weight_kg_pre_allocation",
-            "import_weight_kg_pre_allocation",
+            "export_synchronized_quantity_kg",
+            "import_synchronized_quantity_kg",
             "export_weight_kg",
             "import_weight_kg",
-            "export_weight_source",
-            "import_weight_source",
-            "export_weight_estimated",
-            "import_weight_estimated",
+            "export_synchronized_quantity_source",
+            "import_synchronized_quantity_source",
+            "export_is_synchronized_quantity_estimated",
+            "import_is_synchronized_quantity_estimated",
             "export_weight_is_proxy",
             "import_weight_is_proxy",
             "export_estimated_weight_component_count",
@@ -3775,9 +3777,9 @@ def estimate_cif_fob_rates(
         if aggregate_reusable:
             log_checkpoint_reuse(
                 logger,
-                "CIF/FOB estimated rates manifest matches",
-                output_path,
+                "CIF/FOB estimated rates",
                 reason="manifest matches",
+                cached_output_path=output_path,
             )
             
 

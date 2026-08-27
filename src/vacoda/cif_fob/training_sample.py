@@ -534,12 +534,12 @@ def build_training_sample(
                 ) AS import_uses_weight_proxy,
 
                 COALESCE(
-                    export_weight_estimated,
+                    export_is_synchronized_quantity_estimated,
                     FALSE
                 ) AS export_uses_estimated_weight,
 
                 COALESCE(
-                    import_weight_estimated,
+                    import_is_synchronized_quantity_estimated,
                     FALSE
                 ) AS import_uses_estimated_weight
 

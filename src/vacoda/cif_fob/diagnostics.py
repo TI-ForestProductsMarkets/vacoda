@@ -167,7 +167,7 @@ def build_primary_holdout_diagnostics(
 
         pair_uses_weight_proxy,
         pair_uses_estimated_weight,
-        import_weight_estimated,
+        import_is_synchronized_quantity_estimated,
 
         lagged_pair_factor_found,
         lagged_pair_factor_observations,

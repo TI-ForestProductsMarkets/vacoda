@@ -575,20 +575,6 @@ def prepare_cif_fob_input(
                 -- an independent weight hierarchy.
                 -- --------------------------------------------------
 
-                CAST(
-                    {synchronized_quantity_col}
-                    AS DOUBLE
-                ) AS row_canonical_weight_kg,
-
-                -- --------------------------------------------------
-                -- Canonical weight source
-                -- --------------------------------------------------
-
-                CAST(
-                    {synchronized_quantity_source_col}
-                    AS VARCHAR
-                ) AS row_canonical_weight_source,
-
                 -- --------------------------------------------------
                 -- Paired direct CIF/FOB values
                 --
@@ -659,21 +645,16 @@ def prepare_cif_fob_input(
             SELECT
                 *,
 
-                CAST(
-                    {synchronized_quantity_estimated_col}
-                    AS BOOLEAN
-                ) AS row_canonical_weight_estimated,
-
                 FALSE AS row_canonical_weight_is_proxy,
 
                 CASE
-                    WHEN row_canonical_weight_kg > 0
+                    WHEN {synchronized_quantity_col} > 0
                         THEN (
-                            row_canonical_weight_kg
+                            {synchronized_quantity_col}
                             * {allocation_factor_sql}
                         )
                     ELSE NULL
-                END AS row_canonical_weight_hs_synced,
+                END AS synchronized_quantity_kg_hs_synced,
 
                 (
                     row_paired_cif_value > 0
@@ -693,7 +674,7 @@ def prepare_cif_fob_input(
                 {commodity_col},
 
                 -- ----------------------------------------------
-                -- Canonical value and physical measure
+                -- Canonical value and synchronized physical measure
                 -- ----------------------------------------------
 
                 SUM(
@@ -704,30 +685,33 @@ def prepare_cif_fob_input(
                 ) AS {canonical_value_col},
 
                 SUM(
-                    row_canonical_weight_kg
-                ) AS canonical_weight_kg,
+                    {synchronized_quantity_col}
+                ) AS {synchronized_quantity_col},
 
                 SUM(
-                    row_canonical_weight_hs_synced
-                ) AS canonical_weight_hs_synced,
+                    synchronized_quantity_kg_hs_synced
+                ) AS synchronized_quantity_kg_hs_synced,
 
                 CASE
                     WHEN COUNT(
                         DISTINCT
-                        row_canonical_weight_source
+                        {synchronized_quantity_source_col}
                     ) = 1
                         THEN MIN(
-                            row_canonical_weight_source
+                            {synchronized_quantity_source_col}
                         )
                     ELSE 'mixed'
-                END AS canonical_weight_source,
+                END AS {synchronized_quantity_source_col},
 
                 BOOL_OR(
                     COALESCE(
-                        row_canonical_weight_estimated,
+                        CAST(
+                            {synchronized_quantity_estimated_col}
+                            AS BOOLEAN
+                        ),
                         FALSE
                     )
-                ) AS canonical_weight_estimated,
+                ) AS {synchronized_quantity_estimated_col},
 
                 BOOL_OR(
                     COALESCE(
@@ -814,7 +798,10 @@ def prepare_cif_fob_input(
                 ) AS source_cmd_original_count,
 
                 COUNT(*) FILTER (
-                    WHERE row_canonical_weight_estimated
+                    WHERE COALESCE(
+                        {synchronized_quantity_estimated_col},
+                        FALSE
+                    )
                 ) AS estimated_weight_source_row_count,
 
                 COUNT(*) FILTER (
@@ -822,8 +809,8 @@ def prepare_cif_fob_input(
                 ) AS proxy_weight_source_row_count,
 
                 COUNT(*) FILTER (
-                    WHERE row_canonical_weight_kg IS NULL
-                       OR row_canonical_weight_kg <= 0
+                    WHERE {synchronized_quantity_col} IS NULL
+                    OR {synchronized_quantity_col} <= 0
                 ) AS missing_weight_source_row_count,
 
                 'reported_non_aggregate_components'
@@ -922,20 +909,20 @@ def prepare_cif_fob_input(
                 (
                     SELECT COUNT(*)
                     FROM read_parquet({output_sql})
-                    WHERE canonical_weight_hs_synced > 0
+                    WHERE synchronized_quantity_kg_hs_synced  > 0
                 ) AS n_with_canonical_weight,
 
                 (
                     SELECT COUNT(*)
                     FROM read_parquet({output_sql})
-                    WHERE canonical_weight_hs_synced IS NULL
-                       OR canonical_weight_hs_synced <= 0
+                    WHERE synchronized_quantity_kg_hs_synced  IS NULL
+                       OR synchronized_quantity_kg_hs_synced  <= 0
                 ) AS n_without_canonical_weight,
 
                 (
                     SELECT COUNT(*)
                     FROM read_parquet({output_sql})
-                    WHERE canonical_weight_estimated
+                    WHERE {synchronized_quantity_estimated_col}
                 ) AS n_groups_using_estimated_weight,
 
                 (
@@ -1401,7 +1388,7 @@ def prepare_cif_fob_input(
         )
 
 
-        logger.info("  Step 1 audit passed: %s", audit_passed)
+        logger.info("  Audit passed: %s", audit_passed)
         logger.info("  Ready for mirror-pair construction: %s", ready_for_mirror_pairs)
 
 

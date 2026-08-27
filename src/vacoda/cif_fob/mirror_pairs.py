@@ -19,7 +19,8 @@ Step 1 has already:
 - retained reported, non-aggregate Comtrade evidence;
 - aggregated additive Partner2 / transport / HS components;
 - allocated supplementary measures during HS synchronization;
-- derived canonical weight;
+- consumed the synchronized kg quantity produced by the Quantity module
+  and applied HS allocation where required;
 - derived importer-side direct CIF/FOB factors;
 - passed structural audits.
 
@@ -329,6 +330,18 @@ def build_mirror_pairs(
         columns.canonical_value
     )
 
+    synchronized_quantity_col = _quote_identifier(
+        columns.synchronized_quantity
+    )
+
+    synchronized_quantity_source_col = _quote_identifier(
+        columns.synchronized_quantity_source
+    )
+
+    synchronized_quantity_estimated_col = _quote_identifier(
+        columns.synchronized_quantity_estimated
+    )
+
     direct_cif_col = _quote_identifier(
         columns.direct_cif_value
     )
@@ -599,27 +612,18 @@ def build_mirror_pairs(
                     AS DOUBLE
                 ) AS primary_value_hs_synced,
 
-                CAST(
-                    canonical_weight_kg
-                    AS DOUBLE
-                ) AS canonical_weight_kg,
+                {synchronized_quantity_col},
 
-                CAST(
-                    canonical_weight_hs_synced
-                    AS DOUBLE
-                ) AS canonical_weight_hs_synced,
+                synchronized_quantity_kg_hs_synced,
 
-                CAST(
-                    canonical_weight_estimated
-                    AS BOOLEAN
-                ) AS canonical_weight_estimated,
+                {synchronized_quantity_estimated_col},
+
+                {synchronized_quantity_source_col},
 
                 CAST(
                     canonical_weight_is_proxy
                     AS BOOLEAN
                 ) AS canonical_weight_is_proxy,
-
-                canonical_weight_source,
 
                 CAST(
                     {direct_cif_col}
@@ -736,17 +740,17 @@ def build_mirror_pairs(
                 primary_value_hs_synced
                     AS export_value_fob,
 
-                canonical_weight_kg
-                    AS export_weight_kg_pre_allocation,
+                {synchronized_quantity_col}
+                    AS export_synchronized_quantity_kg,
 
-                canonical_weight_hs_synced
+                synchronized_quantity_kg_hs_synced
                     AS export_weight_kg,
 
-                canonical_weight_source
-                    AS export_weight_source,
+                {synchronized_quantity_source_col}
+                    AS export_synchronized_quantity_source,
 
-                canonical_weight_estimated
-                    AS export_weight_estimated,
+                {synchronized_quantity_estimated_col}
+                    AS export_is_synchronized_quantity_estimated,
 
                 canonical_weight_is_proxy
                     AS export_weight_is_proxy,
@@ -802,17 +806,18 @@ def build_mirror_pairs(
                 primary_value_hs_synced
                     AS import_value_cif,
 
-                canonical_weight_kg
-                    AS import_weight_kg_pre_allocation,
+                {synchronized_quantity_col}
+                    AS import_synchronized_quantity_kg,
 
-                canonical_weight_hs_synced
+                synchronized_quantity_kg_hs_synced
                     AS import_weight_kg,
 
-                canonical_weight_source
-                    AS import_weight_source,
+                {synchronized_quantity_source_col}
+                    AS import_synchronized_quantity_source,
 
-                canonical_weight_estimated
-                    AS import_weight_estimated,
+                {synchronized_quantity_estimated_col}
+                    AS import_is_synchronized_quantity_estimated,
+
 
                 canonical_weight_is_proxy
                     AS import_weight_is_proxy,
@@ -902,18 +907,17 @@ def build_mirror_pairs(
                 x.export_value_fob,
                 m.import_value_cif,
 
-                -- Reporter-side physical measures
-                x.export_weight_kg_pre_allocation,
-                m.import_weight_kg_pre_allocation,
+                x.export_synchronized_quantity_kg,
+                m.import_synchronized_quantity_kg,
 
                 x.export_weight_kg,
                 m.import_weight_kg,
 
-                x.export_weight_source,
-                m.import_weight_source,
+                x.export_synchronized_quantity_source,
+                m.import_synchronized_quantity_source,
 
-                x.export_weight_estimated,
-                m.import_weight_estimated,
+                x.export_is_synchronized_quantity_estimated,
+                m.import_is_synchronized_quantity_estimated,
 
                 x.export_weight_is_proxy,
                 m.import_weight_is_proxy,

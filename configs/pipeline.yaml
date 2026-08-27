@@ -14,8 +14,8 @@ pipeline:
     - "staging"
     - "hs_sync"
     - "quantity"
-    #- "cif_fob"
-    #- "trade_sync"
+    - "cif_fob"
+    - "trade_sync"
     # - "processed_export"
 
   # Stop immediately if a step fails or reports ready_for_next_step=false.
