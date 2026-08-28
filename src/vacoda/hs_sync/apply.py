@@ -22,7 +22,13 @@ import pandas as pd
 from vacoda.io.duckdb_scan import duckdb_scan_relation
 from vacoda.utils.logger import get_logger
 from vacoda.config.hs_sync import HsSyncConfig
-
+from vacoda.pipeline.checkpoint import (
+    file_fingerprint,
+    semantic_config_fingerprint,
+    validate_local_checkpoint,
+    write_local_checkpoint,
+    source_files_fingerprint
+)
 logger = get_logger("HS_SYNC.APPLY")
 
 
@@ -583,12 +589,11 @@ def _build_post_apply_audit(
 
     return pd.DataFrame(checks)
 
-
-
 def run_hs_sync_apply(
     *,
     cfg: HsSyncConfig,
     run_id: str,
+    force: bool = False,
     logger: None | object = None,
 ) -> dict[str, object]:
     """
@@ -604,18 +609,91 @@ def run_hs_sync_apply(
     input_pattern = cfg.coverage.input.pattern
 
     if input_pattern is None:
-        raise ValueError("coverage.input.pattern is required for HS-sync apply.")
+        raise ValueError(
+            "coverage.input.pattern is required for HS-sync apply."
+        )
 
+    input_files = sorted(
+        input_dir.glob(input_pattern)
+    )
+
+    if not input_files:
+        raise FileNotFoundError(
+            "No HS Sync apply input files matched: "
+            f"{input_dir / input_pattern}"
+        )
+    
     input_glob = str(input_dir / input_pattern)
 
     weights_path = cfg.apply_weights_path()
     output_path = cfg.apply_output_path()
     audit_path = cfg.apply_audit_path()
 
-    if not weights_path.exists():
+    if not weights_path.is_file():
         raise FileNotFoundError(
-            f"Complete mapping-weight table does not exist: {weights_path}"
+            "Complete mapping-weight table does not exist: "
+            f"{weights_path}"
         )
+
+    # --------------------------------------------------------------
+    # Local checkpoint
+    # --------------------------------------------------------------
+
+    checkpoint_path = (
+        cfg.apply_output_dir()
+        / "checkpoints"
+        / "apply.json"
+    )
+
+    config_fp = semantic_config_fingerprint(
+        config=cfg,
+        excluded_paths=(
+            ("engine", "threads"),
+            ("artifacts",),
+        ),
+    )
+
+    input_fp = {
+        "trade": source_files_fingerprint(
+            paths=input_files,
+            label="hs_sync_apply_trade_input",
+        ),
+        "weights": file_fingerprint(
+            weights_path,
+            hash_file=True,
+        ),
+    }
+
+    reusable, reason = validate_local_checkpoint(
+        checkpoint_path=checkpoint_path,
+        current_config=config_fp,
+        current_input=input_fp,
+        output_path=output_path,
+    )
+
+    if not force and reusable:
+        logger.info(
+            "🔄 REUSE — HS Sync applied output local checkpoint matches: %s",
+            output_path,
+        )
+
+        return {
+            "status": "reused",
+            "run_id": run_id,
+            "output_path": output_path,
+            "audit_path": audit_path,
+            "audit_passed": True,
+            "n_failed_audit_rows": 0,
+        }
+
+    logger.info(
+        "🔨 REBUILD — HS Sync applied output: %s",
+        "forced" if force else reason,
+    )
+
+    # --------------------------------------------------------------
+    # Existing apply
+    # --------------------------------------------------------------
 
     logger.info("Starting HS-sync apply step.")
     logger.info("  Run ID: %s", run_id)
@@ -644,6 +722,17 @@ def run_hs_sync_apply(
 
     failed = result.audit[result.audit["status"] == "fail"]
     n_failed = len(failed)
+    audit_passed = n_failed < 1
+
+    if audit_passed:
+        write_local_checkpoint(
+            checkpoint_path=checkpoint_path,
+            step_name="hs_sync_apply",
+            run_id=run_id,
+            config=config_fp,
+            input_fingerprint=input_fp,
+            output_path=output_path,
+        )
 
     logger.info("HS-sync apply step completed.")
     logger.info("  Output file: %s", result.output_path)
@@ -655,6 +744,7 @@ def run_hs_sync_apply(
         "run_id": run_id,
         "output_path": result.output_path,
         "audit_path": result.audit_path,
+        "audit_passed": audit_passed,
         "n_audit_rows": len(result.audit),
         "n_failed_audit_rows": n_failed,
     }

@@ -188,6 +188,7 @@ def run_hs_sync_workflow(
                 runner=lambda: run_comtrade_mapping_preparation(
                     cfg=cfg,
                     run_id=run_id,
+                    force=force,
                     logger=logger,
                 ),
             )
@@ -275,6 +276,7 @@ def run_hs_sync_workflow(
             runner=lambda: run_equal_split_allocation(
                     cfg=cfg,
                     run_id=run_id,
+                    force=force,
                     logger=logger,
                 ),
             )
@@ -291,6 +293,7 @@ def run_hs_sync_workflow(
             runner=lambda: run_complete_mapping_weights(
                     cfg=cfg,
                     run_id=run_id,
+                    force=force,
                     logger=logger,
                 ),
             )
@@ -307,6 +310,7 @@ def run_hs_sync_workflow(
             runner=lambda: run_hs_sync_apply(
                     cfg=cfg,
                     run_id=run_id,
+                    force=force,
                     logger=logger,
                 ),
             )

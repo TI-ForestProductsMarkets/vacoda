@@ -33,6 +33,12 @@ from logging import Logger
 
 import pandas as pd
 from vacoda.config.hs_sync import HsSyncConfig
+from vacoda.pipeline.checkpoint import (
+    file_fingerprint,
+    semantic_config_fingerprint,
+    validate_local_checkpoint,
+    write_local_checkpoint,
+)
 
 RELATIONSHIP_REVERSE = {
     "1:1": "1:1",
@@ -283,6 +289,7 @@ def run_comtrade_mapping_preparation(
     *,
     cfg: HsSyncConfig,
     run_id: str,
+    force: bool = False,
     logger: Logger,
 ) -> dict[str, object]:
 
@@ -291,6 +298,97 @@ def run_comtrade_mapping_preparation(
 
     normalized_dir.mkdir(parents=True, exist_ok=True)
 
+
+    input_paths = {
+        spec.raw_filename: raw_dir / spec.raw_filename
+        for spec in MAPPING_SPECS
+    }
+
+    output_paths = {
+        spec.raw_filename: (
+            normalized_dir / output_filename(spec)
+        )
+        for spec in MAPPING_SPECS
+    }
+
+    for name, path in input_paths.items():
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"Missing raw mapping file ({name}): {path}"
+            )
+
+    ## local checkpointing
+    checkpoint_path = (
+        normalized_dir
+        / "checkpoints"
+        / "mapping_preparation.json"
+    )
+
+    config_fp = {
+        "target_hs": cfg.scope.target_hs,
+        "mapping_specs": [
+            {
+                "raw_filename": spec.raw_filename,
+                "raw_source_col": spec.raw_source_col,
+                "raw_target_col": spec.raw_target_col,
+                "source_hs": spec.normalized_source_hs,
+                "target_hs": spec.normalized_target_hs,
+                "reverse_direction": spec.reverse_direction,
+            }
+            for spec in MAPPING_SPECS
+        ],
+        "relationship_reverse": RELATIONSHIP_REVERSE,
+    }
+
+    input_fp = {
+        f"raw_mapping:{name}": file_fingerprint(
+            path,
+            hash_file=True,
+        )
+        for name, path in sorted(input_paths.items())
+    }
+
+    primary_output = next(iter(output_paths.values()))
+
+    reusable, reason = validate_local_checkpoint(
+        checkpoint_path=checkpoint_path,
+        current_config=config_fp,
+        current_input=input_fp,
+        output_path=primary_output,
+    )
+
+    reusable = (
+        reusable
+        and all(path.is_file() for path in output_paths.values())
+    )
+
+    if not force and reusable:
+        logger.info(
+            "REUSE — Comtrade HS mapping preparation local checkpoint matches."
+        )
+
+        file_outputs = {
+            spec.raw_filename: {
+                "status": "reused",
+                "input": input_paths[spec.raw_filename],
+                "output": output_paths[spec.raw_filename],
+            }
+            for spec in MAPPING_SPECS
+        }
+
+        return {
+            "status": "reused",
+            "run_id": run_id,
+            "raw_dir": raw_dir,
+            "normalized_dir": normalized_dir,
+            "files": file_outputs,
+        }
+
+    logger.info(
+        "REBUILD — Comtrade HS mapping preparation: %s",
+        "forced" if force else reason,
+    )
+    
     logger.info("Preparing UN Comtrade / UNSD HS mappings")
     logger.info("Run ID: %s", run_id)
     logger.info("Raw directory:        %s", raw_dir)
@@ -346,9 +444,24 @@ def run_comtrade_mapping_preparation(
             "rows": len(normalized),
         }
 
+    write_local_checkpoint(
+            checkpoint_path=checkpoint_path,
+            step_name="comtrade_mapping_preparation",
+            run_id=run_id,
+            config=config_fp,
+            input_fingerprint=input_fp,
+            output_path=primary_output,
+        )
+
     outputs["status"] = "completed"
     outputs["files"] = file_outputs
 
     logger.info("Comtrade HS mapping preparation complete.")
 
-    return outputs
+    return {
+        "status": "completed",
+        "run_id": run_id,
+        "raw_dir": raw_dir,
+        "normalized_dir": normalized_dir,
+        "files": file_outputs,
+    }

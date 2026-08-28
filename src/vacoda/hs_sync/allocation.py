@@ -21,7 +21,13 @@ import pandas as pd
 
 from vacoda.utils.logger import get_logger
 from vacoda.config.hs_sync import HsSyncConfig
-
+from vacoda.pipeline.checkpoint import (
+    file_fingerprint,
+    semantic_config_fingerprint,
+    validate_local_checkpoint,
+    write_local_checkpoint,
+    source_files_fingerprint,
+)
 
 logger = get_logger("HS_SYNC.ALLOCATION")
 
@@ -855,13 +861,13 @@ def write_complete_mapping_weight_outputs(
         "complete_weights_audit": audit_path,
     }
 
-
 def run_equal_split_allocation(
     *,
     cfg: HsSyncConfig,
     run_id: str,
+    force: bool = False,
     logger: None | object = None,
-) -> dict[str, Path]:
+) -> dict[str, object]:
     """
     Build equal-split allocation weights for observed needs-weights cases.
 
@@ -875,12 +881,6 @@ def run_equal_split_allocation(
             "status": "disabled",
             "run_id": run_id,
         }
-
-    logger.info("Starting HS-sync allocation step.")
-    logger.info("  Run ID: %s", run_id)
-    logger.info("  Allocation target HS: %s", cfg.weights.target_hs)
-    logger.info("  Allocation strategy: %s", cfg.weights.strategy.name)
-    logger.info("  Allocation mappings source: %s", cfg.weights.input.mappings)
 
     if cfg.weights.strategy.name != "equal_split":
         raise ValueError(
@@ -896,8 +896,125 @@ def run_equal_split_allocation(
             "Expected 'coverage.mappings'."
         )
 
-    source_code_coverage_path = cfg.weights_input_coverage_path()
-    logger.info("Loading source-code coverage from: %s", source_code_coverage_path)
+    # ------------------------------------------------------------------
+    # Resolve inputs and outputs
+    # ------------------------------------------------------------------
+
+    source_code_coverage_path = (
+        cfg.weights_input_coverage_path()
+    )
+
+    mapping_paths = cfg.coverage_mapping_files()
+
+    weights_path = (
+        cfg.weights_equal_split_weights_path()
+    )
+
+    audit_path = (
+        cfg.weights_equal_split_audit_path()
+    )
+
+    if not source_code_coverage_path.is_file():
+        raise FileNotFoundError(
+            "Source-code coverage file does not exist: "
+            f"{source_code_coverage_path}"
+        )
+
+    for name, path in mapping_paths.items():
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"HS mapping file does not exist ({name}): {path}"
+            )
+
+    # ------------------------------------------------------------------
+    # Local checkpoint
+    # ------------------------------------------------------------------
+
+    checkpoint_path = (
+        cfg.weights_output_dir()
+        / "checkpoints"
+        / "equal_split_allocation.json"
+    )
+
+    config_fp = semantic_config_fingerprint(
+        config=cfg,
+        excluded_paths=(
+            ("engine", "threads"),
+            ("artifacts",),
+        ),
+    )
+
+    input_fp = {
+        "source_code_coverage": file_fingerprint(
+            source_code_coverage_path,
+            hash_file=True,
+        ),
+        **{
+            f"mapping:{name}": file_fingerprint(
+                path,
+                hash_file=True,
+            )
+            for name, path in sorted(mapping_paths.items())
+        },
+    }
+
+    reusable, reason = validate_local_checkpoint(
+        checkpoint_path=checkpoint_path,
+        current_config=config_fp,
+        current_input=input_fp,
+        output_path=weights_path,
+    )
+
+    # The checkpoint validator checks the primary output.
+    # This step also requires its audit artifact to exist.
+    reusable = (
+        reusable
+        and audit_path.is_file()
+    )
+
+    if not force and reusable:
+        logger.info(
+            "REUSE — Equal-split allocation local checkpoint matches: %s",
+            weights_path,
+        )
+
+        return {
+            "status": "reused",
+            "run_id": run_id,
+            "weights": weights_path,
+            "audit": audit_path,
+            "audit_passed": True,
+            "n_failed_audit_rows": 0,
+        }
+
+    logger.info(
+        "REBUILD — Equal-split allocation: %s",
+        "forced" if force else reason,
+    )
+
+    # ------------------------------------------------------------------
+    # Build
+    # ------------------------------------------------------------------
+
+    logger.info("Starting HS-sync allocation step.")
+    logger.info("  Run ID: %s", run_id)
+    logger.info(
+        "  Allocation target HS: %s",
+        cfg.weights.target_hs,
+    )
+    logger.info(
+        "  Allocation strategy: %s",
+        cfg.weights.strategy.name,
+    )
+    logger.info(
+        "  Allocation mappings source: %s",
+        cfg.weights.input.mappings,
+    )
+
+    logger.info(
+        "Loading source-code coverage from: %s",
+        source_code_coverage_path,
+    )
 
     source_code_coverage = pd.read_csv(
         source_code_coverage_path,
@@ -908,8 +1025,6 @@ def run_equal_split_allocation(
         "Loaded source-code coverage rows: %s",
         f"{len(source_code_coverage):,}",
     )
-
-    mapping_paths = cfg.coverage_mapping_files()
 
     logger.info(
         "Loading %s mapping table(s) from: %s",
@@ -929,7 +1044,11 @@ def run_equal_split_allocation(
     }
 
     for key, df in mapping_tables.items():
-        logger.info("  Mapping %s rows: %s", key, f"{len(df):,}")
+        logger.info(
+            "  Mapping %s rows: %s",
+            key,
+            f"{len(df):,}",
+        )
 
     observed_mapping = build_observed_needs_mapping(
         mapping_tables=mapping_tables,
@@ -945,15 +1064,27 @@ def run_equal_split_allocation(
         mapping=observed_mapping,
     )
 
-    logger.info("Allocation result weight rows: %s", f"{len(result.weights):,}")
-    logger.info("Allocation audit rows: %s", f"{len(result.audit):,}")
+    logger.info(
+        "Allocation result weight rows: %s",
+        f"{len(result.weights):,}",
+    )
+    logger.info(
+        "Allocation audit rows: %s",
+        f"{len(result.audit):,}",
+    )
 
-    weights_path = cfg.weights_equal_split_weights_path()
-    audit_path = cfg.weights_equal_split_audit_path()
-
-    logger.info("Allocation weights output path: %s", weights_path)
-    logger.info("Allocation audit output path: %s", audit_path)
-    logger.info("Overwrite enabled: %s", cfg.weights.write.overwrite)
+    logger.info(
+        "Allocation weights output path: %s",
+        weights_path,
+    )
+    logger.info(
+        "Allocation audit output path: %s",
+        audit_path,
+    )
+    logger.info(
+        "Overwrite enabled: %s",
+        cfg.weights.write.overwrite,
+    )
 
     outputs = write_allocation_outputs(
         weights=result.weights,
@@ -963,18 +1094,44 @@ def run_equal_split_allocation(
         overwrite=cfg.weights.write.overwrite,
     )
 
-    n_failed = int((result.audit["status"] != "pass").sum())
+    # ------------------------------------------------------------------
+    # Audit
+    # ------------------------------------------------------------------
+
+    n_failed = int(
+        (result.audit["status"] != "pass").sum()
+    )
+
+    audit_passed = n_failed == 0
+
+    if audit_passed:
+        logger.info(
+            "✅ AUDIT — Equal-split allocation passed."
+        )
+
+        write_local_checkpoint(
+            checkpoint_path=checkpoint_path,
+            step_name="equal_split_allocation",
+            run_id=run_id,
+            config=config_fp,
+            input_fingerprint=input_fp,
+            output_path=weights_path,
+        )
 
     logger.info("HS-sync equal-split allocation step complete.")
     logger.info("  Weights file: %s", outputs["weights"])
     logger.info("  Audit file: %s", outputs["audit"])
-    logger.info("  Allocation audit failed rows: %s", n_failed)
+    logger.info(
+        "  Allocation audit failed rows: %s",
+        n_failed,
+    )
 
     return {
         "status": "completed",
         "run_id": run_id,
         "weights": outputs["weights"],
         "audit": outputs["audit"],
+        "audit_passed": audit_passed,
         "n_weight_rows": len(result.weights),
         "n_audit_rows": len(result.audit),
         "n_failed_audit_rows": n_failed,
