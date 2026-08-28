@@ -104,7 +104,7 @@ coverage:
     timestamp: false
 
   artifact:
-    kind: "reports"
+    kind: "manifest"
     subdir: "hs_sync/target_{target_hs_lower}/coverage"
     filename: "target_{target_hs_lower}_mapping_coverage_report"
     timestamp: true

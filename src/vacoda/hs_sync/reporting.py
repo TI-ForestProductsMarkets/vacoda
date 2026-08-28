@@ -28,12 +28,14 @@ import pandas as pd
 
 from vacoda.config.hs_sync import HsSyncConfig
 from vacoda.config.paths import get_figure_dir
-from vacoda.utils.display import get_symbols
 from vacoda.utils.markdown import (
     insert_markdown_toc,
     markdown_image,
 )
-
+from vacoda.utils.display import (
+    get_symbols,
+    get_table_figure_layout,
+)
 
 # ======================================================================
 # Helpers
@@ -694,10 +696,218 @@ def build_hs_sync_report(
         "mapping_coverage",
     )
 
+    source_code_coverage = _coverage_table(
+        coverage_tables,
+        "source_code_coverage",
+    )
+
     mapping_coverage_summary = _coverage_table(
         coverage_tables,
         "mapping_summary",
     )
+
+    needs_weights = _coverage_table(
+        coverage_tables,
+        "needs_weights",
+    )
+
+    easy_without_weights = _coverage_table(
+        coverage_tables,
+        "easy_without_weights",
+    )
+
+    needs_weights_top = pd.DataFrame()
+    top_10_value_share = None
+    n_needs_weight_pairs = 0
+
+    if not needs_weights.empty:
+        frame = needs_weights.copy()
+
+        needs_weights_top = (
+            frame.groupby(
+                [
+                    "source_hs",
+                    "source_cmd",
+                    "target_hs",
+                ],
+                as_index=False,
+            )
+            .agg(
+                first_year=("first_year", "min"),
+                last_year=("last_year", "max"),
+                n_target_codes=("target_cmd", "nunique"),
+                target_codes=(
+                    "target_cmd",
+                    lambda values: ";".join(
+                        sorted(
+                            {
+                                str(value)
+                                for value in values
+                                if pd.notna(value)
+                            }
+                        )
+                    ),
+                ),
+                n_rows=("n_rows", "first"),
+                value=("value_total", "first"),
+            )
+            .sort_values(
+                "value",
+                ascending=False,
+            )
+        )
+
+        total_needs_value = needs_weights_top["value"].sum()
+
+        needs_weights_top[
+            "Value share within needs (%)"
+        ] = (
+            100.0
+            * needs_weights_top["value"]
+            / total_needs_value
+        )
+
+        needs_weights_top[
+            "Cumulative value share (%)"
+        ] = needs_weights_top[
+            "Value share within needs (%)"
+        ].cumsum()
+
+        top_10_value_share = (
+            needs_weights_top.head(10)["value"].sum()
+            / total_needs_value
+        )
+
+        needs_weights_top = needs_weights_top.head(10)
+
+    needs_weights_by_hs = pd.DataFrame()
+
+    if not source_code_coverage.empty:
+        needs_source = source_code_coverage.loc[
+            source_code_coverage[
+                "conversion_need"
+            ].eq("needs_weights")
+        ].copy()
+
+        n_needs_weight_pairs = len(needs_source)
+
+        if not needs_source.empty:
+            needs_weights_by_hs = (
+                needs_source.groupby(
+                    "source_hs",
+                    as_index=False,
+                )
+                .agg(
+                    source_code_pairs=("source_cmd", "size"),
+                    rows=("n_rows", "sum"),
+                    value=("value_total", "sum"),
+                    first_year=("first_year", "min"),
+                    last_year=("last_year", "max"),
+                )
+                .sort_values(
+                    "value",
+                    ascending=False,
+                )
+            )
+
+            needs_total_value = (
+                needs_weights_by_hs["value"].sum()
+            )
+
+            needs_weights_by_hs[
+                "Value share within needs (%)"
+            ] = (
+                100.0
+                * needs_weights_by_hs["value"]
+                / needs_total_value
+            )
+
+            needs_weights_by_hs = (
+                needs_weights_by_hs.rename(
+                    columns={
+                        "source_hs": "Source HS",
+                        "source_code_pairs":
+                            "Source HS-code pairs",
+                        "rows": "Rows",
+                        "value": "Value",
+                        "first_year": "First year",
+                        "last_year": "Last year",
+                    }
+                )
+            )
+
+    mapping_outcome_summary = pd.DataFrame()
+
+    if not source_code_coverage.empty:
+        frame = source_code_coverage.copy()
+
+        grouped = (
+            frame.groupby(
+                "conversion_need",
+                dropna=False,
+                as_index=False,
+            )
+            .agg(
+                source_code_pairs=("source_cmd", "size"),
+                rows=("n_rows", "sum"),
+                value=("value_total", "sum"),
+            )
+        )
+
+        total_pairs = grouped["source_code_pairs"].sum()
+        total_rows = grouped["rows"].sum()
+        total_value = grouped["value"].sum()
+
+        grouped["Source-code share (%)"] = (
+            100.0 * grouped["source_code_pairs"] / total_pairs
+        )
+        grouped["Row share (%)"] = (
+            100.0 * grouped["rows"] / total_rows
+        )
+        grouped["Value share (%)"] = (
+            100.0 * grouped["value"] / total_value
+        )
+
+        grouped["Result class"] = grouped[
+            "conversion_need"
+        ].replace(
+            {
+                "easy_without_weights": "Easy without weights",
+                "needs_weights": "Needs weights",
+            }
+        )
+
+        grouped["Meaning"] = grouped[
+            "conversion_need"
+        ].replace(
+            {
+                "easy_without_weights": (
+                    "Already target HS, 1:1, or deterministic aggregation"
+                ),
+                "needs_weights": (
+                    "Source code splits across multiple target codes"
+                ),
+            }
+        )
+
+        mapping_outcome_summary = grouped[
+            [
+                "Result class",
+                "source_code_pairs",
+                "Source-code share (%)",
+                "rows",
+                "Row share (%)",
+                "value",
+                "Value share (%)",
+                "Meaning",
+            ]
+        ].rename(
+            columns={
+                "source_code_pairs": "Source HS-code pairs",
+                "rows": "Rows",
+                "value": "Value",
+            }
+        )
 
     missing_mappings = _coverage_table(
         coverage_tables,
@@ -736,16 +946,6 @@ def build_hs_sync_report(
     # ==================================================================
     # 4. Allocation
     # ==================================================================
-
-    needs_weights = _coverage_table(
-        coverage_tables,
-        "needs_weights",
-    )
-
-    easy_without_weights = _coverage_table(
-        coverage_tables,
-        "easy_without_weights",
-    )
 
     equal_split_summary = _result_summary(
         equal_split_result,
@@ -936,23 +1136,65 @@ def build_hs_sync_report(
             f"target classification `{cfg.scope.target_hs}`."
         ),
         "",
+    ]
 
+    lines.extend([
         "### 2.1 Overall HS-system coverage",
         "",
-        _markdown_table(
-            overall_summary,
-            max_rows=30,
-        ),
-        "",
+    ])
 
+    if "overall_hs_coverage" in written_figures:
+        lines.extend([
+            get_table_figure_layout(
+                overall_summary.head(30),
+                markdown_image(
+                    "Overall source HS coverage",
+                    written_figures["overall_hs_coverage"],
+                    document_path=report_path,
+                    width=650,
+                    height=440,
+                ),
+            ),
+            "",
+        ])
+    else:
+        lines.extend([
+            _markdown_table(
+                overall_summary,
+                max_rows=30,
+            ),
+            "",
+        ])
+
+    lines.extend([
         "### 2.2 Year-by-year HS mix",
         "",
-        _markdown_table(
-            year_hs_mix,
-            max_rows=50,
-        ),
-        "",
+    ])
 
+    if "year_hs_mix" in written_figures:
+        lines.extend([
+            get_table_figure_layout(
+                year_hs_mix.head(50),
+                markdown_image(
+                    "HS classification mix by year",
+                    written_figures["year_hs_mix"],
+                    document_path=report_path,
+                    width=650,
+                    height=440,
+                ),
+            ),
+            "",
+        ])
+    else:
+        lines.extend([
+            _markdown_table(
+                year_hs_mix,
+                max_rows=50,
+            ),
+            "",
+        ])
+
+    lines.extend([
         "### 2.3 Reporter coverage",
         "",
         (
@@ -965,7 +1207,6 @@ def build_hs_sync_report(
             max_rows=20,
         ),
         "",
-
         "### 2.4 Reporter HS timelines",
         "",
         (
@@ -978,7 +1219,6 @@ def build_hs_sync_report(
             max_rows=30,
         ),
         "",
-
         "### 2.5 Classification transitions and anomalies",
         "",
         (
@@ -986,11 +1226,27 @@ def build_hs_sync_report(
             f"`{len(transitions):,}`."
         ),
         "",
+        "",
         _markdown_table(
             transitions,
             max_rows=30,
         ),
         "",
+    ])
+
+    if "hs_transitions" in written_figures:
+        lines.extend([
+            markdown_image(
+                "Reporter HS classification transitions",
+                written_figures["hs_transitions"],
+                document_path=report_path,
+                width=700,
+                height=440,
+            ),
+            "",
+        ])
+
+    lines.extend([
         (
             f"Mixed-classification reporter-years identified: "
             f"`{len(mixed_reporter_years):,}`."
@@ -1001,6 +1257,9 @@ def build_hs_sync_report(
             max_rows=30,
         ),
         "",
+    ])
+
+    lines.extend([
 
         # --------------------------------------------------------------
         # 3. Mapping quality
@@ -1009,28 +1268,54 @@ def build_hs_sync_report(
         "## 3. Mapping quality",
         "",
         (
-            "This section summarizes preparation and validation of the "
-            "HS concordances used to translate observed source codes into "
-            f"the target `{cfg.scope.target_hs}` classification."
+            "This section summarizes how observed source HS codes map "
+            f"into the configured target `{cfg.scope.target_hs}` "
+            "classification and identifies cases requiring allocation."
         ),
         "",
 
-        "### 3.1 Mapping preparation",
+        "### 3.1 Mapping outcome summary",
+        "",
+        (
+            "Source-code pairs are classified according to whether they "
+            "can be resolved deterministically or require allocation weights."
+        ),
+        "",
+        _markdown_table(mapping_outcome_summary),
+        "",
+
+        "### 3.2 Mapping preparation",
+        "",
+        _markdown_table(mapping_preparation_summary),
+        "",
+
+        "### 3.3 Mapping coverage",
         "",
         _markdown_table(
-            mapping_preparation_summary
+            mapping_coverage,
+            max_rows=30,
         ),
         "",
-
-        "### 3.2 Mapping coverage",
+        _markdown_table(mapping_coverage_summary),
         "",
-        _markdown_table(
-            mapping_coverage_summary,
-            max_rows=50,
+        "",
+
+        "### 3.4 Needs-weights diagnostics",
+        "",
+        (
+            f"Source HS-code pairs requiring allocation weights: "
+            f"`{n_needs_weight_pairs:,}`."
         ),
         "",
-
-        "### 3.3 Missing mappings",
+        "**By source HS classification**",
+        "",
+        _markdown_table(needs_weights_by_hs),
+        "",
+        "**Highest-value needs-weights cases**",
+        "",
+        _markdown_table(needs_weights_top),
+        "",
+        "### 3.5 Missing mappings",
         "",
         (
             f"Missing-mapping rows identified: "
@@ -1039,17 +1324,14 @@ def build_hs_sync_report(
         "",
         _markdown_table(
             missing_mappings,
-            max_rows=50,
+            max_rows=30,
         ),
         "",
 
-        "### 3.4 Mapping normalization audit",
+        "### 3.6 Mapping normalization audit",
         "",
-        _markdown_table(
-            mapping_audit_summary
-        ),
+        _markdown_table(mapping_audit_summary),
         "",
-
         # --------------------------------------------------------------
         # 4. Allocation
         # --------------------------------------------------------------
@@ -1156,92 +1438,15 @@ def build_hs_sync_report(
             )
         ),
         "",
-
-        # --------------------------------------------------------------
-        # 7. Diagnostic figures
-        # --------------------------------------------------------------
-
-        "## 7. Diagnostic figures",
-        "",
-    ]
+    ])
 
     # ==================================================================
-    # Figure references
-    # ==================================================================
-
-    if "overall_hs_coverage" in written_figures:
-        lines.extend(
-            [
-                "### 7.1 Overall source HS coverage",
-                "",
-                (
-                    "The figure shows the overall distribution of source "
-                    "observations across HS classification systems."
-                ),
-                "",
-                markdown_image(
-                    "Overall source HS coverage",
-                    written_figures["overall_hs_coverage"],
-                    document_path=report_path,
-                ),
-                "",
-            ]
-        )
-
-    if "year_hs_mix" in written_figures:
-        lines.extend(
-            [
-                "### 7.2 HS classification mix by year",
-                "",
-                (
-                    "The annual composition highlights transitions, "
-                    "overlap periods, and years in which multiple HS "
-                    "systems coexist in the source data."
-                ),
-                "",
-                markdown_image(
-                    "HS classification mix by year",
-                    written_figures["year_hs_mix"],
-                    document_path=report_path,
-                ),
-                "",
-            ]
-        )
-
-    if "hs_transitions" in written_figures:
-        lines.extend(
-            [
-                "### 7.3 Reporter classification transitions",
-                "",
-                (
-                    "The figure counts detected changes in dominant "
-                    "reporter HS classification by transition year."
-                ),
-                "",
-                markdown_image(
-                    "Reporter HS classification transitions",
-                    written_figures["hs_transitions"],
-                    document_path=report_path,
-                ),
-                "",
-            ]
-        )
-
-    if not written_figures:
-        lines.extend(
-            [
-                "_No diagnostic figures were generated._",
-                "",
-            ]
-        )
-
-    # ==================================================================
-    # 8. Output provenance
+    # 7. Output provenance
     # ==================================================================
 
     lines.extend(
         [
-            "## 8. Output provenance",
+            "## 7. Output provenance",
             "",
             "| Artifact | Path |",
             "|---|---|",
