@@ -2234,6 +2234,7 @@ def build_reporter_year_hs_coverage(
     data_dir: str | Path,
     *,
     pattern: str = "*.csv",
+    input_format: str = "csv",
     engine: str = "duckdb",
     threads: int = 16,
     columns: dict[str, str] | None = None,
@@ -2247,6 +2248,7 @@ def build_reporter_year_hs_coverage(
         return build_reporter_year_hs_coverage_duckdb(
             data_dir,
             pattern=pattern,
+            input_format=input_format,
             threads=threads,
             columns=columns,
         )
@@ -2298,6 +2300,7 @@ def build_year_hs_counts(
     data_dir: str | Path,
     *,
     pattern: str = "*.csv",
+    input_format: str = "csv",
     engine: str = "duckdb",
     year_col: str = "RefYear",
     hs_col: str = "ClassificationCode",
@@ -2313,11 +2316,13 @@ def build_year_hs_counts(
     - pandas
     """
     engine = engine.strip().lower()
+    input_format = input_format.strip().lower()
 
     if engine == "duckdb":
         return build_year_hs_counts_duckdb(
             data_dir,
             pattern=pattern,
+            input_format=input_format,
             year_col=year_col,
             hs_col=hs_col,
             threads=threads,
@@ -2345,7 +2350,6 @@ def build_year_hs_counts(
         f"Unknown engine: {engine!r}. "
         "Valid engines are: duckdb, polars, pandas."
     )
-
 
 def make_year_hs_count_pivot(
     year_hs_counts: pd.DataFrame,
@@ -2504,7 +2508,7 @@ def build_year_hs_counts_duckdb(
     """
 
     try:
-        return con.execute(query, [glob_path]).df()
+        return con.execute(query).df()
     finally:
         con.close()
 
@@ -2613,6 +2617,7 @@ def build_reporter_year_hs_coverage_duckdb(
     data_dir: str | Path,
     *,
     pattern: str = "*.csv",
+    input_format: str,
     threads: int = 16,
     columns: dict[str, str] | None = None,
 ) -> pd.DataFrame:
@@ -2637,46 +2642,134 @@ def build_reporter_year_hs_coverage_duckdb(
     data_dir = Path(data_dir)
 
     if not data_dir.exists():
-        raise FileNotFoundError(f"Data directory does not exist: {data_dir}")
+        raise FileNotFoundError(
+            f"Data directory does not exist: {data_dir}"
+        )
 
     columns = columns or {}
 
-    reporter_code_col = columns.get("reporter_code", "ReporterCode")
-    reporter_iso_col = columns.get("reporter_iso", "ReporterISO")
-    reporter_desc_col = columns.get("reporter_desc", "ReporterDesc")
-    year_col = columns.get("year", "RefYear")
-    hs_col = columns.get("hs", "ClassificationCode")
-    hs_search_col = columns.get("hs_search", "ClassificationSearchCode")
-    original_col = columns.get("original", "IsOriginalClassification")
-    cmd_col = columns.get("cmd", "CmdCode")
-    flow_col = columns.get("flow", "FlowCode")
-    value_col = columns.get("value", "PrimaryValue")
-    netweight_col = columns.get("netweight", "NetWgt")
+    reporter_code_col = columns.get(
+        "reporter_code",
+        "ReporterCode",
+    )
+    reporter_iso_col = columns.get(
+        "reporter_iso",
+        "ReporterISO",
+    )
+    reporter_desc_col = columns.get(
+        "reporter_desc",
+        "ReporterDesc",
+    )
+    year_col = columns.get(
+        "year",
+        "RefYear",
+    )
+    hs_col = columns.get(
+        "hs",
+        "ClassificationCode",
+    )
+    hs_search_col = columns.get(
+        "hs_search",
+        "ClassificationSearchCode",
+    )
+    original_col = columns.get(
+        "original",
+        "IsOriginalClassification",
+    )
+    cmd_col = columns.get(
+        "cmd",
+        "CmdCode",
+    )
+    flow_col = columns.get(
+        "flow",
+        "FlowCode",
+    )
+    value_col = columns.get(
+        "value",
+        "PrimaryValue",
+    )
+    netweight_col = columns.get(
+        "netweight",
+        "NetWgt",
+    )
 
-    glob_path = str(data_dir / pattern)
+    glob_path = str(
+        data_dir / pattern
+    )
 
-    con = duckdb.connect(database=":memory:")
-    con.execute(f"PRAGMA threads={int(threads)}")
+    scan = duckdb_scan_relation(
+        path=glob_path,
+        file_format=input_format,
+        alias="src",
+    )
+
+    con = duckdb.connect(
+        database=":memory:"
+    )
+
+    con.execute(
+        f"PRAGMA threads={int(threads)}"
+    )
 
     query = f"""
         WITH base AS (
             SELECT
-                CAST({_quote_ident(reporter_code_col)} AS INTEGER) AS ReporterCode,
-                CAST({_quote_ident(reporter_iso_col)} AS VARCHAR) AS ReporterISO,
-                CAST({_quote_ident(reporter_desc_col)} AS VARCHAR) AS ReporterDesc,
-                CAST({_quote_ident(year_col)} AS INTEGER) AS RefYear,
-                CAST({_quote_ident(hs_col)} AS VARCHAR) AS ClassificationCode,
-                CAST({_quote_ident(hs_search_col)} AS VARCHAR) AS ClassificationSearchCode,
-                CAST({_quote_ident(original_col)} AS BOOLEAN) AS IsOriginalClassification,
-                CAST({_quote_ident(cmd_col)} AS VARCHAR) AS CmdCode,
-                CAST({_quote_ident(flow_col)} AS VARCHAR) AS FlowCode,
-                CAST({_quote_ident(value_col)} AS DOUBLE) AS PrimaryValue,
-                CAST({_quote_ident(netweight_col)} AS DOUBLE) AS NetWgt
-            FROM read_csv_auto(
-                ?,
-                union_by_name=true,
-                filename=true
-            )
+                CAST(
+                    {_quote_ident(reporter_code_col)}
+                    AS INTEGER
+                ) AS ReporterCode,
+
+                CAST(
+                    {_quote_ident(reporter_iso_col)}
+                    AS VARCHAR
+                ) AS ReporterISO,
+
+                CAST(
+                    {_quote_ident(reporter_desc_col)}
+                    AS VARCHAR
+                ) AS ReporterDesc,
+
+                CAST(
+                    {_quote_ident(year_col)}
+                    AS INTEGER
+                ) AS RefYear,
+
+                CAST(
+                    {_quote_ident(hs_col)}
+                    AS VARCHAR
+                ) AS ClassificationCode,
+
+                CAST(
+                    {_quote_ident(hs_search_col)}
+                    AS VARCHAR
+                ) AS ClassificationSearchCode,
+
+                CAST(
+                    {_quote_ident(original_col)}
+                    AS BOOLEAN
+                ) AS IsOriginalClassification,
+
+                CAST(
+                    {_quote_ident(cmd_col)}
+                    AS VARCHAR
+                ) AS CmdCode,
+
+                CAST(
+                    {_quote_ident(flow_col)}
+                    AS VARCHAR
+                ) AS FlowCode,
+
+                CAST(
+                    {_quote_ident(value_col)}
+                    AS DOUBLE
+                ) AS PrimaryValue,
+
+                CAST(
+                    {_quote_ident(netweight_col)}
+                    AS DOUBLE
+                ) AS NetWgt
+
+            FROM {scan}
         ),
 
         grouped AS (
@@ -2688,12 +2781,21 @@ def build_reporter_year_hs_coverage_duckdb(
                 ClassificationCode,
                 ClassificationSearchCode,
                 IsOriginalClassification,
+
                 COUNT(*) AS n_rows,
-                COUNT(DISTINCT CmdCode) AS n_cmd_codes,
-                COUNT(DISTINCT FlowCode) AS n_flows,
-                SUM(PrimaryValue) AS primary_value_total,
-                SUM(NetWgt) AS netwgt_total
+                COUNT(DISTINCT CmdCode)
+                    AS n_cmd_codes,
+                COUNT(DISTINCT FlowCode)
+                    AS n_flows,
+
+                SUM(PrimaryValue)
+                    AS primary_value_total,
+
+                SUM(NetWgt)
+                    AS netwgt_total
+
             FROM base
+
             GROUP BY
                 ReporterCode,
                 ReporterISO,
@@ -2708,9 +2810,13 @@ def build_reporter_year_hs_coverage_duckdb(
             *,
             n_rows * 1.0
             / SUM(n_rows) OVER (
-                PARTITION BY ReporterCode, RefYear
+                PARTITION BY
+                    ReporterCode,
+                    RefYear
             ) AS share_rows_in_reporter_year
+
         FROM grouped
+
         ORDER BY
             ReporterCode,
             RefYear,
@@ -2718,6 +2824,6 @@ def build_reporter_year_hs_coverage_duckdb(
     """
 
     try:
-        return con.execute(query, [glob_path]).df()
+        return con.execute(query).df()
     finally:
         con.close()

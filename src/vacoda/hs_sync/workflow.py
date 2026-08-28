@@ -74,6 +74,7 @@ def build_coverage_tables_step(
 ) -> dict[str, object]:
     tables = build_target_hs_coverage_products(
         cfg=cfg,
+        input_dir=coverage_inputs["input_dir"],
         source_summary=coverage_inputs["source_summary"],
         mappings=coverage_inputs["mappings"],
         logger=logger,
@@ -87,7 +88,6 @@ def build_coverage_tables_step(
             for name, table in tables.items()
         },
     }
-
 
 def run_hs_sync_workflow(
     *,
@@ -193,7 +193,7 @@ def run_hs_sync_workflow(
             )
 
         # ==================================================================
-        # Step 2 — Build coverage products
+        # Step 2 — Load coverage inputs
         # ==================================================================
 
         coverage_inputs_result = run_step(
@@ -210,7 +210,7 @@ def run_hs_sync_workflow(
         coverage_inputs = coverage_inputs_result["coverage_inputs"]
 
         # ==================================================================
-        # Step 3 — Build coverage tables
+        # Step 3 — Build coverage products
         # ==================================================================
 
         coverage_tables_result = run_step(
@@ -229,7 +229,7 @@ def run_hs_sync_workflow(
 
 
         # ==================================================================
-        # Step 4 — Build coverage outputs
+        # Step 4 — Write coverage outputs
         # ==================================================================
 
         coverage_result  = run_step(
@@ -344,12 +344,6 @@ def run_hs_sync_workflow(
             applied_audit_result.get("ready_for_quantity") is True
         )
 
-        if not ready_for_quantity:
-            raise RuntimeError(
-                "HS Sync applied-output audit did not approve "
-                "the output for quantity."
-            )
-
         n_failed_audit_rows = int(
                     applied_audit_result.get("n_failed_audit_rows", 0)
                 )
@@ -357,24 +351,47 @@ def run_hs_sync_workflow(
         # ==================================================================
         # Step 10 — Write HS-sync decision report
         # ==================================================================
-        decision_report_result = run_step(
+        report_result = run_step(
             logger=logger,
             step_number=10,
             total_steps=TOTAL_WORKFLOW_STEPS,
             title=WORKFLOW_STEPS[9],
             runner=lambda: build_hs_sync_report(
-                    cfg=cfg,
-                    tables={
-                        "hs_sync_decision_report": applied_audit_result.get(
-                            "decision_report"
-                        )
-                    },
-                    run_id=run_id,
-                    force=force,
-                    logger=logger,
+                cfg=cfg,
+                run_id=run_id,
+                coverage_tables=coverage_tables,
+                coverage_result=coverage_result,
+                mapping_result=mapping_result,
+                mapping_audit_result=mapping_audit_result,
+                equal_split_result=equal_split_result,
+                complete_weights_result=complete_weights_result,
+                apply_result=apply_result,
+                applied_audit_result=applied_audit_result,
+                report_path=cfg.decision_report_path(run_id),
+                latest_report_path=(
+                    cfg.decision_report_latest_path()
                 ),
+                force=force,
+                logger=logger,
+            ),
+        )
+
+        if not ready_for_quantity:
+            report_path = report_result.get(
+                "report_path"
             )
 
+            message = (
+                "HS Sync applied-output audit did not approve "
+                "the output for Quantity."
+            )
+
+            if report_path is not None:
+                message += (
+                    f" See decision report: {report_path}"
+                )
+
+            raise RuntimeError(message)
 
 
        ########################################################################################
@@ -388,30 +405,38 @@ def run_hs_sync_workflow(
         logger.info("Failed audit rows: %s", n_failed_audit_rows)
         logger.info("Ready for quantity: %s", ready_for_quantity)
         logger.info("Workflow elapsed time: %.2f seconds", workflow_elapsed)
+        logger.info("Decision report: %s", report_result.get("report_path"),)
 
     return {
-            "status": "completed",
-            "run_id": run_id,
+        "status": "completed",
+        "run_id": run_id,
 
-            # Master-pipeline readiness contract.
-            "ready_for_quantity": ready_for_quantity,
+        # Master-pipeline readiness contract.
+        "ready_for_quantity": ready_for_quantity,
 
-            # Compatibility alias.
-            "ready_for_next_step": ready_for_quantity,
+        # Compatibility alias.
+        "ready_for_next_step": ready_for_quantity,
 
-            # Canonical primary output and audit keys used by the master
-            # pipeline and checkpoint system.
-            "output_path": applied_path,
-            "audit_path": audit_path,
+        # Canonical primary output and audit.
+        "output_path": applied_path,
+        "audit_path": audit_path,
 
-            # Explicit HS Sync product paths.
-            "final_parquet": applied_path,
-            "final_audit": audit_path,
+        # Decision report.
+        "report_path": report_result.get(
+            "report_path"
+        ),
+        "latest_report_path": report_result.get(
+            "latest_report_path"
+        ),
 
-            # Final validation outcome.
-            "audit_passed": ready_for_quantity,
-            "n_failed_audit_rows": n_failed_audit_rows,
+        # Explicit HS Sync product paths.
+        "final_parquet": applied_path,
+        "final_audit": audit_path,
 
-            # Useful final workflow metadata.
-            "workflow_duration_seconds": workflow_elapsed,
-        }
+        # Final validation outcome.
+        "audit_passed": ready_for_quantity,
+        "n_failed_audit_rows": n_failed_audit_rows,
+
+        # Useful final workflow metadata.
+        "workflow_duration_seconds": workflow_elapsed,
+    }

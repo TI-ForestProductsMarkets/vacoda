@@ -2,6 +2,14 @@
 vacoda.hs_sync.reporting
 
 Create the final HS Sync decision report and diagnostic figures.
+
+Outputs
+-------
+- Timestamped Markdown decision report
+- Optional latest Markdown copy
+- Overall source-HS coverage figure
+- Annual HS-classification mix figure
+- Reporter HS-transition figure
 """
 
 from __future__ import annotations
@@ -21,7 +29,10 @@ import pandas as pd
 from vacoda.config.hs_sync import HsSyncConfig
 from vacoda.config.paths import get_figure_dir
 from vacoda.utils.display import get_symbols
-from vacoda.utils.markdown import insert_markdown_toc
+from vacoda.utils.markdown import (
+    insert_markdown_toc,
+    markdown_image,
+)
 
 
 # ======================================================================
@@ -42,26 +53,6 @@ def _format_integer(value: Any) -> str:
         return f"{int(round(float(value))):,}"
     except (TypeError, ValueError):
         return str(value)
-
-
-def _format_percent(
-    value: Any,
-    *,
-    digits: int = 2,
-    already_percent: bool = False,
-) -> str:
-    if value is None or pd.isna(value):
-        return "NA"
-
-    try:
-        numeric = float(value)
-    except (TypeError, ValueError):
-        return str(value)
-
-    if not already_percent:
-        numeric *= 100.0
-
-    return f"{numeric:.{digits}f}%"
 
 
 def _markdown_table(
@@ -89,7 +80,7 @@ def _coverage_table(
     coverage_tables: dict[str, pd.DataFrame],
     name: str,
 ) -> pd.DataFrame:
-    """Return one coverage table or an empty DataFrame."""
+    """Return one configured coverage product or an empty DataFrame."""
     table = coverage_tables.get(name)
 
     if table is None:
@@ -102,7 +93,7 @@ def _result_value(
     result: dict[str, Any] | None,
     *keys: str,
 ) -> Any:
-    """Return the first available value from a workflow result."""
+    """Return the first available non-null result value."""
     if not result:
         return None
 
@@ -119,9 +110,10 @@ def _result_summary(
     preferred_keys: tuple[str, ...],
 ) -> pd.DataFrame:
     """
-    Build a compact two-column summary from a workflow result.
+    Build a compact metric/value summary from a workflow result.
 
-    Unknown or unavailable keys are simply omitted.
+    Only scalar values explicitly returned by the producing workflow step
+    are included.
     """
     if not result:
         return pd.DataFrame()
@@ -134,7 +126,16 @@ def _result_summary(
 
         value = result[key]
 
-        if isinstance(value, (pd.DataFrame, dict, list, tuple)):
+        if isinstance(
+            value,
+            (
+                pd.DataFrame,
+                dict,
+                list,
+                tuple,
+                set,
+            ),
+        ):
             continue
 
         rows.append(
@@ -147,25 +148,12 @@ def _result_summary(
     return pd.DataFrame(rows)
 
 
-def _markdown_image(
-    path: Path,
-    *,
-    report_path: Path,
-    alt_text: str,
-) -> str:
-    """Return a Markdown image path relative to the report where possible."""
-    try:
-        relative = path.relative_to(report_path.parent)
-    except ValueError:
-        relative = path
-
-    return f"![{alt_text}]({relative.as_posix()})"
-
 
 def _save_figure(
     figure,
     output_path: Path,
 ) -> None:
+    """Write one report figure."""
     output_path.parent.mkdir(
         parents=True,
         exist_ok=True,
@@ -190,37 +178,58 @@ def _save_figure(
 def _plot_overall_hs_coverage(
     *,
     overall_summary: pd.DataFrame,
+    hs_col: str,
     output_path: Path,
 ) -> bool:
-    """Plot overall source-row share by HS classification."""
+    """
+    Plot overall source-row coverage by source HS classification.
+
+    Expected product
+    ----------------
+    hs_system_overall_summary
+    """
     if overall_summary.empty:
         return False
 
     required = {
-        "ClassificationCode",
+        hs_col,
         "share_pct",
     }
 
-    if not required.issubset(overall_summary.columns):
+    if not required.issubset(
+        overall_summary.columns
+    ):
         return False
 
     frame = (
         overall_summary[
-            ["ClassificationCode", "share_pct"]
+            [
+                hs_col,
+                "share_pct",
+            ]
         ]
         .dropna()
-        .sort_values("share_pct", ascending=True)
+        .sort_values(
+            "share_pct",
+            ascending=True,
+        )
     )
 
     if frame.empty:
         return False
 
     figure, axis = plt.subplots(
-        figsize=(9, max(4.5, 0.45 * len(frame) + 1.5))
+        figsize=(
+            9,
+            max(
+                4.5,
+                0.45 * len(frame) + 1.5,
+            ),
+        )
     )
 
     bars = axis.barh(
-        frame["ClassificationCode"].astype(str),
+        frame[hs_col].astype(str),
         frame["share_pct"].astype(float),
     )
 
@@ -237,8 +246,13 @@ def _plot_overall_hs_coverage(
     axis.set_title(
         "Overall source HS-classification coverage"
     )
-    axis.set_xlabel("Share of source rows (%)")
-    axis.set_ylabel("HS classification")
+    axis.set_xlabel(
+        "Share of source rows (%)"
+    )
+    axis.set_ylabel(
+        "HS classification"
+    )
+
     axis.grid(
         axis="x",
         linestyle="--",
@@ -257,37 +271,28 @@ def _plot_overall_hs_coverage(
 def _plot_year_hs_mix(
     *,
     percentage_pivot: pd.DataFrame,
+    year_col: str,
     output_path: Path,
 ) -> bool:
-    """Plot HS-classification shares through time."""
+    """
+    Plot source HS-classification shares by year.
+
+    Expected product
+    ----------------
+    year_hs_percentage_pivot
+    """
     if percentage_pivot.empty:
         return False
 
     frame = percentage_pivot.copy()
 
-    year_candidates = (
-        "RefYear",
-        "year",
-        "Year",
-    )
-
-    year_col = next(
-        (
-            column
-            for column in year_candidates
-            if column in frame.columns
-        ),
-        None,
-    )
-
-    if year_col is not None:
+    # The workflow may retain the configured year as either
+    # an ordinary column or the pivot index.
+    if year_col in frame.columns:
         frame = frame.set_index(year_col)
 
-    if frame.index.name is None and not isinstance(
-        frame.index,
-        pd.RangeIndex,
-    ):
-        pass
+    elif frame.index.name != year_col:
+        return False
 
     numeric = frame.apply(
         pd.to_numeric,
@@ -318,11 +323,14 @@ def _plot_year_hs_mix(
     )
 
     axis.set_title(
-        "HS-classification mix by year"
+        "Source HS-classification mix by year"
     )
     axis.set_xlabel("Year")
-    axis.set_ylabel("Share of source rows (%)")
+    axis.set_ylabel(
+        "Share of source rows (%)"
+    )
     axis.set_ylim(0, 100)
+
     axis.grid(
         axis="y",
         linestyle="--",
@@ -348,33 +356,28 @@ def _plot_hs_transitions(
     transitions: pd.DataFrame,
     output_path: Path,
 ) -> bool:
-    """Plot the number of reporter HS-classification transitions by year."""
-    if transitions.empty:
-        return False
+    """
+    Plot reporter HS-classification transitions by year.
 
-    year_col = next(
-        (
-            column
-            for column in (
-                "transition_year",
-                "RefYear",
-                "year",
-            )
-            if column in transitions.columns
-        ),
-        None,
-    )
-
-    if year_col is None:
+    build_hs_transition_events() defines transition_year as part of its
+    output contract.
+    """
+    if (
+        transitions.empty
+        or "transition_year"
+        not in transitions.columns
+    ):
         return False
 
     frame = (
-        transitions[year_col]
+        transitions["transition_year"]
         .dropna()
         .value_counts()
         .sort_index()
         .rename_axis("year")
-        .reset_index(name="n_transitions")
+        .reset_index(
+            name="n_transitions"
+        )
     )
 
     if frame.empty:
@@ -392,17 +395,25 @@ def _plot_hs_transitions(
     axis.set_title(
         "Reporter HS-classification transitions by year"
     )
-    axis.set_xlabel("Transition year")
-    axis.set_ylabel("Reporter transitions")
+    axis.set_xlabel(
+        "Transition year"
+    )
+    axis.set_ylabel(
+        "Reporter transitions"
+    )
+
     axis.tick_params(
         axis="x",
         labelrotation=45,
     )
+
     axis.grid(
         axis="y",
         linestyle="--",
         alpha=0.4,
     )
+
+    axis.set_axisbelow(True)
 
     _save_figure(
         figure,
@@ -437,9 +448,65 @@ def build_hs_sync_report(
     """
     Create the final HS Sync Markdown decision report.
 
-    The reporting layer consumes results already produced by the HS Sync
-    workflow. It does not rebuild coverage, mappings, allocations, or audits.
+    Reporting consumes evidence already produced by the HS Sync workflow.
+    It does not rebuild source coverage, mappings, allocation weights,
+    synchronized trade, or audits.
     """
+
+    # ==================================================================
+    # Final workflow decision
+    # ==================================================================
+
+    ready_for_quantity = bool(
+        _result_value(
+            applied_audit_result,
+            "ready_for_quantity",
+            "ready_for_next_step",
+        )
+    )
+
+    final_audit_passed = bool(
+        _result_value(
+            applied_audit_result,
+            "audit_passed",
+            "ready_for_quantity",
+        )
+    )
+
+    n_failed_audit_rows = int(
+        _result_value(
+            applied_audit_result,
+            "n_failed_audit_rows",
+        )
+        or 0
+    )
+
+    decision = (
+        "APPROVED"
+        if ready_for_quantity
+        else "REVIEW REQUIRED"
+    )
+
+    # ==================================================================
+    # Artifact configuration
+    # ==================================================================
+
+    if not cfg.artifacts.enable:
+        return {
+            "status": "disabled",
+            "output_path": None,
+            "report_path": None,
+            "latest_report_path": None,
+            "figure_paths": [],
+            "figures": {},
+            "decision": decision,
+            "audit_passed": final_audit_passed,
+            "ready_for_quantity": ready_for_quantity,
+            "n_failed_audit_rows": (
+                n_failed_audit_rows
+            ),
+        }
+
     report_path = Path(report_path)
 
     if latest_report_path is not None:
@@ -455,13 +522,57 @@ def build_hs_sync_report(
     figure_dir = (
         get_figure_dir()
         / "hs_sync"
-        / f"target_{cfg.scope.target_hs.lower()}"
+        / (
+            f"target_"
+            f"{cfg.scope.target_hs.lower()}"
+        )
     )
 
     figure_dir.mkdir(
         parents=True,
         exist_ok=True,
     )
+
+    # ==================================================================
+    # Reuse
+    # ==================================================================
+
+    if (
+        not force
+        and valid_output(report_path)
+    ):
+        logger.info(
+            "REUSE — HS Sync decision report already exists: %s",
+            report_path,
+        )
+
+        latest_existing = (
+            latest_report_path
+            if (
+                latest_report_path is not None
+                and latest_report_path.exists()
+            )
+            else None
+        )
+
+        return {
+            "status": "reused",
+            "output_path": report_path,
+            "report_path": report_path,
+            "latest_report_path": (
+                latest_existing
+            ),
+            "figure_paths": [],
+            "figures": {},
+            "decision": decision,
+            "audit_passed": final_audit_passed,
+            "ready_for_quantity": (
+                ready_for_quantity
+            ),
+            "n_failed_audit_rows": (
+                n_failed_audit_rows
+            ),
+        }
 
     info = get_symbols("info")
     ok = get_symbols("check")
@@ -485,40 +596,6 @@ def build_hs_sync_report(
     )
 
     # ==================================================================
-    # Report decision
-    # ==================================================================
-
-    ready_for_quantity = bool(
-        _result_value(
-            applied_audit_result,
-            "ready_for_quantity",
-            "ready_for_next_step",
-        )
-    )
-
-    n_failed_audit_rows = int(
-        _result_value(
-            applied_audit_result,
-            "n_failed_audit_rows",
-        )
-        or 0
-    )
-
-    final_audit_passed = bool(
-        _result_value(
-            applied_audit_result,
-            "audit_passed",
-            "ready_for_quantity",
-        )
-    )
-
-    decision = (
-        "APPROVED"
-        if ready_for_quantity
-        else "REVIEW REQUIRED"
-    )
-
-    # ==================================================================
     # 1. Run overview
     # ==================================================================
 
@@ -527,6 +604,9 @@ def build_hs_sync_report(
         "input_path",
         "source_path",
     )
+
+    if input_path is None:
+        input_path = cfg.coverage_input_dir()
 
     output_path = _result_value(
         apply_result,
@@ -552,12 +632,16 @@ def build_hs_sync_report(
                 ),
             },
             {
-                "Item": "Input",
-                "Value": input_path or "NA",
+                "Item": "Source input",
+                "Value": input_path,
             },
             {
                 "Item": "Final HS-sync output",
-                "Value": output_path or "NA",
+                "Value": (
+                    output_path
+                    if output_path is not None
+                    else "NA"
+                ),
             },
         ]
     )
@@ -581,6 +665,16 @@ def build_hs_sync_report(
         "year_hs_percentage_pivot",
     )
 
+    reporter_year_coverage = _coverage_table(
+        coverage_tables,
+        "reporter_year_hs_coverage",
+    )
+
+    reporter_timeline = _coverage_table(
+        coverage_tables,
+        "reporter_hs_timeline",
+    )
+
     transitions = _coverage_table(
         coverage_tables,
         "hs_transition_events",
@@ -595,7 +689,34 @@ def build_hs_sync_report(
     # 3. Mapping quality
     # ==================================================================
 
-    mapping_summary = _result_summary(
+    mapping_coverage = _coverage_table(
+        coverage_tables,
+        "mapping_coverage",
+    )
+
+    mapping_coverage_summary = _coverage_table(
+        coverage_tables,
+        "mapping_summary",
+    )
+
+    missing_mappings = _coverage_table(
+        coverage_tables,
+        "missing_mappings",
+    )
+
+    mapping_preparation_summary = _result_summary(
+        mapping_result,
+        preferred_keys=(
+            "status",
+            "n_rows",
+            "n_mappings",
+            "output_path",
+            "mapping_path",
+            "audit_passed",
+        ),
+    )
+
+    mapping_audit_summary = _result_summary(
         mapping_audit_result,
         preferred_keys=(
             "status",
@@ -612,21 +733,19 @@ def build_hs_sync_report(
         ),
     )
 
-    mapping_preparation_summary = _result_summary(
-        mapping_result,
-        preferred_keys=(
-            "status",
-            "output_path",
-            "mapping_path",
-            "n_rows",
-            "n_mappings",
-            "audit_passed",
-        ),
-    )
-
     # ==================================================================
     # 4. Allocation
     # ==================================================================
+
+    needs_weights = _coverage_table(
+        coverage_tables,
+        "needs_weights",
+    )
+
+    easy_without_weights = _coverage_table(
+        coverage_tables,
+        "easy_without_weights",
+    )
 
     equal_split_summary = _result_summary(
         equal_split_result,
@@ -725,6 +844,7 @@ def build_hs_sync_report(
 
     if _plot_overall_hs_coverage(
         overall_summary=overall_summary,
+        hs_col=cfg.columns.hs,
         output_path=figure_paths[
             "overall_hs_coverage"
         ],
@@ -737,6 +857,7 @@ def build_hs_sync_report(
 
     if _plot_year_hs_mix(
         percentage_pivot=percentage_pivot,
+        year_col=cfg.columns.year,
         output_path=figure_paths[
             "year_hs_mix"
         ],
@@ -768,44 +889,54 @@ def build_hs_sync_report(
         "",
         f"**Decision:** {decision}  ",
         f"**Run ID:** {run_id}  ",
-        f"**Target HS:** {cfg.scope.target_hs}  ",
+        (
+            f"**Target HS:** "
+            f"{cfg.scope.target_hs}  "
+        ),
         (
             f"**Input period:** "
-            f"{cfg.scope.min_year}–{cfg.scope.max_year}  "
+            f"{cfg.scope.min_year}"
+            f"–{cfg.scope.max_year}  "
         ),
         (
             f"**Generated:** "
             f"{datetime.now().isoformat(timespec='seconds')}"
         ),
         "",
+        "",
         "__TOC__",
         "",
-
         # --------------------------------------------------------------
         # 1. Run overview
         # --------------------------------------------------------------
+
         "## 1. Run overview",
         "",
         (
             "This report summarizes the HS synchronization workflow "
             "from source-classification coverage through mapping, "
-            "allocation, application, and final readiness validation."
+            "allocation, application, and final downstream-readiness "
+            "validation."
         ),
         "",
-        _markdown_table(run_overview),
+        _markdown_table(
+            run_overview
+        ),
         "",
 
         # --------------------------------------------------------------
         # 2. Source HS coverage
         # --------------------------------------------------------------
+
         "## 2. Source HS coverage",
         "",
         (
-            "The source coverage diagnostics describe which HS "
-            "classifications occur in the input data before conversion "
-            f"to target classification `{cfg.scope.target_hs}`."
+            "These diagnostics describe the HS classifications observed "
+            "in the source trade data before conversion to the configured "
+            f"target classification `{cfg.scope.target_hs}`."
         ),
         "",
+
         "### 2.1 Overall HS-system coverage",
         "",
         _markdown_table(
@@ -813,6 +944,7 @@ def build_hs_sync_report(
             max_rows=30,
         ),
         "",
+
         "### 2.2 Year-by-year HS mix",
         "",
         _markdown_table(
@@ -820,7 +952,34 @@ def build_hs_sync_report(
             max_rows=50,
         ),
         "",
-        "### 2.3 Classification transitions and anomalies",
+
+        "### 2.3 Reporter coverage",
+        "",
+        (
+            f"Reporter × year × HS coverage rows: "
+            f"`{len(reporter_year_coverage):,}`."
+        ),
+        "",
+        _markdown_table(
+            reporter_year_coverage,
+            max_rows=20,
+        ),
+        "",
+
+        "### 2.4 Reporter HS timelines",
+        "",
+        (
+            f"Continuous reporter HS-classification periods: "
+            f"`{len(reporter_timeline):,}`."
+        ),
+        "",
+        _markdown_table(
+            reporter_timeline,
+            max_rows=30,
+        ),
+        "",
+
+        "### 2.5 Classification transitions and anomalies",
         "",
         (
             f"Reporter classification transitions identified: "
@@ -846,74 +1005,131 @@ def build_hs_sync_report(
         # --------------------------------------------------------------
         # 3. Mapping quality
         # --------------------------------------------------------------
+
         "## 3. Mapping quality",
         "",
         (
             "This section summarizes preparation and validation of the "
-            "HS concordance used to map source classifications into the "
-            "configured target HS."
+            "HS concordances used to translate observed source codes into "
+            f"the target `{cfg.scope.target_hs}` classification."
         ),
         "",
+
         "### 3.1 Mapping preparation",
         "",
         _markdown_table(
-            mapping_preparation_summary,
+            mapping_preparation_summary
         ),
         "",
-        "### 3.2 Mapping audit",
+
+        "### 3.2 Mapping coverage",
         "",
         _markdown_table(
-            mapping_summary,
+            mapping_coverage_summary,
+            max_rows=50,
+        ),
+        "",
+
+        "### 3.3 Missing mappings",
+        "",
+        (
+            f"Missing-mapping rows identified: "
+            f"`{len(missing_mappings):,}`."
+        ),
+        "",
+        _markdown_table(
+            missing_mappings,
+            max_rows=50,
+        ),
+        "",
+
+        "### 3.4 Mapping normalization audit",
+        "",
+        _markdown_table(
+            mapping_audit_summary
         ),
         "",
 
         # --------------------------------------------------------------
         # 4. Allocation
         # --------------------------------------------------------------
+
         "## 4. Allocation",
         "",
         (
-            "One-to-many concordance relationships require allocation "
-            "weights before the synchronized target-HS output can be "
-            "constructed."
+            "One-to-many and many-to-many HS concordance relationships "
+            "require allocation weights before the synchronized "
+            "target-HS output can be constructed."
         ),
         "",
-        "### 4.1 Equal-split allocation",
+
+        "### 4.1 Coverage requiring weights",
         "",
-        _markdown_table(
-            equal_split_summary,
+        (
+            f"Coverage rows requiring allocation weights: "
+            f"`{len(needs_weights):,}`."
         ),
         "",
-        "### 4.2 Complete mapping weights",
+        _markdown_table(
+            needs_weights,
+            max_rows=30,
+        ),
+        "",
+
+        "### 4.2 Coverage not requiring weights",
+        "",
+        (
+            f"Coverage rows directly resolvable without allocation "
+            f"weights: `{len(easy_without_weights):,}`."
+        ),
         "",
         _markdown_table(
-            complete_weights_summary,
+            easy_without_weights,
+            max_rows=30,
+        ),
+        "",
+
+        "### 4.3 Equal-split allocation",
+        "",
+        _markdown_table(
+            equal_split_summary
+        ),
+        "",
+
+        "### 4.4 Complete mapping weights",
+        "",
+        _markdown_table(
+            complete_weights_summary
         ),
         "",
 
         # --------------------------------------------------------------
-        # 5. Applied output
+        # 5. Applied HS-sync output
         # --------------------------------------------------------------
+
         "## 5. Applied HS-sync output",
         "",
         (
-            "The mapping and completed allocation weights are applied "
-            "to the source observations to construct the canonical "
-            f"`{cfg.scope.target_hs}` output."
+            "The normalized mappings and completed allocation weights "
+            "are applied to the source observations to construct the "
+            f"canonical `{cfg.scope.target_hs}` trade output."
         ),
         "",
         _markdown_table(
-            apply_summary,
+            apply_summary
         ),
         "",
 
         # --------------------------------------------------------------
         # 6. Final audit
         # --------------------------------------------------------------
+
         "## 6. Final audit",
         "",
-        f"**Audit status:** "
-        f"{'PASS' if final_audit_passed else 'FAIL'}  ",
+        (
+            f"**Audit status:** "
+            f"{'PASS' if final_audit_passed else 'FAIL'}  "
+        ),
         (
             f"**Failed audit rows:** "
             f"{_format_integer(n_failed_audit_rows)}  "
@@ -924,37 +1140,49 @@ def build_hs_sync_report(
         ),
         "",
         _markdown_table(
-            final_audit_summary,
+            final_audit_summary
         ),
         "",
-        "### Decision",
+
+        "### 6.1 Decision",
         "",
         (
-            f"The HS Sync output is **{decision}** for Quantity "
-            "processing."
+            f"{ok} The HS Sync output passed the final applied-output "
+            "audit and is approved for Quantity processing."
+            if ready_for_quantity
+            else (
+                "The HS Sync output requires review before it can be "
+                "used by the Quantity workflow."
+            )
         ),
         "",
 
         # --------------------------------------------------------------
-        # 7. Figures
+        # 7. Diagnostic figures
         # --------------------------------------------------------------
+
         "## 7. Diagnostic figures",
         "",
     ]
+
+    # ==================================================================
+    # Figure references
+    # ==================================================================
 
     if "overall_hs_coverage" in written_figures:
         lines.extend(
             [
                 "### 7.1 Overall source HS coverage",
                 "",
-                _markdown_image(
-                    written_figures[
-                        "overall_hs_coverage"
-                    ],
-                    report_path=report_path,
-                    alt_text=(
-                        "Overall source HS coverage"
-                    ),
+                (
+                    "The figure shows the overall distribution of source "
+                    "observations across HS classification systems."
+                ),
+                "",
+                markdown_image(
+                    "Overall source HS coverage",
+                    written_figures["overall_hs_coverage"],
+                    document_path=report_path,
                 ),
                 "",
             ]
@@ -965,14 +1193,16 @@ def build_hs_sync_report(
             [
                 "### 7.2 HS classification mix by year",
                 "",
-                _markdown_image(
-                    written_figures[
-                        "year_hs_mix"
-                    ],
-                    report_path=report_path,
-                    alt_text=(
-                        "HS classification mix by year"
-                    ),
+                (
+                    "The annual composition highlights transitions, "
+                    "overlap periods, and years in which multiple HS "
+                    "systems coexist in the source data."
+                ),
+                "",
+                markdown_image(
+                    "HS classification mix by year",
+                    written_figures["year_hs_mix"],
+                    document_path=report_path,
                 ),
                 "",
             ]
@@ -981,37 +1211,96 @@ def build_hs_sync_report(
     if "hs_transitions" in written_figures:
         lines.extend(
             [
-                "### 7.3 Classification transitions",
+                "### 7.3 Reporter classification transitions",
                 "",
-                _markdown_image(
-                    written_figures[
-                        "hs_transitions"
-                    ],
-                    report_path=report_path,
-                    alt_text=(
-                        "Reporter HS classification transitions"
-                    ),
+                (
+                    "The figure counts detected changes in dominant "
+                    "reporter HS classification by transition year."
+                ),
+                "",
+                markdown_image(
+                    "Reporter HS classification transitions",
+                    written_figures["hs_transitions"],
+                    document_path=report_path,
                 ),
                 "",
             ]
         )
 
-    report_text = "\n".join(lines)
+    if not written_figures:
+        lines.extend(
+            [
+                "_No diagnostic figures were generated._",
+                "",
+            ]
+        )
 
-    report_text = insert_markdown_toc(
-        report_text
+    # ==================================================================
+    # 8. Output provenance
+    # ==================================================================
+
+    lines.extend(
+        [
+            "## 8. Output provenance",
+            "",
+            "| Artifact | Path |",
+            "|---|---|",
+            (
+                f"| Source trade input | "
+                f"`{input_path}` |"
+            ),
+            (
+                f"| Coverage outputs | "
+                f"`{_result_value(coverage_result, 'output_dir') or cfg.coverage_output_dir()}` |"
+            ),
+            (
+                f"| HS-synced trade | "
+                f"`{output_path or 'NA'}` |"
+            ),
+            (
+                f"| Final applied-output audit | "
+                f"`{_result_value(applied_audit_result, 'audit_path') or 'NA'}` |"
+            ),
+            (
+                f"| Decision report | "
+                f"`{report_path}` |"
+            ),
+            "",
+        ]
+    )
+
+    # ==================================================================
+    # Table of contents
+    # ==================================================================
+
+    insert_markdown_toc(
+        lines,
+        min_level=2,
+        max_level=3,
     )
 
     # ==================================================================
     # Write report
     # ==================================================================
 
+    report_text = "\n".join(lines)
+
     report_path.write_text(
         report_text,
         encoding="utf-8",
     )
 
-    if latest_report_path is not None:
+    if not valid_output(report_path):
+        raise RuntimeError(
+            "HS Sync decision report was not written correctly."
+        )
+
+    written_latest_path: Path | None = None
+
+    if (
+        cfg.artifacts.write_latest
+        and latest_report_path is not None
+    ):
         latest_report_path.parent.mkdir(
             parents=True,
             exist_ok=True,
@@ -1020,6 +1309,10 @@ def build_hs_sync_report(
         shutil.copyfile(
             report_path,
             latest_report_path,
+        )
+
+        written_latest_path = (
+            latest_report_path
         )
 
     logger.info(
@@ -1039,12 +1332,29 @@ def build_hs_sync_report(
         report_path,
     )
 
+    if written_latest_path is not None:
+        logger.info(
+            "  Latest report: %s",
+            written_latest_path,
+        )
+
+    logger.info(
+        "  Figures written: %d",
+        len(written_figures),
+    )
+
     return {
         "status": "completed",
+        "run_id": run_id,
         "output_path": report_path,
         "report_path": report_path,
-        "latest_report_path": latest_report_path,
-        "figure_paths": written_figures,
+        "latest_report_path": (
+            written_latest_path
+        ),
+        "figure_paths": list(
+            written_figures.values()
+        ),
+        "figures": written_figures,
         "decision": decision,
         "audit_passed": final_audit_passed,
         "ready_for_quantity": ready_for_quantity,

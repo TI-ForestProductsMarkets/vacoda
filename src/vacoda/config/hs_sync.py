@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from vacoda.config.base import (
-    CONFIG_DIR,
+    get_step_config_path,
     load_yaml_config,
     require_bool,
     require_dict,
@@ -27,7 +27,7 @@ from vacoda.config.base import (
 from vacoda.config.paths import get_data_dir, get_output_dir, get_repo_references_dir
 
 
-HS_SYNC_CONFIG_PATH = CONFIG_DIR / "hs_sync.yaml"
+HS_SYNC_CONFIG_PATH = get_step_config_path("hs_sync")
 
 
 # ---------------------------------------------------------------------
@@ -168,6 +168,7 @@ class StagePathConfig:
 @dataclass(frozen=True)
 class ArtifactConfig:
     kind: str
+    enable: bool = True
     subdir: str = ""
     filename: str | None = None
     timestamp: bool = True
@@ -308,26 +309,67 @@ class ColumnsConfig:
     cmd: str
     value: str
 
+    reporter: str
+    reporter_iso: str
+    reporter_desc: str
+
+    hs_search: str
+    is_original_hs: str
+
+    flow: str
+
+    net_weight: str
+
     @classmethod
     def from_dict(
         cls,
         cfg: dict[str, Any],
-        *,
-        key: str = "columns",
-        defaults: dict[str, str] | None = None,
     ) -> "ColumnsConfig":
-        defaults = defaults or {
-            "year": "RefYear",
-            "hs": "ClassificationCode",
-            "cmd": "CmdCode",
-            "value": "PrimaryValue",
-        }
-
         return cls(
-            year=require_str(cfg.get("year", defaults["year"]), key=f"{key}.year"),
-            hs=require_str(cfg.get("hs", defaults["hs"]), key=f"{key}.hs"),
-            cmd=require_str(cfg.get("cmd", defaults["cmd"]), key=f"{key}.cmd"),
-            value=require_str(cfg.get("value", defaults["value"]), key=f"{key}.value"),
+            year=require_str(
+                cfg.get("year"),
+                key="global.columns.year",
+            ),
+            hs=require_str(
+                cfg.get("hs"),
+                key="global.columns.hs",
+            ),
+            cmd=require_str(
+                cfg.get("cmd"),
+                key="global.columns.cmd",
+            ),
+            value=require_str(
+                cfg.get("value"),
+                key="global.columns.value",
+            ),
+            reporter=require_str(
+                cfg.get("reporter"),
+                key="global.columns.reporter",
+            ),
+            reporter_iso=require_str(
+                cfg.get("reporter_iso"),
+                key="global.columns.reporter_iso",
+            ),
+            reporter_desc=require_str(
+                cfg.get("reporter_desc"),
+                key="global.columns.reporter_desc",
+            ),
+            hs_search=require_str(
+                cfg.get("hs_search"),
+                key="global.columns.hs_search",
+            ),
+            is_original_hs=require_str(
+                cfg.get("is_original_hs"),
+                key="global.columns.is_original_hs",
+            ),
+            flow=require_str(
+                cfg.get("flow"),
+                key="global.columns.flow",
+            ),
+            net_weight=require_str(
+                cfg.get("net_weight"),
+                key="global.columns.net_weight",
+            ),
         )
 
     def as_dict(self) -> dict[str, str]:
@@ -336,6 +378,13 @@ class ColumnsConfig:
             "hs": self.hs,
             "cmd": self.cmd,
             "value": self.value,
+            "reporter": self.reporter,
+            "reporter_iso": self.reporter_iso,
+            "reporter_desc": self.reporter_desc,
+            "hs_search": self.hs_search,
+            "is_original_hs": self.is_original_hs,
+            "flow": self.flow,
+            "net_weight": self.net_weight,
         }
 
 
@@ -1764,6 +1813,8 @@ class HsSyncConfig:
     weights: WeightsConfig
     apply: ApplyConfig
 
+    artifacts: ArtifactConfig
+
     references: dict[str, Any]
 
     @classmethod
@@ -1798,7 +1849,11 @@ class HsSyncConfig:
 
         weights_cfg = require_dict(raw.get("weights", {}), key="weights")
         apply_cfg = require_dict(raw.get("apply", {}), key="apply")
-
+        artifacts_cfg = require_dict(
+            raw.get("artifacts", {}),
+            key="artifacts",
+        )
+        
         return cls(
             raw=raw,
             scope=parsed_scope,
@@ -1827,8 +1882,19 @@ class HsSyncConfig:
                 apply_cfg,
                 scope=parsed_scope,
             ),
-            references=_block(raw, "references", required=False),
-        )
+            artifacts=ArtifactConfig.from_dict(
+                artifacts_cfg,
+                key="artifacts",
+                default_kind="reports",
+                default_filename=(
+                    "target_{target_hs_lower}_hs_sync_decision_report"
+                ),
+                context=TemplateContext(
+                    target_hs=parsed_scope.target_hs
+                ),
+            ),
+                    references=_block(raw, "references", required=False),
+                )
     @property
     def target_hs(self) -> str:
         """Effective target HS from global.scope.target_hs."""
@@ -2146,6 +2212,63 @@ class HsSyncConfig:
         return self._resolve_reference_block_dir(
             block=current,
             key=f"references.{dotted_key}",
+        )
+
+
+    def artifacts_output_dir(self) -> Path:
+        return self.artifacts.resolve_output_dir()
+
+
+    def decision_report_path(
+        self,
+        run_id: str,
+    ) -> Path:
+        if self.artifacts.filename is None:
+            raise ValueError(
+                "artifacts.filename is not configured."
+            )
+
+        filename = self._filename_with_ext(
+            self.artifacts.filename,
+            "md",
+        )
+
+        base_path = (
+            self.artifacts_output_dir()
+            / filename
+        )
+
+        if not self.artifacts.timestamp:
+            return base_path
+
+        return base_path.with_name(
+            f"{base_path.stem}_{run_id}"
+            f"{base_path.suffix}"
+        )
+
+
+    def decision_report_latest_path(
+        self,
+    ) -> Path | None:
+        if (
+            not self.artifacts.write_latest
+            or self.artifacts.filename is None
+        ):
+            return None
+
+        filename = self._filename_with_ext(
+            self.artifacts.filename,
+            "md",
+        )
+
+        base_path = (
+            self.artifacts_output_dir()
+            / filename
+        )
+
+        return base_path.with_name(
+            f"{base_path.stem}_latest"
+            f"{base_path.suffix}"
         )
 
     def comtrade_hs_correlation_raw_dir(self) -> Path:

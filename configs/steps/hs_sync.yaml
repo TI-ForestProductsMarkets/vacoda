@@ -18,11 +18,23 @@ global:
   progress:
     enabled: true
 
+global:
+  progress:
+    enabled: true
+
   columns:
     year: "year"
     hs: "source_hs"
     cmd: "source_cmd"
     value: "primary_value"
+
+    reporter: "reporter_code"
+    reporter_iso: "reporter_iso"
+    reporter_desc: "reporter_name"
+    hs_search: "classification_search"
+    is_original_hs: "is_original_classification"
+    flow: "flow_code"
+    net_weight: "net_weight_kg"
 
   logging:
     level: "DEBUG"
@@ -102,6 +114,85 @@ coverage:
       needs_weights_top_n: 10
 
   products: 
+
+    # ========================================================
+    # Source HS-system diagnostics
+    # ========================================================
+
+    year_hs_counts:
+      enabled: true
+      kind: "base"
+      filename: "source_year_hs_counts"
+      write: true
+
+    hs_system_overall_summary:
+      enabled: true
+      kind: "derived"
+      depends_on: "year_hs_counts"
+      filename: "source_hs_system_overall_summary"
+      write: true
+
+    year_hs_count_pivot:
+      enabled: true
+      kind: "derived"
+      depends_on: "year_hs_counts"
+      filename: "source_year_hs_count_pivot"
+      write: false
+
+    year_hs_percentage_pivot:
+      enabled: true
+      kind: "derived"
+      depends_on: "year_hs_count_pivot"
+      filename: "source_year_hs_percentage_pivot"
+      write: true
+
+    year_hs_mix_summary:
+      enabled: true
+      kind: "derived"
+      depends_on: "year_hs_count_pivot"
+      filename: "source_year_hs_mix_summary"
+      write: true
+      options:
+        clean_threshold: 95.0
+        mostly_clean_threshold: 90.0
+
+    reporter_year_hs_coverage:
+      enabled: true
+      kind: "base"
+      filename: "source_reporter_year_hs_coverage"
+      write: false
+
+    reporter_hs_timeline:
+      enabled: true
+      kind: "derived"
+      depends_on: "reporter_year_hs_coverage"
+      filename: "source_reporter_hs_timeline"
+      write: false
+
+    reporter_year_dominant_hs:
+      enabled: true
+      kind: "derived"
+      depends_on: "reporter_year_hs_coverage"
+      filename: "source_reporter_year_dominant_hs"
+      write: false
+
+    hs_transition_events:
+      enabled: true
+      kind: "derived"
+      depends_on: "reporter_year_dominant_hs"
+      filename: "source_hs_transition_events"
+      write: true
+
+    mixed_classification_reporter_years:
+      enabled: true
+      kind: "derived"
+      depends_on: "reporter_year_hs_coverage"
+      filename: "source_mixed_classification_reporter_years"
+      write: true
+
+    # ========================================================
+    # Target-HS mapping diagnostics
+    # ========================================================
     mapping_coverage: 
       enabled: true 
       kind: "base" 
@@ -247,6 +338,18 @@ apply:
     timestamp: false
     write_latest: false
 
+# --------------------------------------------------------------------
+# Decision report
+# --------------------------------------------------------------------
+
+artifacts:
+  enable: true
+  kind: "reports"
+  subdir: "hs_sync/target_{target_hs_lower}"
+  filename: "target_{target_hs_lower}_hs_sync_decision_report"
+  timestamp: true
+  write_latest: true
+
 
 # ============================================================ 
 # Harvard reference-build staging 
@@ -297,10 +400,12 @@ harvard_staging:
     hs: "source_hs"
     cmd: "source_cmd"
     value: "primary_value"
-    reporter_code: "reporter_code"
-    partner_code: "partner_code"
+
+    reporter: "reporter_code"
+    reporter_iso: "reporter_iso"
+    reporter_desc: "reporter_name"
+
     flow: "flow_code"
-    quantity: "quantity"
 
   overwrite: false
 

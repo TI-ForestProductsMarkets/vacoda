@@ -12,6 +12,16 @@ import pandas as pd
 from vacoda.config.hs_sync import HsSyncConfig
 
 from vacoda.hs_sync.coverage import (
+    # Source HS-system diagnostics
+    build_year_hs_counts,
+    build_hs_system_overall_summary,
+    make_year_hs_count_pivot,
+    make_year_hs_percentage_pivot,
+    build_year_hs_mix_summary,
+    build_reporter_year_hs_coverage,
+    build_hs_coverage_summary_tables,
+
+    # Target-HS mapping diagnostics
     build_target_hs_source_code_coverage,
     build_target_hs_mapping_coverage,
     summarize_target_hs_mapping_coverage,
@@ -400,28 +410,194 @@ def load_target_hs_coverage_inputs(
 def build_target_hs_coverage_products(
     *,
     cfg: HsSyncConfig,
+    input_dir: Path,
     source_summary: pd.DataFrame,
     mappings: dict[str, pd.DataFrame],
     logger: None | object = None,
 ) -> dict[str, pd.DataFrame]:
+
+    tables: dict[str, pd.DataFrame] = {}
+
+    # ==============================================================
+    # A. Source HS-system coverage
+    # ==============================================================
+
+    if cfg.is_product_enabled("year_hs_counts"):
+        year_hs_counts = build_year_hs_counts(
+            input_dir,
+            pattern=cfg.coverage.input.pattern,
+            input_format=cfg.coverage.input.format,
+            engine=cfg.engine.name,
+            year_col=cfg.columns.year,
+            hs_col=cfg.columns.hs,
+            threads=cfg.engine.threads,
+            show_progress=cfg.progress.enabled,
+        )
+
+        tables["year_hs_counts"] = year_hs_counts
+
+    if cfg.is_product_enabled(
+        "hs_system_overall_summary"
+    ):
+        source = tables["year_hs_counts"]
+
+        tables[
+            "hs_system_overall_summary"
+        ] = build_hs_system_overall_summary(
+            source,
+            year_col=cfg.columns.year,
+            hs_col=cfg.columns.hs,
+        )
+
+    if cfg.is_product_enabled(
+        "year_hs_count_pivot"
+    ):
+        source = tables["year_hs_counts"]
+
+        tables[
+            "year_hs_count_pivot"
+        ] = make_year_hs_count_pivot(
+            source,
+            year_col=cfg.columns.year,
+            hs_col=cfg.columns.hs,
+        )
+
+    if cfg.is_product_enabled(
+        "year_hs_percentage_pivot"
+    ):
+        tables[
+            "year_hs_percentage_pivot"
+        ] = make_year_hs_percentage_pivot(
+            tables["year_hs_count_pivot"]
+        )
+
+    if cfg.is_product_enabled(
+        "year_hs_mix_summary"
+    ):
+        options = cfg.product_options(
+            "year_hs_mix_summary"
+        )
+
+        tables[
+            "year_hs_mix_summary"
+        ] = build_year_hs_mix_summary(
+            tables["year_hs_count_pivot"],
+            clean_threshold=float(
+                options.get(
+                    "clean_threshold",
+                    95.0,
+                )
+            ),
+            mostly_clean_threshold=float(
+                options.get(
+                    "mostly_clean_threshold",
+                    90.0,
+                )
+            ),
+        )
+
+    if cfg.is_product_enabled(
+        "reporter_year_hs_coverage"
+    ):
+        reporter_coverage = (
+            build_reporter_year_hs_coverage(
+                input_dir,
+                pattern=cfg.coverage.input.pattern,
+                input_format=cfg.coverage.input.format,
+                engine=cfg.engine.name,
+                threads=cfg.engine.threads,
+                columns={
+                    "reporter_code": (
+                        cfg.columns.reporter
+                    ),
+                    "reporter_iso": (
+                        cfg.columns.reporter_iso
+                    ),
+                    "reporter_desc": (
+                        cfg.columns.reporter_desc
+                    ),
+                    "year": (
+                        cfg.columns.year
+                    ),
+                    "hs": (
+                        cfg.columns.hs
+                    ),
+                    "hs_search": (
+                        cfg.columns.hs_search
+                    ),
+                    "original": (
+                        cfg.columns.is_original_hs
+                    ),
+                    "cmd": (
+                        cfg.columns.cmd
+                    ),
+                    "flow": (
+                        cfg.columns.flow
+                    ),
+                    "value": (
+                        cfg.columns.value
+                    ),
+                    "netweight": (
+                        cfg.columns.net_weight
+                    ),
+                },
+            )
+        )
+
+        tables[
+            "reporter_year_hs_coverage"
+        ] = reporter_coverage
+
+        summary_tables = (
+            build_hs_coverage_summary_tables(
+                reporter_coverage
+            )
+        )
+
+        for name, table in summary_tables.items():
+            if cfg.is_product_enabled(name):
+                tables[name] = table
+
+    # ==============================================================
+    # B. Target-HS mapping coverage
+    # ==============================================================
+
     target_hs = cfg.coverage.target_hs
 
     coverage = build_target_hs_mapping_coverage(
         source_summary=source_summary,
         mappings=mappings,
         target_hs=target_hs,
-        mapping_columns=cfg.coverage.mappings.columns.as_dict(),
-        easy_without_weights=cfg.coverage.categories.easy_without_weights,
-        needs_weights=cfg.coverage.categories.needs_weights,
-        missing_categories=cfg.coverage.categories.missing,
+        mapping_columns=(
+            cfg.coverage.mappings.columns.as_dict()
+        ),
+        easy_without_weights=(
+            cfg.coverage.categories.easy_without_weights
+        ),
+        needs_weights=(
+            cfg.coverage.categories.needs_weights
+        ),
+        missing_categories=(
+            cfg.coverage.categories.missing
+        ),
     )
 
-    source_code_coverage = build_target_hs_source_code_coverage(coverage)
+    source_code_coverage = (
+        build_target_hs_source_code_coverage(
+            coverage
+        )
+    )
 
-    summary = summarize_target_hs_mapping_coverage(coverage)
+    summary = (
+        summarize_target_hs_mapping_coverage(
+            coverage
+        )
+    )
 
-    interpretation_report = build_target_hs_mapping_interpretation_report(
-        source_code_coverage
+    interpretation_report = (
+        build_target_hs_mapping_interpretation_report(
+            source_code_coverage
+        )
     )
 
     interpretation_display_report = (
@@ -432,43 +608,60 @@ def build_target_hs_coverage_products(
 
     missing = get_target_hs_missing_mappings(
         coverage,
-        top_n=cfg.product_options("missing_mappings").get("top_n", 50),
+        top_n=cfg.product_options(
+            "missing_mappings"
+        ).get("top_n", 50),
     )
 
     needs_weights = coverage[
-        coverage["conversion_need"] == "needs_weights"
+        coverage["conversion_need"]
+        == "needs_weights"
     ].copy()
 
     easy = coverage[
-        coverage["conversion_need"] == "easy_without_weights"
+        coverage["conversion_need"]
+        == "easy_without_weights"
     ].copy()
 
-    tables = {
-        "source_code_coverage": source_code_coverage,
-        "mapping_coverage": coverage,
-        "mapping_summary": summary,
-        "missing_mappings": missing,
-        "needs_weights": needs_weights,
-        "easy_without_weights": easy,
-        "_mapping_interpretation_report": interpretation_report,
-        "_mapping_interpretation_display_report": interpretation_display_report,
-    }
-
-    logger.info(
-        "%s interpretation report:\n%s",
-        target_hs,
-        interpretation_report[
-            [
-                "result_class",
-                "share_rows_percent",
-                "share_value_percent",
-                "interpretation",
-            ]
-        ].to_string(index=False),
+    tables.update(
+        {
+            "source_code_coverage": (
+                source_code_coverage
+            ),
+            "mapping_coverage": coverage,
+            "mapping_summary": summary,
+            "missing_mappings": missing,
+            "needs_weights": needs_weights,
+            "easy_without_weights": easy,
+            "_mapping_interpretation_report": (
+                interpretation_report
+            ),
+            "_mapping_interpretation_display_report": (
+                interpretation_display_report
+            ),
+        }
     )
 
-    for name, table in tables.items():
-        logger.info("%s shape: %s", name, table.shape)
+    if logger is not None:
+        logger.info(
+            "%s interpretation report:\n%s",
+            target_hs,
+            interpretation_report[
+                [
+                    "result_class",
+                    "share_rows_percent",
+                    "share_value_percent",
+                    "interpretation",
+                ]
+            ].to_string(index=False),
+        )
+
+        for name, table in tables.items():
+            logger.info(
+                "%s shape: %s",
+                name,
+                table.shape,
+            )
 
     return tables
 
@@ -605,6 +798,7 @@ def run_target_hs_mapping_coverage_audit(
 
     coverage_tables = build_target_hs_coverage_products(
         cfg=cfg,
+        input_dir=coverage_inputs["input_dir"],
         source_summary=coverage_inputs["source_summary"],
         mappings=coverage_inputs["mappings"],
         logger=log,
