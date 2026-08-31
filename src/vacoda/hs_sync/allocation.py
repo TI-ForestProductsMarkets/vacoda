@@ -21,13 +21,7 @@ import pandas as pd
 
 from vacoda.utils.logger import get_logger
 from vacoda.config.hs_sync import HsSyncConfig
-from vacoda.pipeline.checkpoint import (
-    file_fingerprint,
-    semantic_config_fingerprint,
-    validate_local_checkpoint,
-    write_local_checkpoint,
-    source_files_fingerprint,
-)
+
 
 logger = get_logger("HS_SYNC.ALLOCATION")
 
@@ -927,72 +921,6 @@ def run_equal_split_allocation(
             )
 
     # ------------------------------------------------------------------
-    # Local checkpoint
-    # ------------------------------------------------------------------
-
-    checkpoint_path = (
-        cfg.weights_output_dir()
-        / "checkpoints"
-        / "equal_split_allocation.json"
-    )
-
-    config_fp = semantic_config_fingerprint(
-        config=cfg,
-        excluded_paths=(
-            ("engine", "threads"),
-            ("artifacts",),
-        ),
-    )
-
-    input_fp = {
-        "source_code_coverage": file_fingerprint(
-            source_code_coverage_path,
-            hash_file=True,
-        ),
-        **{
-            f"mapping:{name}": file_fingerprint(
-                path,
-                hash_file=True,
-            )
-            for name, path in sorted(mapping_paths.items())
-        },
-    }
-
-    reusable, reason = validate_local_checkpoint(
-        checkpoint_path=checkpoint_path,
-        current_config=config_fp,
-        current_input=input_fp,
-        output_path=weights_path,
-    )
-
-    # The checkpoint validator checks the primary output.
-    # This step also requires its audit artifact to exist.
-    reusable = (
-        reusable
-        and audit_path.is_file()
-    )
-
-    if not force and reusable:
-        logger.info(
-            "REUSE — Equal-split allocation local checkpoint matches: %s",
-            weights_path,
-        )
-
-        return {
-            "status": "reused",
-            "run_id": run_id,
-            "weights": weights_path,
-            "audit": audit_path,
-            "audit_passed": True,
-            "n_failed_audit_rows": 0,
-        }
-
-    logger.info(
-        "REBUILD — Equal-split allocation: %s",
-        "forced" if force else reason,
-    )
-
-    # ------------------------------------------------------------------
     # Build
     # ------------------------------------------------------------------
 
@@ -1107,15 +1035,6 @@ def run_equal_split_allocation(
     if audit_passed:
         logger.info(
             "✅ AUDIT — Equal-split allocation passed."
-        )
-
-        write_local_checkpoint(
-            checkpoint_path=checkpoint_path,
-            step_name="equal_split_allocation",
-            run_id=run_id,
-            config=config_fp,
-            input_fingerprint=input_fp,
-            output_path=weights_path,
         )
 
     logger.info("HS-sync equal-split allocation step complete.")

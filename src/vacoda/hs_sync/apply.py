@@ -22,13 +22,7 @@ import pandas as pd
 from vacoda.io.duckdb_scan import duckdb_scan_relation
 from vacoda.utils.logger import get_logger
 from vacoda.config.hs_sync import HsSyncConfig
-from vacoda.pipeline.checkpoint import (
-    file_fingerprint,
-    semantic_config_fingerprint,
-    validate_local_checkpoint,
-    write_local_checkpoint,
-    source_files_fingerprint
-)
+
 logger = get_logger("HS_SYNC.APPLY")
 
 
@@ -635,61 +629,6 @@ def run_hs_sync_apply(
             f"{weights_path}"
         )
 
-    # --------------------------------------------------------------
-    # Local checkpoint
-    # --------------------------------------------------------------
-
-    checkpoint_path = (
-        cfg.apply_output_dir()
-        / "checkpoints"
-        / "apply.json"
-    )
-
-    config_fp = semantic_config_fingerprint(
-        config=cfg,
-        excluded_paths=(
-            ("engine", "threads"),
-            ("artifacts",),
-        ),
-    )
-
-    input_fp = {
-        "trade": source_files_fingerprint(
-            paths=input_files,
-            label="hs_sync_apply_trade_input",
-        ),
-        "weights": file_fingerprint(
-            weights_path,
-            hash_file=True,
-        ),
-    }
-
-    reusable, reason = validate_local_checkpoint(
-        checkpoint_path=checkpoint_path,
-        current_config=config_fp,
-        current_input=input_fp,
-        output_path=output_path,
-    )
-
-    if not force and reusable:
-        logger.info(
-            "🔄 REUSE — HS Sync applied output local checkpoint matches: %s",
-            output_path,
-        )
-
-        return {
-            "status": "reused",
-            "run_id": run_id,
-            "output_path": output_path,
-            "audit_path": audit_path,
-            "audit_passed": True,
-            "n_failed_audit_rows": 0,
-        }
-
-    logger.info(
-        "🔨 REBUILD — HS Sync applied output: %s",
-        "forced" if force else reason,
-    )
 
     # --------------------------------------------------------------
     # Existing apply
@@ -723,16 +662,6 @@ def run_hs_sync_apply(
     failed = result.audit[result.audit["status"] == "fail"]
     n_failed = len(failed)
     audit_passed = n_failed < 1
-
-    if audit_passed:
-        write_local_checkpoint(
-            checkpoint_path=checkpoint_path,
-            step_name="hs_sync_apply",
-            run_id=run_id,
-            config=config_fp,
-            input_fingerprint=input_fp,
-            output_path=output_path,
-        )
 
     logger.info("HS-sync apply step completed.")
     logger.info("  Output file: %s", result.output_path)

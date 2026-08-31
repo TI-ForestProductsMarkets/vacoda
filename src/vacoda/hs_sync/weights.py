@@ -8,12 +8,7 @@ from __future__ import annotations
 from vacoda.config.hs_sync import HsSyncConfig
 import pandas as pd
 from vacoda.hs_sync.allocation import build_complete_mapping_weight_table, write_complete_mapping_weight_outputs
-from vacoda.pipeline.checkpoint import (
-    file_fingerprint,
-    semantic_config_fingerprint,
-    validate_local_checkpoint,
-    write_local_checkpoint,
-)
+
 def run_complete_mapping_weights(
     *,
     cfg: HsSyncConfig,
@@ -58,66 +53,6 @@ def run_complete_mapping_weights(
             f"{weights_path}"
         )
 
-    # --------------------------------------------------------------
-    # Local checkpoint
-    # --------------------------------------------------------------
-
-    checkpoint_path = (
-        cfg.weights_output_dir()
-        / "checkpoints"
-        / "complete_mapping_weights.json"
-    )
-
-    config_fp = semantic_config_fingerprint(
-        config=cfg,
-        excluded_paths=(
-            ("engine", "threads"),
-            ("artifacts",),
-        ),
-    )
-
-    input_fp = {
-        "source_code_coverage": file_fingerprint(
-            source_code_coverage_path,
-            hash_file=True,
-        ),
-        "equal_split_weights": file_fingerprint(
-            weights_path,
-            hash_file=True,
-        ),
-    }
-
-    reusable, reason = validate_local_checkpoint(
-        checkpoint_path=checkpoint_path,
-        current_config=config_fp,
-        current_input=input_fp,
-        output_path=output_weights_path,
-    )
-
-    reusable = (
-        reusable
-        and output_audit_path.is_file()
-    )
-
-    if not force and reusable:
-        logger.info(
-            "REUSE — Complete HS mapping weights local checkpoint matches: %s",
-            output_weights_path,
-        )
-
-        return {
-            "status": "reused",
-            "run_id": run_id,
-            "complete_weights": output_weights_path,
-            "complete_weights_audit": output_audit_path,
-            "audit_passed": True,
-            "n_failed_audit_rows": 0,
-        }
-
-    logger.info(
-        "REBUILD — Complete HS mapping weights: %s",
-        "forced" if force else reason,
-    )
 
     # --------------------------------------------------------------
     # Existing build
@@ -192,15 +127,6 @@ def run_complete_mapping_weights(
     if audit_passed:
         logger.info(
             "✅ AUDIT — Complete HS mapping weights passed."
-        )
-
-        write_local_checkpoint(
-            checkpoint_path=checkpoint_path,
-            step_name="complete_mapping_weights",
-            run_id=run_id,
-            config=config_fp,
-            input_fingerprint=input_fp,
-            output_path=output_weights_path,
         )
 
     logger.info(

@@ -35,7 +35,12 @@ from vacoda.config.paths import rel_path
 from vacoda.io.reports import TextReport, write_text_report
 from vacoda.io.writer import write_csv, write_parquet
 from vacoda.utils.logger import get_logger
-
+from vacoda.pipeline.checkpoint import (
+    semantic_config_fingerprint,
+    source_files_fingerprint,
+    validate_local_checkpoint,
+    write_local_checkpoint,
+)
 
 #logger = get_logger("HS_SYNC.COVERAGE_AUDIT")
 
@@ -64,6 +69,146 @@ def _require_columns(df: pd.DataFrame, required: set[str]) -> None:
             f"Input data is missing required columns: {sorted(missing)}. "
             f"Available columns: {list(df.columns)}"
         )
+
+def run_target_hs_coverage(
+    *,
+    cfg: HsSyncConfig,
+    run_id: str,
+    force: bool = False,
+    logger,
+) -> dict[str, object]:
+
+    input_dir = cfg.coverage_input_dir()
+    input_pattern = cfg.coverage.input.pattern
+
+    if not input_pattern:
+        raise ValueError(
+            "coverage.input.pattern is required."
+        )
+
+    input_files = sorted(
+        input_dir.glob(input_pattern)
+    )
+
+    if not input_files:
+        raise FileNotFoundError(
+            "No HS-sync coverage input files matched: "
+            f"{input_dir / input_pattern}"
+        )
+
+    mapping_paths = cfg.coverage_mapping_files()
+
+    for name, path in mapping_paths.items():
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"Missing coverage mapping ({name}): {path}"
+            )
+
+    output_dir = cfg.coverage_output_dir()
+
+    checkpoint_path = (
+        output_dir
+        / "checkpoints"
+        / "coverage.json"
+    )
+
+    config_fp = semantic_config_fingerprint(
+        config=cfg,
+        excluded_paths=(
+            ("engine", "threads"),
+            ("artifacts",),
+        ),
+    )
+
+    input_fp = {
+        "trade": source_files_fingerprint(
+            paths=input_files,
+            label="hs_sync_coverage_trade_input",
+        ),
+        "mappings": source_files_fingerprint(
+            paths=list(mapping_paths.values()),
+            label="hs_sync_coverage_mappings",
+        ),
+    }
+
+    coverage_inputs = load_target_hs_coverage_inputs(
+        cfg=cfg,
+        logger=logger,
+    )
+
+    coverage_tables = build_target_hs_coverage_products(
+        cfg=cfg,
+        source_summary=coverage_inputs["source_summary"],
+        mappings=coverage_inputs["mappings"],
+        logger=logger,
+    )
+
+    coverage_result = write_target_hs_coverage_outputs(
+        cfg=cfg,
+        tables=coverage_tables,
+        run_id=run_id,
+        logger=logger,
+    )
+
+    primary_output = cfg.weights_input_coverage_path()
+
+
+    reusable, reason = validate_local_checkpoint(
+        checkpoint_path=checkpoint_path,
+        current_config=config_fp,
+        current_input=input_fp,
+        output_path=primary_output,
+    )
+
+    if not force and reusable:
+        logger.info(
+            "REUSE — HS coverage local checkpoint matches: %s",
+            primary_output,
+        )
+
+        coverage_tables = load_target_hs_coverage_products(
+            cfg=cfg,
+        )
+
+        return {
+            "status": "reused",
+            "run_id": run_id,
+            "coverage_tables": coverage_tables,
+            "output_dir": output_dir,
+            "output_path": primary_output,
+            "audit_passed": True,
+        }
+
+    logger.info(
+        "REBUILD — HS coverage products: %s",
+        "forced" if force else reason,
+    )
+
+    if not primary_output.is_file():
+        raise FileNotFoundError(
+            "Coverage build did not produce expected "
+            f"output: {primary_output}"
+        )
+
+    write_local_checkpoint(
+        checkpoint_path=checkpoint_path,
+        step_name="hs_sync_coverage",
+        run_id=run_id,
+        config=config_fp,
+        input_fingerprint=input_fp,
+        output_path=primary_output,
+    )
+
+    return {
+        "status": "completed",
+        "run_id": run_id,
+        "coverage_inputs": coverage_inputs,
+        "coverage_tables": coverage_tables,
+        "coverage_result": coverage_result,
+        "output_dir": output_dir,
+        "output_path": primary_output,
+        "audit_passed": True,
+    }
 
 
 def build_needs_weights_inspection_report(
@@ -349,6 +494,119 @@ def build_target_hs_mapping_coverage_artifact(
 
     return report.render()
 
+def load_target_hs_coverage_products(
+    *,
+    cfg: HsSyncConfig,
+) -> dict[str, pd.DataFrame]:
+    """
+    Load persisted HS-sync coverage products.
+
+    Returns the same logical product dictionary used by
+    build_target_hs_coverage_products().
+    """
+
+    output_dir = cfg.coverage_output_dir()
+
+    def _coverage_csv_path(
+        product_name: str,
+    ) -> Path:
+        filename = cfg.product_filename(
+            product_name
+        )
+
+        product_dir = cfg.product_output_dir(
+            product_name,
+            default_dir=output_dir,
+        )
+
+        return (
+            product_dir
+            / cfg._filename_with_ext(
+                filename,
+                "csv",
+            )
+        )
+
+    products = {
+        "year_hs_counts": (
+            _coverage_csv_path(
+                "year_hs_counts"
+            )
+        ),
+        "hs_system_overall_summary": (
+            _coverage_csv_path(
+                "hs_system_overall_summary"
+            )
+        ),
+        "year_hs_percentage_pivot": (
+            _coverage_csv_path(
+                "year_hs_percentage_pivot"
+            )
+        ),
+        "year_hs_mix_summary": (
+            _coverage_csv_path(
+                "year_hs_mix_summary"
+            )
+        ),
+        "hs_transition_events": (
+            _coverage_csv_path(
+                "hs_transition_events"
+            )
+        ),
+        "mixed_classification_reporter_years": (
+            _coverage_csv_path(
+                "mixed_classification_reporter_years"
+            )
+        ),
+        "source_code_coverage": (
+            cfg.weights_input_coverage_path()
+        ),
+        "mapping_coverage": (
+            _coverage_csv_path(
+                "mapping_coverage"
+            )
+        ),
+        "mapping_summary": (
+            _coverage_csv_path(
+                "mapping_summary"
+            )
+        ),
+        "missing_mappings": (
+            _coverage_csv_path(
+                "missing_mappings"
+            )
+        ),
+        "needs_weights": (
+            _coverage_csv_path(
+                "needs_weights"
+            )
+        ),
+        "easy_without_weights": (
+            _coverage_csv_path(
+                "easy_without_weights"
+            )
+        ),
+    }
+
+    missing = [
+        path
+        for path in products.values()
+        if not path.is_file()
+    ]
+
+    if missing:
+        raise FileNotFoundError(
+            "Missing persisted HS coverage products:\n"
+            + "\n".join(
+                str(path)
+                for path in missing
+            )
+        )
+
+    return {
+        name: pd.read_csv(path)
+        for name, path in products.items()
+    }
 
 def load_target_hs_coverage_inputs(
     *,
