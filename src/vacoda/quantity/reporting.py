@@ -2450,6 +2450,55 @@ def build_quantity_report(
                 .sort_values("Rows", ascending=False)
             )
 
+        supplementary_without_kg_units = _diagnostic_group(
+            diagnostics,
+            "supplementary_without_kg_unit_distribution",
+        )
+
+        if supplementary_without_kg_units.empty:
+            supplementary_without_kg_units_display = pd.DataFrame()
+
+        else:
+            supplementary_without_kg_units_display = (
+                supplementary_without_kg_units[
+                    [
+                        "metric",
+                        "value",
+                        "category_1",
+                        "percentage",
+                    ]
+                ].copy()
+            )
+
+            supplementary_without_kg_units_display.columns = [
+                "Supplementary unit",
+                "Rows",
+                "Share of rescued rows (%)",
+                "Population share (%)",
+            ]
+
+            supplementary_without_kg_units_display["Rows"] = (
+                supplementary_without_kg_units_display["Rows"]
+                .round()
+                .astype("Int64")
+            )
+
+            supplementary_without_kg_units_display = _as_numeric(
+                supplementary_without_kg_units_display,
+                [
+                    "Share of rescued rows (%)",
+                    "Population share (%)",
+                ],
+            )
+
+            supplementary_without_kg_units_display = (
+                supplementary_without_kg_units_display
+                .sort_values(
+                    "Rows",
+                    ascending=False,
+                )
+            )
+
         # --------------------------------------------------------------
         # Net-weight diagnostics
         # --------------------------------------------------------------
@@ -3925,6 +3974,20 @@ def build_quantity_report(
                 "candidate after canonicalization. Reported disagreements are "
                 "not classified as unresolved conflicts because the adopted "
                 "source precedence resolves them."
+            ),
+            "",
+            "**Supplementary-unit composition of rescued no-kg rows**",
+            "",
+            (
+                f"The `{int(supplementary_without_kg_rows or 0):,}` observations "
+                "retaining supplementary physical information but no canonical kg "
+                "are distributed across the final `supplementary_unit` values below. "
+                "`Share of rescued rows` is conditional on this population, while "
+                "`Population share` uses the complete Quantity population."
+            ),
+            "",
+            _markdown_table(
+                supplementary_without_kg_units_display
             ),
             "",
             "### 10.2 Distribution of synchronized kg",

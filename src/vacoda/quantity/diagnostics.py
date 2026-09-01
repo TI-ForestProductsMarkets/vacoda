@@ -3116,6 +3116,62 @@ def build_quantity_diagnostics(
             WITH population AS (
                 SELECT COUNT(*) AS n_total
                 FROM read_parquet({synchronized_sql})
+            ),
+
+            rescued AS (
+                SELECT
+                    supplementary_unit,
+                    COUNT(*) AS n_rows
+                FROM read_parquet({synchronized_sql})
+                WHERE NOT COALESCE(
+                    synchronized_quantity_kg > 0,
+                    FALSE
+                )
+                  AND supplementary_quantity > 0
+                  AND supplementary_unit IS NOT NULL
+                GROUP BY supplementary_unit
+            ),
+
+            rescued_total AS (
+                SELECT SUM(n_rows) AS n_rescued
+                FROM rescued
+            )
+
+            SELECT
+                'supplementary_without_kg_unit_distribution'
+                    AS diagnostic_group,
+
+                supplementary_unit AS metric,
+
+                CAST(n_rows AS DOUBLE) AS value,
+
+                100.0 * n_rows / population.n_total
+                    AS percentage,
+
+                NULL::INTEGER AS year,
+
+                CAST(
+                    100.0 * n_rows
+                    / NULLIF(rescued_total.n_rescued, 0)
+                    AS VARCHAR
+                ) AS category_1,
+
+                NULL::VARCHAR AS category_2,
+                NULL::VARCHAR AS category_3
+
+            FROM rescued
+            CROSS JOIN population
+            CROSS JOIN rescued_total
+
+            ORDER BY n_rows DESC
+            """
+        )
+
+        queries.append(
+            f"""
+            WITH population AS (
+                SELECT COUNT(*) AS n_total
+                FROM read_parquet({synchronized_sql})
             )
 
             SELECT
