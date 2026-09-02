@@ -299,6 +299,29 @@ def file_manifest_fingerprint(
         "manifest_sha256": sha256_text(manifest_text),
     }
 
+def _normalize_passed_series(
+    series: pd.Series,
+) -> pd.Series:
+    """Normalize audit pass/fail values to boolean."""
+    if pd.api.types.is_bool_dtype(series):
+        return series.fillna(False)
+
+    normalized = (
+        series.astype(str)
+        .str.strip()
+        .str.lower()
+    )
+
+    return normalized.isin(
+        {
+            "true",
+            "1",
+            "yes",
+            "pass",
+            "passed",
+            "ok",
+        }
+    )
 
 def _read_audit(path: Path) -> pd.DataFrame:
     """Read a supported pipeline audit artifact."""
@@ -381,6 +404,34 @@ def audit_summary(
                 ready_status = str(
                     ready_rows["status"].iloc[-1]
                 ).strip().lower()
+
+    # --------------------------------------------------------------
+    # Long-format audit with explicit boolean pass flag
+    # --------------------------------------------------------------
+
+    elif (
+        "passed" in audit.columns
+        and (
+            "check" in audit.columns
+            or "check_name" in audit.columns
+        )
+    ):
+        passed = _normalize_passed_series(
+            audit["passed"]
+        )
+
+        n_failed = int(
+            (~passed).sum()
+        )
+
+        # The pipeline readiness flag is a workflow-level result
+        # and does not have to exist as an individual audit row.
+        if ready_check is not None:
+            ready_status = (
+                "pass"
+                if bool(passed.all())
+                else "fail"
+            )
 
     # --------------------------------------------------------------
     # Wide-format audit with explicit pass flag
