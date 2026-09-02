@@ -157,7 +157,7 @@ cif_fob:
     # Annual Oil prices (USD per barrel) for the years 1960–2022, from the World Bank Commodity Price Data
     oil_price:
       source: "repo"
-      path: "macroeconomic/prepared"
+      path: "macroeconomic/oil_prices/prepared"
       filename: "annual_oil_prices.parquet"
 
     # Build the product unit-value feature from the same HS6 product in prior years;

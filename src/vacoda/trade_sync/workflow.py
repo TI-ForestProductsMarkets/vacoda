@@ -425,12 +425,12 @@ def run_trade_sync_workflow(
             and reconciled_path.stat().st_size > 0
         )
 
-        ready_for_weight_sync = bool(
+        ready_for_value_sync = bool(
             audit_passed
             and reconciled_output_valid
         )
 
-        if not ready_for_weight_sync:
+        if not ready_for_value_sync:
             raise RuntimeError(
                 "Trade Sync finished without an audited, usable "
                 "reconciled-trade output."
@@ -496,8 +496,8 @@ def run_trade_sync_workflow(
                 )
 
         logger.info(
-                "Ready for Weight Sync: %s",
-                ready_for_weight_sync,
+                "Ready for Value Sync: %s",
+                ready_for_value_sync,
             )
         logger.info(
                 "Workflow duration: %.2fs",
@@ -510,11 +510,7 @@ def run_trade_sync_workflow(
             "run_id": run_id,
 
             # Master-pipeline readiness contract.
-            "ready_for_weight_sync": ready_for_weight_sync,
-
-            # Compatibility alias until pipeline.yaml and the master pipeline
-            # use ready_for_weight_sync directly.
-            "ready_for_processed_export": ready_for_weight_sync,
+            "ready_for_value_sync": ready_for_value_sync,
 
             # Canonical primary output and audit keys used by the master
             # pipeline and checkpoint system.

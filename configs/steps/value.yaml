@@ -1,0 +1,94 @@
+# configs/steps/value.yaml
+# Configuration for converting synchronized nominal USD trade values
+# into constant-price USD using the US GDP deflator.
+
+value:
+
+
+  # --------------------------------------------------------------------
+  # Input
+  # --------------------------------------------------------------------
+
+  input:
+    stage: "interim"
+    subdir: "trade_sync/target_{target_hs_lower}"
+    filename: "comtrade_target_{target_hs_lower}_trade_synced.parquet"
+    format: "parquet"
+
+
+  # --------------------------------------------------------------------
+  # Output
+  # --------------------------------------------------------------------
+
+  output:
+    stage: "interim"
+    subdir: "value/target_{target_hs_lower}"
+    format: "parquet"
+
+
+  # --------------------------------------------------------------------
+  # Reference data
+  # --------------------------------------------------------------------
+
+  reference_data:
+
+    us_gdp_deflator:
+
+      source:
+        source: "repo"
+        path: "macroeconomic/us_gdp_deflator/source"
+        filename: "API_NY.GDP.DEFL.ZS_DS2_en_csv_v2_38103.csv"
+
+      prepared:
+        source: "repo"
+        path: "macroeconomic/us_gdp_deflator/prepared"
+        filename: "us_gdp_deflator_annual.parquet"
+
+      country_code: "USA"
+      indicator_code: "NY.GDP.DEFL.ZS"
+
+
+  # --------------------------------------------------------------------
+  # Products
+  # --------------------------------------------------------------------
+
+  products:
+
+    deflated_trade:
+      enable: true
+      filename: "comtrade_target_{target_hs_lower}_value_deflated.parquet"
+
+    audit:
+      enable: true
+      filename: "comtrade_target_{target_hs_lower}_value_deflated.audit.csv"
+
+
+  # --------------------------------------------------------------------
+  # Method
+  # --------------------------------------------------------------------
+
+  method:
+    reference_year: 2025
+    preserve_nominal_values: true
+
+  # --------------------------------------------------------------------
+  # Logging
+  # --------------------------------------------------------------------
+
+  logging:
+    level: "DEBUG"
+    subdir: "logs/value"
+    file: "LOG_VALUE_TARGET_{target_hs_lower}.log"
+    timestamp: true
+
+  # --------------------------------------------------------------------
+  # Decision report
+  # --------------------------------------------------------------------
+
+  artifacts:
+    enable: true
+    kind: "reports"
+    subdir: "value/target_{target_hs_lower}"
+    filename: "target_{target_hs_lower}_value_decision_report"
+    timestamp: true
+    write_latest: true
