@@ -204,6 +204,34 @@ def config_fingerprint(path: Path) -> dict[str, Any]:
         "sha256": file_sha256(path),
     }
 
+def file_content_fingerprint(
+    path: Path,
+) -> dict[str, Any]:
+    """
+    Return a content-based file fingerprint.
+
+    Intended for semantic inputs where modification time must not affect
+    reuse. File identity is based on path, size, and SHA-256 content.
+    """
+    path = Path(path)
+
+    if not path.exists():
+        return {
+            "path": str(path),
+            "exists": False,
+            "size_bytes": None,
+            "sha256": None,
+        }
+
+    stat = path.stat()
+
+    return {
+        "path": str(path.resolve()),
+        "exists": True,
+        "size_bytes": stat.st_size,
+        "sha256": file_sha256(path),
+    }
+
 def file_list_fingerprint(
     *,
     paths: list[Path],

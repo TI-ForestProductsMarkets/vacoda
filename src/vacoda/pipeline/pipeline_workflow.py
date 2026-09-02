@@ -605,33 +605,55 @@ def _build_cif_fob_plan(
         engine=pipeline_cfg.engine,
     )
 
-    input_paths = [
-        cfg.input_path(),
+    input_path = cfg.input_path()
+
+    reference_paths = [
         cfg.features.geography.resolve_path(),
         cfg.features.pair_geography.resolve_path(),
         cfg.features.geography_crosswalk.resolve_path(),
         cfg.features.oil_price.resolve_path(),
     ]
 
+    cif_fob_source_dir = Path(
+        run_cif_fob_workflow.__code__.co_filename
+    ).parent
+
+    implementation_fp = source_files_fingerprint(
+        paths=list(
+            cif_fob_source_dir.rglob("*.py")
+        ),
+        label="cif_fob_implementation",
+    )
+
     input_fp = {
-        "cif_fob_inputs": file_list_fingerprint(
-            paths=input_paths,
-            label="cif_fob_required_inputs",
-        )
+        "cif_fob_input": file_list_fingerprint(
+            paths=[input_path],
+            label="cif_fob_required_input",
+        ),
+        "reference_inputs": source_files_fingerprint(
+            paths=reference_paths,
+            label="cif_fob_reference_inputs",
+        ),
+        "implementation": implementation_fp,
     }
 
-    output_path = cfg.product_path("corrected_trade")
-    audit_path = output_path.with_suffix(".audit.csv")
+    output_path = cfg.product_path(
+        "corrected_trade"
+    )
+
+    audit_path = output_path.with_suffix(
+        ".audit.csv"
+    )
 
     return StepPlan(
         step_name=step_name,
         config_path=config_path,
         config_fingerprint=_step_config_fingerprint(
-                    config_path=config_path,
-                    resolved_config=cfg,
-                    pipeline_cfg=pipeline_cfg,
-                    include_scope=True,
-                ),
+            config_path=config_path,
+            resolved_config=cfg,
+            pipeline_cfg=pipeline_cfg,
+            include_scope=True,
+        ),
         input_fingerprint=input_fp,
         output_path=output_path,
         audit_path=audit_path,
@@ -639,7 +661,7 @@ def _build_cif_fob_plan(
             config_path=config_path,
             pipeline_cfg=pipeline_cfg,
             run_id=run_id,
-            force=force
+            force=force,
         ),
     )
 
@@ -733,11 +755,12 @@ def _build_value_plan(
 
     input_fp = {
         "value_input": file_list_fingerprint(
-            paths=[
-                input_path,
-                deflator_source_path,
-            ],
-            label="value_required_inputs",
+            paths=[input_path],
+            label="value_required_input",
+        ),
+        "reference_inputs": source_files_fingerprint(
+            paths=[deflator_source_path],
+            label="value_reference_inputs",
         ),
         "implementation": implementation_fp,
     }

@@ -31,7 +31,7 @@ import pandas as pd
 from scipy.stats import spearmanr
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from vacoda.pipeline.checkpoint import load_checkpoint, file_fingerprint, write_estimation_local_checkpoint, semantic_config_fingerprint
+from vacoda.pipeline.checkpoint import load_checkpoint, file_fingerprint, write_estimation_local_checkpoint, semantic_config_fingerprint, file_content_fingerprint
 from vacoda.utils.logger import log_checkpoint_reuse, log_checkpoint_rebuild, log_semantic_check, log_checkpoint_skip
 try:
     import statsmodels.api as sm
@@ -3283,17 +3283,25 @@ def estimate_cif_fob_rates(
             f"CIF/FOB training-features Parquet not found: {input_path}"
         )
 
+    estimation_config_payload = {
+        "scope": {
+            "target_hs": cfg.scope.target_hs,
+            "min_year": cfg.scope.min_year,
+            "max_year": cfg.scope.max_year,
+        },
+        "estimation": cfg.method.estimation,
+        "predictors": cfg.method.predictors,
+    }
+
     config_fp = semantic_config_fingerprint(
-        config=cfg,
-        excluded_paths=(
-            ("engine", "threads"),
-        ),
+        config=estimation_config_payload,
     )
 
+    # 2. Content fingerprint of training_features without mtime.
     input_fp = {
         "training_features": file_fingerprint(
             input_path,
-            hash_file=True,
+            hash_file=False,
         ),
     }
 

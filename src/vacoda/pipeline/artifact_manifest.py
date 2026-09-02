@@ -134,6 +134,65 @@ def file_stat_fingerprint(
         "mtime_ns": int(stat.st_mtime_ns),
     }
 
+def file_content_list_fingerprint(
+    *,
+    paths: list[Path],
+    label: str,
+) -> dict[str, Any]:
+    """
+    Fingerprint a collection of semantic input files by content.
+    """
+    files = sorted(
+        Path(path)
+        for path in paths
+    )
+
+    entries = [
+        file_content_fingerprint(path)
+        for path in files
+    ]
+
+    return {
+        "kind": "content_file_list",
+        "label": label,
+        "n_files": len(files),
+        "n_missing_files": sum(
+            not item["exists"]
+            for item in entries
+        ),
+        "files": entries,
+        "semantic_sha256": semantic_fingerprint(
+            entries
+        ),
+    }
+
+def file_content_fingerprint(
+    path: Path,
+) -> dict[str, Any]:
+    """
+    Return a content-based fingerprint for a semantic input.
+
+    Intended for repository-managed reference/config/source files where
+    modification time must not affect reuse.
+    """
+    path = Path(path)
+
+    if not path.is_file():
+        return {
+            "path": str(path.resolve()),
+            "exists": False,
+            "size_bytes": None,
+            "sha256": None,
+        }
+
+    stat = path.stat()
+
+    return {
+        "path": str(path.resolve()),
+        "exists": True,
+        "size_bytes": int(stat.st_size),
+        "sha256": file_content_sha256(path),
+    }
 
 def file_content_sha256(
     path: Path,
