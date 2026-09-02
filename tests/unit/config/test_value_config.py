@@ -37,6 +37,11 @@ def test_value_config_loads(
 
     assert cfg.method.reference_year == 2025
     assert cfg.method.preserve_nominal_values is True
+    assert cfg.input.columns.year == "year"
+    assert (
+        cfg.input.columns.nominal_value
+        == "trade_value_reconciled"
+    )
 
     assert (
         cfg.reference_data.us_gdp_deflator.country_code

@@ -76,11 +76,34 @@ def _render_value(
 
 
 @dataclass(frozen=True)
+class ValueInputColumnsConfig:
+    year: str
+    nominal_value: str
+
+    @classmethod
+    def from_dict(
+        cls,
+        cfg: dict[str, Any],
+    ) -> "ValueInputColumnsConfig":
+        return cls(
+            year=require_str(
+                cfg.get("year"),
+                key="value.input.columns.year",
+            ),
+            nominal_value=require_str(
+                cfg.get("nominal_value"),
+                key="value.input.columns.nominal_value",
+            ),
+        )
+
+
+@dataclass(frozen=True)
 class ValueInputConfig:
     stage: str
     subdir: str
     filename: str
     format: str
+    columns: ValueInputColumnsConfig
 
     @classmethod
     def from_dict(
@@ -113,6 +136,12 @@ class ValueInputConfig:
                 key="value.input.filename",
             ),
             format=format_name,
+            columns=ValueInputColumnsConfig.from_dict(
+                require_dict(
+                    cfg.get("columns"),
+                    key="value.input.columns",
+                )
+            ),
         )
 
     def resolve_dir(self) -> Path:

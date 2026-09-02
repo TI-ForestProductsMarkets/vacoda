@@ -28,6 +28,9 @@ from vacoda.utils.runtime import (
 )
 
 from vacoda.value.prepare_deflator import prepare_us_gdp_deflator
+from vacoda.value.deflate import deflate_trade_values
+from vacoda.value.audit import run_value_output_audit
+from vacoda.value.reporting import build_value_report
 
 # These will be added as the module is built:
 # from vacoda.value.deflate import deflate_trade_values
@@ -181,7 +184,194 @@ def run_value_workflow(
         # Step 2 — Deflate synchronized trade values
         # ==================================================================
 
-        raise NotImplementedError(
-            "Value workflow Step 2 is not implemented yet: "
-            "deflate synchronized trade values."
+        deflated_result = run_step(
+            logger=logger,
+            step_number=2,
+            total_steps=TOTAL_WORKFLOW_STEPS,
+            title=WORKFLOW_STEPS[1],
+            runner=lambda: deflate_trade_values(
+                cfg=cfg,
+                input_path=resolved_input_path,
+                deflator_path=deflator_path,
+                run_id=run_id,
+                force=force,
+                logger=logger,
+            ),
         )
+
+        deflated_path = require_artifact(
+            result=deflated_result,
+            path_key="deflated_trade_path",
+            consumer_step=WORKFLOW_STEPS[2],
+            producer_product="deflated Value trade Parquet",
+        )
+
+        # ==================================================================
+        # Step 3 — Audit Value output
+        # ==================================================================
+
+        audit_result = run_step(
+            logger=logger,
+            step_number=3,
+            total_steps=TOTAL_WORKFLOW_STEPS,
+            title=WORKFLOW_STEPS[2],
+            runner=lambda: run_value_output_audit(
+                cfg=cfg,
+                input_path=resolved_input_path,
+                deflated_trade_path=deflated_path,
+                deflator_path=deflator_path,
+                run_id=run_id,
+                logger=logger,
+            ),
+        )
+
+        audit_path = require_artifact(
+            result=audit_result,
+            path_key="audit_path",
+            consumer_step=WORKFLOW_STEPS[3],
+            producer_product="Value output audit",
+        )
+
+        # ==================================================================
+        # Step 4 — Write Value decision report
+        # ==================================================================
+
+        report_result = run_step(
+            logger=logger,
+            step_number=4,
+            total_steps=TOTAL_WORKFLOW_STEPS,
+            title=WORKFLOW_STEPS[3],
+            runner=lambda: build_value_report(
+                cfg=cfg,
+                input_path=resolved_input_path,
+                deflated_trade_path=deflated_path,
+                deflator_path=deflator_path,
+                audit_path=audit_path,
+                run_id=run_id,
+                force=force,
+                logger=logger,
+            ),
+        )
+
+        report_path = require_result_path(
+            report_result,
+            "Value reporting result did not contain "
+            "an expected report path.",
+            "report_path",
+            "output_path",
+        )
+
+        if not report_path.is_file():
+            raise FileNotFoundError(
+                f"Value decision report not found: {report_path}"
+            )
+
+        ready_for_validation = bool(
+            report_result.get(
+                "ready_for_validation"
+            )
+        )
+
+        if not ready_for_validation:
+            raise RuntimeError(
+                "Value workflow finished without "
+                "validation-ready output."
+            )
+
+        workflow_elapsed = (
+            perf_counter()
+            - workflow_start
+        )
+
+        separator(logger)
+
+        logger.info(
+            "%s Value workflow finished.",
+            get_symbols("success"),
+        )
+        logger.info(
+            "Run ID: %s",
+            run_id,
+        )
+        logger.info(
+            "Prepared GDP deflator: %s",
+            deflator_path,
+        )
+        logger.info(
+            "Deflated trade: %s",
+            deflated_path,
+        )
+        logger.info(
+            "Audit: %s",
+            audit_path,
+        )
+        logger.info(
+            "Decision report: %s",
+            report_path,
+        )
+
+        latest_report_path = (
+            report_result.get(
+                "latest_report_path"
+            )
+        )
+
+        if latest_report_path is not None:
+            logger.info(
+                "Latest decision report: %s",
+                latest_report_path,
+            )
+
+        logger.info(
+            "Ready for validation: %s",
+            ready_for_validation,
+        )
+        logger.info(
+            "Workflow duration: %.2fs",
+            workflow_elapsed,
+        )
+
+        separator(logger)
+
+    return {
+        "status": "completed",
+        "run_id": run_id,
+
+        # Master-pipeline readiness contract.
+        "ready_for_validation": (
+            ready_for_validation
+        ),
+
+        # Canonical primary output.
+        "output_path": deflated_path,
+
+        # Explicit Value product paths.
+        "prepared_deflator_path": (
+            deflator_path
+        ),
+        "deflated_trade_path": (
+            deflated_path
+        ),
+        "audit_path": audit_path,
+        "report_path": report_path,
+        "latest_report_path": (
+            report_result.get(
+                "latest_report_path"
+            )
+        ),
+
+        # Final decision metadata.
+        "decision": (
+            report_result.get(
+                "decision"
+            )
+        ),
+        "n_failed_audit_rows": (
+            report_result.get(
+                "n_failed_audit_rows"
+            )
+        ),
+        "workflow_duration_seconds": (
+            workflow_elapsed
+        ),
+    }

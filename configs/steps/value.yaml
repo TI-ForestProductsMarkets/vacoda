@@ -14,6 +14,10 @@ value:
     subdir: "trade_sync/target_{target_hs_lower}"
     filename: "comtrade_target_{target_hs_lower}_trade_synced.parquet"
     format: "parquet"
+  
+    columns:
+      year: "year"
+      nominal_value: "trade_value_reconciled"
 
 
   # --------------------------------------------------------------------
