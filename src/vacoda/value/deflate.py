@@ -18,12 +18,18 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from venv import logger
 
 import duckdb
 
 from vacoda.config.value import ValueConfig
 from vacoda.utils.sql import sql_literal
-
+from vacoda.pipeline.checkpoint import (
+    file_fingerprint,
+    semantic_config_fingerprint,
+    validate_local_checkpoint,
+    write_local_checkpoint,
+)
 
 DEFLATOR_COLUMN = "usd_gdp_deflator"
 DEFLATION_FACTOR_COLUMN = "usd_deflation_factor"
@@ -216,12 +222,57 @@ def deflate_trade_values(
             f"{deflator_path}"
         )
 
-    if output_path.exists() and not force:
+    ## Local checkpointing
+    checkpoint_path = (
+        cfg.output_dir()
+        / "checkpoints"
+        / "deflated_trade.json"
+    )
+
+    config_fp = semantic_config_fingerprint(
+        config=cfg,
+        excluded_paths=(
+            ("engine", "threads"),
+        ),
+    )
+
+    input_fp = {
+        "trade_sync_input": file_fingerprint(
+            input_path,
+            hash_file=True,
+        ),
+        "prepared_deflator": file_fingerprint(
+            deflator_path,
+            hash_file=True,
+        ),
+    }
+
+    reusable, reason = validate_local_checkpoint(
+        checkpoint_path=checkpoint_path,
+        current_config=config_fp,
+        current_input=input_fp,
+        output_path=output_path,
+    )
+
+    if not force and reusable:
         logger.info(
-            "Existing Value output will be rebuilt because "
-            "local Step-2 reuse is not implemented yet: %s",
+            "REUSE — Deflated Value trade local "
+            "checkpoint matches: %s",
             output_path,
         )
+
+        return {
+            "status": "reused",
+            "output_path": output_path,
+            "deflated_trade_path": output_path,
+            "audit_passed": True,
+            "ready_for_value_audit": True,
+        }
+
+    logger.info(
+        "REBUILD — Deflated Value trade: %s",
+        "forced" if force else reason,
+    )
 
     output_path.parent.mkdir(
         parents=True,
@@ -421,7 +472,11 @@ def deflate_trade_values(
             ).fetchone()[0]
         )
 
-        if output_rows != input_rows:
+        row_count_preserved = (
+            output_rows == input_rows
+        )
+
+        if not row_count_preserved:
             raise RuntimeError(
                 "Value deflation changed row count: "
                 f"input={input_rows:,}, "
@@ -444,7 +499,11 @@ def deflate_trade_values(
             ).fetchone()[0]
         )
 
-        if missing_output_deflator:
+        deflator_coverage_complete = (
+            missing_output_deflator == 0
+        )
+
+        if not deflator_coverage_complete:
             raise RuntimeError(
                 "Value output contains rows without a GDP deflator "
                 "inside the configured year range."
@@ -464,14 +523,37 @@ def deflate_trade_values(
             ).fetchone()[0]
         )
 
-        if bad_reference_factor:
+        reference_factor_valid = (
+            bad_reference_factor == 0
+        )
+
+        if not reference_factor_valid:
             raise RuntimeError(
                 "Reference-year Value rows do not have "
                 "usd_deflation_factor = 1."
             )
 
+        step_audit_passed = bool(
+            row_count_preserved
+            and deflator_coverage_complete
+            and reference_factor_valid
+        )
+
+        ready_for_value_audit = (
+            step_audit_passed
+        )
+
         temporary_path.replace(
             output_path
+        )
+
+        write_local_checkpoint(
+            checkpoint_path=checkpoint_path,
+            step_name="deflated_trade",
+            run_id=run_id,
+            config=config_fp,
+            input_fingerprint=input_fp,
+            output_path=output_path,
         )
 
         logger.info(
@@ -481,6 +563,14 @@ def deflate_trade_values(
         logger.info(
             "  Rows: %s",
             f"{output_rows:,}",
+        )
+        logger.info(
+            "  Step audit passed: %s",
+            step_audit_passed,
+        )
+        logger.info(
+            "  Ready for Value audit: %s",
+            ready_for_value_audit,
         )
 
         return {
@@ -502,7 +592,21 @@ def deflate_trade_values(
             "constant_value_column": (
                 CONSTANT_VALUE_COLUMN
             ),
-            "ready_for_value_audit": True,
+            "row_count_preserved": (
+                row_count_preserved
+            ),
+            "deflator_coverage_complete": (
+                deflator_coverage_complete
+            ),
+            "reference_factor_valid": (
+                reference_factor_valid
+            ),
+            "audit_passed": (
+                step_audit_passed
+            ),
+            "ready_for_value_audit": (
+                ready_for_value_audit
+            ),
         }
 
     finally:

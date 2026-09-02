@@ -25,7 +25,12 @@ from typing import Any
 import pandas as pd
 
 from vacoda.config.value import ValueConfig
-
+from vacoda.pipeline.checkpoint import (
+    file_fingerprint,
+    semantic_config_fingerprint,
+    validate_local_checkpoint,
+    write_local_checkpoint,
+)
 
 # ======================================================================
 # Source reading
@@ -339,6 +344,54 @@ def prepare_us_gdp_deflator(
     source_path = cfg.deflator_source_path()
     output_path = cfg.deflator_prepared_path()
 
+    ## Local checkpointing 
+    checkpoint_path = (
+        cfg.output_dir()
+        / "checkpoints"
+        / "prepared_deflator.json"
+    )
+
+    config_fp = semantic_config_fingerprint(
+        config=cfg,
+        excluded_paths=(
+            ("engine", "threads"),
+        ),
+    )
+
+    input_fp = {
+        "source": file_fingerprint(
+            source_path,
+            hash_file=True,
+        ),
+    }
+
+    reusable, reason = validate_local_checkpoint(
+        checkpoint_path=checkpoint_path,
+        current_config=config_fp,
+        current_input=input_fp,
+        output_path=output_path,
+    )
+
+    if not force and reusable:
+        logger.info(
+            "REUSE — Prepared US GDP deflator local "
+            "checkpoint matches: %s",
+            output_path,
+        )
+
+        return {
+            "status": "reused",
+            "output_path": output_path,
+            "prepared_deflator_path": output_path,
+            "audit_passed": True,
+            "ready_for_value_deflation": True,
+        }
+
+    logger.info(
+        "REBUILD — Prepared US GDP deflator: %s",
+        "forced" if force else reason,
+    )
+
     if not source_path.is_file():
         raise FileNotFoundError(
             "World Bank GDP-deflator source CSV not found: "
@@ -386,6 +439,23 @@ def prepare_us_gdp_deflator(
         reference_year=cfg.method.reference_year,
     )
 
+    audit_passed = bool(
+        audit["n_rows"] > 0
+        and audit["year_min"] <= cfg.method.reference_year
+        and audit["year_max"] >= cfg.method.reference_year
+        and audit["reference_year"] == cfg.method.reference_year
+        and audit["reference_year_deflator"] > 0
+    )
+
+    ready_for_value_deflation = bool(
+        audit_passed
+    )
+
+    if not audit_passed:
+        raise RuntimeError(
+            "Prepared GDP-deflator audit failed."
+        )
+
     output_path.parent.mkdir(
         parents=True,
         exist_ok=True,
@@ -402,6 +472,15 @@ def prepare_us_gdp_deflator(
 
     temporary_path.replace(
         output_path
+    )
+
+    write_local_checkpoint(
+        checkpoint_path=checkpoint_path,
+        step_name="prepared_deflator",
+        run_id=run_id,
+        config=config_fp,
+        input_fingerprint=input_fp,
+        output_path=output_path,
     )
 
     logger.info(
@@ -425,8 +504,8 @@ def prepare_us_gdp_deflator(
 
     return {
         "status": "completed",
-        "audit_passed": True,
-        "ready_for_value_deflation": True,
+        "audit_passed": audit_passed,
+        "ready_for_value_deflation": ready_for_value_deflation,
         "output_path": output_path,
         "prepared_deflator_path": output_path,
         **audit,

@@ -81,7 +81,7 @@ steps:
     config: "configs/steps/value.yaml"
     expected_status:
       - "completed"
-    required_ready_flag: null
+    required_ready_flag: "ready_for_validation"
 
 
 checkpoint:
