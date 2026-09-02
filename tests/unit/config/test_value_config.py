@@ -6,7 +6,7 @@ from vacoda.config.pipeline import (
     PipelineEngineConfig,
     PipelineScopeConfig,
 )
-from vacoda.config.value import ValueConfig
+from vacoda.config.steps.value import ValueConfig
 
 
 @pytest.fixture

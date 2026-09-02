@@ -15,7 +15,7 @@ from vacoda.config.base import (
     load_yaml_config,
     require_dict,
 )
-from vacoda.config.cif_fob import CifFobConfig
+from vacoda.config.steps.cif_fob import CifFobConfig
 from vacoda.config.pipeline import (
     PipelineEngineConfig,
     PipelineScopeConfig,

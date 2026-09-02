@@ -2,7 +2,7 @@ from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 
-from vacoda.cif_fob import workflow
+from vacoda.steps.cif_fob import workflow
 
 
 class _Flag:

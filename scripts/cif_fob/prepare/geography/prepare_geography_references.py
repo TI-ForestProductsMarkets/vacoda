@@ -13,7 +13,7 @@ This includes:
 from __future__ import annotations
 
 import argparse
-from vacoda.cif_fob.references.geography.workflow import prepare_geography_references
+from vacoda.steps.cif_fob.references.geography.workflow import prepare_geography_references
 
 N_THREADS = 54
 DEFAULT_GRAVITY_REFERENCE_YEAR = 2021

@@ -1,4 +1,4 @@
-from vacoda.cif_fob.workflow import _resolve_primary_estimation_name
+from vacoda.steps.cif_fob.workflow import _resolve_primary_estimation_name
 
 
 def test_resolve_primary_estimation_name_returns_full_run_name():

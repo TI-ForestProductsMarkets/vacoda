@@ -11,8 +11,8 @@ from vacoda.config.pipeline import (
     PipelineEngineConfig,
     PipelineScopeConfig,
 )
-from vacoda.config.quantity import QuantityConfig
-from vacoda.quantity.workflow import run_quantity_workflow
+from vacoda.config.steps.quantity import QuantityConfig
+from vacoda.steps.quantity.workflow import run_quantity_workflow
 
 
 def main() -> None:

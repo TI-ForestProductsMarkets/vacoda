@@ -16,10 +16,10 @@ from pathlib import Path
 
 import pandas as pd
 
-from vacoda.config.hs_sync import HsSyncConfig
+from vacoda.config.steps.hs_sync import HsSyncConfig
 from vacoda.config.pipeline import PipelineConfig
 from vacoda.config.paths import resolve_log_path
-from vacoda.hs_sync.allocation import (
+from vacoda.steps.hs_sync.allocation import (
     build_complete_mapping_weight_table,
     write_complete_mapping_weight_outputs,
 )

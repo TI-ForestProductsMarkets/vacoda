@@ -3,7 +3,7 @@
 Prepare VACODA-owned geography extension references.
 """
 
-from vacoda.cif_fob.references.geography.vacoda_extension import (
+from vacoda.steps.cif_fob.references.geography.vacoda_extension import (
     prepare_vacoda_country_geography,
     prepare_vacoda_geography_crosswalk,
 )

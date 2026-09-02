@@ -6,10 +6,10 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from vacoda.config.hs_sync import HsSyncConfig
+from vacoda.config.steps.hs_sync import HsSyncConfig
 from vacoda.config.pipeline import PipelineConfig
 from vacoda.config.paths import resolve_log_path
-from vacoda.hs_sync.workflow import run_hs_sync_workflow
+from vacoda.steps.hs_sync.workflow import run_hs_sync_workflow
 from vacoda.utils.logger import (
     get_logger,
     parse_log_level,

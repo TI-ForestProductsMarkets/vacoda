@@ -6,7 +6,7 @@ Script to prepare the CEPII gravity dataset for use in the CIF-FOB project.
 This script reads the raw CEPII gravity data, processes it to extract relevant geographic information for
 country pairs, and writes the processed data to a parquet file for downstream use.
 """
-from vacoda.cif_fob.references.geography.cepii_gravity import prepare_gravity_pair_geography
+from vacoda.steps.cif_fob.references.geography.cepii_gravity import prepare_gravity_pair_geography
 from vacoda.config.paths import get_geography_cepii_gravity_dir
 
 INPUT_PATH =  get_geography_cepii_gravity_dir() / "source" / "Gravity_V202211.csv"

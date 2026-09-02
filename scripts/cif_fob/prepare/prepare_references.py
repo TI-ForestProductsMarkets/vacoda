@@ -6,8 +6,8 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from vacoda.cif_fob.references.geography.workflow import prepare_geography_references
-from vacoda.cif_fob.references.macroeconomic import prepare_annual_oil_prices
+from vacoda.steps.cif_fob.references.geography.workflow import prepare_geography_references
+from vacoda.steps.cif_fob.references.macroeconomic import prepare_annual_oil_prices
 from vacoda.config.paths import get_references_macroeconomic_dir
 
 N_THREADS = 58

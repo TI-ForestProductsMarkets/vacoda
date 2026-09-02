@@ -4,7 +4,7 @@ from vacoda.utils.logger import get_logger
 
 import pandas as pd
 
-from vacoda.cif_fob import reporting
+from vacoda.steps.cif_fob import reporting
 
 
 def _fake_cfg(target_hs: str = "H5"):

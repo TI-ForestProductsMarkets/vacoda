@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pandas as pd
 
-from vacoda.cif_fob import reporting
+from vacoda.steps.cif_fob import reporting
 
 
 def test_enabled_predictor_set_names_returns_only_enabled():

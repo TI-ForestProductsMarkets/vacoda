@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 
-from vacoda.cif_fob import estimate_rates as estimate_rates_module
+from vacoda.steps.cif_fob import estimate_rates as estimate_rates_module
 
 
 def test_build_run_prediction_checkpoint_uses_canonical_keys():

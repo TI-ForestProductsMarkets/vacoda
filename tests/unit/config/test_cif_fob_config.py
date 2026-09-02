@@ -2,7 +2,7 @@ import copy
 
 import pytest
 
-from vacoda.config.cif_fob import CifFobConfig, load_cif_fob_config
+from vacoda.config.steps.cif_fob import CifFobConfig, load_cif_fob_config
 from vacoda.config.pipeline import PipelineConfig
 
 

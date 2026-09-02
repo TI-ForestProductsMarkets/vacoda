@@ -6,10 +6,10 @@ from datetime import datetime
 from pprint import pformat
 import argparse as ap
 
-from vacoda.config.cif_fob import CifFobConfig
+from vacoda.config.steps.cif_fob import CifFobConfig
 from vacoda.config.pipeline import PipelineConfig
 from vacoda.config.paths import resolve_log_path
-from vacoda.cif_fob.workflow import run_cif_fob_workflow
+from vacoda.steps.cif_fob.workflow import run_cif_fob_workflow
 from vacoda.utils.logger import get_logger, parse_log_level, setup_logging
 
 def main() -> None:

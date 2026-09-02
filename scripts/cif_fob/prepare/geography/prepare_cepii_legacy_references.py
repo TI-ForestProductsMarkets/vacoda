@@ -2,7 +2,7 @@
 """Prepare all CEPII legacy geography references."""
 from __future__ import annotations
 
-from vacoda.cif_fob.references.geography.cepii_legacy import (
+from vacoda.steps.cif_fob.references.geography.cepii_legacy import (
     prepare_legacy_country_geography,
     prepare_legacy_pair_geography,
 )

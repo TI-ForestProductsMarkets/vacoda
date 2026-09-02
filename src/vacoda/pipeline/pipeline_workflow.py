@@ -15,21 +15,21 @@ from typing import Any, Callable
 
 import pandas as pd
 
-from vacoda.config.trade_sync import TradeSyncConfig
-from vacoda.config.cif_fob import CifFobConfig
+from vacoda.config.steps.trade_sync import TradeSyncConfig
+from vacoda.config.steps.cif_fob import CifFobConfig
 from vacoda.config.dataset import DatasetConfig
-from vacoda.config.hs_sync import HsSyncConfig
-from vacoda.config.value import ValueConfig
+from vacoda.config.steps.hs_sync import HsSyncConfig
+from vacoda.config.steps.value import ValueConfig
 from vacoda.config.paths import resolve_log_path
 from vacoda.config.pipeline import PipelineConfig
-from vacoda.trade_sync.workflow import run_trade_sync_workflow
-from vacoda.config.quantity import QuantityConfig
-from vacoda.quantity.audit import quantity_audit_path
-from vacoda.quantity.workflow import run_quantity_workflow
-from vacoda.cif_fob.workflow import run_cif_fob_workflow
+from vacoda.steps.trade_sync.workflow import run_trade_sync_workflow
+from vacoda.config.steps.quantity import QuantityConfig
+from vacoda.steps.quantity.audit import quantity_audit_path
+from vacoda.steps.quantity.workflow import run_quantity_workflow
+from vacoda.steps.cif_fob.workflow import run_cif_fob_workflow
 from vacoda.dataset.staging import build_comtrade_staging_dataset
-from vacoda.hs_sync.workflow import run_hs_sync_workflow
-from vacoda.value.workflow import run_value_workflow
+from vacoda.steps.hs_sync.workflow import run_hs_sync_workflow
+from vacoda.steps.value.workflow import run_value_workflow
 from vacoda.pipeline.checkpoint import (
     checkpoint_path,
     config_fingerprint,
