@@ -27,14 +27,13 @@ from vacoda.config.steps.quantity import QuantityConfig
 from vacoda.steps.quantity.audit import quantity_audit_path
 from vacoda.steps.quantity.workflow import run_quantity_workflow
 from vacoda.steps.cif_fob.workflow import run_cif_fob_workflow
-from vacoda.dataset.staging import build_comtrade_staging_dataset
+from vacoda.steps.dataset.staging import build_comtrade_staging_dataset
 from vacoda.steps.hs_sync.workflow import run_hs_sync_workflow
 from vacoda.steps.value.workflow import run_value_workflow
 from vacoda.pipeline.checkpoint import (
     checkpoint_path,
     config_fingerprint,
     semantic_config_fingerprint,
-    file_fingerprint,
     file_list_fingerprint,
     file_manifest_fingerprint,
     load_checkpoint,
