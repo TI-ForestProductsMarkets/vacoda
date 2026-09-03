@@ -17,6 +17,7 @@ pipeline:
     - "cif_fob"
     - "trade_sync"
     - "value"
+    - "validation"
 
   # Stop immediately if a step fails or reports ready_for_next_step=false.
   fail_fast: true
@@ -82,6 +83,13 @@ steps:
     expected_status:
       - "completed"
     required_ready_flag: "ready_for_validation"
+
+  validation:
+    enabled: true
+    config: "configs/steps/validation.yaml"
+    expected_status:
+      - "completed"
+    required_ready_flag: "ready_for_release"
 
 
 checkpoint:

@@ -22,6 +22,7 @@ from vacoda.config.steps.quantity import QuantityConfig
 from vacoda.config.steps.cif_fob import CifFobConfig
 from vacoda.config.steps.trade_sync import TradeSyncConfig
 from vacoda.config.steps.value import ValueConfig
+from vacoda.config.steps.validation import ValidationConfig
 
 ## Processing
 from vacoda.steps.ingestion.staging import build_comtrade_ingestion_layer
@@ -31,6 +32,8 @@ from vacoda.steps.quantity.audit import quantity_audit_path
 from vacoda.steps.cif_fob.workflow import run_cif_fob_workflow
 from vacoda.steps.trade_sync.workflow import run_trade_sync_workflow
 from vacoda.steps.value.workflow import run_value_workflow
+from vacoda.steps.validation.workflow import run_validation_workflow
+
 from vacoda.config.pipeline import PipelineConfig
 
 ## 
@@ -427,6 +430,26 @@ def _run_value_step(
         force=force,
     )
 
+def _run_validation_step(
+    *,
+    config_path: Path,
+    pipeline_cfg: PipelineConfig,
+    run_id: str,
+    force: bool = False,
+) -> dict[str, Any]:
+    cfg = ValidationConfig.from_yaml(
+        config_path,
+        scope=pipeline_cfg.scope,
+        engine=pipeline_cfg.engine,
+    )
+
+    return run_validation_workflow(
+        cfg=cfg,
+        run_id=run_id,
+        logger=get_logger("PIPELINE.VALIDATION"),
+        force=force,
+    )
+
 def _build_ingestion_plan(
     *,
     step_name: str,
@@ -797,6 +820,67 @@ def _build_value_plan(
         ),
     )
 
+def _build_validation_plan(
+    *,
+    step_name: str,
+    config_path: Path,
+    pipeline_cfg: PipelineConfig,
+) -> StepPlan:
+    cfg = ValidationConfig.from_yaml(
+        config_path,
+        scope=pipeline_cfg.scope,
+        engine=pipeline_cfg.engine,
+    )
+
+    input_path = cfg.input_path()
+
+    validation_source_dir = Path(
+        run_validation_workflow.__code__.co_filename
+    ).parent
+
+    implementation_fp = source_files_fingerprint(
+        paths=list(
+            validation_source_dir.rglob("*.py")
+        ),
+        label="validation_implementation",
+    )
+
+    input_fp = {
+        "validation_input": file_list_fingerprint(
+            paths=[input_path],
+            label="validation_required_input",
+        ),
+        "implementation": implementation_fp,
+    }
+
+    output_path = cfg.product_path(
+        "release"
+    )
+
+    audit_path = cfg.product_path(
+        "consistency_audit"
+    )
+
+    return StepPlan(
+        step_name=step_name,
+        config_path=config_path,
+        config_fingerprint=_step_config_fingerprint(
+            config_path=config_path,
+            resolved_config=cfg,
+            pipeline_cfg=pipeline_cfg,
+            include_scope=True,
+        ),
+        input_fingerprint=input_fp,
+        output_path=output_path,
+        audit_path=audit_path,
+        runner=lambda run_id, force: _run_validation_step(
+            config_path=config_path,
+            pipeline_cfg=pipeline_cfg,
+            run_id=run_id,
+            force=force,
+        ),
+    )
+
 def _step_config_fingerprint(
     *,
     config_path: Path,
@@ -971,6 +1055,12 @@ def _build_step_plan(
             pipeline_cfg=pipeline_cfg,
         )
 
+    if step_name == "validation":
+        return _build_validation_plan(
+            step_name=step_name,
+            config_path=config_path,
+            pipeline_cfg=pipeline_cfg,
+        )
     raise NotImplementedError(
         f"No pipeline plan implemented for step {step_name!r}."
     )

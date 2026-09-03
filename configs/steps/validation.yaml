@@ -1,0 +1,264 @@
+# configs/steps/validation.yaml
+# Final VACODA validation, quality-control, and release configuration.
+
+validation:
+
+  # --------------------------------------------------------------------
+  # Input
+  # --------------------------------------------------------------------
+
+  input:
+    stage: "interim"
+    subdir: "value/target_{target_hs_lower}"
+    filename: "comtrade_target_{target_hs_lower}_value_deflated.parquet"
+    format: "parquet"
+
+  # --------------------------------------------------------------------
+  # Output
+  # --------------------------------------------------------------------
+
+  output:
+    stage: "processed"
+    subdir: "validation/target_{target_hs_lower}"
+    format: "parquet"
+
+  # --------------------------------------------------------------------
+  # Products
+  # --------------------------------------------------------------------
+
+  products:
+
+    prepared_input:
+      enable: true
+      filename: "prepared/comtrade_target_{target_hs_lower}_validation_prepared.parquet"
+
+    structural_audit:
+      enable: true
+      filename: "audits/target_{target_hs_lower}_validation_structural_audit.parquet"
+
+    missingness:
+      enable: true
+      filename: "diagnostics/target_{target_hs_lower}_validation_missingness.parquet"
+
+    unit_value_diagnostics:
+      enable: true
+      filename: "diagnostics/target_{target_hs_lower}_validation_unit_values.parquet"
+
+    outliers:
+      enable: true
+      filename: "diagnostics/target_{target_hs_lower}_validation_outliers.parquet"
+
+    consistency_audit:
+      enable: true
+      filename: "audits/target_{target_hs_lower}_validation_consistency_audit.parquet"
+
+    provenance:
+      enable: true
+      filename: "target_{target_hs_lower}_validation_provenance.parquet"
+
+    validated_trade:
+      enable: true
+      filename: "comtrade_target_{target_hs_lower}_validated.parquet"
+
+    release:
+      enable: true
+      filename: "vacoda_target_{target_hs_lower}_trade.parquet"
+
+  # --------------------------------------------------------------------
+  # Method
+  # --------------------------------------------------------------------
+
+  method:
+
+    structural:
+
+      required_fields:
+        - year
+        - reporter_code
+        - partner_code
+        - flow_code
+        - target_cmd
+        - quantity_kg
+        - trade_value_reconciled
+        - trade_value_reconciled_constant_usd
+
+      canonical_key:
+        - year
+        - reporter_code
+        - partner_code
+        - flow_code
+        - target_cmd
+
+      duplicate_keys:
+        fail_on_duplicates: true
+
+      valid_flows:
+        - "M"
+        - "X"
+
+      require_positive_value: true
+      require_nonnegative_quantity: true
+
+    missingness:
+
+      fields:
+        - quantity_kg
+        - trade_value_reconciled
+        - trade_value_reconciled_constant_usd
+
+      summarize_by:
+        - year
+        - reporter_code
+        - partner_code
+        - flow_code
+        - target_cmd
+
+    unit_value:
+
+      value_column: "trade_value_reconciled"
+      quantity_column: "quantity_kg"
+      output_column: "unit_value_usd_per_kg"
+
+      require_positive_value: true
+      require_positive_quantity: true
+
+      transform: "log"
+
+      peer_group:
+        - target_cmd
+        - year
+
+      fallback_peer_group:
+        - target_cmd
+
+      minimum_group_rows: 30
+
+    outliers:
+
+      method: "robust_mad"
+      column: "unit_value_usd_per_kg"
+
+      group_by:
+        - target_cmd
+        - year
+
+      thresholds:
+        warning_score: 5.0
+        severe_score: 8.0
+
+      action: "flag"
+      remove: false
+
+    consistency:
+
+      positive_value_requires_quantity:
+        enabled: true
+
+      positive_quantity_requires_value:
+        enabled: true
+
+      constant_value_consistency:
+        enabled: true
+        relative_tolerance: 1.0e-10
+
+      target_hs_validity:
+        enabled: true
+
+      year_scope_validity:
+        enabled: true
+
+    imputation:
+
+      enabled: false
+
+      preserve_original_values: true
+
+      quantity:
+        enabled: false
+
+      value:
+        enabled: false
+
+  # --------------------------------------------------------------------
+  # Release
+  # --------------------------------------------------------------------
+
+  release:
+
+    columns:
+      year: "year"
+      reporter: "reporter_code"
+      partner: "partner_code"
+      flow: "flow_code"
+      hs_code: "target_cmd"
+      quantity_kg: "quantity_kg"
+      trade_value_usd: "trade_value_reconciled"
+      trade_value_constant_usd: "trade_value_reconciled_constant_usd"
+
+    sort_by:
+      - year
+      - reporter
+      - partner
+      - flow
+      - hs_code
+
+  # --------------------------------------------------------------------
+  # Decision
+  # --------------------------------------------------------------------
+
+  decision:
+
+    fail_on:
+      structural_failure: true
+      duplicate_keys: true
+      invalid_hs_codes: true
+      invalid_years: true
+
+    allow_flagged_outliers: true
+    allow_imputed_rows: true
+
+    ready_flag: "ready_for_release"
+
+  # --------------------------------------------------------------------
+  # Diagnostics
+  # --------------------------------------------------------------------
+
+  diagnostics:
+
+    unit_value_percentiles:
+      - 0.01
+      - 0.05
+      - 0.25
+      - 0.50
+      - 0.75
+      - 0.95
+      - 0.99
+
+    missingness_dimensions:
+      - year
+      - reporter_code
+      - partner_code
+      - target_cmd
+      - flow_code
+
+  # --------------------------------------------------------------------
+  # Logging
+  # --------------------------------------------------------------------
+
+  logging:
+    level: "DEBUG"
+    subdir: "logs/validation"
+    file: "LOG_VALIDATION_TARGET_{target_hs_lower}.log"
+    timestamp: true
+
+  # --------------------------------------------------------------------
+  # Decision report
+  # --------------------------------------------------------------------
+
+  artifacts:
+    enable: true
+    kind: "reports"
+    subdir: "validation/target_{target_hs_lower}"
+    filename: "target_{target_hs_lower}_validation_decision_report"
+    timestamp: true
+    write_latest: true
