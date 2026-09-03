@@ -172,6 +172,184 @@ def _metric_lookup(
 # Figures
 # ======================================================================
 
+def _plot_quantity_strategy_comparison_by_year(
+    *,
+    con: duckdb.DuckDBPyConnection,
+    reconciled_sql: str,
+    output_path: Path,
+) -> None:
+    """Compare value-weighted quantity with the simple bilateral mean."""
+
+    frame = con.execute(
+        f"""
+        WITH eligible AS (
+            SELECT
+                year,
+
+                (
+                    export_synchronized_quantity_kg
+                    + import_synchronized_quantity_kg
+                ) / 2.0 AS simple_mean_kg,
+
+                (
+                    export_synchronized_quantity_kg
+                    * exporter_adjusted_weight
+                    +
+                    import_synchronized_quantity_kg
+                    * importer_adjusted_weight
+                ) AS weighted_kg
+
+            FROM read_parquet({reconciled_sql})
+
+            WHERE export_synchronized_quantity_kg > 0
+              AND import_synchronized_quantity_kg > 0
+              AND exporter_adjusted_weight IS NOT NULL
+              AND importer_adjusted_weight IS NOT NULL
+        ),
+
+        compared AS (
+            SELECT
+                year,
+                ABS(weighted_kg - simple_mean_kg)
+                    / simple_mean_kg AS strategy_difference
+            FROM eligible
+            WHERE simple_mean_kg > 0
+        )
+
+        SELECT
+            year,
+            MEDIAN(strategy_difference) AS median_difference,
+            QUANTILE_CONT(strategy_difference, 0.90)
+                AS p90_difference
+        FROM compared
+        GROUP BY year
+        ORDER BY year
+        """
+    ).fetchdf()
+
+    figure, axis = plt.subplots(figsize=(10, 6))
+
+    axis.plot(
+        frame["year"],
+        100 * frame["median_difference"],
+        marker="o",
+        label="Median",
+    )
+
+    axis.plot(
+        frame["year"],
+        100 * frame["p90_difference"],
+        marker="o",
+        label="P90",
+    )
+
+    axis.set_title(
+        "Value-weighted quantity versus simple bilateral mean"
+    )
+    axis.set_xlabel("Year")
+    axis.set_ylabel("Absolute difference (%)")
+    axis.grid(axis="y", linestyle="--", alpha=0.5)
+    axis.legend()
+
+    figure.tight_layout()
+    figure.savefig(output_path, dpi=180, bbox_inches="tight")
+    plt.close(figure)
+
+def _plot_quantity_deviation_distribution(
+    *,
+    con: duckdb.DuckDBPyConnection,
+    reconciled_sql: str,
+    output_path: Path,
+) -> None:
+    """Plot disagreement between usable exporter and importer kg quantities."""
+
+    frame = con.execute(
+        f"""
+        SELECT
+            ABS(
+                export_synchronized_quantity_kg
+                - import_synchronized_quantity_kg
+            )
+            / GREATEST(
+                export_synchronized_quantity_kg,
+                import_synchronized_quantity_kg
+            ) AS relative_difference
+
+        FROM read_parquet({reconciled_sql})
+
+        WHERE export_synchronized_quantity_kg IS NOT NULL
+          AND isfinite(export_synchronized_quantity_kg)
+          AND export_synchronized_quantity_kg > 0
+          AND import_synchronized_quantity_kg IS NOT NULL
+          AND isfinite(import_synchronized_quantity_kg)
+          AND import_synchronized_quantity_kg > 0
+        """
+    ).fetchdf()
+
+    if frame.empty:
+        raise RuntimeError(
+            "No bilateral positive quantity observations are available."
+        )
+
+    relative_difference = frame["relative_difference"].dropna()
+
+    bin_edges = [index / 10 for index in range(11)]
+    bin_labels = [
+        "[0%, 10%]",
+        "(10%, 20%]",
+        "(20%, 30%]",
+        "(30%, 40%]",
+        "(40%, 50%]",
+        "(50%, 60%]",
+        "(60%, 70%]",
+        "(70%, 80%]",
+        "(80%, 90%]",
+        "(90%, 100%]",
+    ]
+
+    counts = pd.cut(
+        relative_difference.clip(lower=0, upper=1),
+        bins=bin_edges,
+        labels=bin_labels,
+        include_lowest=True,
+        right=True,
+    ).value_counts(sort=False)
+
+    shares = 100.0 * counts / counts.sum()
+
+    figure, axis = plt.subplots(figsize=(11, 6))
+
+    bars = axis.bar(
+        shares.index.astype(str),
+        shares.values,
+        width=1.0,
+        edgecolor="white",
+        linewidth=0.5,
+    )
+
+    axis.bar_label(
+        bars,
+        labels=[f"{value:.1f}%" for value in shares],
+        padding=3,
+        fontsize=9,
+    )
+
+    axis.set_title(
+        "Distribution of bilateral quantity differences\n"
+        f"All years, n = {len(relative_difference):,}"
+    )
+    axis.set_xlabel(
+        "Quantity difference relative to the larger report"
+    )
+    axis.set_ylabel("Share of rows (%)")
+    axis.grid(axis="y", linestyle="--", alpha=0.5)
+    axis.set_axisbelow(True)
+
+    figure.tight_layout()
+    figure.savefig(output_path, dpi=180, bbox_inches="tight")
+    plt.close(figure)
+
+
 def _plot_positive_positive_deviation_distribution(
     *,
     con: duckdb.DuckDBPyConnection,
@@ -1181,6 +1359,72 @@ def build_trade_sync_report(
             metric="total_corrected_import_fob",
         )
 
+        n_both_quantity = _metric_lookup(
+            diagnostics,
+            scope="quantity_overall",
+            metric="n_both_quantity_rows",
+        )
+
+        n_export_quantity_only = _metric_lookup(
+            diagnostics,
+            scope="quantity_overall",
+            metric="n_export_quantity_only_rows",
+        )
+
+        n_import_quantity_only = _metric_lookup(
+            diagnostics,
+            scope="quantity_overall",
+            metric="n_import_quantity_only_rows",
+        )
+
+        n_no_quantity = _metric_lookup(
+            diagnostics,
+            scope="quantity_overall",
+            metric="n_no_quantity_rows",
+        )
+
+        median_quantity_difference = _metric_lookup(
+            diagnostics,
+            scope="quantity_overall",
+            metric="median_quantity_relative_difference",
+        )
+
+        p90_quantity_difference = _metric_lookup(
+            diagnostics,
+            scope="quantity_overall",
+            metric="p90_quantity_relative_difference",
+        )
+
+        p95_quantity_difference = _metric_lookup(
+            diagnostics,
+            scope="quantity_overall",
+            metric="p95_quantity_relative_difference",
+        )
+
+        p99_quantity_difference = _metric_lookup(
+            diagnostics,
+            scope="quantity_overall",
+            metric="p99_quantity_relative_difference",
+        )
+
+        quantity_within_10pct = _metric_lookup(
+            diagnostics,
+            scope="quantity_overall",
+            metric="quantity_within_10pct_share",
+        )
+
+        median_weighted_vs_mean = _metric_lookup(
+            diagnostics,
+            scope="quantity_overall",
+            metric="median_quantity_weighted_vs_mean_fraction",
+        )
+
+        p90_weighted_vs_mean = _metric_lookup(
+            diagnostics,
+            scope="quantity_overall",
+            metric="p90_quantity_weighted_vs_mean_fraction",
+        )
+
         # Compute agreement measures directly from genuine two-sided
         # positive reports. This avoids mixing implicit-zero evidence
         # into descriptive report-agreement statistics.
@@ -1627,6 +1871,12 @@ def build_trade_sync_report(
                 figure_dir
                 / "selected_country_export_reliability_over_time.png"
             ),
+            "quantity_deviation_distribution": (
+                figure_dir / "quantity_deviation_distribution.png"
+            ),
+            "quantity_strategy_comparison": (
+                figure_dir / "quantity_strategy_comparison_by_year.png"
+            ),
         }
         
         _plot_reconciliation_status_by_year(
@@ -1682,7 +1932,31 @@ def build_trade_sync_report(
             minimum_years=6,
             maximum_countries=8,
         )
+        _plot_selected_country_reliability_over_time(
+            con=con,
+            reliability_sql=reliability_sql,
+            output_path=figure_paths["export_reliability_trajectory"],
+            reporting_direction="export",
+            maximum_year=country_reliability_plot_year,
+            minimum_evidence=30,
+            minimum_years=6,
+            maximum_countries=8,
+        )
+        _plot_quantity_deviation_distribution(
+            con=con,
+            reconciled_sql=reconciled_sql,
+            output_path=figure_paths[
+                "quantity_deviation_distribution"
+            ],
+        )
 
+        _plot_quantity_strategy_comparison_by_year(
+            con=con,
+            reconciled_sql=reconciled_sql,
+            output_path=figure_paths[
+                "quantity_strategy_comparison"
+            ],
+        )
         # --------------------------------------------------------------
         # Decision logic
         # --------------------------------------------------------------
@@ -2360,7 +2634,84 @@ def build_trade_sync_report(
             document_path=report_path,
         ),
         "",
-        "## 9. Reconciliation composition",
+        "",
+        "## 9. Bilateral quantity diagnostics",
+        "",
+        (
+            "The Quantity module standardizes available physical quantity "
+            "evidence into kilograms on each reporting side. At the bilateral "
+            "`year × exporter × importer × product` grain, exporter and "
+            "importer kg quantities can nevertheless differ."
+        ),
+        "",
+        (
+            "Trade Sync does not yet harmonize these two quantity observations. "
+            "The following diagnostics compare the mirror quantities and evaluate "
+            "two candidate approaches: a simple bilateral mean and application "
+            "of the existing Trade Sync value-reliability weights."
+        ),
+        "",
+        "| Quantity availability | Rows |",
+        "|---|---:|",
+        (
+            "| Both exporter and importer quantity usable | "
+            f"{_format_integer(n_both_quantity)} |"
+        ),
+        (
+            "| Exporter quantity only | "
+            f"{_format_integer(n_export_quantity_only)} |"
+        ),
+        (
+            "| Importer quantity only | "
+            f"{_format_integer(n_import_quantity_only)} |"
+        ),
+        (
+            "| Neither quantity usable | "
+            f"{_format_integer(n_no_quantity)} |"
+        ),
+        "",
+        (
+            "Among rows with usable quantities on both sides, the median "
+            "difference relative to the larger quantity is "
+            f"`{_format_percent(median_quantity_difference)}`; the P90, "
+            f"P95, and P99 differences are "
+            f"`{_format_percent(p90_quantity_difference)}`, "
+            f"`{_format_percent(p95_quantity_difference)}`, and "
+            f"`{_format_percent(p99_quantity_difference)}`, respectively."
+        ),
+        "",
+        (
+            f"`{_format_percent(quantity_within_10pct)}` of bilateral "
+            "quantity pairs agree within 10%."
+        ),
+        "",
+        markdown_image(
+            "Distribution of bilateral quantity differences",
+            figure_paths["quantity_deviation_distribution"],
+            document_path=report_path,
+        ),
+        "",
+        (
+            "For rows where both quantities and the existing Trade Sync "
+            "reliability weights are available, applying those weights instead "
+            "of a simple bilateral mean changes the candidate quantity by a "
+            "median absolute amount of "
+            f"`{_format_percent(median_weighted_vs_mean)}` and a P90 amount "
+            f"of `{_format_percent(p90_weighted_vs_mean)}`."
+        ),
+        "",
+        markdown_image(
+            "Value-weighted quantity versus simple bilateral mean",
+            figure_paths["quantity_strategy_comparison"],
+            document_path=report_path,
+        ),
+        "",
+        (
+            "These results are diagnostic only. No bilateral quantity "
+            "harmonization rule is applied in the current Trade Sync output."
+        ),
+    
+        "## 10. Reconciliation composition",
         "",
         (
             "The following table reports how the complete CIF/FOB input "
@@ -2384,7 +2735,7 @@ def build_trade_sync_report(
             document_path=report_path,
         ),
         "",
-        "## 10. Annual results",
+        "## 11. Annual results",
         "",
         _markdown_table(
             annual_summary.rename(
@@ -2415,7 +2766,7 @@ def build_trade_sync_report(
             "are both retained. The boundedness property applies row-by-row to bilateral reconciliation, not to these aggregate totals."
         ),
         "",
-        "## 11. Interpretation and limitations",
+        "## 12. Interpretation and limitations",
         "",
         (
             "- Trade Sync harmonizes reporting evidence; it does not "
@@ -2465,7 +2816,7 @@ def build_trade_sync_report(
             "underlying trade flow."
         ),
         "",
-        "## 12. Output artifacts",
+        "## 13. Output artifacts",
         "",
         f"- Reconciled trade: `{reconciled_trade_path}`",
         f"- Country reliability: `{country_reliability_path}`",

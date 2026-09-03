@@ -308,6 +308,11 @@ def build_trade_sync_diagnostics(
             "importer_adjusted_weight",
             "exporter_mean_deviation",
             "importer_mean_deviation",
+
+            "export_synchronized_quantity_kg",
+            "import_synchronized_quantity_kg",
+            "export_is_synchronized_quantity_estimated",
+            "import_is_synchronized_quantity_estimated",
         }
 
         missing_reconciled_columns = sorted(
@@ -383,29 +388,139 @@ def build_trade_sync_diagnostics(
         WITH reconciled AS (
             SELECT *
             FROM read_parquet({reconciled_sql})
+        ),
+
+        base AS (
+            SELECT
+                *,
+
+                CASE
+                    WHEN reconciliation_export_value IS NOT NULL
+                    AND reconciliation_import_value IS NOT NULL
+                        THEN (
+                            reconciliation_export_value
+                            + reconciliation_import_value
+                        ) / 2.0
+                    ELSE NULL
+                END AS simple_average_value,
+
+                CASE
+                    WHEN export_synchronized_quantity_kg IS NOT NULL
+                    AND isfinite(export_synchronized_quantity_kg)
+                    AND export_synchronized_quantity_kg > 0
+                    AND import_synchronized_quantity_kg IS NOT NULL
+                    AND isfinite(import_synchronized_quantity_kg)
+                    AND import_synchronized_quantity_kg > 0
+                        THEN (
+                            export_synchronized_quantity_kg
+                            + import_synchronized_quantity_kg
+                        ) / 2.0
+                    ELSE NULL
+                END AS quantity_simple_mean_kg,
+
+                CASE
+                    WHEN export_synchronized_quantity_kg IS NOT NULL
+                    AND isfinite(export_synchronized_quantity_kg)
+                    AND export_synchronized_quantity_kg > 0
+                    AND import_synchronized_quantity_kg IS NOT NULL
+                    AND isfinite(import_synchronized_quantity_kg)
+                    AND import_synchronized_quantity_kg > 0
+                    AND exporter_adjusted_weight IS NOT NULL
+                    AND importer_adjusted_weight IS NOT NULL
+                        THEN (
+                            export_synchronized_quantity_kg
+                            * exporter_adjusted_weight
+                            +
+                            import_synchronized_quantity_kg
+                            * importer_adjusted_weight
+                        )
+                    ELSE NULL
+                END AS quantity_value_weighted_kg,
+
+                CASE
+                    WHEN export_synchronized_quantity_kg IS NOT NULL
+                    AND isfinite(export_synchronized_quantity_kg)
+                    AND export_synchronized_quantity_kg > 0
+                    AND import_synchronized_quantity_kg IS NOT NULL
+                    AND isfinite(import_synchronized_quantity_kg)
+                    AND import_synchronized_quantity_kg > 0
+                        THEN (
+                            ABS(
+                                export_synchronized_quantity_kg
+                                - import_synchronized_quantity_kg
+                            )
+                            /
+                            GREATEST(
+                                export_synchronized_quantity_kg,
+                                import_synchronized_quantity_kg
+                            )
+                        )
+                    ELSE NULL
+                END AS quantity_relative_difference,
+
+                CASE
+                    WHEN export_synchronized_quantity_kg IS NOT NULL
+                    AND isfinite(export_synchronized_quantity_kg)
+                    AND export_synchronized_quantity_kg > 0
+                    AND import_synchronized_quantity_kg IS NOT NULL
+                    AND isfinite(import_synchronized_quantity_kg)
+                    AND import_synchronized_quantity_kg > 0
+                        THEN (
+                            import_synchronized_quantity_kg
+                            / export_synchronized_quantity_kg
+                        )
+                    ELSE NULL
+                END AS quantity_import_export_ratio,
+
+                CASE
+                    WHEN export_synchronized_quantity_kg IS NOT NULL
+                    AND isfinite(export_synchronized_quantity_kg)
+                    AND export_synchronized_quantity_kg > 0
+                    AND import_synchronized_quantity_kg IS NOT NULL
+                    AND isfinite(import_synchronized_quantity_kg)
+                    AND import_synchronized_quantity_kg > 0
+                        THEN ABS(
+                            LN(import_synchronized_quantity_kg)
+                            - LN(export_synchronized_quantity_kg)
+                        )
+                    ELSE NULL
+                END AS quantity_absolute_log_gap
+
+            FROM reconciled
         )
 
         SELECT
             *,
 
+            -- --------------------------------------------------------------
+            -- Quantity candidate comparison
+            -- --------------------------------------------------------------
+
             CASE
-                WHEN reconciliation_export_value IS NOT NULL
-                 AND reconciliation_import_value IS NOT NULL
+                WHEN quantity_simple_mean_kg IS NOT NULL
+                AND quantity_simple_mean_kg > 0
+                AND quantity_value_weighted_kg IS NOT NULL
                     THEN (
-                        reconciliation_export_value
-                        + reconciliation_import_value
-                    ) / 2.0
-
+                        ABS(
+                            quantity_value_weighted_kg
+                            - quantity_simple_mean_kg
+                        )
+                        / quantity_simple_mean_kg
+                    )
                 ELSE NULL
-            END AS simple_average_value,
+            END AS quantity_weighted_vs_mean_fraction,
+
+            -- --------------------------------------------------------------
+            -- Existing value diagnostics
+            -- --------------------------------------------------------------
 
             CASE
                 WHEN reconciliation_export_value IS NOT NULL
-                 AND reconciliation_import_value IS NOT NULL
-                 AND GREATEST(
-                     reconciliation_export_value,
-                     reconciliation_import_value
-                 ) > 0
+                AND reconciliation_import_value IS NOT NULL
+                AND GREATEST(
+                    reconciliation_export_value,
+                    reconciliation_import_value
+                ) > 0
                     THEN (
                         ABS(
                             reconciliation_export_value
@@ -423,11 +538,11 @@ def build_trade_sync_diagnostics(
 
             CASE
                 WHEN reconciliation_export_value IS NOT NULL
-                 AND reconciliation_import_value IS NOT NULL
-                 AND (
-                     reconciliation_export_value
-                     + reconciliation_import_value
-                 ) > 0
+                AND reconciliation_import_value IS NOT NULL
+                AND (
+                    reconciliation_export_value
+                    + reconciliation_import_value
+                ) > 0
                     THEN (
                         ABS(
                             reconciliation_export_value
@@ -447,11 +562,11 @@ def build_trade_sync_diagnostics(
 
             CASE
                 WHEN reconciliation_export_value IS NOT NULL
-                 AND reconciliation_import_value IS NOT NULL
-                 AND (
-                     reconciliation_export_value
-                     + reconciliation_import_value
-                 ) > 0
+                AND reconciliation_import_value IS NOT NULL
+                AND (
+                    reconciliation_export_value
+                    + reconciliation_import_value
+                ) > 0
                     THEN (
                         trade_value_reconciled
                         -
@@ -473,9 +588,9 @@ def build_trade_sync_diagnostics(
 
             CASE
                 WHEN export_value_fob IS NOT NULL
-                 AND isfinite(export_value_fob)
-                 AND export_value_fob > 0
-                 AND trade_value_reconciled IS NOT NULL
+                AND isfinite(export_value_fob)
+                AND export_value_fob > 0
+                AND trade_value_reconciled IS NOT NULL
                     THEN (
                         trade_value_reconciled
                         - export_value_fob
@@ -486,9 +601,9 @@ def build_trade_sync_diagnostics(
 
             CASE
                 WHEN import_value_fob_corrected IS NOT NULL
-                 AND isfinite(import_value_fob_corrected)
-                 AND import_value_fob_corrected > 0
-                 AND trade_value_reconciled IS NOT NULL
+                AND isfinite(import_value_fob_corrected)
+                AND import_value_fob_corrected > 0
+                AND trade_value_reconciled IS NOT NULL
                     THEN (
                         trade_value_reconciled
                         - import_value_fob_corrected
@@ -499,12 +614,12 @@ def build_trade_sync_diagnostics(
 
             CASE
                 WHEN {str(tolerance_available).upper()}
-                 AND reconciliation_export_value IS NOT NULL
-                 AND reconciliation_import_value IS NOT NULL
-                 AND GREATEST(
-                     reconciliation_export_value,
-                     reconciliation_import_value
-                 ) > 0
+                AND reconciliation_export_value IS NOT NULL
+                AND reconciliation_import_value IS NOT NULL
+                AND GREATEST(
+                    reconciliation_export_value,
+                    reconciliation_import_value
+                ) > 0
                     THEN (
                         ABS(
                             reconciliation_export_value
@@ -520,7 +635,7 @@ def build_trade_sync_diagnostics(
                 ELSE NULL
             END AS within_agreement_tolerance
 
-        FROM reconciled
+        FROM base
         """
 
         # ==============================================================
@@ -657,6 +772,244 @@ def build_trade_sync_diagnostics(
                 ) AS within_agreement_tolerance_share
 
             FROM reconciliation_base
+        ),
+
+        quantity_overall_wide AS (
+            SELECT
+                CAST(COUNT(*) AS DOUBLE)
+                    AS n_rows,
+
+                CAST(
+                    COUNT(*) FILTER (
+                        WHERE export_synchronized_quantity_kg IS NOT NULL
+                          AND isfinite(export_synchronized_quantity_kg)
+                          AND export_synchronized_quantity_kg > 0
+                    )
+                    AS DOUBLE
+                ) AS n_export_quantity_rows,
+
+                CAST(
+                    COUNT(*) FILTER (
+                        WHERE import_synchronized_quantity_kg IS NOT NULL
+                          AND isfinite(import_synchronized_quantity_kg)
+                          AND import_synchronized_quantity_kg > 0
+                    )
+                    AS DOUBLE
+                ) AS n_import_quantity_rows,
+
+                CAST(
+                    COUNT(*) FILTER (
+                        WHERE quantity_relative_difference IS NOT NULL
+                    )
+                    AS DOUBLE
+                ) AS n_both_quantity_rows,
+
+                CAST(
+                    COUNT(*) FILTER (
+                        WHERE export_synchronized_quantity_kg IS NOT NULL
+                          AND isfinite(export_synchronized_quantity_kg)
+                          AND export_synchronized_quantity_kg > 0
+                          AND (
+                              import_synchronized_quantity_kg IS NULL
+                              OR NOT isfinite(import_synchronized_quantity_kg)
+                              OR import_synchronized_quantity_kg <= 0
+                          )
+                    )
+                    AS DOUBLE
+                ) AS n_export_quantity_only_rows,
+
+                CAST(
+                    COUNT(*) FILTER (
+                        WHERE import_synchronized_quantity_kg IS NOT NULL
+                          AND isfinite(import_synchronized_quantity_kg)
+                          AND import_synchronized_quantity_kg > 0
+                          AND (
+                              export_synchronized_quantity_kg IS NULL
+                              OR NOT isfinite(export_synchronized_quantity_kg)
+                              OR export_synchronized_quantity_kg <= 0
+                          )
+                    )
+                    AS DOUBLE
+                ) AS n_import_quantity_only_rows,
+
+                CAST(
+                    COUNT(*) FILTER (
+                        WHERE (
+                            export_synchronized_quantity_kg IS NULL
+                            OR NOT isfinite(export_synchronized_quantity_kg)
+                            OR export_synchronized_quantity_kg <= 0
+                        )
+                        AND (
+                            import_synchronized_quantity_kg IS NULL
+                            OR NOT isfinite(import_synchronized_quantity_kg)
+                            OR import_synchronized_quantity_kg <= 0
+                        )
+                    )
+                    AS DOUBLE
+                ) AS n_no_quantity_rows,
+
+                CAST(
+                    MEDIAN(quantity_relative_difference)
+                    AS DOUBLE
+                ) AS median_quantity_relative_difference,
+
+                CAST(
+                    QUANTILE_CONT(
+                        quantity_relative_difference,
+                        0.75
+                    )
+                    AS DOUBLE
+                ) AS p75_quantity_relative_difference,
+
+                CAST(
+                    QUANTILE_CONT(
+                        quantity_relative_difference,
+                        0.90
+                    )
+                    AS DOUBLE
+                ) AS p90_quantity_relative_difference,
+
+                CAST(
+                    QUANTILE_CONT(
+                        quantity_relative_difference,
+                        0.95
+                    )
+                    AS DOUBLE
+                ) AS p95_quantity_relative_difference,
+
+                CAST(
+                    QUANTILE_CONT(
+                        quantity_relative_difference,
+                        0.99
+                    )
+                    AS DOUBLE
+                ) AS p99_quantity_relative_difference,
+
+                CAST(
+                    MEDIAN(quantity_import_export_ratio)
+                    AS DOUBLE
+                ) AS median_quantity_import_export_ratio,
+
+                CAST(
+                    MEDIAN(quantity_absolute_log_gap)
+                    AS DOUBLE
+                ) AS median_quantity_absolute_log_gap,
+
+                CAST(
+                    MEDIAN(quantity_weighted_vs_mean_fraction)
+                    AS DOUBLE
+                ) AS median_quantity_weighted_vs_mean_fraction,
+
+                CAST(
+                    QUANTILE_CONT(
+                        quantity_weighted_vs_mean_fraction,
+                        0.90
+                    )
+                    AS DOUBLE
+                ) AS p90_quantity_weighted_vs_mean_fraction,
+
+                CAST(
+                    AVG(
+                        CASE
+                            WHEN quantity_relative_difference <= 0.05
+                                THEN 1.0
+                            WHEN quantity_relative_difference IS NOT NULL
+                                THEN 0.0
+                        END
+                    )
+                    AS DOUBLE
+                ) AS quantity_within_5pct_share,
+
+                CAST(
+                    AVG(
+                        CASE
+                            WHEN quantity_relative_difference <= 0.10
+                                THEN 1.0
+                            WHEN quantity_relative_difference IS NOT NULL
+                                THEN 0.0
+                        END
+                    )
+                    AS DOUBLE
+                ) AS quantity_within_10pct_share,
+
+                CAST(
+                    AVG(
+                        CASE
+                            WHEN quantity_relative_difference <= 0.20
+                                THEN 1.0
+                            WHEN quantity_relative_difference IS NOT NULL
+                                THEN 0.0
+                        END
+                    )
+                    AS DOUBLE
+                ) AS quantity_within_20pct_share,
+
+                CAST(
+                    AVG(
+                        CASE
+                            WHEN quantity_relative_difference <= 0.50
+                                THEN 1.0
+                            WHEN quantity_relative_difference IS NOT NULL
+                                THEN 0.0
+                        END
+                    )
+                    AS DOUBLE
+                ) AS quantity_within_50pct_share
+
+            FROM reconciliation_base
+        ),
+
+        quantity_year_wide AS (
+            SELECT
+                year,
+
+                CAST(COUNT(*) AS DOUBLE)
+                    AS n_rows,
+
+                CAST(
+                    COUNT(*) FILTER (
+                        WHERE quantity_relative_difference IS NOT NULL
+                    )
+                    AS DOUBLE
+                ) AS n_both_quantity_rows,
+
+                CAST(
+                    MEDIAN(quantity_relative_difference)
+                    AS DOUBLE
+                ) AS median_quantity_relative_difference,
+
+                CAST(
+                    QUANTILE_CONT(
+                        quantity_relative_difference,
+                        0.90
+                    )
+                    AS DOUBLE
+                ) AS p90_quantity_relative_difference,
+
+                CAST(
+                    MEDIAN(quantity_import_export_ratio)
+                    AS DOUBLE
+                ) AS median_quantity_import_export_ratio,
+
+                CAST(
+                    MEDIAN(quantity_weighted_vs_mean_fraction)
+                    AS DOUBLE
+                ) AS median_quantity_weighted_vs_mean_fraction,
+
+                CAST(
+                    AVG(
+                        CASE
+                            WHEN quantity_relative_difference <= 0.10
+                                THEN 1.0
+                            WHEN quantity_relative_difference IS NOT NULL
+                                THEN 0.0
+                        END
+                    )
+                    AS DOUBLE
+                ) AS quantity_within_10pct_share
+
+            FROM reconciliation_base
+            GROUP BY year
         ),
 
         year_wide AS (
@@ -1334,6 +1687,281 @@ def build_trade_sync_diagnostics(
                 'median_implicit_zero_share',
                 median_implicit_zero_share
             FROM reliability_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_overall',
+                NULL,
+                NULL,
+                NULL,
+                'n_export_quantity_rows',
+                n_export_quantity_rows
+            FROM quantity_overall_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_overall',
+                NULL,
+                NULL,
+                NULL,
+                'n_import_quantity_rows',
+                n_import_quantity_rows
+            FROM quantity_overall_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_overall',
+                NULL,
+                NULL,
+                NULL,
+                'n_both_quantity_rows',
+                n_both_quantity_rows
+            FROM quantity_overall_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_overall',
+                NULL,
+                NULL,
+                NULL,
+                'n_export_quantity_only_rows',
+                n_export_quantity_only_rows
+            FROM quantity_overall_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_overall',
+                NULL,
+                NULL,
+                NULL,
+                'n_import_quantity_only_rows',
+                n_import_quantity_only_rows
+            FROM quantity_overall_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_overall',
+                NULL,
+                NULL,
+                NULL,
+                'n_no_quantity_rows',
+                n_no_quantity_rows
+            FROM quantity_overall_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_overall',
+                NULL,
+                NULL,
+                NULL,
+                'median_quantity_relative_difference',
+                median_quantity_relative_difference
+            FROM quantity_overall_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_overall',
+                NULL,
+                NULL,
+                NULL,
+                'p90_quantity_relative_difference',
+                p90_quantity_relative_difference
+            FROM quantity_overall_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_overall',
+                NULL,
+                NULL,
+                NULL,
+                'p75_quantity_relative_difference',
+                p75_quantity_relative_difference
+            FROM quantity_overall_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_overall',
+                NULL,
+                NULL,
+                NULL,
+                'median_quantity_absolute_log_gap',
+                median_quantity_absolute_log_gap
+            FROM quantity_overall_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_overall',
+                NULL,
+                NULL,
+                NULL,
+                'p95_quantity_relative_difference',
+                p95_quantity_relative_difference
+            FROM quantity_overall_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_overall',
+                NULL,
+                NULL,
+                NULL,
+                'p99_quantity_relative_difference',
+                p99_quantity_relative_difference
+            FROM quantity_overall_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_overall',
+                NULL,
+                NULL,
+                NULL,
+                'median_quantity_import_export_ratio',
+                median_quantity_import_export_ratio
+            FROM quantity_overall_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_overall',
+                NULL,
+                NULL,
+                NULL,
+                'median_quantity_weighted_vs_mean_fraction',
+                median_quantity_weighted_vs_mean_fraction
+            FROM quantity_overall_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_overall',
+                NULL,
+                NULL,
+                NULL,
+                'p90_quantity_weighted_vs_mean_fraction',
+                p90_quantity_weighted_vs_mean_fraction
+            FROM quantity_overall_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_overall',
+                NULL,
+                NULL,
+                NULL,
+                'quantity_within_5pct_share',
+                quantity_within_5pct_share
+            FROM quantity_overall_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_overall',
+                NULL,
+                NULL,
+                NULL,
+                'quantity_within_10pct_share',
+                quantity_within_10pct_share
+            FROM quantity_overall_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_overall',
+                NULL,
+                NULL,
+                NULL,
+                'quantity_within_20pct_share',
+                quantity_within_20pct_share
+            FROM quantity_overall_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_overall',
+                NULL,
+                NULL,
+                NULL,
+                'quantity_within_50pct_share',
+                quantity_within_50pct_share
+            FROM quantity_overall_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_year',
+                year,
+                NULL,
+                NULL,
+                'n_both_quantity_rows',
+                n_both_quantity_rows
+            FROM quantity_year_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_year',
+                year,
+                NULL,
+                NULL,
+                'median_quantity_relative_difference',
+                median_quantity_relative_difference
+            FROM quantity_year_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_year',
+                year,
+                NULL,
+                NULL,
+                'p90_quantity_relative_difference',
+                p90_quantity_relative_difference
+            FROM quantity_year_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_year',
+                year,
+                NULL,
+                NULL,
+                'median_quantity_import_export_ratio',
+                median_quantity_import_export_ratio
+            FROM quantity_year_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_year',
+                year,
+                NULL,
+                NULL,
+                'median_quantity_weighted_vs_mean_fraction',
+                median_quantity_weighted_vs_mean_fraction
+            FROM quantity_year_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_year',
+                year,
+                NULL,
+                NULL,
+                'quantity_within_10pct_share',
+                quantity_within_10pct_share
+            FROM quantity_year_wide
         )
 
         SELECT *
@@ -1463,7 +2091,14 @@ def build_trade_sync_diagnostics(
                     FROM output
                     WHERE diagnostic_scope = 'overall'
                       AND metric = 'total_reconciled_value'
-                ) AS overall_total_reconciled_value
+                ) AS overall_total_reconciled_value,
+
+                (
+                    SELECT metric_value
+                    FROM output
+                    WHERE diagnostic_scope = 'quantity_overall'
+                      AND metric = 'n_both_quantity_rows'
+                ) AS overall_both_quantity_rows
 
             """
         ).fetchone()
@@ -1486,6 +2121,7 @@ def build_trade_sync_diagnostics(
             overall_weighted_rows,
             overall_single_report_rows,
             overall_total_reconciled_value,
+            overall_both_quantity_rows,
         ) = output_audit_row
 
         if int(n_diagnostic_rows) == 0:
@@ -1511,11 +2147,23 @@ def build_trade_sync_diagnostics(
                 f"{int(n_nonfinite_metric_values):,} non-finite metrics."
             )
 
-        if int(n_diagnostic_scopes) != 4:
+        if int(n_diagnostic_scopes) != 6:
             raise RuntimeError(
                 "Trade Sync diagnostics did not produce all expected "
-                "scopes: overall, year, year_status, and "
-                "country_reliability."
+                "scopes: overall, year, year_status, country_reliability, "
+                "quantity_overall, and quantity_year."
+            )
+
+        if overall_both_quantity_rows is None:
+            raise RuntimeError(
+                "Quantity diagnostics did not produce the bilateral "
+                "quantity coverage metric."
+            )
+
+        if int(round(float(overall_both_quantity_rows))) <= 0:
+            raise RuntimeError(
+                "No rows with usable exporter and importer quantities "
+                "were available for quantity diagnostics."
             )
 
         if int(round(float(diagnostic_input_rows))) != int(
@@ -1574,6 +2222,10 @@ def build_trade_sync_diagnostics(
         logger.info(
             "  Total reconciled value: %.6f",
             float(overall_total_reconciled_value or 0.0),
+        )
+        logger.info(
+            "  Rows with both usable quantities: %s",
+            f"{int(round(float(overall_both_quantity_rows))):,}",
         )
         logger.info(
             "  Agreement-tolerance diagnostics available: %s",
