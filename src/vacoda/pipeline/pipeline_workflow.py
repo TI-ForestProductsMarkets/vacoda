@@ -15,21 +15,26 @@ from typing import Any, Callable
 
 import pandas as pd
 
-from vacoda.config.steps.trade_sync import TradeSyncConfig
-from vacoda.config.steps.cif_fob import CifFobConfig
-from vacoda.config.dataset import DatasetConfig
+## Steps
+from vacoda.config.ingestion import IngestionConfig
 from vacoda.config.steps.hs_sync import HsSyncConfig
-from vacoda.config.steps.value import ValueConfig
-from vacoda.config.paths import resolve_log_path
-from vacoda.config.pipeline import PipelineConfig
-from vacoda.steps.trade_sync.workflow import run_trade_sync_workflow
 from vacoda.config.steps.quantity import QuantityConfig
-from vacoda.steps.quantity.audit import quantity_audit_path
-from vacoda.steps.quantity.workflow import run_quantity_workflow
-from vacoda.steps.cif_fob.workflow import run_cif_fob_workflow
-from vacoda.steps.dataset.staging import build_comtrade_staging_dataset
+from vacoda.config.steps.cif_fob import CifFobConfig
+from vacoda.config.steps.trade_sync import TradeSyncConfig
+from vacoda.config.steps.value import ValueConfig
+
+## Processing
+from vacoda.steps.ingestion.staging import build_comtrade_ingestion_layer
 from vacoda.steps.hs_sync.workflow import run_hs_sync_workflow
+from vacoda.steps.quantity.workflow import run_quantity_workflow
+from vacoda.steps.quantity.audit import quantity_audit_path
+from vacoda.steps.cif_fob.workflow import run_cif_fob_workflow
+from vacoda.steps.trade_sync.workflow import run_trade_sync_workflow
 from vacoda.steps.value.workflow import run_value_workflow
+from vacoda.config.pipeline import PipelineConfig
+
+## 
+from vacoda.config.paths import resolve_log_path
 from vacoda.pipeline.checkpoint import (
     checkpoint_path,
     config_fingerprint,
@@ -69,20 +74,20 @@ class StepDecision:
     action: str  # "run" or "skip"
     reason: str
 
-def _run_staging_step(
+def _run_ingestion_step(
     *,
     config_path: Path,
     pipeline_cfg: PipelineConfig,
     run_id: str,
     force: bool = False
 ) -> dict[str, Any]:
-    cfg = DatasetConfig.from_yaml(
+    cfg = IngestionConfig.from_yaml(
         config_path,
         scope=pipeline_cfg.scope,
         engine=pipeline_cfg.engine,
     )
 
-    return build_comtrade_staging_dataset(
+    return build_comtrade_ingestion_layer(
         cfg=cfg,
         run_id=run_id,
         logger=get_logger("PIPELINE.STAGING"),
@@ -422,20 +427,20 @@ def _run_value_step(
         force=force,
     )
 
-def _build_staging_plan(
+def _build_ingestion_plan(
     *,
     step_name: str,
     config_path: Path,
     pipeline_cfg: PipelineConfig,
 ) -> StepPlan:
-    cfg = DatasetConfig.from_yaml(
+    cfg = IngestionConfig.from_yaml(
         config_path,
         scope=pipeline_cfg.scope,
         engine=pipeline_cfg.engine,
     )
 
     if cfg.input.pattern is None:
-        raise ValueError("dataset input.pattern is required for staging checkpointing.")
+        raise ValueError("dataset input.pattern is required for ingestion checkpointing.")
 
     input_dir = cfg.input.resolve_dir()
     input_pattern = cfg.input.pattern
@@ -455,7 +460,7 @@ def _build_staging_plan(
         ),
         output_path=cfg.output_path(),
         audit_path=cfg.audit_path(),
-        runner=lambda run_id, force: _run_staging_step(
+        runner=lambda run_id, force: _run_ingestion_step(
             config_path=config_path,
             pipeline_cfg=pipeline_cfg,
             run_id=run_id,
@@ -923,8 +928,8 @@ def _build_step_plan(
     pipeline_cfg: PipelineConfig,
 ) -> StepPlan:
 
-    if step_name == "staging":
-        return _build_staging_plan(
+    if step_name == "ingestion":
+        return _build_ingestion_plan(
             step_name=step_name,
             config_path=config_path,
             pipeline_cfg=pipeline_cfg,

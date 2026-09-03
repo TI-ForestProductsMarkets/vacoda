@@ -10,9 +10,9 @@ This script is intended to be run as a standalone process, and it uses the confi
 from datetime import datetime
 from time import perf_counter
 
-from vacoda.config.dataset import DatasetConfig
+from vacoda.config.ingestion import DatasetConfig
 from vacoda.config.pipeline import PipelineConfig
-from vacoda.dataset.staging import build_comtrade_staging_dataset
+from vacoda.steps.ingestion.staging import build_comtrade_ingestion_layer
 from vacoda.config.paths import resolve_log_path
 from vacoda.utils.logger import (
     get_logger,
@@ -42,7 +42,7 @@ def main() -> None:
     step_start = perf_counter()
 
     try:
-        outputs = build_comtrade_staging_dataset(
+        outputs = build_comtrade_ingestion_layer(
                             cfg=cfg, 
                             run_id=run_id,
                             logger=logger)

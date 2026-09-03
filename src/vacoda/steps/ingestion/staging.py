@@ -1,5 +1,13 @@
-# src/vacoda/dataset/staging.py
+"""
+src.vacoda.ingestion.staging.py
 
+This module contains the logic for building the Comtrade ingestion layer from raw CSV files.
+The ingestion layer is the boundary between raw data and staged data, and it performs the following tasks:
+- reads many raw CSV files
+- validates required raw columns
+- writes one typed standardized parquet
+- writes a small audit manifest
+"""
 from __future__ import annotations
 
 from logging import Logger
@@ -7,7 +15,7 @@ from pathlib import Path
 
 import duckdb
 import pandas as pd
-from vacoda.config.dataset import DatasetConfig
+from vacoda.config.ingestion import IngestionConfig
 from vacoda.utils.sql import sql_literal
 
 COMTRADE_QUANTITY_UNIT_LABELS = {
@@ -125,9 +133,9 @@ def _unit_consistency_condition(
 
     return " OR ".join(conditions)
 
-def build_comtrade_staging_dataset(
+def build_comtrade_ingestion_layer(
     *,
-    cfg: DatasetConfig,
+    cfg: IngestionConfig,
     run_id: str,
     force: bool = False,
     logger: Logger,
@@ -142,9 +150,9 @@ def build_comtrade_staging_dataset(
     - writes a small audit manifest
     """
 
-    if cfg.dataset.mode != "multi_file":
+    if cfg.ingestion.mode != "multi_file":
         raise ValueError(
-            f"Expected dataset.mode='multi_file' for staging, got {cfg.dataset.mode!r}."
+            f"Expected ingestion.mode='multi_file' for staging, got {cfg.ingestion.mode!r}."
         )
 
     if cfg.input.format != "csv":
@@ -259,7 +267,7 @@ def build_comtrade_staging_dataset(
     logger.info("  Input files: %s", f"{n_input_files:,}")
 
     try:
-        logger.info("Building Comtrade staging dataset.")
+        logger.info("Building Comtrade ingestion layer.")
         logger.info("  Engine: %s", cfg.engine.name)
         logger.info("  Threads: %s", cfg.engine.threads)
         logger.info("  Input glob: %s", input_glob)
@@ -456,7 +464,7 @@ def build_comtrade_staging_dataset(
         audit = pd.concat([audit, ready_row], ignore_index=True)
 
         audit.insert(0, "run_id", run_id)
-        audit.insert(1, "dataset_name", cfg.dataset.name)
+        audit.insert(1, "dataset_name", cfg.ingestion.name)
         audit.insert(2, "schema_name", cfg.schema.name)
         audit.insert(3, "schema_version", cfg.schema.version)
         audit.to_csv(audit_path, index=False)
@@ -473,7 +481,7 @@ def build_comtrade_staging_dataset(
             )
 
 
-        logger.info("Comtrade staging dataset built successfully.")
+        logger.info("Comtrade ingestion built successfully.")
         logger.info("  Rows: %s", f"{int(row['n_rows']):,}")
         logger.info("  Year range: %s-%s", int(row["min_year"]), int(row["max_year"]))
         logger.info("  Source pairs: %s", f"{int(row['source_pairs']):,}")

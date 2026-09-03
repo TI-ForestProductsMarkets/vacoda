@@ -11,7 +11,7 @@ pipeline:
 
   # Run order matters.
   enabled_steps:
-    - "staging"
+    - "ingestion"
     - "hs_sync"
     - "quantity"
     - "cif_fob"
@@ -40,9 +40,9 @@ engine:
   threads: 50
 
 steps:
-  staging:
+  ingestion:
     enabled: true
-    config: "configs/steps/dataset.yaml"
+    config: "configs/steps/ingestion.yaml"
     expected_status:
       - "completed"
       - "skipped_existing"

@@ -1,4 +1,4 @@
-# src/vacoda/config/dataset.py
+# src/vacoda/config/ingestion.py
 
 from __future__ import annotations
 
@@ -17,11 +17,11 @@ from vacoda.config.base import (
 from vacoda.config.paths import get_data_dir, get_output_dir
 
 
-DATASET_CONFIG_PATH = get_step_config_path("dataset")
+INGESTION_CONFIG_PATH = get_step_config_path("ingestion")
 
 
-def load_dataset_config(config_path: Path | None = None) -> dict[str, Any]:
-    return load_yaml_config(config_path or DATASET_CONFIG_PATH)
+def load_ingestion_config(config_path: Path | None = None) -> dict[str, Any]:
+    return load_yaml_config(config_path or INGESTION_CONFIG_PATH)
 
 
 @dataclass(frozen=True)
@@ -66,17 +66,17 @@ class StagePathConfig:
         return self.resolve_dir() / self.file
         
 @dataclass(frozen=True)
-class DatasetInfoConfig:
+class IngestionInfoConfig:
     name: str
     mode: str
     source: str
 
     @classmethod
-    def from_dict(cls, cfg: dict[str, Any]) -> "DatasetInfoConfig":
+    def from_dict(cls, cfg: dict[str, Any]) -> "IngestionInfoConfig":
         return cls(
-            name=require_str(cfg.get("name"), key="dataset.name"),
-            mode=require_str(cfg.get("mode"), key="dataset.mode").strip().lower(),
-            source=require_str(cfg.get("source"), key="dataset.source").strip().lower(),
+            name=require_str(cfg.get("name"), key="ingestion.name"),
+            mode=require_str(cfg.get("mode"), key="ingestion.mode").strip().lower(),
+            source=require_str(cfg.get("source"), key="ingestion.source").strip().lower(),
         )
 
 
@@ -217,18 +217,17 @@ class LoggingConfig:
     def from_dict(cls, cfg: dict[str, Any]) -> "LoggingConfig":
         return cls(
             level=require_str(cfg.get("level", "INFO"), key="logging.level").upper(),
-            file=require_str(cfg.get("file", "LOG_DATASET_BUILD.log"), key="logging.file"),
+            file=require_str(cfg.get("file", "LOG_INGESTION_BUILD.log"), key="logging.file"),
             timestamp=require_bool(cfg.get("timestamp", True), key="logging.timestamp"),
         )
 
     def resolve_log_file(self) -> Path:
-        from vacoda.config.paths import get_output_dir
 
         return get_output_dir("logs") / self.file
 
 @dataclass(frozen=True)
-class DatasetConfig:
-    dataset: DatasetInfoConfig
+class IngestionConfig:
+    ingestion: IngestionInfoConfig
     input: StagePathConfig
     output: StagePathConfig
     engine: EngineConfig
@@ -236,14 +235,15 @@ class DatasetConfig:
     write: WriteConfig
     audit: AuditConfig
     logging: LoggingConfig
+    
     @classmethod
     def from_yaml(cls,
                 config_path: Path | None = None,
                 *,
                 scope: Any | None = None,
-                engine: Any | None = None) -> "DatasetConfig":
+                engine: Any | None = None) -> "IngestionConfig":
                 return cls.from_dict(
-                    load_dataset_config(config_path),
+                    load_ingestion_config(config_path),
                     scope=scope,
                     engine=engine,
                 )
@@ -254,12 +254,12 @@ class DatasetConfig:
                 raw: dict[str, Any],
                 *,
                 scope: Any | None = None,
-                engine: Any | None = None) -> "DatasetConfig":
+                engine: Any | None = None) -> "IngestionConfig":
         if engine is None:
-            raise ValueError("DatasetConfig requires pipeline engine.")
+            raise ValueError("IngestionConfig requires pipeline engine.")
 
         return cls(
-            dataset=DatasetInfoConfig.from_dict(require_dict(raw.get("dataset"), key="dataset")),
+            ingestion=IngestionInfoConfig.from_dict(require_dict(raw.get("ingestion"), key="ingestion")),
             input=StagePathConfig.from_dict(require_dict(raw.get("input"), key="input"), key="input"),
             output=StagePathConfig.from_dict(require_dict(raw.get("output"), key="output"), key="output"),
             engine=(EngineConfig.from_pipeline_engine(engine)),

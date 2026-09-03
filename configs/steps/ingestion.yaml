@@ -1,8 +1,8 @@
-## configs/dataset.yaml
+## configs/ingestion.yaml
 ## Raw UN Comtrade API CSVs -> staged Comtrade parquet.
 ## This is the first technical standardization layer before HS-sync.
 
-dataset:
+ingestion:
   name: comtrade_api_single_annual_hs_staged
   mode: multi_file
   source: api_single
@@ -15,7 +15,7 @@ input:
 
 output:
   stage: interim
-  subdir: staging/api_single
+  subdir: ingestion/api_single
   file: comtrade_api_single_annual_hs_staged.parquet
   format: parquet
 
@@ -188,10 +188,10 @@ write:
 audit:
   enabled: true
   kind: manifest
-  subdir: staging/api_single
+  subdir: ingestion/api_single
   filename: comtrade_api_single_annual_hs_staged_audit.csv
 
 logging:
   level: DEBUG
-  file: LOG_DATASET_BUILD.log
+  file: LOG_INGESTION_BUILD.log
   timestamp: true

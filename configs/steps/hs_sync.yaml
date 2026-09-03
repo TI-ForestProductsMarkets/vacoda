@@ -18,10 +18,6 @@ global:
   progress:
     enabled: true
 
-global:
-  progress:
-    enabled: true
-
   columns:
     year: "year"
     hs: "source_hs"
@@ -57,7 +53,7 @@ coverage:
 
   input:
     stage: "interim"
-    subdir: "staging/api_single"
+    subdir: "ingestion/api_single"
     pattern: "*.parquet"  # file: "comtrade_api_single_annual_hs_staged.parquet"
     format: "parquet"
 
