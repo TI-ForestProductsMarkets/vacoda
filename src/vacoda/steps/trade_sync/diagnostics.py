@@ -3,17 +3,22 @@ vacoda.steps.trade_sync.diagnostics
 
 Build diagnostic summaries for Trade Sync reconciliation.
 
-The diagnostics step does not modify reconciled trade values. It evaluates:
+The diagnostics step does not modify reconciled trade values or quantities. It evaluates:
 
 - reconciliation coverage;
-- totals before and after reconciliation;
-- composition by reconciliation status;
-- reliability-weight distributions;
-- disagreement between exporter and importer reports;
-- effect of reliability weighting relative to a simple average;
+- totals before and after value reconciliation;
+- composition by value-reconciliation status;
+- value reliability-weight distributions;
+- disagreement between exporter and importer value reports;
+- effect of value reliability weighting relative to a simple average;
 - agreement-tolerance incidence;
 - country reliability evidence strength;
-- country-year-direction scores dominated by implicit zeros.
+- country-year-direction scores dominated by implicit zeros;
+- bilateral quantity availability and disagreement;
+- quantity-specific reporting reliability;
+- quantity-reconciliation method composition and effects;
+- implied unit-value plausibility;
+- plausibility evidence under extreme quantity disagreement.
 """
 
 from __future__ import annotations
@@ -26,17 +31,11 @@ import duckdb
 from vacoda.config.steps.trade_sync import TradeSyncConfig
 from vacoda.utils.display import get_symbols
 from vacoda.pipeline.checkpoint import validate_local_checkpoint, file_fingerprint, write_local_checkpoint, semantic_config_fingerprint
-
+from vacoda.utils.sql import sql_literal
 
 # ======================================================================
 # Helpers
 # ======================================================================
-
-
-def _sql_literal(value: str | Path) -> str:
-    """Return a safely quoted SQL string literal."""
-    return "'" + str(value).replace("'", "''") + "'"
-
 
 def valid_output(path: Path) -> bool:
     """Return True when an existing output appears usable."""
@@ -110,6 +109,7 @@ def build_trade_sync_diagnostics(
     reconciled_trade_path: Path,
     country_reliability_path: Path,
     reconciliation_audit_path: Path,
+    quantity_reconciliation_audit_path: Path,
     run_id: str,
     force: bool = False,
     logger,
@@ -126,7 +126,9 @@ def build_trade_sync_diagnostics(
     country_reliability_path:
         Country-year-direction reliability parquet.
     reconciliation_audit_path:
-        Reconciliation audit parquet.
+        Value-reconciliation audit parquet.
+    quantity_reconciliation_audit_path:
+        Quantity-reconciliation audit parquet.
     force:
         Rebuild an existing diagnostics product when True.
     logger:
@@ -136,13 +138,14 @@ def build_trade_sync_diagnostics(
     reconciled_trade_path = Path(reconciled_trade_path)
     country_reliability_path = Path(country_reliability_path)
     reconciliation_audit_path = Path(reconciliation_audit_path)
-
+    quantity_reconciliation_audit_path = Path(quantity_reconciliation_audit_path)
     output_path = cfg.product_path("diagnostics")
 
     for label, path in (
         ("reconciled Trade Sync output", reconciled_trade_path),
         ("country reliability", country_reliability_path),
         ("reconciliation audit", reconciliation_audit_path),
+        ("quantity reconciliation audit", quantity_reconciliation_audit_path)
     ):
         if not path.exists():
             raise FileNotFoundError(
@@ -173,6 +176,10 @@ def build_trade_sync_diagnostics(
         ),
         "reconciliation_audit": file_fingerprint(
             reconciliation_audit_path,
+            hash_file=True,
+        ),
+        "quantity_reconciliation_audit": file_fingerprint(
+            quantity_reconciliation_audit_path,
             hash_file=True,
         ),
     }
@@ -207,13 +214,11 @@ def build_trade_sync_diagnostics(
         exist_ok=True,
     )
 
-    reconciled_sql = _sql_literal(reconciled_trade_path)
-    reliability_sql = _sql_literal(country_reliability_path)
-    reconciliation_audit_sql = _sql_literal(
-        reconciliation_audit_path
-    )
-    output_sql = _sql_literal(output_path)
-
+    reconciled_sql = sql_literal(reconciled_trade_path)
+    reliability_sql = sql_literal(country_reliability_path)
+    reconciliation_audit_sql = sql_literal(reconciliation_audit_path)
+    quantity_reconciliation_audit_sql = sql_literal(quantity_reconciliation_audit_path)
+    output_sql = sql_literal(output_path)
     (
         agreement_tolerance_enabled,
         agreement_tolerance,
@@ -248,6 +253,10 @@ def build_trade_sync_diagnostics(
     logger.info(
         "  Reconciliation audit: %s",
         reconciliation_audit_path,
+    )
+    logger.info(
+        "  Quantity reconciliation audit: %s",
+        quantity_reconciliation_audit_path,
     )
     logger.info(
         "  Output: %s",
@@ -313,6 +322,35 @@ def build_trade_sync_diagnostics(
             "import_synchronized_quantity_kg",
             "export_is_synchronized_quantity_estimated",
             "import_is_synchronized_quantity_estimated",
+
+            "quantity_availability_case",
+
+            "quantity_simple_mean_kg",
+            "quantity_value_weighted_kg",
+            "quantity_reliability_weighted_kg",
+
+            "quantity_relative_difference",
+            "quantity_import_export_ratio",
+            "quantity_absolute_log_gap",
+
+            "export_quantity_reliability",
+            "import_quantity_reliability",
+            "export_quantity_reliability_weight",
+            "import_quantity_reliability_weight",
+
+            "export_implied_unit_value",
+            "import_implied_unit_value",
+            "unit_value_reference_observations",
+            "product_year_median_unit_value",
+            "product_year_log_unit_value_mad",
+
+            "export_unit_value_log_distance",
+            "import_unit_value_log_distance",
+            "export_unit_value_robust_distance",
+            "import_unit_value_robust_distance",
+
+            "quantity_reconciled_kg",
+            "quantity_reconciliation_method",
         }
 
         missing_reconciled_columns = sorted(
@@ -380,6 +418,45 @@ def build_trade_sync_diagnostics(
                 f"found {int(audit_row_count):,}."
             )
 
+        quantity_audit_row_count = con.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM read_parquet({quantity_reconciliation_audit_sql})
+            """
+        ).fetchone()[0]
+
+        if int(quantity_audit_row_count) != 1:
+            raise RuntimeError(
+                "Quantity reconciliation audit must contain exactly one row; "
+                f"found {int(quantity_audit_row_count):,}."
+            )
+
+        value_audit_passed = con.execute(
+            f"""
+            SELECT audit_passed
+            FROM read_parquet({reconciliation_audit_sql})
+            LIMIT 1
+            """
+        ).fetchone()[0]
+
+        quantity_audit_passed = con.execute(
+            f"""
+            SELECT audit_passed
+            FROM read_parquet({quantity_reconciliation_audit_sql})
+            LIMIT 1
+            """
+        ).fetchone()[0]
+
+        if not bool(value_audit_passed):
+            raise RuntimeError(
+                "Trade Sync value reconciliation audit did not pass."
+            )
+
+        if not bool(quantity_audit_passed):
+            raise RuntimeError(
+                "Trade Sync quantity reconciliation audit did not pass."
+            )
+
         # ==============================================================
         # DIAGNOSTIC BASE
         # ==============================================================
@@ -391,101 +468,7 @@ def build_trade_sync_diagnostics(
         ),
 
         base AS (
-            SELECT
-                *,
-
-                CASE
-                    WHEN reconciliation_export_value IS NOT NULL
-                    AND reconciliation_import_value IS NOT NULL
-                        THEN (
-                            reconciliation_export_value
-                            + reconciliation_import_value
-                        ) / 2.0
-                    ELSE NULL
-                END AS simple_average_value,
-
-                CASE
-                    WHEN export_synchronized_quantity_kg IS NOT NULL
-                    AND isfinite(export_synchronized_quantity_kg)
-                    AND export_synchronized_quantity_kg > 0
-                    AND import_synchronized_quantity_kg IS NOT NULL
-                    AND isfinite(import_synchronized_quantity_kg)
-                    AND import_synchronized_quantity_kg > 0
-                        THEN (
-                            export_synchronized_quantity_kg
-                            + import_synchronized_quantity_kg
-                        ) / 2.0
-                    ELSE NULL
-                END AS quantity_simple_mean_kg,
-
-                CASE
-                    WHEN export_synchronized_quantity_kg IS NOT NULL
-                    AND isfinite(export_synchronized_quantity_kg)
-                    AND export_synchronized_quantity_kg > 0
-                    AND import_synchronized_quantity_kg IS NOT NULL
-                    AND isfinite(import_synchronized_quantity_kg)
-                    AND import_synchronized_quantity_kg > 0
-                    AND exporter_adjusted_weight IS NOT NULL
-                    AND importer_adjusted_weight IS NOT NULL
-                        THEN (
-                            export_synchronized_quantity_kg
-                            * exporter_adjusted_weight
-                            +
-                            import_synchronized_quantity_kg
-                            * importer_adjusted_weight
-                        )
-                    ELSE NULL
-                END AS quantity_value_weighted_kg,
-
-                CASE
-                    WHEN export_synchronized_quantity_kg IS NOT NULL
-                    AND isfinite(export_synchronized_quantity_kg)
-                    AND export_synchronized_quantity_kg > 0
-                    AND import_synchronized_quantity_kg IS NOT NULL
-                    AND isfinite(import_synchronized_quantity_kg)
-                    AND import_synchronized_quantity_kg > 0
-                        THEN (
-                            ABS(
-                                export_synchronized_quantity_kg
-                                - import_synchronized_quantity_kg
-                            )
-                            /
-                            GREATEST(
-                                export_synchronized_quantity_kg,
-                                import_synchronized_quantity_kg
-                            )
-                        )
-                    ELSE NULL
-                END AS quantity_relative_difference,
-
-                CASE
-                    WHEN export_synchronized_quantity_kg IS NOT NULL
-                    AND isfinite(export_synchronized_quantity_kg)
-                    AND export_synchronized_quantity_kg > 0
-                    AND import_synchronized_quantity_kg IS NOT NULL
-                    AND isfinite(import_synchronized_quantity_kg)
-                    AND import_synchronized_quantity_kg > 0
-                        THEN (
-                            import_synchronized_quantity_kg
-                            / export_synchronized_quantity_kg
-                        )
-                    ELSE NULL
-                END AS quantity_import_export_ratio,
-
-                CASE
-                    WHEN export_synchronized_quantity_kg IS NOT NULL
-                    AND isfinite(export_synchronized_quantity_kg)
-                    AND export_synchronized_quantity_kg > 0
-                    AND import_synchronized_quantity_kg IS NOT NULL
-                    AND isfinite(import_synchronized_quantity_kg)
-                    AND import_synchronized_quantity_kg > 0
-                        THEN ABS(
-                            LN(import_synchronized_quantity_kg)
-                            - LN(export_synchronized_quantity_kg)
-                        )
-                    ELSE NULL
-                END AS quantity_absolute_log_gap
-
+            SELECT *
             FROM reconciled
         )
 
@@ -493,22 +476,47 @@ def build_trade_sync_diagnostics(
             *,
 
             -- --------------------------------------------------------------
-            -- Quantity candidate comparison
+            -- Quantity-reconciliation diagnostics
             -- --------------------------------------------------------------
 
             CASE
-                WHEN quantity_simple_mean_kg IS NOT NULL
-                AND quantity_simple_mean_kg > 0
-                AND quantity_value_weighted_kg IS NOT NULL
+                WHEN quantity_simple_mean_kg > 0
+                 AND quantity_reliability_weighted_kg IS NOT NULL
                     THEN (
                         ABS(
-                            quantity_value_weighted_kg
+                            quantity_reliability_weighted_kg
                             - quantity_simple_mean_kg
                         )
                         / quantity_simple_mean_kg
                     )
                 ELSE NULL
-            END AS quantity_weighted_vs_mean_fraction,
+            END AS quantity_reliability_vs_mean_fraction,
+
+            CASE
+                WHEN quantity_value_weighted_kg > 0
+                 AND quantity_reliability_weighted_kg IS NOT NULL
+                    THEN (
+                        ABS(
+                            quantity_reliability_weighted_kg
+                            - quantity_value_weighted_kg
+                        )
+                        / quantity_value_weighted_kg
+                    )
+                ELSE NULL
+            END AS quantity_reliability_vs_value_weighted_fraction,
+
+            CASE
+                WHEN quantity_simple_mean_kg > 0
+                 AND quantity_reconciled_kg IS NOT NULL
+                    THEN (
+                        ABS(
+                            quantity_reconciled_kg
+                            - quantity_simple_mean_kg
+                        )
+                        / quantity_simple_mean_kg
+                    )
+                ELSE NULL
+            END AS quantity_reconciled_vs_mean_fraction,
 
             -- --------------------------------------------------------------
             -- Existing value diagnostics
@@ -516,11 +524,11 @@ def build_trade_sync_diagnostics(
 
             CASE
                 WHEN reconciliation_export_value IS NOT NULL
-                AND reconciliation_import_value IS NOT NULL
-                AND GREATEST(
+                 AND reconciliation_import_value IS NOT NULL
+                 AND GREATEST(
                     reconciliation_export_value,
                     reconciliation_import_value
-                ) > 0
+                 ) > 0
                     THEN (
                         ABS(
                             reconciliation_export_value
@@ -532,17 +540,16 @@ def build_trade_sync_diagnostics(
                             reconciliation_import_value
                         )
                     )
-
                 ELSE NULL
             END AS relative_difference_from_larger,
 
             CASE
                 WHEN reconciliation_export_value IS NOT NULL
-                AND reconciliation_import_value IS NOT NULL
-                AND (
+                 AND reconciliation_import_value IS NOT NULL
+                 AND (
                     reconciliation_export_value
                     + reconciliation_import_value
-                ) > 0
+                 ) > 0
                     THEN (
                         ABS(
                             reconciliation_export_value
@@ -556,17 +563,16 @@ def build_trade_sync_diagnostics(
                             ) / 2.0
                         )
                     )
-
                 ELSE NULL
             END AS symmetric_relative_difference,
 
             CASE
                 WHEN reconciliation_export_value IS NOT NULL
-                AND reconciliation_import_value IS NOT NULL
-                AND (
+                 AND reconciliation_import_value IS NOT NULL
+                 AND (
                     reconciliation_export_value
                     + reconciliation_import_value
-                ) > 0
+                 ) > 0
                     THEN (
                         trade_value_reconciled
                         -
@@ -582,44 +588,41 @@ def build_trade_sync_diagnostics(
                             + reconciliation_import_value
                         ) / 2.0
                     )
-
                 ELSE NULL
             END AS reconciled_vs_simple_average_fraction,
 
             CASE
                 WHEN export_value_fob IS NOT NULL
-                AND isfinite(export_value_fob)
-                AND export_value_fob > 0
-                AND trade_value_reconciled IS NOT NULL
+                 AND isfinite(export_value_fob)
+                 AND export_value_fob > 0
+                 AND trade_value_reconciled IS NOT NULL
                     THEN (
                         trade_value_reconciled
                         - export_value_fob
                     ) / export_value_fob
-
                 ELSE NULL
             END AS reconciled_vs_export_fraction,
 
             CASE
                 WHEN import_value_fob_corrected IS NOT NULL
-                AND isfinite(import_value_fob_corrected)
-                AND import_value_fob_corrected > 0
-                AND trade_value_reconciled IS NOT NULL
+                 AND isfinite(import_value_fob_corrected)
+                 AND import_value_fob_corrected > 0
+                 AND trade_value_reconciled IS NOT NULL
                     THEN (
                         trade_value_reconciled
                         - import_value_fob_corrected
                     ) / import_value_fob_corrected
-
                 ELSE NULL
             END AS reconciled_vs_import_fraction,
 
             CASE
                 WHEN {str(tolerance_available).upper()}
-                AND reconciliation_export_value IS NOT NULL
-                AND reconciliation_import_value IS NOT NULL
-                AND GREATEST(
+                 AND reconciliation_export_value IS NOT NULL
+                 AND reconciliation_import_value IS NOT NULL
+                 AND GREATEST(
                     reconciliation_export_value,
                     reconciliation_import_value
-                ) > 0
+                 ) > 0
                     THEN (
                         ABS(
                             reconciliation_export_value
@@ -631,7 +634,6 @@ def build_trade_sync_diagnostics(
                             reconciliation_import_value
                         )
                     ) <= {tolerance_sql}
-
                 ELSE NULL
             END AS within_agreement_tolerance
 
@@ -849,6 +851,46 @@ def build_trade_sync_diagnostics(
                 ) AS n_no_quantity_rows,
 
                 CAST(
+                    COUNT(*) FILTER (
+                        WHERE quantity_reconciliation_method
+                            = 'quantity_reliability_weighted'
+                    )
+                    AS DOUBLE
+                ) AS n_quantity_reliability_weighted,
+
+                CAST(
+                    COUNT(*) FILTER (
+                        WHERE quantity_reconciliation_method
+                            = 'bilateral_simple_mean_fallback'
+                    )
+                    AS DOUBLE
+                ) AS n_quantity_simple_mean_fallback,
+
+                CAST(
+                    COUNT(*) FILTER (
+                        WHERE quantity_reconciliation_method
+                            = 'export_quantity_retained'
+                    )
+                    AS DOUBLE
+                ) AS n_quantity_export_retained,
+
+                CAST(
+                    COUNT(*) FILTER (
+                        WHERE quantity_reconciliation_method
+                            = 'import_quantity_retained'
+                    )
+                    AS DOUBLE
+                ) AS n_quantity_import_retained,
+
+                CAST(
+                    COUNT(*) FILTER (
+                        WHERE quantity_reconciliation_method
+                            = 'no_usable_quantity'
+                    )
+                    AS DOUBLE
+                ) AS n_quantity_missing,
+
+                CAST(
                     MEDIAN(quantity_relative_difference)
                     AS DOUBLE
                 ) AS median_quantity_relative_difference,
@@ -896,17 +938,50 @@ def build_trade_sync_diagnostics(
                 ) AS median_quantity_absolute_log_gap,
 
                 CAST(
-                    MEDIAN(quantity_weighted_vs_mean_fraction)
+                    MEDIAN(quantity_reconciled_vs_mean_fraction)
                     AS DOUBLE
-                ) AS median_quantity_weighted_vs_mean_fraction,
+                ) AS median_quantity_reconciled_vs_mean_fraction,
 
                 CAST(
                     QUANTILE_CONT(
-                        quantity_weighted_vs_mean_fraction,
+                        quantity_reconciled_vs_mean_fraction,
                         0.90
                     )
                     AS DOUBLE
-                ) AS p90_quantity_weighted_vs_mean_fraction,
+                ) AS p90_quantity_reconciled_vs_mean_fraction,
+
+                CAST(
+                    MEDIAN(quantity_reliability_vs_value_weighted_fraction)
+                    AS DOUBLE
+                ) AS median_quantity_reliability_vs_value_weighted_fraction,
+
+                CAST(
+                    QUANTILE_CONT(
+                        quantity_reliability_vs_value_weighted_fraction,
+                        0.90
+                    )
+                    AS DOUBLE
+                ) AS p90_quantity_reliability_vs_value_weighted_fraction,
+
+                CAST(
+                    MEDIAN(export_quantity_reliability)
+                    AS DOUBLE
+                ) AS median_export_quantity_reliability,
+
+                CAST(
+                    MEDIAN(import_quantity_reliability)
+                    AS DOUBLE
+                ) AS median_import_quantity_reliability,
+
+                CAST(
+                    MEDIAN(
+                        ABS(
+                            export_quantity_reliability
+                            - import_quantity_reliability
+                        )
+                    )
+                    AS DOUBLE
+                ) AS median_quantity_reliability_gap,
 
                 CAST(
                     AVG(
@@ -959,6 +1034,195 @@ def build_trade_sync_diagnostics(
             FROM reconciliation_base
         ),
 
+        quantity_plausibility_wide AS (
+            SELECT
+                CAST(
+                    COUNT(*) FILTER (
+                        WHERE quantity_availability_case = 'both_quantity'
+                          AND export_unit_value_robust_distance IS NOT NULL
+                          AND import_unit_value_robust_distance IS NOT NULL
+                    )
+                    AS DOUBLE
+                ) AS n_plausibility_comparable_rows,
+
+                CAST(
+                    AVG(
+                        CASE
+                            WHEN export_unit_value_robust_distance IS NOT NULL
+                             AND import_unit_value_robust_distance IS NOT NULL
+                             AND export_unit_value_robust_distance
+                                 < import_unit_value_robust_distance
+                                THEN 1.0
+                            WHEN export_unit_value_robust_distance IS NOT NULL
+                             AND import_unit_value_robust_distance IS NOT NULL
+                                THEN 0.0
+                            ELSE NULL
+                        END
+                    )
+                    AS DOUBLE
+                ) AS export_more_plausible_share,
+
+                CAST(
+                    AVG(
+                        CASE
+                            WHEN export_unit_value_robust_distance IS NOT NULL
+                             AND import_unit_value_robust_distance IS NOT NULL
+                             AND import_unit_value_robust_distance
+                                 < export_unit_value_robust_distance
+                                THEN 1.0
+                            WHEN export_unit_value_robust_distance IS NOT NULL
+                             AND import_unit_value_robust_distance IS NOT NULL
+                                THEN 0.0
+                            ELSE NULL
+                        END
+                    )
+                    AS DOUBLE
+                ) AS import_more_plausible_share
+
+            FROM reconciliation_base
+        ),
+
+        quantity_extreme_plausibility_wide AS (
+            SELECT
+                CAST(
+                    COUNT(*) FILTER (
+                        WHERE quantity_relative_difference > 0.90
+                    )
+                    AS DOUBLE
+                ) AS n_extreme_quantity_disagreement,
+
+                CAST(
+                    COUNT(*) FILTER (
+                        WHERE quantity_relative_difference > 0.90
+                          AND export_unit_value_robust_distance IS NOT NULL
+                          AND import_unit_value_robust_distance IS NOT NULL
+                    )
+                    AS DOUBLE
+                ) AS n_extreme_with_plausibility_evidence,
+
+                CAST(
+                    AVG(
+                        CASE
+                            WHEN quantity_relative_difference > 0.90
+                             AND export_unit_value_robust_distance IS NOT NULL
+                             AND import_unit_value_robust_distance IS NOT NULL
+                             AND ABS(
+                                 export_unit_value_robust_distance
+                                 - import_unit_value_robust_distance
+                             ) >= 1.0
+                                THEN 1.0
+
+                            WHEN quantity_relative_difference > 0.90
+                             AND export_unit_value_robust_distance IS NOT NULL
+                             AND import_unit_value_robust_distance IS NOT NULL
+                                THEN 0.0
+
+                            ELSE NULL
+                        END
+                    )
+                    AS DOUBLE
+                ) AS extreme_clear_plausibility_preference_share
+
+            FROM reconciliation_base
+        ),
+
+        quantity_disagreement_band_wide AS (
+            SELECT
+                CASE
+                    WHEN quantity_relative_difference <= 0.10
+                        THEN '00_10'
+                    WHEN quantity_relative_difference <= 0.50
+                        THEN '10_50'
+                    WHEN quantity_relative_difference <= 0.90
+                        THEN '50_90'
+                    ELSE '90_100'
+                END AS quantity_disagreement_band,
+
+                COUNT(*) AS n_rows,
+
+                MEDIAN(
+                    ABS(
+                        export_quantity_reliability
+                        - import_quantity_reliability
+                    )
+                ) FILTER (
+                    WHERE export_quantity_reliability IS NOT NULL
+                      AND import_quantity_reliability IS NOT NULL
+                ) AS median_quantity_reliability_gap,
+
+                MEDIAN(
+                    quantity_reconciled_vs_mean_fraction
+                ) AS median_reconciled_vs_mean_fraction,
+
+                AVG(
+                    CASE
+                        WHEN export_unit_value_robust_distance IS NOT NULL
+                         AND import_unit_value_robust_distance IS NOT NULL
+                            THEN 1.0
+                        ELSE 0.0
+                    END
+                ) AS plausibility_evidence_share,
+
+                AVG(
+                    CASE
+                        WHEN export_unit_value_robust_distance IS NOT NULL
+                         AND import_unit_value_robust_distance IS NOT NULL
+                         AND export_unit_value_robust_distance
+                             < import_unit_value_robust_distance
+                            THEN 1.0
+                        WHEN export_unit_value_robust_distance IS NOT NULL
+                         AND import_unit_value_robust_distance IS NOT NULL
+                            THEN 0.0
+                        ELSE NULL
+                    END
+                ) AS export_more_plausible_share,
+
+                AVG(
+                    CASE
+                        WHEN export_unit_value_robust_distance IS NOT NULL
+                         AND import_unit_value_robust_distance IS NOT NULL
+                         AND import_unit_value_robust_distance
+                             < export_unit_value_robust_distance
+                            THEN 1.0
+                        WHEN export_unit_value_robust_distance IS NOT NULL
+                         AND import_unit_value_robust_distance IS NOT NULL
+                            THEN 0.0
+                        ELSE NULL
+                    END
+                ) AS import_more_plausible_share,
+
+                AVG(
+                    CASE
+                        WHEN export_unit_value_robust_distance IS NOT NULL
+                         AND import_unit_value_robust_distance IS NOT NULL
+                         AND ABS(
+                             export_unit_value_robust_distance
+                             - import_unit_value_robust_distance
+                         ) >= 1.0
+                            THEN 1.0
+                        WHEN export_unit_value_robust_distance IS NOT NULL
+                         AND import_unit_value_robust_distance IS NOT NULL
+                            THEN 0.0
+                        ELSE NULL
+                    END
+                ) AS clear_plausibility_preference_share
+
+            FROM reconciliation_base
+
+            WHERE quantity_relative_difference IS NOT NULL
+
+            GROUP BY
+                CASE
+                    WHEN quantity_relative_difference <= 0.10
+                        THEN '00_10'
+                    WHEN quantity_relative_difference <= 0.50
+                        THEN '10_50'
+                    WHEN quantity_relative_difference <= 0.90
+                        THEN '50_90'
+                    ELSE '90_100'
+                END
+        ),
+
         quantity_year_wide AS (
             SELECT
                 year,
@@ -992,9 +1256,27 @@ def build_trade_sync_diagnostics(
                 ) AS median_quantity_import_export_ratio,
 
                 CAST(
-                    MEDIAN(quantity_weighted_vs_mean_fraction)
+                    MEDIAN(quantity_reconciled_vs_mean_fraction)
                     AS DOUBLE
-                ) AS median_quantity_weighted_vs_mean_fraction,
+                ) AS median_quantity_reconciled_vs_mean_fraction,
+
+                CAST(
+                    QUANTILE_CONT(
+                        quantity_reconciled_vs_mean_fraction,
+                        0.90
+                    )
+                    AS DOUBLE
+                ) AS p90_quantity_reconciled_vs_mean_fraction,
+
+                CAST(
+                    MEDIAN(export_quantity_reliability)
+                    AS DOUBLE
+                ) AS median_export_quantity_reliability,
+
+                CAST(
+                    MEDIAN(import_quantity_reliability)
+                    AS DOUBLE
+                ) AS median_import_quantity_reliability,
 
                 CAST(
                     AVG(
@@ -1761,6 +2043,138 @@ def build_trade_sync_diagnostics(
                 NULL,
                 NULL,
                 NULL,
+                'n_quantity_reliability_weighted',
+                n_quantity_reliability_weighted
+            FROM quantity_overall_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_overall',
+                NULL,
+                NULL,
+                NULL,
+                'n_quantity_simple_mean_fallback',
+                n_quantity_simple_mean_fallback
+            FROM quantity_overall_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_overall',
+                NULL,
+                NULL,
+                NULL,
+                'n_quantity_export_retained',
+                n_quantity_export_retained
+            FROM quantity_overall_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_overall',
+                NULL,
+                NULL,
+                NULL,
+                'n_quantity_import_retained',
+                n_quantity_import_retained
+            FROM quantity_overall_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_overall',
+                NULL,
+                NULL,
+                NULL,
+                'n_quantity_missing',
+                n_quantity_missing
+            FROM quantity_overall_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_overall',
+                NULL,
+                NULL,
+                NULL,
+                'median_quantity_reconciled_vs_mean_fraction',
+                median_quantity_reconciled_vs_mean_fraction
+            FROM quantity_overall_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_overall',
+                NULL,
+                NULL,
+                NULL,
+                'p90_quantity_reconciled_vs_mean_fraction',
+                p90_quantity_reconciled_vs_mean_fraction
+            FROM quantity_overall_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_overall',
+                NULL,
+                NULL,
+                NULL,
+                'median_quantity_reliability_vs_value_weighted_fraction',
+                median_quantity_reliability_vs_value_weighted_fraction
+            FROM quantity_overall_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_overall',
+                NULL,
+                NULL,
+                NULL,
+                'p90_quantity_reliability_vs_value_weighted_fraction',
+                p90_quantity_reliability_vs_value_weighted_fraction
+            FROM quantity_overall_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_overall',
+                NULL,
+                NULL,
+                NULL,
+                'median_export_quantity_reliability',
+                median_export_quantity_reliability
+            FROM quantity_overall_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_overall',
+                NULL,
+                NULL,
+                NULL,
+                'median_import_quantity_reliability',
+                median_import_quantity_reliability
+            FROM quantity_overall_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_overall',
+                NULL,
+                NULL,
+                NULL,
+                'median_quantity_reliability_gap',
+                median_quantity_reliability_gap
+            FROM quantity_overall_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_overall',
+                NULL,
+                NULL,
+                NULL,
                 'median_quantity_relative_difference',
                 median_quantity_relative_difference
             FROM quantity_overall_wide
@@ -1838,28 +2252,6 @@ def build_trade_sync_diagnostics(
                 NULL,
                 NULL,
                 NULL,
-                'median_quantity_weighted_vs_mean_fraction',
-                median_quantity_weighted_vs_mean_fraction
-            FROM quantity_overall_wide
-
-            UNION ALL
-
-            SELECT
-                'quantity_overall',
-                NULL,
-                NULL,
-                NULL,
-                'p90_quantity_weighted_vs_mean_fraction',
-                p90_quantity_weighted_vs_mean_fraction
-            FROM quantity_overall_wide
-
-            UNION ALL
-
-            SELECT
-                'quantity_overall',
-                NULL,
-                NULL,
-                NULL,
                 'quantity_within_5pct_share',
                 quantity_within_5pct_share
             FROM quantity_overall_wide
@@ -1896,6 +2288,157 @@ def build_trade_sync_diagnostics(
                 'quantity_within_50pct_share',
                 quantity_within_50pct_share
             FROM quantity_overall_wide
+
+            -- ==========================================================
+            -- Quantity plausibility metrics
+            -- ==========================================================
+
+            UNION ALL
+
+            SELECT
+                'quantity_plausibility',
+                NULL,
+                NULL,
+                NULL,
+                'n_plausibility_comparable_rows',
+                n_plausibility_comparable_rows
+            FROM quantity_plausibility_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_plausibility',
+                NULL,
+                NULL,
+                NULL,
+                'export_more_plausible_share',
+                export_more_plausible_share
+            FROM quantity_plausibility_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_plausibility',
+                NULL,
+                NULL,
+                NULL,
+                'import_more_plausible_share',
+                import_more_plausible_share
+            FROM quantity_plausibility_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_plausibility',
+                NULL,
+                NULL,
+                NULL,
+                'n_extreme_quantity_disagreement',
+                n_extreme_quantity_disagreement
+            FROM quantity_extreme_plausibility_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_plausibility',
+                NULL,
+                NULL,
+                NULL,
+                'n_extreme_with_plausibility_evidence',
+                n_extreme_with_plausibility_evidence
+            FROM quantity_extreme_plausibility_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_plausibility',
+                NULL,
+                NULL,
+                NULL,
+                'extreme_clear_plausibility_preference_share',
+                extreme_clear_plausibility_preference_share
+            FROM quantity_extreme_plausibility_wide
+
+            -- ==========================================================
+            -- Quantity disagreement-band metrics
+            -- ==========================================================
+
+            UNION ALL
+
+            SELECT
+                'quantity_disagreement_band',
+                NULL,
+                quantity_disagreement_band,
+                NULL,
+                'n_rows',
+                n_rows
+            FROM quantity_disagreement_band_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_disagreement_band',
+                NULL,
+                quantity_disagreement_band,
+                NULL,
+                'median_quantity_reliability_gap',
+                median_quantity_reliability_gap
+            FROM quantity_disagreement_band_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_disagreement_band',
+                NULL,
+                quantity_disagreement_band,
+                NULL,
+                'median_reconciled_vs_mean_fraction',
+                median_reconciled_vs_mean_fraction
+            FROM quantity_disagreement_band_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_disagreement_band',
+                NULL,
+                quantity_disagreement_band,
+                NULL,
+                'plausibility_evidence_share',
+                plausibility_evidence_share
+            FROM quantity_disagreement_band_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_disagreement_band',
+                NULL,
+                quantity_disagreement_band,
+                NULL,
+                'export_more_plausible_share',
+                export_more_plausible_share
+            FROM quantity_disagreement_band_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_disagreement_band',
+                NULL,
+                quantity_disagreement_band,
+                NULL,
+                'import_more_plausible_share',
+                import_more_plausible_share
+            FROM quantity_disagreement_band_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_disagreement_band',
+                NULL,
+                quantity_disagreement_band,
+                NULL,
+                'clear_plausibility_preference_share',
+                clear_plausibility_preference_share
+            FROM quantity_disagreement_band_wide
 
             UNION ALL
 
@@ -1948,8 +2491,41 @@ def build_trade_sync_diagnostics(
                 year,
                 NULL,
                 NULL,
-                'median_quantity_weighted_vs_mean_fraction',
-                median_quantity_weighted_vs_mean_fraction
+                'median_quantity_reconciled_vs_mean_fraction',
+                median_quantity_reconciled_vs_mean_fraction
+            FROM quantity_year_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_year',
+                year,
+                NULL,
+                NULL,
+                'p90_quantity_reconciled_vs_mean_fraction',
+                p90_quantity_reconciled_vs_mean_fraction
+            FROM quantity_year_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_year',
+                year,
+                NULL,
+                NULL,
+                'median_export_quantity_reliability',
+                median_export_quantity_reliability
+            FROM quantity_year_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_year',
+                year,
+                NULL,
+                NULL,
+                'median_import_quantity_reliability',
+                median_import_quantity_reliability
             FROM quantity_year_wide
 
             UNION ALL
@@ -2147,11 +2723,12 @@ def build_trade_sync_diagnostics(
                 f"{int(n_nonfinite_metric_values):,} non-finite metrics."
             )
 
-        if int(n_diagnostic_scopes) != 6:
+        if int(n_diagnostic_scopes) != 8:
             raise RuntimeError(
                 "Trade Sync diagnostics did not produce all expected "
                 "scopes: overall, year, year_status, country_reliability, "
-                "quantity_overall, and quantity_year."
+                "quantity_overall, quantity_plausibility, "
+                "quantity_disagreement_band, and quantity_year."
             )
 
         if overall_both_quantity_rows is None:

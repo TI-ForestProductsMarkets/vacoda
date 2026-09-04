@@ -19,7 +19,10 @@ from vacoda.steps.trade_sync.prepare_input import  prepare_trade_sync_input
 from vacoda.steps.trade_sync.build_pairs import build_trade_sync_pairs
 from vacoda.steps.trade_sync.reliability_evidence import build_trade_sync_reliability_evidence
 from vacoda.steps.trade_sync.country_reliability import estimate_trade_sync_country_reliability
-from vacoda.steps.trade_sync.reconcile import reconcile_trade
+from vacoda.steps.trade_sync.reconcile_trade import reconcile_trade
+from vacoda.steps.trade_sync.audit_trade import audit_trade_reconciliation
+from vacoda.steps.trade_sync.reconcile_quantity import reconcile_bilateral_quantity
+from vacoda.steps.trade_sync.audit_quantity import audit_quantity_reconciliation
 from vacoda.steps.trade_sync.diagnostics import build_trade_sync_diagnostics
 from vacoda.steps.trade_sync.reporting import build_trade_sync_report
 from vacoda.utils.runtime import timed_workflow
@@ -32,6 +35,8 @@ REQUIRED_PRODUCTS = (
     "country_reliability",
     "reconciled_trade",
     "reconciliation_audit",
+    "reconciled_quantity",
+    "reconciliation_audit_quantity",
     "diagnostics",
 )
 
@@ -41,51 +46,16 @@ WORKFLOW_STEPS = [
     "Build Trade Sync bilateral pairs",
     "Build Trade Sync reliability evidence",
     "Estimate Trade Sync country reliability",
-    "Reconcile trade",
+    "Reconcile bilateral trade",
     "Audit trade reconciliation",
+    "Reconcile bilateral quantity",
+    "Audit quantity reconciliation",
     "Build Trade Sync diagnostics",
     "Write Trade Sync decision report",
 ]
 
 TOTAL_WORKFLOW_STEPS = len(WORKFLOW_STEPS)
 
-
-    
-def validate_reconciliation_audit(
-    *,
-    reconciled_result: dict,
-    logger,
-) -> dict:
-    """Validate the audit artifact produced during reconciliation."""
-
-    audit_path = require_result_path(
-            reconciled_result,
-            "Trade Sync reconciliation result did not contain "
-            "the reconciliation-audit path.",
-            "reconciliation_audit_path",
-            "audit_path",
-        )
-
-    if not audit_path.is_file():
-        raise FileNotFoundError(
-            f"Trade Sync reconciliation audit not found: {audit_path}"
-        )
-
-    if not bool(reconciled_result.get("audit_passed", False)):
-        raise RuntimeError(
-            "Trade Sync reconciliation audit did not pass."
-        )
-
-    logger.info("  Audit: %s", audit_path)
-    logger.info("  Audit passed: True")
-
-    return {
-        "status": "completed",
-        "output_path": audit_path,
-        "reconciliation_audit_path": audit_path,
-        "audit_passed": True,
-        "ready_for_diagnostics": True,
-    }
 
 def run_trade_sync_workflow(
     *,
@@ -325,7 +295,7 @@ def run_trade_sync_workflow(
         )
 
         # ==================================================================
-        # Step 6 — Validate reconciliation audit
+        # Step 6 — Audit trade reconciliation
         # ==================================================================
 
         audit_result = run_step(
@@ -333,8 +303,12 @@ def run_trade_sync_workflow(
                 step_number=6,
                 total_steps=TOTAL_WORKFLOW_STEPS,
                 title=WORKFLOW_STEPS[5],
-                runner=lambda: validate_reconciliation_audit(
-                    reconciled_result=reconciled_result,
+                runner=lambda: audit_trade_reconciliation(
+                    cfg=cfg,
+                    prepared_input_path=prepared_path,
+                    reconciled_trade_path=reconciled_path,
+                    run_id=run_id,
+                    force=force,
                     logger=logger,
                 ),
             )
@@ -346,60 +320,102 @@ def run_trade_sync_workflow(
             producer_product="reconciliation-audit Parquet",
         )
 
-        audit_passed = bool(
-                audit_result.get(
-                    "audit_passed",
-                    False,
-                )
-            )
-        if not audit_passed:
-            raise RuntimeError(
-                "Trade Sync reconciliation_audit product must be enabled."
-            )
+        # ==================================================================
+        # Step 7 — Reconcile bilateral quantity
+        # ==================================================================
+
+        quantity_result = run_step(
+            logger=logger,
+            step_number=7,
+            total_steps=TOTAL_WORKFLOW_STEPS,
+            title=WORKFLOW_STEPS[6],
+            runner=lambda: reconcile_bilateral_quantity(
+                cfg=cfg,
+                reconciled_trade_path=reconciled_path,
+                run_id=run_id,
+                force=force,
+                logger=logger,
+            ),
+        )
+
+        reconciled_quantity_path = require_artifact(
+            result=quantity_result,
+            path_key="reconciled_quantity_path",
+            consumer_step=WORKFLOW_STEPS[7],
+            producer_product="reconciled-quantity Parquet",
+        )
 
 
         # ==================================================================
-        # Step 7 — Build diagnostics
+        # Step 8 — Audit quantity reconciliation
+        # ==================================================================
+
+        quantity_audit_result = run_step(
+            logger=logger,
+            step_number=8,
+            total_steps=TOTAL_WORKFLOW_STEPS,
+            title=WORKFLOW_STEPS[7],
+            runner=lambda: audit_quantity_reconciliation(
+                cfg=cfg,
+                reconciled_trade_path=reconciled_path,
+                reconciled_quantity_path=reconciled_quantity_path,
+                run_id=run_id,
+                force=force,
+                logger=logger,
+            ),
+        )
+
+        quantity_audit_path = require_artifact(
+            result=quantity_audit_result,
+            path_key="quantity_reconciliation_audit_path",
+            consumer_step=WORKFLOW_STEPS[8],
+            producer_product="quantity-reconciliation-audit Parquet",
+        )
+
+        # ==================================================================
+        # Step 9 — Build diagnostics
         # ==================================================================
 
         diagnostics_result = run_step(
+            logger=logger,
+            step_number=9,
+            total_steps=TOTAL_WORKFLOW_STEPS,
+            title=WORKFLOW_STEPS[8],
+            runner=lambda: build_trade_sync_diagnostics(
+                cfg=cfg,
+                reconciled_trade_path=reconciled_quantity_path,
+                country_reliability_path=country_reliability_path,
+                reconciliation_audit_path=audit_path,
+                quantity_reconciliation_audit_path=quantity_audit_path,
+                run_id=run_id,
+                force=force,
                 logger=logger,
-                step_number=7,
-                total_steps=TOTAL_WORKFLOW_STEPS,
-                title=WORKFLOW_STEPS[6],
-                runner=lambda: build_trade_sync_diagnostics(
-                    cfg=cfg,
-                    reconciled_trade_path=reconciled_path,
-                    country_reliability_path=country_reliability_path,
-                    reconciliation_audit_path=audit_path,
-                    run_id=run_id,
-                    force=force,
-                    logger=logger,
-                ),
-            )
+            ),
+        )
 
         diagnostics_path = require_artifact(
             result=diagnostics_result,
             path_key="diagnostics_path",
-            consumer_step=WORKFLOW_STEPS[7],
+            consumer_step=WORKFLOW_STEPS[8],
             producer_product="diagnostics Parquet",
         )
 
 
         # ==================================================================
-        # Step 8 — Write Trade Sync decision report
+        # Step 10 — Write Trade Sync decision report
         # ==================================================================
 
         report_result = run_step(
                 logger=logger,
-                step_number=8,
+                step_number=10,
                 total_steps=TOTAL_WORKFLOW_STEPS,
-                title=WORKFLOW_STEPS[7],
+                title=WORKFLOW_STEPS[9],
                 runner=lambda: build_trade_sync_report(
                     cfg=cfg,
-                    reconciled_trade_path=reconciled_path,
+                    reconciled_trade_path=reconciled_quantity_path,
                     country_reliability_path=country_reliability_path,
                     reconciliation_audit_path=audit_path,
+                    quantity_reconciliation_audit_path=quantity_audit_path,
                     diagnostics_path=diagnostics_path,
                     run_id=run_id,
                     force=force,
@@ -421,27 +437,17 @@ def run_trade_sync_workflow(
             )
         
         reconciled_output_valid = bool(
-            reconciled_path.is_file()
-            and reconciled_path.stat().st_size > 0
+            reconciled_quantity_path.is_file()
+            and reconciled_quantity_path.stat().st_size > 0
         )
 
-        ready_for_value_sync = bool(
-            audit_passed
-            and reconciled_output_valid
-        )
+        ready_for_value_sync = reconciled_output_valid
 
         if not ready_for_value_sync:
             raise RuntimeError(
                 "Trade Sync finished without an audited, usable "
                 "reconciled-trade output."
             )
-
-        n_failed_audit_rows = int(
-            reconciled_result.get(
-                "n_failed_audit_rows",
-                0,
-            )
-        )
 
         ########################################################################################
         
@@ -463,14 +469,6 @@ def run_trade_sync_workflow(
         logger.info(
                 "Reconciliation audit: %s",
                 audit_path,
-            )
-        logger.info(
-                "Reconciliation audit passed: %s",
-                audit_passed,
-            )
-        logger.info(
-                "Failed audit rows: %s",
-                n_failed_audit_rows,
             )
 
         if diagnostics_path is not None:
@@ -514,8 +512,11 @@ def run_trade_sync_workflow(
 
             # Canonical primary output and audit keys used by the master
             # pipeline and checkpoint system.
-            "output_path": reconciled_path,
-            "audit_path": audit_path,
+            "output_path": reconciled_quantity_path,
+            "reconciled_trade_path": reconciled_path,
+            "reconciliation_audit_path": audit_path,
+            "reconciled_quantity_path": reconciled_quantity_path,
+            "quantity_reconciliation_audit_path": quantity_audit_path,
 
             # Explicit Trade Sync product paths.
             "prepared_input_path": prepared_path,
@@ -529,10 +530,6 @@ def run_trade_sync_workflow(
             "latest_report_path": report_result.get(
                 "latest_report_path"
             ),
-
-            # Final validation outcome.
-            "audit_passed": audit_passed,
-            "n_failed_audit_rows": n_failed_audit_rows,
 
             # Useful final decision metadata.
             "decision": report_result.get("decision"),

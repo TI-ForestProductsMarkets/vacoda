@@ -36,7 +36,7 @@ from vacoda.utils.markdown import (
 )
 from vacoda.config.steps.trade_sync import TradeSyncConfig
 from vacoda.utils.display import get_symbols
-
+from vacoda.utils.sql import sql_literal
 
 # ======================================================================
 # Helpers
@@ -70,11 +70,6 @@ def _country_name_from_iso(country_iso: str) -> str:
         return code
 
     return country.name
-
-def _sql_literal(value: str | Path) -> str:
-    """Return a safely quoted SQL literal."""
-    return "'" + str(value).replace("'", "''") + "'"
-
 
 def valid_output(path: Path) -> bool:
     """Return True when an existing output appears usable."""
@@ -172,60 +167,46 @@ def _metric_lookup(
 # Figures
 # ======================================================================
 
-def _plot_quantity_strategy_comparison_by_year(
+def _plot_quantity_reconciliation_effect_by_year(
     *,
-    con: duckdb.DuckDBPyConnection,
-    reconciled_sql: str,
+    diagnostics: pd.DataFrame,
     output_path: Path,
 ) -> None:
-    """Compare value-weighted quantity with the simple bilateral mean."""
+    """Plot the effect of final quantity reconciliation by year."""
 
-    frame = con.execute(
-        f"""
-        WITH eligible AS (
-            SELECT
-                year,
-
-                (
-                    export_synchronized_quantity_kg
-                    + import_synchronized_quantity_kg
-                ) / 2.0 AS simple_mean_kg,
-
-                (
-                    export_synchronized_quantity_kg
-                    * exporter_adjusted_weight
-                    +
-                    import_synchronized_quantity_kg
-                    * importer_adjusted_weight
-                ) AS weighted_kg
-
-            FROM read_parquet({reconciled_sql})
-
-            WHERE export_synchronized_quantity_kg > 0
-              AND import_synchronized_quantity_kg > 0
-              AND exporter_adjusted_weight IS NOT NULL
-              AND importer_adjusted_weight IS NOT NULL
-        ),
-
-        compared AS (
-            SELECT
-                year,
-                ABS(weighted_kg - simple_mean_kg)
-                    / simple_mean_kg AS strategy_difference
-            FROM eligible
-            WHERE simple_mean_kg > 0
+    median_frame = diagnostics[
+        diagnostics["diagnostic_scope"].eq("quantity_year")
+        & diagnostics["metric"].eq(
+            "median_quantity_reconciled_vs_mean_fraction"
         )
+    ][["year", "metric_value"]].rename(
+        columns={
+            "metric_value": "median_difference",
+        }
+    )
 
-        SELECT
-            year,
-            MEDIAN(strategy_difference) AS median_difference,
-            QUANTILE_CONT(strategy_difference, 0.90)
-                AS p90_difference
-        FROM compared
-        GROUP BY year
-        ORDER BY year
-        """
-    ).fetchdf()
+    p90_frame = diagnostics[
+        diagnostics["diagnostic_scope"].eq("quantity_year")
+        & diagnostics["metric"].eq(
+            "p90_quantity_reconciled_vs_mean_fraction"
+        )
+    ][["year", "metric_value"]].rename(
+        columns={
+            "metric_value": "p90_difference",
+        }
+    )
+
+    frame = median_frame.merge(
+        p90_frame,
+        on="year",
+        how="inner",
+    ).sort_values("year")
+
+    if frame.empty:
+        raise RuntimeError(
+            "No year-level quantity reconciliation-effect "
+            "diagnostics are available."
+        )
 
     figure, axis = plt.subplots(figsize=(10, 6))
 
@@ -244,7 +225,7 @@ def _plot_quantity_strategy_comparison_by_year(
     )
 
     axis.set_title(
-        "Value-weighted quantity versus simple bilateral mean"
+        "Final reconciled quantity versus simple bilateral mean"
     )
     axis.set_xlabel("Year")
     axis.set_ylabel("Absolute difference (%)")
@@ -252,7 +233,117 @@ def _plot_quantity_strategy_comparison_by_year(
     axis.legend()
 
     figure.tight_layout()
-    figure.savefig(output_path, dpi=180, bbox_inches="tight")
+    figure.savefig(
+        output_path,
+        dpi=180,
+        bbox_inches="tight",
+    )
+    plt.close(figure)
+
+def _plot_quantity_plausibility_by_disagreement_band(
+    *,
+    diagnostics: pd.DataFrame,
+    output_path: Path,
+) -> None:
+    """Plot unit-value evidence by quantity-disagreement severity."""
+
+    relevant = diagnostics[
+        diagnostics["diagnostic_scope"].eq(
+            "quantity_disagreement_band"
+        )
+        & diagnostics["metric"].isin(
+            {
+                "plausibility_evidence_share",
+                "clear_plausibility_preference_share",
+            }
+        )
+    ].copy()
+
+    if relevant.empty:
+        raise RuntimeError(
+            "No quantity plausibility diagnostics are available."
+        )
+
+    frame = (
+        relevant
+        .pivot_table(
+            index="reconciliation_status",
+            columns="metric",
+            values="metric_value",
+            aggfunc="first",
+        )
+        .reset_index()
+    )
+
+    band_order = [
+        "00_10",
+        "10_50",
+        "50_90",
+        "90_100",
+    ]
+
+    band_labels = {
+        "00_10": "0–10%",
+        "10_50": "10–50%",
+        "50_90": "50–90%",
+        "90_100": "90–100%",
+    }
+
+    frame["band_order"] = frame[
+        "reconciliation_status"
+    ].map(
+        {
+            band: index
+            for index, band in enumerate(band_order)
+        }
+    )
+
+    frame = frame.sort_values("band_order")
+
+    x = range(len(frame))
+
+    width = 0.38
+
+    figure, axis = plt.subplots(figsize=(10, 6))
+
+    axis.bar(
+        [position - width / 2 for position in x],
+        100 * frame["plausibility_evidence_share"],
+        width=width,
+        label="Comparable unit-value evidence",
+    )
+
+    axis.bar(
+        [position + width / 2 for position in x],
+        100 * frame["clear_plausibility_preference_share"],
+        width=width,
+        label="Clear plausibility preference",
+    )
+
+    axis.set_xticks(list(x))
+    axis.set_xticklabels(
+        [
+            band_labels.get(code, code)
+            for code in frame["reconciliation_status"]
+        ]
+    )
+
+    axis.set_title(
+        "Unit-value plausibility by quantity-disagreement severity"
+    )
+    axis.set_xlabel(
+        "Exporter–importer quantity difference"
+    )
+    axis.set_ylabel("Share of rows (%)")
+    axis.grid(axis="y", linestyle="--", alpha=0.5)
+    axis.legend()
+
+    figure.tight_layout()
+    figure.savefig(
+        output_path,
+        dpi=180,
+        bbox_inches="tight",
+    )
     plt.close(figure)
 
 def _plot_quantity_deviation_distribution(
@@ -1195,6 +1286,7 @@ def build_trade_sync_report(
     reconciled_trade_path: Path,
     country_reliability_path: Path,
     reconciliation_audit_path: Path,
+    quantity_reconciliation_audit_path: Path,
     diagnostics_path: Path,
     run_id: str,
     force: bool = False,
@@ -1205,12 +1297,14 @@ def build_trade_sync_report(
     reconciled_trade_path = Path(reconciled_trade_path)
     country_reliability_path = Path(country_reliability_path)
     reconciliation_audit_path = Path(reconciliation_audit_path)
+    quantity_reconciliation_audit_path = Path(quantity_reconciliation_audit_path)
     diagnostics_path = Path(diagnostics_path)
 
     for label, path in (
         ("reconciled trade", reconciled_trade_path),
         ("country reliability", country_reliability_path),
         ("reconciliation audit", reconciliation_audit_path),
+        ("quantity reconciliation audit", quantity_reconciliation_audit_path),
         ("Trade Sync diagnostics", diagnostics_path),
     ):
         if not path.exists():
@@ -1254,10 +1348,11 @@ def build_trade_sync_report(
             "ready_for_processed_export": True,
         }
 
-    reconciled_sql = _sql_literal(reconciled_trade_path)
-    reliability_sql = _sql_literal(country_reliability_path)
-    audit_sql = _sql_literal(reconciliation_audit_path)
-    diagnostics_sql = _sql_literal(diagnostics_path)
+    reconciled_sql = sql_literal(reconciled_trade_path)
+    reliability_sql = sql_literal(country_reliability_path)
+    audit_sql = sql_literal(reconciliation_audit_path)
+    diagnostics_sql = sql_literal(diagnostics_path)
+    quantity_audit_sql = sql_literal(quantity_reconciliation_audit_path)
 
     agreement_tolerance = float(
         cfg.diagnostics.agreement_tolerance.relative_difference
@@ -1293,6 +1388,18 @@ def build_trade_sync_report(
             FROM read_parquet({audit_sql})
             """
         ).fetchdf()
+
+        quantity_audit = con.execute(
+            f"""
+            SELECT *
+            FROM read_parquet({quantity_audit_sql})
+            """
+        ).fetchdf()
+
+        if len(quantity_audit) != 1:
+            raise RuntimeError(
+                "Quantity reconciliation audit must contain exactly one row."
+            )
 
         if len(audit) != 1:
             raise RuntimeError(
@@ -1413,18 +1520,190 @@ def build_trade_sync_report(
             metric="quantity_within_10pct_share",
         )
 
-        median_weighted_vs_mean = _metric_lookup(
+        # --------------------------------------------------------------
+        # Quantity reconciliation composition
+        # --------------------------------------------------------------
+
+        n_quantity_reliability_weighted = _metric_lookup(
             diagnostics,
             scope="quantity_overall",
-            metric="median_quantity_weighted_vs_mean_fraction",
+            metric="n_quantity_reliability_weighted",
         )
 
-        p90_weighted_vs_mean = _metric_lookup(
+        n_quantity_simple_mean_fallback = _metric_lookup(
             diagnostics,
             scope="quantity_overall",
-            metric="p90_quantity_weighted_vs_mean_fraction",
+            metric="n_quantity_simple_mean_fallback",
         )
 
+        n_quantity_export_retained = _metric_lookup(
+            diagnostics,
+            scope="quantity_overall",
+            metric="n_quantity_export_retained",
+        )
+
+        n_quantity_import_retained = _metric_lookup(
+            diagnostics,
+            scope="quantity_overall",
+            metric="n_quantity_import_retained",
+        )
+
+        n_quantity_missing = _metric_lookup(
+            diagnostics,
+            scope="quantity_overall",
+            metric="n_quantity_missing",
+        )
+
+
+        # --------------------------------------------------------------
+        # Effect of quantity reconciliation
+        # --------------------------------------------------------------
+
+        median_quantity_reconciled_vs_mean = _metric_lookup(
+            diagnostics,
+            scope="quantity_overall",
+            metric="median_quantity_reconciled_vs_mean_fraction",
+        )
+
+        p90_quantity_reconciled_vs_mean = _metric_lookup(
+            diagnostics,
+            scope="quantity_overall",
+            metric="p90_quantity_reconciled_vs_mean_fraction",
+        )
+
+        median_quantity_reliability_vs_value_weighted = _metric_lookup(
+            diagnostics,
+            scope="quantity_overall",
+            metric=(
+                "median_quantity_reliability_vs_value_weighted_fraction"
+            ),
+        )
+
+        p90_quantity_reliability_vs_value_weighted = _metric_lookup(
+            diagnostics,
+            scope="quantity_overall",
+            metric=(
+                "p90_quantity_reliability_vs_value_weighted_fraction"
+            ),
+        )
+
+
+        # --------------------------------------------------------------
+        # Quantity-specific reliability
+        # --------------------------------------------------------------
+
+        median_export_quantity_reliability = _metric_lookup(
+            diagnostics,
+            scope="quantity_overall",
+            metric="median_export_quantity_reliability",
+        )
+
+        median_import_quantity_reliability = _metric_lookup(
+            diagnostics,
+            scope="quantity_overall",
+            metric="median_import_quantity_reliability",
+        )
+
+        median_quantity_reliability_gap = _metric_lookup(
+            diagnostics,
+            scope="quantity_overall",
+            metric="median_quantity_reliability_gap",
+        )
+
+
+        # --------------------------------------------------------------
+        # Unit-value plausibility
+        # --------------------------------------------------------------
+
+        n_plausibility_comparable = _metric_lookup(
+            diagnostics,
+            scope="quantity_plausibility",
+            metric="n_plausibility_comparable_rows",
+        )
+
+        export_more_plausible_share = _metric_lookup(
+            diagnostics,
+            scope="quantity_plausibility",
+            metric="export_more_plausible_share",
+        )
+
+        import_more_plausible_share = _metric_lookup(
+            diagnostics,
+            scope="quantity_plausibility",
+            metric="import_more_plausible_share",
+        )
+
+        n_extreme_quantity_disagreement = _metric_lookup(
+            diagnostics,
+            scope="quantity_plausibility",
+            metric="n_extreme_quantity_disagreement",
+        )
+
+        n_extreme_with_plausibility = _metric_lookup(
+            diagnostics,
+            scope="quantity_plausibility",
+            metric="n_extreme_with_plausibility_evidence",
+        )
+
+        extreme_clear_plausibility_share = _metric_lookup(
+            diagnostics,
+            scope="quantity_plausibility",
+            metric="extreme_clear_plausibility_preference_share",
+        )
+
+        quantity_disagreement_bands = diagnostics[
+            diagnostics["diagnostic_scope"].eq(
+                "quantity_disagreement_band"
+            )
+        ].copy()
+
+        if not quantity_disagreement_bands.empty:
+            quantity_disagreement_bands = (
+                quantity_disagreement_bands
+                .pivot_table(
+                    index="reconciliation_status",
+                    columns="metric",
+                    values="metric_value",
+                    aggfunc="first",
+                )
+                .reset_index()
+                .rename(
+                    columns={
+                        "reconciliation_status": "band",
+                    }
+                )
+            )
+
+            band_labels = {
+                "00_10": "0–10%",
+                "10_50": "10–50%",
+                "50_90": "50–90%",
+                "90_100": "90–100%",
+            }
+
+            quantity_disagreement_bands["band_label"] = (
+                quantity_disagreement_bands["band"]
+                .map(band_labels)
+                .fillna(quantity_disagreement_bands["band"])
+            )
+
+            quantity_disagreement_bands["band_order"] = (
+                quantity_disagreement_bands["band"]
+                .map(
+                    {
+                        "00_10": 0,
+                        "10_50": 1,
+                        "50_90": 2,
+                        "90_100": 3,
+                    }
+                )
+            )
+
+            quantity_disagreement_bands = (
+                quantity_disagreement_bands
+                .sort_values("band_order")
+                .reset_index(drop=True)
+            )
         # Compute agreement measures directly from genuine two-sided
         # positive reports. This avoids mixing implicit-zero evidence
         # into descriptive report-agreement statistics.
@@ -1872,10 +2151,18 @@ def build_trade_sync_report(
                 / "selected_country_export_reliability_over_time.png"
             ),
             "quantity_deviation_distribution": (
-                figure_dir / "quantity_deviation_distribution.png"
+                figure_dir
+                / "quantity_deviation_distribution.png"
             ),
-            "quantity_strategy_comparison": (
-                figure_dir / "quantity_strategy_comparison_by_year.png"
+
+            "quantity_reconciliation_effect": (
+                figure_dir
+                / "quantity_reconciliation_effect_by_year.png"
+            ),
+
+            "quantity_plausibility_by_disagreement": (
+                figure_dir
+                / "quantity_plausibility_by_disagreement.png"
             ),
         }
         
@@ -1950,11 +2237,17 @@ def build_trade_sync_report(
             ],
         )
 
-        _plot_quantity_strategy_comparison_by_year(
-            con=con,
-            reconciled_sql=reconciled_sql,
+        _plot_quantity_reconciliation_effect_by_year(
+            diagnostics=diagnostics,
             output_path=figure_paths[
-                "quantity_strategy_comparison"
+                "quantity_reconciliation_effect"
+            ],
+        )
+
+        _plot_quantity_plausibility_by_disagreement_band(
+            diagnostics=diagnostics,
+            output_path=figure_paths[
+                "quantity_plausibility_by_disagreement"
             ],
         )
         # --------------------------------------------------------------
@@ -2012,6 +2305,90 @@ def build_trade_sync_report(
                 "treated as provisional."
             )
 
+
+        quantity_method_summary = pd.DataFrame(
+            [
+                {
+                    "Method": "Quantity reliability weighted",
+                    "Rows": int(
+                        round(
+                            n_quantity_reliability_weighted
+                            or 0
+                        )
+                    ),
+                },
+                {
+                    "Method": "Bilateral simple-mean fallback",
+                    "Rows": int(
+                        round(
+                            n_quantity_simple_mean_fallback
+                            or 0
+                        )
+                    ),
+                },
+                {
+                    "Method": "Exporter quantity retained",
+                    "Rows": int(
+                        round(
+                            n_quantity_export_retained
+                            or 0
+                        )
+                    ),
+                },
+                {
+                    "Method": "Importer quantity retained",
+                    "Rows": int(
+                        round(
+                            n_quantity_import_retained
+                            or 0
+                        )
+                    ),
+                },
+                {
+                    "Method": "No usable quantity",
+                    "Rows": int(
+                        round(
+                            n_quantity_missing
+                            or 0
+                        )
+                    ),
+                },
+            ]
+        )
+
+
+        quantity_band_display = (
+            quantity_disagreement_bands[
+                [
+                    "band_label",
+                    "n_rows",
+                    "median_quantity_reliability_gap",
+                    "median_reconciled_vs_mean_fraction",
+                    "plausibility_evidence_share",
+                    "clear_plausibility_preference_share",
+                ]
+            ].copy()
+            if not quantity_disagreement_bands.empty
+            else pd.DataFrame()
+        )
+
+        if not quantity_band_display.empty:
+            quantity_band_display[
+                "median_quantity_reliability_gap"
+            ] *= 100
+
+            quantity_band_display[
+                "median_reconciled_vs_mean_fraction"
+            ] *= 100
+
+            quantity_band_display[
+                "plausibility_evidence_share"
+            ] *= 100
+
+            quantity_band_display[
+                "clear_plausibility_preference_share"
+            ] *= 100
+    
         # --------------------------------------------------------------
         # Markdown
         # --------------------------------------------------------------
@@ -2635,21 +3012,25 @@ def build_trade_sync_report(
         ),
         "",
         "",
-        "## 9. Bilateral quantity diagnostics",
+        "## 9. Bilateral quantity reconciliation",
         "",
         (
-            "The Quantity module standardizes available physical quantity "
-            "evidence into kilograms on each reporting side. At the bilateral "
-            "`year × exporter × importer × product` grain, exporter and "
-            "importer kg quantities can nevertheless differ."
+            "The Quantity module provides standardized kilogram quantities "
+            "for the exporter and importer sides. Trade Sync now reconciles "
+            "these bilateral quantity observations after trade-value "
+            "reconciliation has passed its audit."
         ),
         "",
         (
-            "Trade Sync does not yet harmonize these two quantity observations. "
-            "The following diagnostics compare the mirror quantities and evaluate "
-            "two candidate approaches: a simple bilateral mean and application "
-            "of the existing Trade Sync value-reliability weights."
+            "The reconciled trade value is used as a common value anchor for "
+            "evaluating exporter- and importer-side implied unit values. "
+            "Quantity-specific reporting reliability determines the current "
+            "bilateral reconciliation weights; unit-value plausibility remains "
+            "diagnostic evidence and is not yet included in the final quantity "
+            "weight."
         ),
+        "",
+        "### 9.1 Quantity availability",
         "",
         "| Quantity availability | Rows |",
         "|---|---:|",
@@ -2670,11 +3051,13 @@ def build_trade_sync_report(
             f"{_format_integer(n_no_quantity)} |"
         ),
         "",
+        "### 9.2 Mirror-report disagreement",
+        "",
         (
             "Among rows with usable quantities on both sides, the median "
             "difference relative to the larger quantity is "
-            f"`{_format_percent(median_quantity_difference)}`; the P90, "
-            f"P95, and P99 differences are "
+            f"`{_format_percent(median_quantity_difference)}`. "
+            "The P90, P95, and P99 differences are "
             f"`{_format_percent(p90_quantity_difference)}`, "
             f"`{_format_percent(p95_quantity_difference)}`, and "
             f"`{_format_percent(p99_quantity_difference)}`, respectively."
@@ -2691,25 +3074,158 @@ def build_trade_sync_report(
             document_path=report_path,
         ),
         "",
+        "### 9.3 Quantity reporting reliability",
+        "",
         (
-            "For rows where both quantities and the existing Trade Sync "
-            "reliability weights are available, applying those weights instead "
-            "of a simple bilateral mean changes the candidate quantity by a "
-            "median absolute amount of "
-            f"`{_format_percent(median_weighted_vs_mean)}` and a P90 amount "
-            f"of `{_format_percent(p90_weighted_vs_mean)}`."
+            "The median quantity-specific reliability index is "
+            f"`{_format_percent(median_export_quantity_reliability)}` "
+            "for exporter-side reporting and "
+            f"`{_format_percent(median_import_quantity_reliability)}` "
+            "for importer-side reporting."
+        ),
+        "",
+        (
+            "The median absolute exporter–importer reliability gap within "
+            "bilateral quantity observations is "
+            f"`{_format_percent(median_quantity_reliability_gap)}`."
+        ),
+        "",
+        (
+            "These quantity reliability measures are mirror-consistency "
+            "signals. They indicate how consistently a reporting side agrees "
+            "with its mirror evidence; they are not direct observations of "
+            "the unknown true quantity."
+        ),
+        "",
+        "### 9.4 Reconciliation method composition",
+        "",
+        _markdown_table(quantity_method_summary),
+        "",
+        (
+            "When both usable quantities are available and quantity-specific "
+            "reliability weights can be formed, Trade Sync applies the "
+            "reliability-weighted quantity. Bilateral rows without usable "
+            "quantity reliability fall back to the simple mean. Unilateral "
+            "usable quantities are retained unchanged."
+        ),
+        "",
+        "### 9.5 Effect of reconciliation",
+        "",
+        (
+            "Relative to a simple bilateral mean, the final reconciled "
+            "quantity differs by a median absolute amount of "
+            f"`{_format_percent(median_quantity_reconciled_vs_mean)}` "
+            "and by "
+            f"`{_format_percent(p90_quantity_reconciled_vs_mean)}` "
+            "at the 90th percentile."
+        ),
+        "",
+        (
+            "Compared with applying the existing trade-value reliability "
+            "weights to quantity, the quantity-specific reliability candidate "
+            "differs by a median absolute amount of "
+            f"`{_format_percent(median_quantity_reliability_vs_value_weighted)}` "
+            "and a P90 amount of "
+            f"`{_format_percent(p90_quantity_reliability_vs_value_weighted)}`."
         ),
         "",
         markdown_image(
-            "Value-weighted quantity versus simple bilateral mean",
-            figure_paths["quantity_strategy_comparison"],
+            "Final quantity reconciliation versus simple bilateral mean",
+            figure_paths["quantity_reconciliation_effect"],
             document_path=report_path,
         ),
         "",
+        "### 9.6 Unit-value plausibility",
+        "",
         (
-            "These results are diagnostic only. No bilateral quantity "
-            "harmonization rule is applied in the current Trade Sync output."
+            "A product-year implied-unit-value reference can be evaluated for "
+            f"`{_format_integer(n_plausibility_comparable)}` bilateral "
+            "quantity observations."
         ),
+        "",
+        (
+            "Among rows with comparable plausibility evidence, the exporter "
+            "quantity is closer to the product-year unit-value reference in "
+            f"`{_format_percent(export_more_plausible_share)}` of cases, "
+            "while the importer quantity is closer in "
+            f"`{_format_percent(import_more_plausible_share)}`."
+        ),
+        "",
+        (
+            "This plausibility evidence is intentionally diagnostic at this "
+            "stage. It has not been folded into the production quantity "
+            "weights."
+        ),
+        "",
+        "### 9.7 Extreme-disagreement evidence",
+        "",
+        (
+            f"`{_format_integer(n_extreme_quantity_disagreement)}` bilateral "
+            "quantity observations differ by more than 90% relative to the "
+            "larger report."
+        ),
+        "",
+        (
+            "Of these extreme-disagreement rows, "
+            f"`{_format_integer(n_extreme_with_plausibility)}` have usable "
+            "unit-value plausibility evidence."
+        ),
+        "",
+        (
+            "A clear difference of at least one robust-distance unit between "
+            "the two implied-unit-value candidates occurs in "
+            f"`{_format_percent(extreme_clear_plausibility_share)}` of the "
+            "extreme rows with comparable plausibility evidence."
+        ),
+        "",
+        _markdown_table(
+            quantity_band_display.rename(
+                columns={
+                    "band_label": "Quantity difference",
+                    "n_rows": "Rows",
+                    "median_quantity_reliability_gap": (
+                        "Median reliability gap (%)"
+                    ),
+                    "median_reconciled_vs_mean_fraction": (
+                        "Median reconciliation effect (%)"
+                    ),
+                    "plausibility_evidence_share": (
+                        "Plausibility evidence (%)"
+                    ),
+                    "clear_plausibility_preference_share": (
+                        "Clear plausibility preference (%)"
+                    ),
+                }
+            )
+        ),
+        "",
+        markdown_image(
+            "Unit-value plausibility by quantity-disagreement severity",
+            figure_paths[
+                "quantity_plausibility_by_disagreement"
+            ],
+            document_path=report_path,
+        ),
+        "",
+        "### 9.8 Methodological assessment",
+        "",
+        (
+            "The current quantity reconciliation therefore uses two distinct "
+            "levels of evidence. Quantity-specific reporter reliability "
+            "determines the production bilateral weights, while reconciled-value "
+            "unit-value plausibility independently tests whether one quantity "
+            "candidate appears substantially more consistent with the "
+            "product-year value structure."
+        ),
+        "",
+        (
+            "The unit-value evidence should be interpreted as a diagnostic "
+            "cross-check rather than proof that one reporter is correct. "
+            "The disagreement-band and extreme-case results determine whether "
+            "this evidence is sufficiently discriminating and stable to justify "
+            "incorporating it into a later quantity-reconciliation formulation."
+        ),
+        "",
     
         "## 10. Reconciliation composition",
         "",
@@ -2818,9 +3334,13 @@ def build_trade_sync_report(
         "",
         "## 13. Output artifacts",
         "",
-        f"- Reconciled trade: `{reconciled_trade_path}`",
+        f"- Reconciled trade and quantity: `{reconciled_trade_path}`",
         f"- Country reliability: `{country_reliability_path}`",
         f"- Reconciliation audit: `{reconciliation_audit_path}`",
+        (
+            f"- Quantity reconciliation audit: "
+            f"`{quantity_reconciliation_audit_path}`"
+        ),
         f"- Diagnostics: `{diagnostics_path}`",
         f"- Report: `{report_path}`",
         "",
