@@ -620,6 +620,19 @@ def reconcile_bilateral_quantity(
                             reference.median_log_unit_value
                         ) AS product_year_median_unit_value,
 
+                        CASE
+                            WHEN rows.trade_value_reconciled IS NOT NULL
+                            AND isfinite(rows.trade_value_reconciled)
+                            AND rows.trade_value_reconciled > 0
+                            AND rows.quantity_simple_mean_kg IS NOT NULL
+                            AND isfinite(rows.quantity_simple_mean_kg)
+                            AND rows.quantity_simple_mean_kg > 0
+                                THEN (
+                                    rows.trade_value_reconciled
+                                    / rows.quantity_simple_mean_kg
+                                )
+                            ELSE NULL
+                        END AS mean_implied_unit_value,
                         reference.mad_log_unit_value
                             AS product_year_log_unit_value_mad,
 
@@ -654,6 +667,24 @@ def reconcile_bilateral_quantity(
                             ELSE NULL
                         END
                             AS import_unit_value_log_distance,
+
+                        CASE
+                            WHEN rows.trade_value_reconciled IS NOT NULL
+                            AND isfinite(rows.trade_value_reconciled)
+                            AND rows.trade_value_reconciled > 0
+                            AND rows.quantity_simple_mean_kg IS NOT NULL
+                            AND isfinite(rows.quantity_simple_mean_kg)
+                            AND rows.quantity_simple_mean_kg > 0
+                            AND reference.median_log_unit_value IS NOT NULL
+                                THEN ABS(
+                                    LN(
+                                        rows.trade_value_reconciled
+                                        / rows.quantity_simple_mean_kg
+                                    )
+                                    - reference.median_log_unit_value
+                                )
+                            ELSE NULL
+                        END AS mean_unit_value_log_distance,
 
                         CASE
                             WHEN rows.export_implied_unit_value
@@ -858,8 +889,104 @@ def reconcile_bilateral_quantity(
                                 THEN 'import_quantity_retained'
 
                             ELSE 'no_usable_quantity'
-                        END AS quantity_reconciliation_method
+                        END AS quantity_reconciliation_method,
+                    
 
+                        CASE
+                            -- -------------------------------------------------------------
+                            -- Bilateral quantities:
+                            -- choose the candidate whose implied unit value lies closest
+                            -- to the robust product-year unit-value reference.
+                            --
+                            -- In an exact tie, prefer the neutral bilateral mean.
+                            -- -------------------------------------------------------------
+
+                            WHEN quantity_availability_case = 'both_quantity'
+                            AND mean_unit_value_log_distance IS NOT NULL
+                            AND mean_unit_value_log_distance
+                                    <= export_unit_value_log_distance
+                            AND mean_unit_value_log_distance
+                                    <= import_unit_value_log_distance
+                                THEN quantity_simple_mean_kg
+
+                            WHEN quantity_availability_case = 'both_quantity'
+                            AND export_unit_value_log_distance IS NOT NULL
+                            AND (
+                                    import_unit_value_log_distance IS NULL
+                                    OR export_unit_value_log_distance
+                                        <= import_unit_value_log_distance
+                                )
+                                THEN export_synchronized_quantity_kg
+
+                            WHEN quantity_availability_case = 'both_quantity'
+                            AND import_unit_value_log_distance IS NOT NULL
+                                THEN import_synchronized_quantity_kg
+
+                            -- If product-year unit-value evidence is unavailable,
+                            -- retain a neutral bilateral fallback.
+                            WHEN quantity_availability_case = 'both_quantity'
+                                THEN quantity_simple_mean_kg
+
+                            -- Unilateral usable quantities remain unchanged.
+                            WHEN quantity_availability_case = 'export_only'
+                                THEN export_synchronized_quantity_kg
+
+                            WHEN quantity_availability_case = 'import_only'
+                                THEN import_synchronized_quantity_kg
+
+                            ELSE NULL
+
+                        END AS trade_synced_quantity_kg,
+
+                        
+                        CASE
+                            WHEN quantity_availability_case = 'both_quantity'
+                            AND mean_unit_value_log_distance IS NOT NULL
+                            AND mean_unit_value_log_distance
+                                    <= export_unit_value_log_distance
+                            AND mean_unit_value_log_distance
+                                    <= import_unit_value_log_distance
+                                THEN 'unit_value_guided_mean'
+
+                            WHEN quantity_availability_case = 'both_quantity'
+                            AND export_unit_value_log_distance IS NOT NULL
+                            AND (
+                                    import_unit_value_log_distance IS NULL
+                                    OR export_unit_value_log_distance
+                                        <= import_unit_value_log_distance
+                                )
+                                THEN 'unit_value_guided_export'
+
+                            WHEN quantity_availability_case = 'both_quantity'
+                            AND import_unit_value_log_distance IS NOT NULL
+                                THEN 'unit_value_guided_import'
+
+                            WHEN quantity_availability_case = 'both_quantity'
+                                THEN 'bilateral_mean_no_unit_value_reference'
+
+                            WHEN quantity_availability_case = 'export_only'
+                                THEN 'export_quantity_retained'
+
+                            WHEN quantity_availability_case = 'import_only'
+                                THEN 'import_quantity_retained'
+
+                            ELSE 'no_usable_quantity'
+
+                        END AS trade_synced_quantity_method,
+                        
+                        CASE
+                            WHEN quantity_availability_case = 'both_quantity'
+                                THEN 'bilateral_synced'
+
+                            WHEN quantity_availability_case IN (
+                                'export_only',
+                                'import_only'
+                            )
+                                THEN 'unilateral_retained'
+
+                            ELSE 'missing'
+
+                        END AS trade_synced_quantity_status
                     FROM candidates_complete
                 )
 
@@ -921,7 +1048,27 @@ def reconcile_bilateral_quantity(
 
                 COUNT(*) FILTER (
                     WHERE quantity_reconciled_kg IS NOT NULL
-                ) AS n_reconciled_quantity
+                ) AS n_reconciled_quantity,
+
+                COUNT(*) FILTER (
+                    WHERE trade_synced_quantity_method
+                        = 'unit_value_guided_export'
+                ) AS n_trade_synced_export,
+
+                COUNT(*) FILTER (
+                    WHERE trade_synced_quantity_method
+                        = 'unit_value_guided_import'
+                ) AS n_trade_synced_import,
+
+                COUNT(*) FILTER (
+                    WHERE trade_synced_quantity_method
+                        = 'unit_value_guided_mean'
+                ) AS n_trade_synced_mean,
+
+                COUNT(*) FILTER (
+                    WHERE trade_synced_quantity_method
+                        = 'bilateral_mean_no_unit_value_reference'
+                ) AS n_trade_synced_mean_no_reference
 
             FROM read_parquet({output_sql})
             """
@@ -941,6 +1088,10 @@ def reconcile_bilateral_quantity(
             n_quantity_reliability_weighted,
             n_simple_mean_fallback,
             n_reconciled_quantity,
+            n_trade_synced_export,
+            n_trade_synced_import,
+            n_trade_synced_mean,
+            n_trade_synced_mean_no_reference,
         ) = [
             int(value or 0)
             for value in summary
@@ -981,6 +1132,22 @@ def reconcile_bilateral_quantity(
             n_simple_mean_fallback,
         )
         logger.info(
+            "  Trade synced via export guidance: %,d",
+            n_trade_synced_export,
+        )
+        logger.info(
+            "  Trade synced via import guidance: %,d",
+            n_trade_synced_import,
+        )
+        logger.info(
+            "  Trade synced via neutral bilateral mean: %,d",
+            n_trade_synced_mean,
+        )
+        logger.info(
+            "  Trade synced without unit-value reference: %,d",
+            n_trade_synced_mean_no_reference,
+        )
+        logger.info(
             "✍ WRITE — Reconciled bilateral quantity: %s",
             output_path,
         )
@@ -1003,6 +1170,12 @@ def reconcile_bilateral_quantity(
             ),
             "n_reconciled_quantity": (
                 n_reconciled_quantity
+            ),
+            "n_trade_synced_export": n_trade_synced_export,
+            "n_trade_synced_import": n_trade_synced_import,
+            "n_trade_synced_mean": n_trade_synced_mean,
+            "n_trade_synced_mean_no_reference": (
+                n_trade_synced_mean_no_reference
             ),
         }
 

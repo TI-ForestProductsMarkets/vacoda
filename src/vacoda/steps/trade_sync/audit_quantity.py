@@ -193,6 +193,15 @@ def audit_quantity_reconciliation(
 
             "quantity_reconciled_kg",
             "quantity_reconciliation_method",
+            "mean_implied_unit_value",
+            "mean_unit_value_log_distance",
+
+            "export_unit_value_log_distance",
+            "import_unit_value_log_distance",
+
+            "trade_synced_quantity_kg",
+            "trade_synced_quantity_method",
+            "trade_synced_quantity_status",
         }
 
         _require_columns(
@@ -461,6 +470,75 @@ def audit_quantity_reconciliation(
         )
 
         # --------------------------------------------------------------
+        # Trade-synced quantity validity
+        # --------------------------------------------------------------
+
+        invalid_trade_synced_quantity_rows = int(
+            con.execute(
+                f"""
+                SELECT COUNT(*)
+
+                FROM read_parquet({quantity_sql})
+
+                WHERE trade_synced_quantity_kg IS NOT NULL
+                  AND (
+                        NOT isfinite(trade_synced_quantity_kg)
+                        OR trade_synced_quantity_kg <= 0
+                  )
+                """
+            ).fetchone()[0]
+        )
+
+        trade_synced_quantities_valid = (
+            invalid_trade_synced_quantity_rows == 0
+        )
+
+        # --------------------------------------------------------------
+        # Usable quantity rows must receive a trade-synced quantity
+        # --------------------------------------------------------------
+
+        missing_expected_trade_synced_quantity = int(
+            con.execute(
+                f"""
+                SELECT COUNT(*)
+
+                FROM read_parquet({quantity_sql})
+
+                WHERE quantity_availability_case IN (
+                    'both_quantity',
+                    'export_only',
+                    'import_only'
+                )
+                  AND trade_synced_quantity_kg IS NULL
+                """
+            ).fetchone()[0]
+        )
+
+        expected_trade_synced_quantities_present = (
+            missing_expected_trade_synced_quantity == 0
+        )
+
+        # --------------------------------------------------------------
+        # No-quantity rows must remain missing after Trade Sync
+        # --------------------------------------------------------------
+
+        no_quantity_trade_synced_nonmissing_rows = int(
+            con.execute(
+                f"""
+                SELECT COUNT(*)
+
+                FROM read_parquet({quantity_sql})
+
+                WHERE quantity_availability_case = 'no_quantity'
+                  AND trade_synced_quantity_kg IS NOT NULL
+                """
+            ).fetchone()[0]
+        )
+
+        no_quantity_trade_synced_valid = (
+            no_quantity_trade_synced_nonmissing_rows == 0
+        )
+        # --------------------------------------------------------------
         # Rows with usable quantity must receive a reconciled quantity
         # --------------------------------------------------------------
 
@@ -587,6 +665,61 @@ def audit_quantity_reconciliation(
             import_only_mismatches == 0
         )
 
+
+        trade_synced_unilateral_mismatches = int(
+            con.execute(
+                f"""
+                SELECT COUNT(*)
+
+                FROM read_parquet({quantity_sql})
+
+                WHERE
+                    (
+                        quantity_availability_case = 'export_only'
+                        AND (
+                            trade_synced_quantity_kg IS NULL
+                            OR ABS(
+                                trade_synced_quantity_kg
+                                - export_synchronized_quantity_kg
+                            )
+                            >
+                            (
+                                1e-9
+                                * GREATEST(
+                                    ABS(export_synchronized_quantity_kg),
+                                    1.0
+                                )
+                            )
+                        )
+                    )
+
+                    OR
+
+                    (
+                        quantity_availability_case = 'import_only'
+                        AND (
+                            trade_synced_quantity_kg IS NULL
+                            OR ABS(
+                                trade_synced_quantity_kg
+                                - import_synchronized_quantity_kg
+                            )
+                            >
+                            (
+                                1e-9
+                                * GREATEST(
+                                    ABS(import_synchronized_quantity_kg),
+                                    1.0
+                                )
+                            )
+                        )
+                    )
+                """
+            ).fetchone()[0]
+        )
+
+        trade_synced_unilateral_preserved = (
+            trade_synced_unilateral_mismatches == 0
+        )
         # --------------------------------------------------------------
         # Both-quantity candidate integrity
         # --------------------------------------------------------------
@@ -692,6 +825,68 @@ def audit_quantity_reconciliation(
         )
 
         # --------------------------------------------------------------
+        # Trade-synced method / status combinations
+        # --------------------------------------------------------------
+
+        invalid_trade_synced_method_rows = int(
+            con.execute(
+                f"""
+                SELECT COUNT(*)
+
+                FROM read_parquet({quantity_sql})
+
+                WHERE NOT (
+
+                    (
+                        quantity_availability_case = 'both_quantity'
+                        AND trade_synced_quantity_method IN (
+                            'unit_value_guided_export',
+                            'unit_value_guided_import',
+                            'unit_value_guided_mean',
+                            'bilateral_mean_no_unit_value_reference'
+                        )
+                        AND trade_synced_quantity_status
+                            = 'bilateral_synced'
+                    )
+
+                    OR
+
+                    (
+                        quantity_availability_case = 'export_only'
+                        AND trade_synced_quantity_method
+                            = 'export_quantity_retained'
+                        AND trade_synced_quantity_status
+                            = 'unilateral_retained'
+                    )
+
+                    OR
+
+                    (
+                        quantity_availability_case = 'import_only'
+                        AND trade_synced_quantity_method
+                            = 'import_quantity_retained'
+                        AND trade_synced_quantity_status
+                            = 'unilateral_retained'
+                    )
+
+                    OR
+
+                    (
+                        quantity_availability_case = 'no_quantity'
+                        AND trade_synced_quantity_method
+                            = 'no_usable_quantity'
+                        AND trade_synced_quantity_status
+                            = 'missing'
+                    )
+                )
+                """
+            ).fetchone()[0]
+        )
+
+        trade_synced_methods_valid = (
+            invalid_trade_synced_method_rows == 0
+        )
+        # --------------------------------------------------------------
         # Method arithmetic
         # --------------------------------------------------------------
 
@@ -772,6 +967,191 @@ def audit_quantity_reconciliation(
             and mean_fallback_mismatches == 0
         )
 
+        # --------------------------------------------------------------
+        # Trade-synced quantity arithmetic
+        # --------------------------------------------------------------
+
+        trade_synced_export_mismatches = int(
+            con.execute(
+                f"""
+                SELECT COUNT(*)
+
+                FROM read_parquet({quantity_sql})
+
+                WHERE trade_synced_quantity_method
+                        = 'unit_value_guided_export'
+
+                  AND (
+                        trade_synced_quantity_kg IS NULL
+                        OR export_synchronized_quantity_kg IS NULL
+
+                        OR ABS(
+                            trade_synced_quantity_kg
+                            - export_synchronized_quantity_kg
+                        )
+                        >
+                        (
+                            1e-9
+                            * GREATEST(
+                                ABS(export_synchronized_quantity_kg),
+                                1.0
+                            )
+                        )
+
+                        OR export_unit_value_log_distance IS NULL
+
+                        OR (
+                            import_unit_value_log_distance IS NOT NULL
+                            AND export_unit_value_log_distance
+                                > import_unit_value_log_distance
+                        )
+
+                        OR (
+                            mean_unit_value_log_distance IS NOT NULL
+                            AND export_unit_value_log_distance
+                                >= mean_unit_value_log_distance
+                        )
+                  )
+                """
+            ).fetchone()[0]
+        )
+
+        trade_synced_import_mismatches = int(
+            con.execute(
+                f"""
+                SELECT COUNT(*)
+
+                FROM read_parquet({quantity_sql})
+
+                WHERE trade_synced_quantity_method
+                        = 'unit_value_guided_import'
+
+                  AND (
+                        trade_synced_quantity_kg IS NULL
+                        OR import_synchronized_quantity_kg IS NULL
+
+                        OR ABS(
+                            trade_synced_quantity_kg
+                            - import_synchronized_quantity_kg
+                        )
+                        >
+                        (
+                            1e-9
+                            * GREATEST(
+                                ABS(import_synchronized_quantity_kg),
+                                1.0
+                            )
+                        )
+
+                        OR import_unit_value_log_distance IS NULL
+
+                        OR (
+                            export_unit_value_log_distance IS NOT NULL
+                            AND import_unit_value_log_distance
+                                >= export_unit_value_log_distance
+                        )
+
+                        OR (
+                            mean_unit_value_log_distance IS NOT NULL
+                            AND import_unit_value_log_distance
+                                >= mean_unit_value_log_distance
+                        )
+                  )
+                """
+            ).fetchone()[0]
+        )
+
+        trade_synced_mean_mismatches = int(
+            con.execute(
+                f"""
+                SELECT COUNT(*)
+
+                FROM read_parquet({quantity_sql})
+
+                WHERE trade_synced_quantity_method
+                        = 'unit_value_guided_mean'
+
+                  AND (
+                        trade_synced_quantity_kg IS NULL
+                        OR quantity_simple_mean_kg IS NULL
+
+                        OR ABS(
+                            trade_synced_quantity_kg
+                            - quantity_simple_mean_kg
+                        )
+                        >
+                        (
+                            1e-9
+                            * GREATEST(
+                                ABS(quantity_simple_mean_kg),
+                                1.0
+                            )
+                        )
+
+                        OR mean_unit_value_log_distance IS NULL
+
+                        OR (
+                            export_unit_value_log_distance IS NOT NULL
+                            AND mean_unit_value_log_distance
+                                > export_unit_value_log_distance
+                        )
+
+                        OR (
+                            import_unit_value_log_distance IS NOT NULL
+                            AND mean_unit_value_log_distance
+                                > import_unit_value_log_distance
+                        )
+                  )
+                """
+            ).fetchone()[0]
+        )
+
+        trade_synced_no_reference_mismatches = int(
+            con.execute(
+                f"""
+                SELECT COUNT(*)
+
+                FROM read_parquet({quantity_sql})
+
+                WHERE trade_synced_quantity_method
+                        = 'bilateral_mean_no_unit_value_reference'
+
+                  AND (
+                        quantity_availability_case <> 'both_quantity'
+
+                        OR trade_synced_quantity_kg IS NULL
+
+                        OR quantity_simple_mean_kg IS NULL
+
+                        OR export_unit_value_log_distance IS NOT NULL
+
+                        OR import_unit_value_log_distance IS NOT NULL
+
+                        OR mean_unit_value_log_distance IS NOT NULL
+
+                        OR ABS(
+                            trade_synced_quantity_kg
+                            - quantity_simple_mean_kg
+                        )
+                        >
+                        (
+                            1e-9
+                            * GREATEST(
+                                ABS(quantity_simple_mean_kg),
+                                1.0
+                            )
+                        )
+                  )
+                """
+            ).fetchone()[0]
+        )
+
+        trade_synced_arithmetic_valid = (
+            trade_synced_export_mismatches == 0
+            and trade_synced_import_mismatches == 0
+            and trade_synced_mean_mismatches == 0
+            and trade_synced_no_reference_mismatches == 0
+        )
         # --------------------------------------------------------------
         # Existing reconciled trade value must remain unchanged
         # --------------------------------------------------------------
@@ -914,14 +1294,25 @@ def audit_quantity_reconciliation(
                 bilateral_key_unique,
                 availability_partition_valid,
                 availability_flags_valid,
+
                 reconciled_quantities_valid,
                 expected_quantities_present,
                 no_quantity_rows_valid,
+
                 export_only_preserved,
                 import_only_preserved,
                 both_quantity_candidates_valid,
                 reconciliation_methods_valid,
                 reconciliation_arithmetic_valid,
+
+                # New Trade-Synced quantity contract
+                trade_synced_quantities_valid,
+                expected_trade_synced_quantities_present,
+                no_quantity_trade_synced_valid,
+                trade_synced_methods_valid,
+                trade_synced_arithmetic_valid,
+                trade_synced_unilateral_preserved,
+
                 trade_value_preserved,
                 bilateral_population_preserved,
             )
@@ -1051,7 +1442,52 @@ def audit_quantity_reconciliation(
                         AS bilateral_population_preserved,
 
                     {str(audit_passed).upper()}
-                        AS audit_passed
+                        AS audit_passed,
+
+                    {invalid_trade_synced_quantity_rows}
+                        AS invalid_trade_synced_quantity_rows,
+
+                    {str(trade_synced_quantities_valid).upper()}
+                        AS trade_synced_quantities_valid,
+
+                    {missing_expected_trade_synced_quantity}
+                        AS missing_expected_trade_synced_quantity,
+
+                    {str(expected_trade_synced_quantities_present).upper()}
+                        AS expected_trade_synced_quantities_present,
+
+                    {no_quantity_trade_synced_nonmissing_rows}
+                        AS no_quantity_trade_synced_nonmissing_rows,
+
+                    {str(no_quantity_trade_synced_valid).upper()}
+                        AS no_quantity_trade_synced_valid,
+
+                    {invalid_trade_synced_method_rows}
+                        AS invalid_trade_synced_method_rows,
+
+                    {str(trade_synced_methods_valid).upper()}
+                        AS trade_synced_methods_valid,
+
+                    {trade_synced_export_mismatches}
+                        AS trade_synced_export_mismatches,
+
+                    {trade_synced_import_mismatches}
+                        AS trade_synced_import_mismatches,
+
+                    {trade_synced_mean_mismatches}
+                        AS trade_synced_mean_mismatches,
+
+                    {trade_synced_no_reference_mismatches}
+                        AS trade_synced_no_reference_mismatches,
+
+                    {str(trade_synced_arithmetic_valid).upper()}
+                        AS trade_synced_arithmetic_valid,
+
+                    {trade_synced_unilateral_mismatches}
+                        AS trade_synced_unilateral_mismatches,
+
+                    {str(trade_synced_unilateral_preserved).upper()}
+                        AS trade_synced_unilateral_preserved
             )
             TO {audit_sql}
             (
@@ -1115,6 +1551,19 @@ def audit_quantity_reconciliation(
             "  Method/arithmetic mismatches: %s",
             f"{invalid_method_rows + weighted_method_mismatches + mean_fallback_mismatches:,}",
         )
+
+        logger.info(
+            "  Invalid trade-synced quantities: %s",
+            f"{invalid_trade_synced_quantity_rows:,}",
+        )
+        logger.info(
+            "  Invalid trade-sync method/status rows: %s",
+            f"{invalid_trade_synced_method_rows:,}",
+        )
+        logger.info(
+            "  Trade-sync selection/arithmetic mismatches: %s",
+            f"{trade_synced_export_mismatches + trade_synced_import_mismatches + trade_synced_mean_mismatches + trade_synced_no_reference_mismatches + trade_synced_unilateral_mismatches:,}",
+        )
         logger.info(
             "  Trade-value mismatches: %s",
             f"{trade_value_mismatches:,}",
@@ -1168,6 +1617,24 @@ def audit_quantity_reconciliation(
                 "reconciliation_arithmetic_valid": (
                     reconciliation_arithmetic_valid
                 ),
+                "trade_synced_quantities_valid": (
+                    trade_synced_quantities_valid
+                ),
+                "expected_trade_synced_quantities_present": (
+                    expected_trade_synced_quantities_present
+                ),
+                "no_quantity_trade_synced_valid": (
+                    no_quantity_trade_synced_valid
+                ),
+                "trade_synced_methods_valid": (
+                    trade_synced_methods_valid
+                ),
+                "trade_synced_arithmetic_valid": (
+                    trade_synced_arithmetic_valid
+                ),
+                "trade_synced_unilateral_preserved": (
+                    trade_synced_unilateral_preserved
+                ),
                 "trade_value_preserved": (
                     trade_value_preserved
                 ),
@@ -1205,6 +1672,25 @@ def audit_quantity_reconciliation(
             "n_export_only": n_export_only,
             "n_import_only": n_import_only,
             "n_no_quantity": n_no_quantity,
+
+            "trade_synced_quantities_valid": (
+                trade_synced_quantities_valid
+            ),
+            "expected_trade_synced_quantities_present": (
+                expected_trade_synced_quantities_present
+            ),
+            "no_quantity_trade_synced_valid": (
+                no_quantity_trade_synced_valid
+            ),
+            "trade_synced_methods_valid": (
+                trade_synced_methods_valid
+            ),
+            "trade_synced_arithmetic_valid": (
+                trade_synced_arithmetic_valid
+            ),
+            "trade_synced_unilateral_preserved": (
+                trade_synced_unilateral_preserved
+            ),
         }
 
     finally:

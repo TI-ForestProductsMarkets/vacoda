@@ -1554,6 +1554,53 @@ def build_trade_sync_report(
             metric="n_quantity_missing",
         )
 
+        n_plausibility_decisive = _metric_lookup(
+            diagnostics,
+            scope="quantity_plausibility_first",
+            metric="n_plausibility_decisive_rows",
+        )
+
+        plausibility_decisive_share = _metric_lookup(
+            diagnostics,
+            scope="quantity_plausibility_first",
+            metric="plausibility_decisive_share",
+        )
+
+        n_plausibility_export_selected = _metric_lookup(
+            diagnostics,
+            scope="quantity_plausibility_first",
+            metric="n_plausibility_export_selected",
+        )
+
+        n_plausibility_import_selected = _metric_lookup(
+            diagnostics,
+            scope="quantity_plausibility_first",
+            metric="n_plausibility_import_selected",
+        )
+
+        median_plausibility_first_change = _metric_lookup(
+            diagnostics,
+            scope="quantity_plausibility_first",
+            metric="median_plausibility_first_change",
+        )
+
+        p90_plausibility_first_change = _metric_lookup(
+            diagnostics,
+            scope="quantity_plausibility_first",
+            metric="p90_plausibility_first_change",
+        )
+
+        plausibility_first_improves_share = _metric_lookup(
+            diagnostics,
+            scope="quantity_plausibility_first",
+            metric="plausibility_first_improves_share",
+        )
+
+        median_robust_distance_improvement = _metric_lookup(
+            diagnostics,
+            scope="quantity_plausibility_first",
+            metric="median_robust_distance_improvement",
+        )
 
         # --------------------------------------------------------------
         # Effect of quantity reconciliation
@@ -1651,6 +1698,147 @@ def build_trade_sync_report(
             metric="extreme_clear_plausibility_preference_share",
         )
 
+        n_reference_comparable_rows = _metric_lookup(
+            diagnostics,
+            scope="quantity_reference",
+            metric="n_reference_comparable_rows",
+        )
+
+        reference_between_reporters_share = _metric_lookup(
+            diagnostics,
+            scope="quantity_reference",
+            metric="reference_between_reporters_share",
+        )
+
+        current_closest_to_reference_share = _metric_lookup(
+            diagnostics,
+            scope="quantity_reference",
+            metric="current_closest_to_reference_share",
+        )
+
+        export_closest_to_reference_share = _metric_lookup(
+            diagnostics,
+            scope="quantity_reference",
+            metric="export_closest_to_reference_share",
+        )
+
+        import_closest_to_reference_share = _metric_lookup(
+            diagnostics,
+            scope="quantity_reference",
+            metric="import_closest_to_reference_share",
+        )
+
+        median_reference_vs_current_fraction = _metric_lookup(
+            diagnostics,
+            scope="quantity_reference",
+            metric="median_reference_vs_current_fraction",
+        )
+
+        p90_reference_vs_current_fraction = _metric_lookup(
+            diagnostics,
+            scope="quantity_reference",
+            metric="p90_reference_vs_current_fraction",
+        )
+
+        median_current_reference_log_distance = _metric_lookup(
+            diagnostics,
+            scope="quantity_reference",
+            metric="median_current_reference_log_distance",
+        )
+
+        median_export_reference_log_distance = _metric_lookup(
+            diagnostics,
+            scope="quantity_reference",
+            metric="median_export_reference_log_distance",
+        )
+
+        median_import_reference_log_distance = _metric_lookup(
+            diagnostics,
+            scope="quantity_reference",
+            metric="median_import_reference_log_distance",
+        )
+
+        median_reference_observations = _metric_lookup(
+            diagnostics,
+            scope="quantity_reference",
+            metric="median_reference_observations",
+        )
+
+        # --------------------------------------------------------------
+        # Final Trade-Synced quantity
+        # --------------------------------------------------------------
+
+        n_trade_synced_quantity_rows = _metric_lookup(
+            diagnostics,
+            scope="quantity_trade_sync",
+            metric="n_trade_synced_quantity_rows",
+        )
+
+        n_unit_value_guided_export = _metric_lookup(
+            diagnostics,
+            scope="quantity_trade_sync",
+            metric="n_unit_value_guided_export",
+        )
+
+        n_unit_value_guided_import = _metric_lookup(
+            diagnostics,
+            scope="quantity_trade_sync",
+            metric="n_unit_value_guided_import",
+        )
+
+        n_unit_value_guided_mean = _metric_lookup(
+            diagnostics,
+            scope="quantity_trade_sync",
+            metric="n_unit_value_guided_mean",
+        )
+
+        n_bilateral_mean_no_reference = _metric_lookup(
+            diagnostics,
+            scope="quantity_trade_sync",
+            metric="n_bilateral_mean_no_reference",
+        )
+
+        n_trade_sync_export_retained = _metric_lookup(
+            diagnostics,
+            scope="quantity_trade_sync",
+            metric="n_export_quantity_retained",
+        )
+
+        n_trade_sync_import_retained = _metric_lookup(
+            diagnostics,
+            scope="quantity_trade_sync",
+            metric="n_import_quantity_retained",
+        )
+
+        n_trade_sync_no_usable_quantity = _metric_lookup(
+            diagnostics,
+            scope="quantity_trade_sync",
+            metric="n_no_usable_quantity",
+        )
+
+        unit_value_guided_export_share = _metric_lookup(
+            diagnostics,
+            scope="quantity_trade_sync",
+            metric="unit_value_guided_export_share",
+        )
+
+        unit_value_guided_import_share = _metric_lookup(
+            diagnostics,
+            scope="quantity_trade_sync",
+            metric="unit_value_guided_import_share",
+        )
+
+        unit_value_guided_mean_share = _metric_lookup(
+            diagnostics,
+            scope="quantity_trade_sync",
+            metric="unit_value_guided_mean_share",
+        )
+
+        bilateral_mean_no_reference_share = _metric_lookup(
+            diagnostics,
+            scope="quantity_trade_sync",
+            metric="bilateral_mean_no_reference_share",
+        )
         quantity_disagreement_bands = diagnostics[
             diagnostics["diagnostic_scope"].eq(
                 "quantity_disagreement_band"
@@ -2079,6 +2267,150 @@ def build_trade_sync_report(
             ]
         )
 
+        quantity_trade_sync_summary = pd.DataFrame(
+            [
+                {
+                    "Outcome": "Trade-synced quantity available",
+                    "Rows": _format_integer(
+                        n_trade_synced_quantity_rows
+                    ),
+                    "Share of bilateral rows": "—",
+                },
+                {
+                    "Outcome": "Unit-value guided — exporter selected",
+                    "Rows": _format_integer(
+                        n_unit_value_guided_export
+                    ),
+                    "Share of bilateral rows": _format_percent(
+                        unit_value_guided_export_share
+                    ),
+                },
+                {
+                    "Outcome": "Unit-value guided — importer selected",
+                    "Rows": _format_integer(
+                        n_unit_value_guided_import
+                    ),
+                    "Share of bilateral rows": _format_percent(
+                        unit_value_guided_import_share
+                    ),
+                },
+                {
+                    "Outcome": "Unit-value guided — bilateral mean selected",
+                    "Rows": _format_integer(
+                        n_unit_value_guided_mean
+                    ),
+                    "Share of bilateral rows": _format_percent(
+                        unit_value_guided_mean_share
+                    ),
+                },
+                {
+                    "Outcome": "Bilateral mean — no unit-value reference",
+                    "Rows": _format_integer(
+                        n_bilateral_mean_no_reference
+                    ),
+                    "Share of bilateral rows": _format_percent(
+                        bilateral_mean_no_reference_share
+                    ),
+                },
+                {
+                    "Outcome": "Exporter-only quantity retained",
+                    "Rows": _format_integer(
+                        n_trade_sync_export_retained
+                    ),
+                    "Share of bilateral rows": "—",
+                },
+                {
+                    "Outcome": "Importer-only quantity retained",
+                    "Rows": _format_integer(
+                        n_trade_sync_import_retained
+                    ),
+                    "Share of bilateral rows": "—",
+                },
+                {
+                    "Outcome": "No usable quantity",
+                    "Rows": _format_integer(
+                        n_trade_sync_no_usable_quantity
+                    ),
+                    "Share of bilateral rows": "—",
+                },
+            ]
+        )
+
+        quantity_trade_sync_band_display = (
+            quantity_disagreement_bands[
+                [
+                    "band_label",
+                    "n_rows",
+                    "trade_synced_export_share",
+                    "trade_synced_import_share",
+                    "trade_synced_mean_share",
+                    "trade_synced_no_reference_share",
+                ]
+            ].copy()
+            if not quantity_disagreement_bands.empty
+            else pd.DataFrame()
+        )
+
+        if not quantity_trade_sync_band_display.empty:
+            for column in (
+                "trade_synced_export_share",
+                "trade_synced_import_share",
+                "trade_synced_mean_share",
+                "trade_synced_no_reference_share",
+            ):
+                quantity_trade_sync_band_display[column] *= 100
+        quantity_reference_summary = pd.DataFrame(
+            [
+                {
+                    "Measure": "Comparable bilateral rows",
+                    "Value": _format_integer(
+                        n_reference_comparable_rows
+                    ),
+                },
+                {
+                    "Measure": "Reference lies between reports",
+                    "Value": _format_percent(
+                        reference_between_reporters_share
+                    ),
+                },
+                {
+                    "Measure": "Current reconciliation closest",
+                    "Value": _format_percent(
+                        current_closest_to_reference_share
+                    ),
+                },
+                {
+                    "Measure": "Exporter quantity closest",
+                    "Value": _format_percent(
+                        export_closest_to_reference_share
+                    ),
+                },
+                {
+                    "Measure": "Importer quantity closest",
+                    "Value": _format_percent(
+                        import_closest_to_reference_share
+                    ),
+                },
+                {
+                    "Measure": "Median reference-vs-current change",
+                    "Value": _format_percent(
+                        median_reference_vs_current_fraction
+                    ),
+                },
+                {
+                    "Measure": "P90 reference-vs-current change",
+                    "Value": _format_percent(
+                        p90_reference_vs_current_fraction
+                    ),
+                },
+                {
+                    "Measure": "Median reference observations",
+                    "Value": _format_integer(
+                        median_reference_observations
+                    ),
+                },
+            ]
+        )
         population_accounting = pd.DataFrame(
             [
                 {
@@ -2366,6 +2698,14 @@ def build_trade_sync_report(
                     "median_reconciled_vs_mean_fraction",
                     "plausibility_evidence_share",
                     "clear_plausibility_preference_share",
+                    "plausibility_first_trigger_share",
+                    "plausibility_first_improves_share",
+                    "median_plausibility_first_change",
+                    "reference_between_reporters_share",
+                    "current_closest_to_reference_share",
+                    "export_closest_to_reference_share",
+                    "import_closest_to_reference_share",
+                    "median_reference_vs_current_fraction",
                 ]
             ].copy()
             if not quantity_disagreement_bands.empty
@@ -2388,7 +2728,38 @@ def build_trade_sync_report(
             quantity_band_display[
                 "clear_plausibility_preference_share"
             ] *= 100
-    
+
+            quantity_band_display[
+                "plausibility_first_trigger_share"
+            ] *= 100
+
+            quantity_band_display[
+                "plausibility_first_improves_share"
+            ] *= 100
+
+            quantity_band_display[
+                "median_plausibility_first_change"
+            ] *= 100
+
+            quantity_band_display[
+                "reference_between_reporters_share"
+            ] *= 100
+
+            quantity_band_display[
+                "current_closest_to_reference_share"
+            ] *= 100
+
+            quantity_band_display[
+                "export_closest_to_reference_share"
+            ] *= 100
+
+            quantity_band_display[
+                "import_closest_to_reference_share"
+            ] *= 100
+
+            quantity_band_display[
+                "median_reference_vs_current_fraction"
+            ] *= 100
         # --------------------------------------------------------------
         # Markdown
         # --------------------------------------------------------------
@@ -3016,21 +3387,61 @@ def build_trade_sync_report(
         "",
         (
             "The Quantity module provides standardized kilogram quantities "
-            "for the exporter and importer sides. Trade Sync now reconciles "
-            "these bilateral quantity observations after trade-value "
-            "reconciliation has passed its audit."
+            "for the exporter and importer sides. Trade Sync converts this "
+            "bilateral evidence into one `trade_synced_quantity_kg` for each "
+            "`year × exporter × importer × product` observation."
         ),
         "",
         (
-            "The reconciled trade value is used as a common value anchor for "
-            "evaluating exporter- and importer-side implied unit values. "
-            "Quantity-specific reporting reliability determines the current "
-            "bilateral reconciliation weights; unit-value plausibility remains "
-            "diagnostic evidence and is not yet included in the final quantity "
-            "weight."
+            "When both usable quantities are available, the reconciled trade "
+            "value is used as the common value anchor. Exporter quantity, "
+            "importer quantity, and their simple bilateral mean each imply a "
+            "unit value. Trade Sync selects the quantity candidate whose "
+            "implied unit value is closest to the robust product-year "
+            "unit-value reference. If only one usable quantity exists, it is "
+            "retained unchanged; if neither exists, the synchronized quantity "
+            "remains missing."
         ),
         "",
-        "### 9.1 Quantity availability",
+        "### 9.1 Final Trade-Synced quantity",
+        "",
+        (
+            "The following table summarizes the final quantity outcome applied "
+            "by Trade Sync. Percentages for the unit-value-guided methods use "
+            "rows with usable quantities on both sides as the denominator."
+        ),
+        "",
+        _markdown_table(quantity_trade_sync_summary),
+        "",
+        (
+            "For bilateral observations, the next table shows how candidate "
+            "selection changes as exporter–importer quantity disagreement "
+            "becomes more severe."
+        ),
+        "",
+        _markdown_table(
+            quantity_trade_sync_band_display.rename(
+                columns={
+                    "band_label": "Quantity difference",
+                    "n_rows": "Rows",
+                    "trade_synced_export_share": (
+                        "Exporter selected (%)"
+                    ),
+                    "trade_synced_import_share": (
+                        "Importer selected (%)"
+                    ),
+                    "trade_synced_mean_share": (
+                        "Mean selected (%)"
+                    ),
+                    "trade_synced_no_reference_share": (
+                        "Mean — no reference (%)"
+                    ),
+                }
+            )
+        ),
+        "",
+        "",
+        "### 9.2 Quantity availability",
         "",
         "| Quantity availability | Rows |",
         "|---|---:|",
@@ -3051,7 +3462,7 @@ def build_trade_sync_report(
             f"{_format_integer(n_no_quantity)} |"
         ),
         "",
-        "### 9.2 Mirror-report disagreement",
+        "### 9.3 Mirror-report disagreement",
         "",
         (
             "Among rows with usable quantities on both sides, the median "
@@ -3074,7 +3485,7 @@ def build_trade_sync_report(
             document_path=report_path,
         ),
         "",
-        "### 9.3 Quantity reporting reliability",
+        "### 9.4 Quantity reporting reliability",
         "",
         (
             "The median quantity-specific reliability index is "
@@ -3097,7 +3508,7 @@ def build_trade_sync_report(
             "the unknown true quantity."
         ),
         "",
-        "### 9.4 Reconciliation method composition",
+        "### 9.5 Reconciliation method composition",
         "",
         _markdown_table(quantity_method_summary),
         "",
@@ -3109,7 +3520,7 @@ def build_trade_sync_report(
             "usable quantities are retained unchanged."
         ),
         "",
-        "### 9.5 Effect of reconciliation",
+        "### 9.6 Effect of reconciliation",
         "",
         (
             "Relative to a simple bilateral mean, the final reconciled "
@@ -3135,7 +3546,7 @@ def build_trade_sync_report(
             document_path=report_path,
         ),
         "",
-        "### 9.6 Unit-value plausibility",
+        "### 9.7 Unit-value plausibility",
         "",
         (
             "A product-year implied-unit-value reference can be evaluated for "
@@ -3157,7 +3568,7 @@ def build_trade_sync_report(
             "weights."
         ),
         "",
-        "### 9.7 Extreme-disagreement evidence",
+        "### 9.8 Extreme-disagreement evidence",
         "",
         (
             f"`{_format_integer(n_extreme_quantity_disagreement)}` bilateral "
@@ -3207,7 +3618,92 @@ def build_trade_sync_report(
             document_path=report_path,
         ),
         "",
-        "### 9.8 Methodological assessment",
+        "### 9.9 Plausibility-first counterfactual",
+        "",
+        (
+            "To evaluate whether row-specific unit-value evidence could improve "
+            "the current reliability-only reconciliation, a counterfactual "
+            "quantity was constructed. When exporter and importer implied "
+            "unit-value robust distances differ by at least one unit, the "
+            "quantity associated with the smaller distance is selected. "
+            "Otherwise the current reliability-weighted quantity is retained."
+        ),
+        "",
+        (
+            f"This rule is decisive for "
+            f"`{_format_integer(n_plausibility_decisive)}` bilateral rows "
+            f"({_format_percent(plausibility_decisive_share)} of bilateral "
+            "quantity observations)."
+        ),
+        "",
+        (
+            f"The exporter quantity is selected in "
+            f"`{_format_integer(n_plausibility_export_selected)}` cases and "
+            f"the importer quantity in "
+            f"`{_format_integer(n_plausibility_import_selected)}` cases."
+        ),
+        "",
+        (
+            "Where the plausibility-first rule is decisive, it changes the "
+            "current reconciled quantity by a median absolute amount of "
+            f"`{_format_percent(median_plausibility_first_change)}` and a "
+            f"P90 amount of "
+            f"`{_format_percent(p90_plausibility_first_change)}`."
+        ),
+        "",
+        (
+            "Most importantly, the plausibility-first candidate produces a "
+            "smaller product-year unit-value robust distance than the current "
+            "reliability-weighted quantity in "
+            f"`{_format_percent(plausibility_first_improves_share)}` of "
+            "comparable decisive cases."
+        ),
+        "",
+        (
+            "The median reduction in robust unit-value distance is "
+            f"`{median_robust_distance_improvement:.3f}`."
+            if median_robust_distance_improvement is not None
+            else (
+                "The median robust-distance improvement could not be evaluated."
+            )
+        ),
+        "",
+        (
+            "This remains a counterfactual diagnostic. The production "
+            "`quantity_reconciled_kg` is unchanged."
+        ),
+        "",
+
+        "### 9.10 Product-year unit-value reference quantity",
+        "",
+        (
+            "For each bilateral product-year observation, Trade Sync "
+            "derives a diagnostic reference quantity from the reconciled "
+            "trade value and the robust product-year median unit value:"
+        ),
+        "",
+        (
+            "`reference quantity = reconciled trade value / "
+            "product-year median unit value`"
+        ),
+        "",
+        (
+            "This reference is not treated as the true quantity. It is "
+            "used as a product-year benchmark against which the exporter "
+            "quantity, importer quantity, and current reliability-weighted "
+            "quantity can be compared."
+        ),
+        "",
+        _markdown_table(quantity_reference_summary),
+        "",
+        (
+            "The following table shows how these relationships change "
+            "as exporter-importer quantity disagreement becomes more severe."
+        ),
+        "",
+        _markdown_table(quantity_band_display),
+        "",
+        "### 9.11 Methodological assessment",
         "",
         (
             "The current quantity reconciliation therefore uses two distinct "
