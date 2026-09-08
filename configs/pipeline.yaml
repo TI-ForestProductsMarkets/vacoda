@@ -16,8 +16,8 @@ pipeline:
     - "quantity"
     - "cif_fob"
     - "trade_sync"
-  #  - "value"
-  #  - "validation"
+    - "value"
+    - "validation"
 
   # Stop immediately if a step fails or reports ready_for_next_step=false.
   fail_fast: true
