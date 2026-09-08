@@ -17,14 +17,12 @@ from typing import Any
 from vacoda.config.steps.validation import ValidationConfig
 
 from vacoda.steps.validation.prepare_input import prepare_validation_input
-# from vacoda.steps.validation.structural import  audit_structural_integrity
-# from vacoda.steps.validation.missingness import build_missingness_diagnostics
-# from vacoda.steps.validation.unit_values import build_unit_value_diagnostics
-# from vacoda.steps.validation.outliers import  detect_validation_outliers
+from vacoda.steps.validation.structural import  audit_structural_integrity
+from vacoda.steps.validation.model import  develop_quantity_model
 # from vacoda.steps.validation.consistency import  audit_cross_variable_consistency
 # from vacoda.steps.validation.finalize import build_validated_trade
 # from vacoda.steps.validation.release import build_release_dataset
-# from vacoda.steps.validation.reporting import build_validation_report
+from vacoda.steps.validation.reporting import build_validation_report
 
 from vacoda.utils.artifacts import (
     require_artifact,
@@ -42,11 +40,8 @@ from vacoda.utils.runtime import (
 REQUIRED_PRODUCTS = (
     "prepared_input",
     "structural_audit",
-    "missingness",
-    "unit_value_diagnostics",
-    "outliers",
+    "model_diagnostics",
     "consistency_audit",
-    "provenance",
     "validated_trade",
     "release",
 )
@@ -55,12 +50,10 @@ REQUIRED_PRODUCTS = (
 WORKFLOW_STEPS = [
     "Prepare Validation input",
     "Audit structural integrity",
-    "Analyze missingness",
-    "Build unit-value diagnostics",
-    "Detect unit-value outliers",
-    "Audit cross-variable consistency",
-    "Build validated trade",
-    "Build VACODA release dataset",
+    "Build Model diagnostics",
+    # "Build validated trade",
+    # "Audit cross-variable consistency",
+    # "Build VACODA release dataset",
     "Write Validation decision report",
 ]
 
@@ -162,14 +155,6 @@ def run_validation_workflow(
         logger.info("Input: %s", resolved_input_path)
         logger.info("Output directory: %s", cfg.output_dir())
         logger.info(
-            "Outlier method: %s",
-            cfg.method.outliers.method,
-        )
-        logger.info(
-            "Imputation enabled: %s",
-            cfg.method.imputation.enabled,
-        )
-        logger.info(
             "Enabled products: %s",
             " ".join(
                 f"{name}={enabled}"
@@ -202,116 +187,56 @@ def run_validation_workflow(
             producer_product="prepared Validation input",
         )
 
-    #     # ==================================================================
-    #     # Step 2 — Structural integrity
-    #     # ==================================================================
+        # ==================================================================
+        # Step 2 — Structural integrity audit
+        # ==================================================================
 
-    #     structural_result = run_step(
-    #         logger=logger,
-    #         step_number=2,
-    #         total_steps=TOTAL_WORKFLOW_STEPS,
-    #         title=WORKFLOW_STEPS[1],
-    #         runner=lambda: audit_structural_integrity(
-    #             cfg=cfg,
-    #             input_path=prepared_path,
-    #             run_id=run_id,
-    #             force=force,
-    #             logger=logger,
-    #         ),
-    #     )
+        structural_result = run_step(
+            logger=logger,
+            step_number=2,
+            total_steps=TOTAL_WORKFLOW_STEPS,
+            title=WORKFLOW_STEPS[1],
+            runner=lambda: audit_structural_integrity(
+                cfg=cfg,
+                input_path=prepared_path,
+                run_id=run_id,
+                force=force,
+                logger=logger,
+            ),
+        )
 
-    #     structural_audit_path = require_artifact(
-    #         result=structural_result,
-    #         path_key="structural_audit_path",
-    #         consumer_step=WORKFLOW_STEPS[2],
-    #         producer_product="structural-integrity audit",
-    #     )
+        structural_audit_path = require_artifact(
+            result=structural_result,
+            path_key="structural_audit_path",
+            consumer_step=WORKFLOW_STEPS[2],
+            producer_product="Validation structural audit",
+        )
 
-    #     structural_passed = bool(
-    #         structural_result.get("audit_passed", False)
-    #     )
+        # ==================================================================
+        # Step 3 — Quantity-model diagnostics
+        # ==================================================================
 
-    #     if not structural_passed:
-    #         raise RuntimeError(
-    #             "Validation structural-integrity audit did not pass."
-    #         )
+        model_diagnostic_result = run_step(
+            logger=logger,
+            step_number=3,
+            total_steps=TOTAL_WORKFLOW_STEPS,
+            title=WORKFLOW_STEPS[2],
+            runner=lambda: develop_quantity_model(
+                cfg=cfg,
+                input_path=prepared_path,
+                structural_audit_path=structural_audit_path,
+                run_id=run_id,
+                force=force,
+                logger=logger,
+            ),
+        )
 
-    #     # ==================================================================
-    #     # Step 3 — Missingness analysis
-    #     # ==================================================================
-
-    #     missingness_result = run_step(
-    #         logger=logger,
-    #         step_number=3,
-    #         total_steps=TOTAL_WORKFLOW_STEPS,
-    #         title=WORKFLOW_STEPS[2],
-    #         runner=lambda: build_missingness_diagnostics(
-    #             cfg=cfg,
-    #             input_path=prepared_path,
-    #             run_id=run_id,
-    #             force=force,
-    #             logger=logger,
-    #         ),
-    #     )
-
-    #     missingness_path = require_artifact(
-    #         result=missingness_result,
-    #         path_key="missingness_path",
-    #         consumer_step=WORKFLOW_STEPS[3],
-    #         producer_product="missingness diagnostics",
-    #     )
-
-    #     # ==================================================================
-    #     # Step 4 — Unit-value diagnostics
-    #     # ==================================================================
-
-    #     unit_value_result = run_step(
-    #         logger=logger,
-    #         step_number=4,
-    #         total_steps=TOTAL_WORKFLOW_STEPS,
-    #         title=WORKFLOW_STEPS[3],
-    #         runner=lambda: build_unit_value_diagnostics(
-    #             cfg=cfg,
-    #             input_path=prepared_path,
-    #             run_id=run_id,
-    #             force=force,
-    #             logger=logger,
-    #         ),
-    #     )
-
-    #     unit_value_path = require_artifact(
-    #         result=unit_value_result,
-    #         path_key="unit_value_diagnostics_path",
-    #         consumer_step=WORKFLOW_STEPS[4],
-    #         producer_product="unit-value diagnostics",
-    #     )
-
-    #     # ==================================================================
-    #     # Step 5 — Outlier detection
-    #     # ==================================================================
-
-    #     outlier_result = run_step(
-    #         logger=logger,
-    #         step_number=5,
-    #         total_steps=TOTAL_WORKFLOW_STEPS,
-    #         title=WORKFLOW_STEPS[4],
-    #         runner=lambda: detect_validation_outliers(
-    #             cfg=cfg,
-    #             input_path=prepared_path,
-    #             unit_value_diagnostics_path=unit_value_path,
-    #             run_id=run_id,
-    #             force=force,
-    #             logger=logger,
-    #         ),
-    #     )
-
-    #     outliers_path = require_artifact(
-    #         result=outlier_result,
-    #         path_key="outliers_path",
-    #         consumer_step=WORKFLOW_STEPS[5],
-    #         producer_product="Validation outlier diagnostics",
-    #     )
-
+        model_diagnostics_path = require_artifact(
+            result=model_diagnostic_result,
+            path_key="model_diagnostics_path",
+            consumer_step=WORKFLOW_STEPS[3],
+            producer_product="quantity-model diagnostics",
+        )
     #     # ==================================================================
     #     # Step 6 — Cross-variable consistency
     #     # ==================================================================
@@ -329,23 +254,6 @@ def run_validation_workflow(
     #             logger=logger,
     #         ),
     #     )
-
-    #     consistency_audit_path = require_artifact(
-    #         result=consistency_result,
-    #         path_key="consistency_audit_path",
-    #         consumer_step=WORKFLOW_STEPS[6],
-    #         producer_product="cross-variable consistency audit",
-    #     )
-
-    #     consistency_passed = bool(
-    #         consistency_result.get("audit_passed", False)
-    #     )
-
-    #     if not consistency_passed:
-    #         raise RuntimeError(
-    #             "Validation cross-variable consistency audit "
-    #             "did not pass."
-    #         )
 
     #     # ==================================================================
     #     # Step 7 — Build validated trade and provenance
@@ -370,19 +278,6 @@ def run_validation_workflow(
     #         ),
     #     )
 
-    #     validated_trade_path = require_artifact(
-    #         result=validated_result,
-    #         path_key="validated_trade_path",
-    #         consumer_step=WORKFLOW_STEPS[7],
-    #         producer_product="validated trade",
-    #     )
-
-    #     provenance_path = require_artifact(
-    #         result=validated_result,
-    #         path_key="provenance_path",
-    #         consumer_step=WORKFLOW_STEPS[8],
-    #         producer_product="Validation provenance",
-    #     )
 
     #     # ==================================================================
     #     # Step 8 — Build final VACODA release
@@ -409,30 +304,25 @@ def run_validation_workflow(
     #         producer_product="VACODA release dataset",
     #     )
 
-    #     # ==================================================================
-    #     # Step 9 — Write Validation decision report
-    #     # ==================================================================
+        # ==================================================================
+        # Step 4 — Build Validation report
+        # ==================================================================
 
-    #     report_result = run_step(
-    #         logger=logger,
-    #         step_number=9,
-    #         total_steps=TOTAL_WORKFLOW_STEPS,
-    #         title=WORKFLOW_STEPS[8],
-    #         runner=lambda: build_validation_report(
-    #             cfg=cfg,
-    #             validated_trade_path=validated_trade_path,
-    #             release_path=release_path,
-    #             structural_audit_path=structural_audit_path,
-    #             missingness_path=missingness_path,
-    #             unit_value_diagnostics_path=unit_value_path,
-    #             outliers_path=outliers_path,
-    #             consistency_audit_path=consistency_audit_path,
-    #             provenance_path=provenance_path,
-    #             run_id=run_id,
-    #             force=force,
-    #             logger=logger,
-    #         ),
-    #     )
+        report_result = run_step(
+            logger=logger,
+            step_number=4,
+            total_steps=TOTAL_WORKFLOW_STEPS,
+            title=WORKFLOW_STEPS[3],
+            runner=lambda: build_validation_report(
+                cfg=cfg,
+                prepared_input_path=prepared_path,
+                structural_audit_path=structural_audit_path,
+                model_diagnostics_path=model_diagnostics_path,
+                run_id=run_id,
+                force=force,
+                logger=logger,
+            ),
+        )
 
     #     report_path = require_result_path(
     #         report_result,
@@ -471,15 +361,15 @@ def run_validation_workflow(
     #             "VACODA release dataset."
     #         )
 
-    #     workflow_elapsed = perf_counter() - workflow_start
+        workflow_elapsed = perf_counter() - workflow_start
 
-    #     separator(logger)
+        separator(logger)
 
-    #     logger.info(
-    #         "%s Validation workflow finished.",
-    #         get_symbols("success"),
-    #     )
-    #     logger.info("Run ID: %s", run_id)
+        logger.info(
+            "%s Validation workflow finished.",
+            get_symbols("success"),
+        )
+        logger.info("Run ID: %s", run_id)
     #     logger.info(
     #         "Validated trade: %s",
     #         validated_trade_path,
@@ -488,10 +378,10 @@ def run_validation_workflow(
     #         "Release dataset: %s",
     #         release_path,
     #     )
-    #     logger.info(
-    #         "Structural audit passed: %s",
-    #         structural_passed,
-    #     )
+        # logger.info(
+        #     "Structural audit passed: %s",
+        #     structural_passed,
+        # )
     #     logger.info(
     #         "Consistency audit passed: %s",
     #         consistency_passed,
@@ -528,11 +418,11 @@ def run_validation_workflow(
     #         workflow_elapsed,
     #     )
 
-    #     separator(logger)
+        separator(logger)
 
-    # return {
-    #     "status": "completed",
-    #     "run_id": run_id,
+    return {
+        "status": "completed",
+        "run_id": run_id,
 
     #     # Master-pipeline readiness contract.
     #     "ready_for_release": ready_for_release,
@@ -542,13 +432,9 @@ def run_validation_workflow(
     #     "audit_path": consistency_audit_path,
 
     #     # Explicit Validation products.
-    #     "prepared_input_path": prepared_path,
-    #     "structural_audit_path": structural_audit_path,
-    #     "missingness_path": missingness_path,
-    #     "unit_value_diagnostics_path": unit_value_path,
-    #     "outliers_path": outliers_path,
+         "prepared_input_path": prepared_path,
+         "structural_audit_path": structural_result["structural_audit_path"],
     #     "consistency_audit_path": consistency_audit_path,
-    #     "provenance_path": provenance_path,
     #     "validated_trade_path": validated_trade_path,
     #     "release_path": release_path,
     #     "report_path": report_path,
@@ -562,4 +448,4 @@ def run_validation_workflow(
     #     "decision": decision,
 
     #     "workflow_duration_seconds": workflow_elapsed,
-    # }
+     }

@@ -338,6 +338,7 @@ def require_int(
     *,
     key: str,
     min_value: int | None = None,
+    max_value: int | None = None,
 ) -> int:
     """Require a YAML value to be an integer."""
     if not isinstance(value, int):
@@ -349,6 +350,11 @@ def require_int(
     if min_value is not None and value < min_value:
         raise ValueError(
             f"'{key}' must be >= {min_value}, got {value}."
+        )
+
+    if max_value is not None and value > max_value:
+        raise ValueError(
+            f"'{key}' must be <= {max_value}, got {value}."
         )
 
     return value

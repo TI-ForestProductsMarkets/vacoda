@@ -30,35 +30,23 @@ validation:
 
     prepared_input:
       enable: true
-      filename: "prepared/comtrade_target_{target_hs_lower}_validation_prepared.parquet"
+      filename: "prepared/comtrade_target_{target_hs_lower}_prepared.parquet"
 
     structural_audit:
       enable: true
-      filename: "audits/target_{target_hs_lower}_validation_structural_audit.parquet"
+      filename: "audits/target_{target_hs_lower}_structural_audit.parquet"
 
-    missingness:
+    model_diagnostics:
       enable: true
-      filename: "diagnostics/target_{target_hs_lower}_validation_missingness.parquet"
-
-    unit_value_diagnostics:
-      enable: true
-      filename: "diagnostics/target_{target_hs_lower}_validation_unit_values.parquet"
-
-    outliers:
-      enable: true
-      filename: "diagnostics/target_{target_hs_lower}_validation_outliers.parquet"
-
-    consistency_audit:
-      enable: true
-      filename: "audits/target_{target_hs_lower}_validation_consistency_audit.parquet"
-
-    provenance:
-      enable: true
-      filename: "target_{target_hs_lower}_validation_provenance.parquet"
+      filename: "diagnostics/target_{target_hs_lower}_model_diagnostics.parquet"
 
     validated_trade:
       enable: true
       filename: "comtrade_target_{target_hs_lower}_validated.parquet"
+    
+    consistency_audit:
+      enable: true
+      filename: "target_{target_hs_lower}_consistency_audit.parquet"
 
     release:
       enable: true
@@ -71,113 +59,118 @@ validation:
   method:
 
     structural:
-
       required_fields:
         - year
-        - reporter_code
-        - partner_code
-        - flow_code
+        - exporter_iso
+        - importer_iso
         - target_cmd
-        - quantity_kg
+
         - trade_value_reconciled
         - trade_value_reconciled_constant_usd
 
+        - trade_synced_quantity_kg
+        - trade_synced_quantity_method
+        - trade_synced_quantity_status
+
+        - export_synchronized_quantity_kg
+        - import_synchronized_quantity_kg
+        - export_is_synchronized_quantity_estimated
+        - import_is_synchronized_quantity_estimated
+
+        - quantity_availability_case
+        - quantity_relative_difference
+
+        - product_year_median_unit_value
+        - product_year_log_unit_value_mad
+        - unit_value_reference_observations
+
+        - export_unit_value_log_distance
+        - import_unit_value_log_distance
+        - mean_unit_value_log_distance
+
       canonical_key:
         - year
-        - reporter_code
-        - partner_code
-        - flow_code
+        - exporter_iso
+        - importer_iso
         - target_cmd
-
+      
       duplicate_keys:
         fail_on_duplicates: true
-
-      valid_flows:
-        - "M"
-        - "X"
 
       require_positive_value: true
       require_nonnegative_quantity: true
 
-    missingness:
 
-      fields:
-        - quantity_kg
-        - trade_value_reconciled
-        - trade_value_reconciled_constant_usd
+  # --------------------------------------------------------------
+  # Model-based validation
+  # --------------------------------------------------------------
 
-      summarize_by:
-        - year
-        - reporter_code
-        - partner_code
-        - flow_code
-        - target_cmd
+  model:
 
-    unit_value:
 
-      value_column: "trade_value_reconciled"
-      quantity_column: "quantity_kg"
-      output_column: "unit_value_usd_per_kg"
+    columns:
+      year: "year"
+      product: "target_cmd"
 
-      require_positive_value: true
-      require_positive_quantity: true
+      quantity: "trade_synced_quantity_kg"
+      nominal_value: "trade_value_reconciled"
+      constant_value: "trade_value_reconciled_constant_usd"
 
+      export_quantity: "export_synchronized_quantity_kg"
+      import_quantity: "import_synchronized_quantity_kg"
+
+      export_estimated: "export_is_synchronized_quantity_estimated"
+      import_estimated: "import_is_synchronized_quantity_estimated"
+
+      quantity_relative_difference: "quantity_relative_difference"
+
+      unit_value_reference: "product_year_median_unit_value"
+      unit_value_reference_observations: "unit_value_reference_observations"
+
+    # --------------------------------------------------------------
+    # Candidate pseudo-truth population
+    # --------------------------------------------------------------
+
+    training_population:
+
+      require_bilateral_quantities: true
+      require_non_estimated_quantities: true
+
+      disagreement_thresholds:
+        - 0.05
+        - 0.10
+        - 0.20
+        - 0.30
+        - 0.50
+        - 0.90
+
+      unit_value_reference_min_observations:
+        - 30
+        - 100
+        - 500
+
+      unit_value_log_distance_thresholds:
+        - 0.25
+        - 0.50
+        - 1.00
+
+    # --------------------------------------------------------------
+    # Model target
+    # --------------------------------------------------------------
+
+    target:
       transform: "log"
 
-      peer_group:
-        - target_cmd
-        - year
+    # --------------------------------------------------------------
+    # Training decision
+    # --------------------------------------------------------------
+    #
+    # No final training population is selected yet. The diagnostics
+    # generated from the thresholds above are reviewed first.
+    # --------------------------------------------------------------
 
-      fallback_peer_group:
-        - target_cmd
-
-      minimum_group_rows: 30
-
-    outliers:
-
-      method: "robust_mad"
-      column: "unit_value_usd_per_kg"
-
-      group_by:
-        - target_cmd
-        - year
-
-      thresholds:
-        warning_score: 5.0
-        severe_score: 8.0
-
-      action: "flag"
-      remove: false
-
-    consistency:
-
-      positive_value_requires_quantity:
-        enabled: true
-
-      positive_quantity_requires_value:
-        enabled: true
-
-      constant_value_consistency:
-        enabled: true
-        relative_tolerance: 1.0e-10
-
-      target_hs_validity:
-        enabled: true
-
-      year_scope_validity:
-        enabled: true
-
-    imputation:
-
+    selection:
       enabled: false
-
-      preserve_original_values: true
-
-      quantity:
-        enabled: false
-
-      value:
-        enabled: false
 
   # --------------------------------------------------------------------
   # Release
@@ -187,8 +180,8 @@ validation:
 
     columns:
       year: "year"
-      reporter: "reporter_code"
-      partner: "partner_code"
+      reporter: "exporter_iso"
+      partner: "importer_iso"
       flow: "flow_code"
       hs_code: "target_cmd"
       quantity_kg: "quantity_kg"
@@ -219,27 +212,6 @@ validation:
 
     ready_flag: "ready_for_release"
 
-  # --------------------------------------------------------------------
-  # Diagnostics
-  # --------------------------------------------------------------------
-
-  diagnostics:
-
-    unit_value_percentiles:
-      - 0.01
-      - 0.05
-      - 0.25
-      - 0.50
-      - 0.75
-      - 0.95
-      - 0.99
-
-    missingness_dimensions:
-      - year
-      - reporter_code
-      - partner_code
-      - target_cmd
-      - flow_code
 
   # --------------------------------------------------------------------
   # Logging
