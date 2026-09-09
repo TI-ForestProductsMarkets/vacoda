@@ -2131,8 +2131,8 @@ def build_validation_report(
             "",
             (
                 "The following diagnostics describe the distribution of "
-                "Mirror quantity disagreement, Product-year UV support, "
-                "and Trade-Synced UV distance among directly observed "
+                "`Mirror quantity disagreement`, `Product-year UV support`, "
+                "and `Trade-Synced UV distance` among directly observed "
                 "bilateral quantity rows."
             ),
             "",
