@@ -102,11 +102,10 @@ validation:
 
 
   # --------------------------------------------------------------
-  # Model-based validation
+  # Diagnostics 
   # --------------------------------------------------------------
 
-  model:
-
+  diagnostics:
 
     columns:
       year: "year"
@@ -155,19 +154,11 @@ validation:
         - 1.00
 
     # --------------------------------------------------------------
-    # Model target
+    # Diagnostic target
     # --------------------------------------------------------------
 
     target:
       transform: "log"
-
-    # --------------------------------------------------------------
-    # Training decision
-    # --------------------------------------------------------------
-    #
-    # No final training population is selected yet. The diagnostics
-    # generated from the thresholds above are reviewed first.
-    # --------------------------------------------------------------
 
     selection:
       enabled: false

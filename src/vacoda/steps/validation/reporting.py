@@ -7,7 +7,7 @@ The report summarizes the evidence produced by the Validation workflow,
 including:
 
 - structural-integrity results;
-- candidate pseudo-ground-truth population;
+- candidate training population;
 - training-threshold sensitivity;
 - joint threshold-grid evidence;
 - temporal and product coverage;
@@ -159,22 +159,22 @@ def _plot_training_population_funnel(
     labels = {
         "all_rows": "All rows",
         "trade_synced_quantity_available": (
-            "Trade-Synced\nquantity"
+            "Trade-Synced quantity"
         ),
         "both_quantities_available": (
-            "Both mirror\nquantities"
+            "Bilateral quantity observations"
         ),
         "both_quantities_non_estimated": (
-            "Both directly\nobserved"
+            "Direct bilateral observations"
         ),
         "both_observed_with_disagreement": (
-            "Disagreement\nevidence"
+            "Mirror disagreement available"
         ),
         "both_observed_with_uv_distance": (
-            "Unit-value\nevidence"
+            "UV distance available"
         ),
         "complete_training_evidence": (
-            "Complete training\nevidence"
+            "All candidate-selection diagnostics"
         ),
     }
 
@@ -344,10 +344,10 @@ def _plot_training_evidence_distributions(
 
     variables = {
         "quantity_relative_difference": (
-            "Mirror quantity difference"
+            "Mirror quantity disagreement"
         ),
         "synced_unit_value_log_distance": (
-            "Synced unit-value log distance"
+            "Trade-Synced UV distance"
         ),
     }
 
@@ -424,7 +424,7 @@ def build_validation_report(
     cfg: ValidationConfig,
     prepared_input_path: Path,
     structural_audit_path: Path,
-    model_diagnostics_path: Path,
+    diagnostics_path: Path,
     run_id: str,
     force: bool = False,
     logger,
@@ -436,7 +436,7 @@ def build_validation_report(
 
     - the canonical Validation input;
     - structural-integrity results;
-    - candidate pseudo-ground-truth evidence;
+    - candidate training population evidence;
     - sensitivity to possible training-sample thresholds;
     - coverage across years and products;
     - the current training-population decision status.
@@ -444,17 +444,9 @@ def build_validation_report(
     The report will be extended as later Validation stages become active.
     """
 
-    prepared_input_path = Path(
-        prepared_input_path
-    )
-
-    structural_audit_path = Path(
-        structural_audit_path
-    )
-
-    model_diagnostics_path = Path(
-        model_diagnostics_path
-    )
+    prepared_input_path = Path(prepared_input_path)
+    structural_audit_path = Path(structural_audit_path)
+    diagnostics_path = Path(diagnostics_path)
 
     for label, path in (
         (
@@ -467,7 +459,7 @@ def build_validation_report(
         ),
         (
             "Validation model diagnostics",
-            model_diagnostics_path,
+            diagnostics_path,
         ),
     ):
         if not path.is_file():
@@ -512,33 +504,33 @@ def build_validation_report(
         exist_ok=True,
     )
 
-    if (
-        not force
-        and valid_output(report_path)
-    ):
-        logger.info(
-            "REUSE — Validation report already exists: %s",
-            report_path,
-        )
+    # if (
+    #     not force
+    #     and valid_output(report_path)
+    # ):
+    #     logger.info(
+    #         "REUSE — Validation report already exists: %s",
+    #         report_path,
+    #     )
 
-        return {
-            "status": "reused",
-            "output_path": report_path,
-            "report_path": report_path,
-            "latest_report_path": (
-                latest_path
-                if latest_path.exists()
-                else None
-            ),
-            "ready_for_training_decision": True,
-        }
+    #     return {
+    #         "status": "reused",
+    #         "output_path": report_path,
+    #         "report_path": report_path,
+    #         "latest_report_path": (
+    #             latest_path
+    #             if latest_path.exists()
+    #             else None
+    #         ),
+    #         "ready_for_training_decision": True,
+    #     }
 
     structural_sql = sql_literal(
         structural_audit_path
     )
 
     diagnostics_sql = sql_literal(
-        model_diagnostics_path
+        diagnostics_path
     )
 
     info = get_symbols(
@@ -566,7 +558,7 @@ def build_validation_report(
 
     logger.info(
         "  Model diagnostics: %s",
-        model_diagnostics_path,
+        diagnostics_path,
     )
 
     logger.info(
@@ -719,14 +711,14 @@ def build_validation_report(
                 },
                 {
                     "Check": (
-                        "Duplicate canonical-key rows"
+                        "Duplicate rows"
                     ),
                     "Result": _format_integer(
                         n_duplicate_rows
                     ),
                 },
                 {
-                    "Check": "Null canonical-key rows",
+                    "Check": "Null rows",
                     "Result": _format_integer(
                         n_null_key_rows
                     ),
@@ -807,19 +799,19 @@ def build_validation_report(
                 "Trade-Synced quantity available"
             ),
             "both_quantities_available": (
-                "Both exporter and importer quantities"
+                "Bilateral quantity observation"
             ),
             "both_quantities_non_estimated": (
-                "Both quantities directly observed"
+                "Direct bilateral quantity observations"
             ),
             "both_observed_with_disagreement": (
-                "Direct observations with disagreement evidence"
+                "Direct bilateral observations with exporter–importer quantity difference available"
             ),
             "both_observed_with_uv_distance": (
-                "Direct observations with unit-value evidence"
+                "Direct bilateral observations with unit-value distance available"
             ),
             "complete_training_evidence": (
-                "Complete candidate-training evidence"
+                "Direct bilateral observations with all candidate-selection diagnostics available"
             ),
         }
 
@@ -860,7 +852,7 @@ def build_validation_report(
                 ].map(
                     _format_percent
                 ),
-                "Share of parent": funnel[
+                "Share of parent (previous group)": funnel[
                     "share_of_parent"
                 ].map(
                     _format_percent
@@ -925,7 +917,7 @@ def build_validation_report(
                 )
 
                 evidence_label = (
-                    "Synced UV log distance"
+                    "Trade-Synced UV distance"
                 )
 
             else:
@@ -980,7 +972,7 @@ def build_validation_report(
 
         threshold_grid_display = pd.DataFrame(
             {
-                "Mirror difference": (
+                "Maximum Mirror quantity disagreement": (
                     threshold_grid[
                         "disagreement_threshold"
                     ].map(
@@ -989,7 +981,7 @@ def build_validation_report(
                         )
                     )
                 ),
-                "Minimum UV support": (
+                "Minimum Product-year UV support": (
                     threshold_grid[
                         "uv_support_threshold"
                     ].map(
@@ -998,7 +990,7 @@ def build_validation_report(
                         )
                     )
                 ),
-                "Maximum UV log distance": (
+                "Maximum Trade-Synced UV distance": (
                     threshold_grid[
                         "uv_distance_threshold"
                     ].map(
@@ -1085,6 +1077,14 @@ def build_validation_report(
             "year"
         )
 
+        for column in (
+            "median_quantity_difference_vs_import",
+            "median_absolute_quantity_difference_vs_import",
+            "exporter_higher_share",
+        ):
+            if column not in year_coverage.columns:
+                year_coverage[column] = None
+
         year_display = pd.DataFrame(
             {
                 "Year": (
@@ -1115,14 +1115,14 @@ def build_validation_report(
                         _format_percent
                     )
                 ),
-                "Median mirror difference": (
+                "Median Mirror quantity disagreement": (
                     year_coverage[
                         "median_quantity_relative_difference"
                     ].map(
                         _format_percent
                     )
                 ),
-                "Median UV log distance": (
+                "Median Trade-Synced UV distance": (
                     year_coverage[
                         "median_synced_uv_log_distance"
                     ].map(
@@ -1134,11 +1134,35 @@ def build_validation_report(
                         )
                     )
                 ),
-                "Median UV support": (
+                "Median Product-year UV support": (
                     year_coverage[
                         "median_uv_reference_observations"
                     ].map(
                         _format_integer
+                    )
+                ),
+
+                "Median exporter difference vs importer": (
+                    year_coverage[
+                        "median_quantity_difference_vs_import"
+                    ].map(
+                        _format_percent
+                    )
+                ),
+
+                "Median absolute difference vs importer": (
+                    year_coverage[
+                        "median_absolute_quantity_difference_vs_import"
+                    ].map(
+                        _format_percent
+                    )
+                ),
+
+                "Exporter quantity higher": (
+                    year_coverage[
+                        "exporter_higher_share"
+                    ].map(
+                        _format_percent
                     )
                 ),
             }
@@ -1260,10 +1284,10 @@ def build_validation_report(
                 ),
                 "share_of_all": "Direct share",
                 "median_quantity_relative_difference": (
-                    "Median mirror difference"
+                    "Median Mirror quantity disagreement"
                 ),
                 "median_synced_uv_log_distance": (
-                    "Median UV log distance"
+                    "Median Trade-Synced UV distance"
                 ),
             }
         )
@@ -1279,13 +1303,19 @@ def build_validation_report(
 
         distribution_labels = {
             "quantity_relative_difference": (
-                "Mirror quantity difference"
+                "Mirror quantity disagreement"
+            ),
+            "quantity_difference_vs_import": (
+                "Exporter quantity relative to importer"
+            ),
+            "quantity_absolute_difference_vs_import": (
+                "Absolute exporter quantity difference relative to importer"
             ),
             "synced_unit_value_log_distance": (
-                "Synced unit-value log distance"
+                "Trade-Synced UV distance"
             ),
             "unit_value_reference_observations": (
-                "Product-year UV reference observations"
+                "Product-year UV support"
             ),
         }
 
@@ -1322,6 +1352,12 @@ def build_validation_report(
             )
         )
 
+        percentage_distribution_variables = {
+            "Mirror quantity disagreement",
+            "Exporter quantity relative to importer",
+            "Absolute exporter quantity difference relative to importer",
+        }
+
         distribution_display[
             "value"
         ] = (
@@ -1330,10 +1366,8 @@ def build_validation_report(
                     _format_percent(
                         row["value"]
                     )
-                    if (
-                        row["variable"]
-                        == "Mirror quantity difference"
-                    )
+                    if row["variable"]
+                    in percentage_distribution_variables
                     else _format_number(
                         row["value"],
                         digits=3,
@@ -1447,7 +1481,7 @@ def build_validation_report(
         # ==============================================================
 
         training_selection_enabled = bool(
-            cfg.model.selection.enabled
+            cfg.diagnostics.selection.enabled
         )
 
         if training_selection_enabled:
@@ -1456,7 +1490,7 @@ def build_validation_report(
             )
         else:
             training_status = (
-                "No final pseudo-ground-truth training population has "
+                "No final training population has "
                 "been selected yet. The current diagnostics are intended "
                 "to support that decision before model fitting."
             )
@@ -1492,7 +1526,7 @@ def build_validation_report(
         )
 
         matrix_display.index.name = (
-            "Mirror quantity difference"
+            "Mirror quantity disagreement"
         )
 
 
@@ -1525,19 +1559,19 @@ def build_validation_report(
             side_plausibility_display.rename(
                 columns={
                     "disagreement_band": (
-                        "Mirror quantity difference"
+                        "Mirror quantity disagreement"
                     ),
 
                     "median_export_uv_distance": (
-                        "Median exporter UV distance"
+                        "Median Exporter UV distance"
                     ),
 
                     "median_import_uv_distance": (
-                        "Median importer UV distance"
+                        "Median Importer UV distance"
                     ),
 
                     "median_bilateral_max_uv_distance": (
-                        "Median worst-side UV distance"
+                        "Median Worst-side UV distance"
                     ),
 
                     "both_within_025_share": (
@@ -1567,6 +1601,132 @@ def build_validation_report(
             ].map(
                 _format_percent
             )
+
+        # ==============================================================
+        # Importer-referenced quantity comparison
+        # ==============================================================
+
+        importer_reference = _scope_frame(
+            diagnostics,
+            "importer_reference",
+        )
+
+        if importer_reference.empty:
+            raise RuntimeError(
+                "Importer-reference quantity diagnostics are unavailable."
+            )
+
+        importer_reference_lookup = {
+            str(row.variable): (
+                float(row.value)
+                if pd.notna(row.value)
+                else None
+            )
+            for row in importer_reference.itertuples(
+                index=False
+            )
+        }
+
+        n_importer_reference_rows = int(
+            importer_reference["n_rows"].max()
+        )
+
+        mean_difference_vs_import = (
+            importer_reference_lookup.get(
+                "mean_quantity_difference_vs_import"
+            )
+        )
+
+        median_difference_vs_import = (
+            importer_reference_lookup.get(
+                "median_quantity_difference_vs_import"
+            )
+        )
+
+        median_absolute_difference_vs_import = (
+            importer_reference_lookup.get(
+                "median_absolute_quantity_difference_vs_import"
+            )
+        )
+
+        exporter_higher_share = (
+            importer_reference_lookup.get(
+                "exporter_quantity_higher_share"
+            )
+        )
+
+        importer_higher_share = (
+            importer_reference_lookup.get(
+                "importer_quantity_higher_share"
+            )
+        )
+
+        exact_agreement_share = (
+            importer_reference_lookup.get(
+                "exact_quantity_agreement_share"
+            )
+        )
+
+        importer_reference_display = pd.DataFrame(
+            [
+                {
+                    "Measure": (
+                        "Comparable directly observed bilateral rows"
+                    ),
+                    "Result": _format_integer(
+                        n_importer_reference_rows
+                    ),
+                },
+                {
+                    "Measure": (
+                        "Mean exporter difference relative to importer"
+                    ),
+                    "Result": _format_percent(
+                        mean_difference_vs_import
+                    ),
+                },
+                {
+                    "Measure": (
+                        "Median exporter difference relative to importer"
+                    ),
+                    "Result": _format_percent(
+                        median_difference_vs_import
+                    ),
+                },
+                {
+                    "Measure": (
+                        "Median absolute difference relative to importer"
+                    ),
+                    "Result": _format_percent(
+                        median_absolute_difference_vs_import
+                    ),
+                },
+                {
+                    "Measure": (
+                        "Exporter quantity larger than importer"
+                    ),
+                    "Result": _format_percent(
+                        exporter_higher_share
+                    ),
+                },
+                {
+                    "Measure": (
+                        "Importer quantity larger than exporter"
+                    ),
+                    "Result": _format_percent(
+                        importer_higher_share
+                    ),
+                },
+                {
+                    "Measure": (
+                        "Exact exporter-importer agreement"
+                    ),
+                    "Result": _format_percent(
+                        exact_agreement_share
+                    ),
+                },
+            ]
+        )
 
         # ==============================================================
         # Report
@@ -1615,36 +1775,21 @@ def build_validation_report(
                 "quantities can be reconstructed with sufficient evidence."
             ),
             "",
-            (
-                "Model development does not begin by treating all existing "
-                "`trade_synced_quantity_kg` observations as ground truth. "
-                "Instead, the workflow first identifies a high-confidence "
-                "subset of quantity observations that may serve as "
-                "pseudo-ground-truth for training and controlled evaluation."
-            ),
             "",
-            "## 2. Canonical Validation input",
+            "## 2. Structural integrity audit",
             "",
             (
-                f"The prepared Validation dataset contains "
+                f"- The prepared Validation dataset contains "
                 f"`{_format_integer(n_rows)}` observations across "
                 f"`{cfg.scope.min_year}–{cfg.scope.max_year}`."
             ),
             "",
             (
-                f"`{_format_integer(n_available_quantity_rows)}` rows "
+                f"- `{_format_integer(n_available_quantity_rows)}` rows "
                 "contain a Trade-Synced quantity and "
                 f"`{_format_integer(n_missing_quantity_rows)}` rows "
                 "enter Validation without a usable synchronized quantity."
             ),
-            "",
-            (
-                "Missing quantity is not considered a structural failure. "
-                "It is an explicit Validation population that may later be "
-                "eligible for model-based reconstruction."
-            ),
-            "",
-            "## 3. Structural integrity",
             "",
             _markdown_table(
                 structural_summary
@@ -1657,30 +1802,113 @@ def build_validation_report(
                 "consistency. Economic plausibility is not decided here."
             ),
             "",
-            "## 4. Quantity-model development",
+            "## 3. Quantity diagnostics",
             "",
             (
-                "The quantity model is being developed as a unified source "
-                "of evidence for observed, suspicious, and missing quantity "
-                "records. The model itself will estimate expected quantity "
-                "and uncertainty; later Validation logic will determine "
-                "whether an existing quantity is preserved, corrected, "
-                "imputed, or left unresolved."
+                "Quantity diagnostics examine the available quantity "
+                "information before model development. They provide evidence "
+                "on agreement between reporting partners, consistency with "
+                "product-year unit values, and the amount of usable evidence "
+                "available for candidate training selection."
             ),
             "",
             (
-                "Before fitting such a model, the workflow must establish "
-                "which observations are sufficiently trustworthy to act as "
-                "pseudo-ground-truth."
+                "The following terminology is used throughout this section:"
             ),
             "",
-            "## 5. Candidate pseudo-ground-truth population",
+            (
+                "- **Mirror quantity disagreement** —  `|exporter quantity - importer quantity| / max(exporter quantity, importer quantity)`<br>"
+                "&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;&emsp; symmetric relative difference between exporter- and importer-reported quantities:<br>"
+            ),
+            (
+                "&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;&emsp; A value of `0%` means exact agreement. Larger values indicate "
+                "greater disagreement. Neither reporter is treated as the "
+                "reference."
+            ),
             "",
             (
-                "The first model-development filter focuses on bilateral "
-                "quantity observations where both exporter and importer "
-                "quantities are available and both are directly observed "
+                "- **Unit value (UV)** — `trade value / quantity`, trade value per kilogram:<br>"
+            ),
+            "",
+            (
+                "- **Product-year UV reference** — a robust reference unit "
+                "value for the same HS product and year."
+            ),
+            "",
+            (
+                "- **Product-year UV support** — the number of observations "
+                "supporting the product-year UV reference."
+            ),
+            "",
+            (
+                "- **UV distance** — `|log(implied UV) − log(product-year UV reference)|`<br>"
+                "&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;&emsp; the distance between an observation's implied unit value and the product-year UV reference:<br>"
+                "&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;&emsp; A value close to `0` means that the implied unit value is "
+                "close to the reference. Larger values indicate greater separation."
+            ),
+            "",
+            (
+                "- **Trade-Synced UV distance** — the UV distance calculated "
+                "using the Trade-Synced quantity."
+            ),
+            "",
+            (
+                "- **Exporter UV distance** and **Importer UV distance** — "
+                "the corresponding UV distances calculated separately using "
+                "the exporter- and importer-reported quantities."
+            ),
+            "",
+            (
+                "- **Worst-side UV distance** — the larger of the exporter "
+                "and importer UV distances. A small value therefore requires "
+                "both reporting sides to be close to the product-year UV "
+                "reference."
+            ),
+            "",
+            "",
+            "### 3.1. Candidate training population",
+            "",
+            (
+                "The first diagnostic identifies the subset of Validation "
+                "rows for which quantity information from both reporting "
+                "sides is available and the diagnostics needed for later "
+                "candidate selection can be calculated."
+            ),
+            "",
+            (
+                "The population is narrowed using the following terms and "
+                "data requirements:"
+            ),
+            "",
+            (
+                "- **Trade-Synced quantity available** — a synchronized "
+                "quantity produced by the earlier Trade Sync stage is "
+                "available for the observation."
+            ),
+            "",
+            (
+                "- **Bilateral quantity observations** — both an exporter "
+                "quantity and an importer quantity are available for the "
+                "same bilateral trade observation. Either quantity may still "
+                "be marked as estimated."
+            ),
+            "",
+            (
+                "- **Direct bilateral quantity observations** — both the "
+                "exporter and importer quantities are directly reported "
                 "rather than marked as estimated."
+            ),
+            "",
+            (
+                "- **Candidate-selection diagnostics** — the Mirror quantity "
+                "disagreement and UV diagnostics required for later candidate "
+                "training selection."
+            ),
+            "",
+            "",
+            (
+                "The table below shows how the Validation population narrows "
+                "as these quantities and diagnostics become available."
             ),
             "",
             _markdown_table(
@@ -1696,21 +1924,126 @@ def build_validation_report(
             ),
             "",
             (
-                f"`{_format_integer(n_both_observed)}` observations have "
-                "usable directly observed quantities on both sides. "
-                f"`{_format_integer(n_complete_training_evidence)}` of "
-                "these also have the complete disagreement, product-year "
-                "unit-value support, and synchronized-unit-value evidence "
-                "needed for the current training-sample evaluation."
+                f"Of all Validation rows, "
+                f"`{_format_percent(n_both_quantities / n_rows)}` contain "
+                "both exporter and importer quantities. Among these bilateral "
+                f"quantity observations, "
+                f"`{_format_percent(n_both_observed / n_both_quantities)}` "
+                "have both quantities directly reported rather than estimated."
             ),
             "",
-            "## 6. Threshold sensitivity",
+            (
+                f"This leaves `{_format_integer(n_both_observed)}` direct "
+                "bilateral quantity observations, representing "
+                f"`{_format_percent(n_both_observed / n_rows)}` of all "
+                "Validation rows."
+            ),
+            "",
+            (
+                "The final three rows of the table do not yet apply quality "
+                "thresholds. They only indicate whether the required "
+                "candidate-selection diagnostics can be calculated. In the "
+                f"current dataset, all `{_format_integer(n_both_observed)}` "
+                "direct bilateral quantity observations have Mirror quantity "
+                "disagreement and UV distance available."
+            ),
+            "",
+            "### 3.2. Exporter quantity relative to importer",
+            "",
+            (
+                "For bilateral rows where both exporter and importer "
+                "quantities are directly observed, Validation also measures "
+                "the exporter-reported quantity relative to the importer-"
+                "reported quantity."
+            ),
+            "",
+            (
+                "- The importer quantity is used as the reference denominator:"
+            ),
+            "",
+            (
+                "&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;`(exporter quantity − importer quantity) / importer quantity`"
+            ),
+            "",
+            (
+                "- This measure retains direction. A positive value means "
+                "the exporter reports a larger quantity than the importer; "
+                "a negative value means the exporter reports a smaller "
+                "quantity. For example, if the importer reports `100 kg` "
+                "and the exporter reports `120 kg`, the result is `+20%`. "
+                "If the exporter reports `80 kg`, the result is `−20%`."
+            ),
+            "",
+            (
+                "- This importer-referenced measure complements the symmetric "
+                "exporter–importer quantity-difference measure used elsewhere "
+                "in the diagnostics. The symmetric measure describes the "
+                "magnitude of disagreement without choosing either reporter "
+                "as the reference. The importer-referenced measure additionally "
+                "shows the direction of that disagreement."
+            ),
+            "",
+            _markdown_table(
+                importer_reference_display
+            ),
+            "",
+            (
+                f"- The mean exporter difference relative to the importer is "
+                f"`{_format_percent(mean_difference_vs_import)}`. This very "
+                "large value indicates an extremely right-skewed distribution "
+                "rather than a typical exporter quantity being this much "
+                "larger than the importer quantity."
+            ),
+            "",
+            (
+                "- Because the importer quantity is the denominator, rows with "
+                "a very small importer-reported quantity and a much larger "
+                "exporter-reported quantity can generate extremely large "
+                "positive ratios. A relatively small number of such observations "
+                "can therefore have a very large influence on the arithmetic mean."
+            ),
+            "",
+            (
+                f"- The median signed difference is "
+                f"`{_format_percent(median_difference_vs_import)}`. "
+                "This indicates that the typical bilateral observation shows "
+                "very little overall directional difference between exporter "
+                "and importer quantities."
+            ),
+            "",
+            (
+                f"- However, the median absolute difference is "
+                f"`{_format_percent(median_absolute_difference_vs_import)}`. "
+                "This shows that exporter and importer quantities frequently "
+                "differ substantially in magnitude even though the direction "
+                "of those differences is broadly balanced."
+            ),
+            "",
+            (
+                f"- Exporter quantities are larger than importer quantities in "
+                f"`{_format_percent(exporter_higher_share)}` of comparable "
+                "rows, while importer quantities are larger in "
+                f"`{_format_percent(importer_higher_share)}`. Exact agreement "
+                f"occurs in `{_format_percent(exact_agreement_share)}` of rows."
+            ),
+            "",
+            (
+                "- The importer is used here as the comparison base, not as an "
+                "assumption that every importer-reported quantity is correct. "
+                "The purpose of this diagnostic is to distinguish three "
+                "different properties of the bilateral quantity discrepancy: "
+                "its direction, its typical magnitude, and the presence of "
+                "extreme asymmetric observations."
+            ),
+            "",
+            "### 3.3. Threshold sensitivity",
             "",
             (
                 "No scientific threshold has yet been selected as the "
                 "definition of a clean training observation. Instead, "
-                "several mirror-disagreement, unit-value-support, and "
-                "unit-value-distance thresholds are evaluated independently."
+                "thresholds for Mirror quantity disagreement, Product-year "
+                "UV support, and Trade-Synced UV distance are evaluated "
+                "independently."
             ),
             "",
             _markdown_table(
@@ -1724,19 +2057,19 @@ def build_validation_report(
                 "as alternative final training samples."
             ),
             "",
-            "## 7. Joint candidate-training populations",
+            "### 3.4. Joint candidate-training populations",
             "",
             (
-                "The following grid applies the three evidence dimensions "
-                "jointly. Each row therefore represents one possible "
-                "pseudo-ground-truth definition:"
+                "The following grid applies the three candidate-selection "
+                "diagnostics jointly. Each row represents one possible "
+                "candidate training population:"
             ),
             "",
             (
                 "`direct bilateral quantities` + "
-                "`mirror-disagreement limit` + "
-                "`minimum product-year unit-value support` + "
-                "`maximum synchronized-unit-value log distance`."
+                "`maximum Mirror quantity disagreement` + "
+                "`minimum Product-year UV support` + "
+                "`maximum Trade-Synced UV distance`."
             ),
             "",
             _markdown_table(
@@ -1749,23 +2082,23 @@ def build_validation_report(
                 "the production training definition merely because it has "
                 "a large or small population."
             ),
-            "",
-            "## 8. Mirror agreement and bilateral unit-value plausibility",
+            ""
+            "### 3.5. Mirror quantity disagreement and bilateral UV plausibility"
             "",
             (
-                "Mirror agreement and unit-value plausibility provide "
-                "different forms of evidence about quantity credibility. "
-                "The following matrix therefore divides directly observed "
-                "bilateral quantity rows simultaneously by exporter–importer "
-                "quantity disagreement and by the worse of the two "
-                "side-specific unit-value log distances."
+                "- Mirror quantity disagreement and bilateral UV distance "
+                "provide complementary evidence about quantity credibility. "
+                "The following matrix groups direct bilateral observations "
+                "simultaneously by Mirror quantity disagreement and "
+                "Worst-side UV distance."
             ),
             "",
             (
-                "Using the worse side means that a row enters a low "
-                "unit-value-distance category only when both the exporter "
-                "and importer quantities independently imply unit values "
-                "close to the product-year reference."
+                "- Worst-side UV distance is the larger of the exporter and "
+                "importer UV distances. A row therefore enters a low "
+                "Worst-side UV-distance category only when both reporting "
+                "sides imply unit values close to the Product-year UV "
+                "reference."
             ),
             "",
             _markdown_table(
@@ -1775,79 +2108,31 @@ def build_validation_report(
             "",
             (
                 "The low-disagreement, low-unit-value-distance cells are "
-                "the strongest current candidates for pseudo-ground-truth. "
+                "the strongest current candidates for training population. "
                 "Rows with strong mirror agreement but weak unit-value "
                 "plausibility remain questionable because both reporters "
                 "can agree on a quantity that is economically unusual."
             ),
             "",
-            "## 9. Side-specific unit-value plausibility",
+            "### 3.6. Side-specific unit-value plausibility",
             "",
             (
-                "The following table evaluates exporter and importer "
-                "quantities separately within each mirror-disagreement band. "
-                "The worst-side distance is particularly informative because "
-                "it prevents one highly plausible reporting side from masking "
-                "a weak counterpart."
+                "The following table evaluates Exporter UV distance and "
+                "Importer UV distance separately within each Mirror quantity "
+                "disagreement band. Worst-side UV distance shows the less "
+                "plausible of the two reporting sides."
             ),
             "",
             _markdown_table(
                 side_plausibility_display
             ),
             "",
-            "## 10. Temporal coverage",
-            "",
-            (
-                "A candidate pseudo-ground-truth population must provide "
-                "useful evidence across the full time horizon rather than "
-                "being concentrated in only a few years."
-            ),
-            "",
-            _markdown_table(
-                year_display
-            ),
-            "",
-            markdown_image(
-                "Direct bilateral quantity evidence by year",
-                figure_paths[
-                    "training_evidence_by_year"
-                ],
-                document_path=report_path,
-            ),
-            "",
-            "## 11. Product coverage",
-            "",
-            (
-                f"The current diagnostics contain `{_format_integer(n_products)}` "
-                "HS products. "
-                f"`{_format_integer(n_products_with_direct_evidence)}` "
-                "have at least one directly observed bilateral quantity "
-                "observation."
-            ),
-            "",
-            (
-                "The median within-product share represented by directly "
-                "observed bilateral quantity evidence is "
-                f"`{_format_percent(median_product_direct_share)}`."
-            ),
-            "",
-            (
-                "The following table shows the 20 products with the largest "
-                "numbers of directly observed bilateral quantity rows. "
-                "This is a coverage diagnostic, not a ranking of product "
-                "quality."
-            ),
-            "",
-            _markdown_table(
-                product_display
-            ),
-            "",
-            "## 12. Distributional evidence",
+            "### 3.7. Distributional evidence",
             "",
             (
                 "The following diagnostics describe the distribution of "
-                "mirror disagreement, synchronized unit-value distance, "
-                "and product-year reference support among directly observed "
+                "Mirror quantity disagreement, Product-year UV support, "
+                "and Trade-Synced UV distance among directly observed "
                 "bilateral quantity rows."
             ),
             "",
@@ -1871,26 +2156,84 @@ def build_validation_report(
                 "available for later cross-year predictive modelling."
             ),
             "",
-            "## 13. Current methodological assessment",
+            "## 4. Diagnostic Coverage",
+            "",
+            (
+                "The following diagnostics describe the temporal and "
+                "product coverage of the available quantity evidence. "
+                "They are intended to support the selection of a "
+                "defensible training population that is large enough, "
+                "sufficiently clean, and adequately represented across "
+                "years and products."
+            ),
+            "",
+            "### 4.1. Temporal coverage",
+            "",
+            (
+                "A candidate training population must provide "
+                "useful evidence across the full time horizon rather than "
+                "being concentrated in only a few years."
+            ),
+            "",
+            _markdown_table(
+                year_display
+            ),
+            "",
+            markdown_image(
+                "Direct bilateral quantity evidence by year",
+                figure_paths[
+                    "training_evidence_by_year"
+                ],
+                document_path=report_path,
+            ),
+            "",
+            "### 4.2. Product coverage",
+            "",
+            (
+                f"- The current diagnostics contain `{_format_integer(n_products)}` "
+                "HS products. "
+                f"`{_format_integer(n_products_with_direct_evidence)}` "
+                "have at least one directly observed bilateral quantity "
+                "observation."
+            ),
+            "",
+            (
+                "- The median within-product share represented by directly "
+                "observed bilateral quantity evidence is "
+                f"`{_format_percent(median_product_direct_share)}`."
+            ),
+            "",
+            (
+                "- The following table shows the 20 products with the largest "
+                "numbers of directly observed bilateral quantity rows. "
+                "This is a coverage diagnostic, not a ranking of product "
+                "quality."
+            ),
+            "",
+            _markdown_table(
+                product_display
+            ),
+            "",
+            "## 5. Current methodological assessment",
             "",
             training_status,
             "",
             (
-                "The next scientific decision is therefore not yet the "
+                "- The next scientific decision is therefore not yet the "
                 "choice of machine-learning algorithm. It is the selection "
-                "of a defensible pseudo-ground-truth population that is "
+                "of a defensible training population that is "
                 "large enough, sufficiently clean, and adequately "
                 "represented across years and products."
             ),
             "",
             (
-                "Once that population is selected, model performance should "
+                "- Once that population is selected, model performance should "
                 "be tested using controlled missingness and corruption of "
                 "high-confidence observations rather than by assuming that "
                 "all synchronized quantities are true."
             ),
             "",
-            "## 14. Output artifacts",
+            "## 6. Output artifacts",
             "",
             (
                 f"- Prepared Validation input: "
@@ -1901,8 +2244,8 @@ def build_validation_report(
                 f"`{structural_audit_path}`"
             ),
             (
-                f"- Model diagnostics: "
-                f"`{model_diagnostics_path}`"
+                f"- Diagnostics: "
+                f"`{diagnostics_path}`"
             ),
             f"- Report: `{report_path}`",
             "",
@@ -1912,6 +2255,7 @@ def build_validation_report(
             lines,
             min_level=2,
             max_level=3,
+            flat_sublevels=True,
         )
 
         report_path.write_text(

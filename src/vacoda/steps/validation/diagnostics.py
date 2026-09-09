@@ -1,19 +1,8 @@
 """
-vacoda.steps.validation.model
+vacoda.steps.validation.diagnostics
 
-Develop the quantity-validation model used by the final VACODA
-Validation workflow.
+Build the diagnostics used by Validation workflow.
 
-The first model-development phase identifies and characterizes
-high-confidence quantity observations that may serve as pseudo-ground-truth
-for model training and evaluation.
-
-No machine-learning model is fitted in this phase. Candidate training
-populations are evaluated across configurable mirror-disagreement,
-unit-value-reference support, and unit-value-plausibility thresholds.
-
-The resulting diagnostics provide the empirical basis for selecting the
-training population before model fitting begins.
 """
 
 from __future__ import annotations
@@ -46,7 +35,7 @@ def _safe_identifier(
         str(name),
     ):
         raise ValueError(
-            f"Unsafe Validation model column identifier: {name!r}"
+            f"Unsafe Validation diagnostics column identifier: {name!r}"
         )
 
     return f'"{name}"'
@@ -70,7 +59,7 @@ def _require_columns(
     input_path: Path,
     required_columns: set[str],
 ) -> None:
-    """Require configured model-development columns in the input."""
+    """Require configured diagnostics-development columns in the input."""
 
     input_sql = sql_literal(input_path)
 
@@ -91,7 +80,7 @@ def _require_columns(
 
     if missing:
         raise RuntimeError(
-            "Validation model input is missing required column(s): "
+            "Validation diagnostics input is missing required column(s): "
             + ", ".join(missing)
         )
 
@@ -101,7 +90,7 @@ def _require_columns(
 # ======================================================================
 
 
-def develop_quantity_model(
+def build_diagnostics(
     *,
     cfg: ValidationConfig,
     input_path: Path,
@@ -111,24 +100,8 @@ def develop_quantity_model(
     logger,
 ) -> dict[str, Any]:
     """
-    Characterize candidate quantity-model training populations.
+    Characterize candidate diagnostics training populations.
 
-    This first model-development phase does not fit a machine-learning
-    model.
-
-    It:
-
-    - verifies the configured model-development input contract;
-    - derives synchronized-quantity unit-value plausibility evidence;
-    - identifies bilateral directly observed quantity evidence;
-    - evaluates configurable pseudo-truth thresholds;
-    - evaluates combinations of those thresholds;
-    - measures coverage across year and product;
-    - records relevant distributional evidence;
-    - writes one machine-readable diagnostics artifact.
-
-    reporting.py later turns these diagnostics into the methodological
-    justification for selecting the actual model-training population.
     """
 
     start = perf_counter()
@@ -140,17 +113,17 @@ def develop_quantity_model(
 
     if not input_path.is_file():
         raise FileNotFoundError(
-            f"Validation model input not found: {input_path}"
+            f"Validation diagnostics input not found: {input_path}"
         )
 
     if not structural_audit_path.is_file():
         raise FileNotFoundError(
-            "Validation structural-audit artifact not found: "
+            "Validation diagnostics structural-audit artifact not found: "
             f"{structural_audit_path}"
         )
 
     output_path = cfg.product_path(
-        "model_diagnostics"
+        "diagnostics"
     )
 
     output_path.parent.mkdir(
@@ -168,7 +141,7 @@ def develop_quantity_model(
     #     and output_path.stat().st_size > 0
     # ):
     #     logger.info(
-    #         "%s REUSE — Validation model diagnostics: %s",
+    #         "%s REUSE — Validation diagnostics: %s",
     #         get_symbols("reuse"),
     #         output_path,
     #     )
@@ -177,18 +150,18 @@ def develop_quantity_model(
     #         "status": "completed",
     #         "run_id": run_id,
     #         "output_path": output_path,
-    #         "model_diagnostics_path": output_path,
+    #         "diagnostics_path": output_path,
     #         "reused": True,
-    #         "model_fitted": False,
+    #         "fitted": False,
     #         "ready_for_training_decision": True,
     #     }
 
     logger.info(
-        "%s REBUILD — Validation quantity-model development",
+        "%s REBUILD — Validation diagnostics",
         get_symbols("rebuilt"),
     )
     logger.info(
-        "Characterizing candidate quantity-model training populations."
+        "Characterizing candidate diagnostics training populations."
     )
     logger.info(
         "  Input: %s",
@@ -207,9 +180,9 @@ def develop_quantity_model(
     # Configuration
     # ==================================================================
 
-    model_cfg = cfg.model
-    columns_cfg = model_cfg.columns
-    training_cfg = model_cfg.training_population
+    diagnostics_cfg = cfg.diagnostics
+    columns_cfg = diagnostics_cfg.columns
+    training_cfg = diagnostics_cfg.training_population
 
     year_col = str(
         columns_cfg.year
@@ -278,9 +251,6 @@ def develop_quantity_model(
         training_cfg.require_non_estimated_quantities
     )
 
-    # The parser already validates these thresholds and guarantees that
-    # they are ordered and non-duplicated, so model.py does not repeat
-    # configuration validation.
 
     logger.info(
         "  Require bilateral quantities: %s",
@@ -313,7 +283,7 @@ def develop_quantity_model(
     )
     logger.info(
         "  Final training selection enabled: %s",
-        model_cfg.selection.enabled,
+        diagnostics_cfg.selection.enabled,
     )
 
     # ==================================================================
@@ -405,7 +375,7 @@ def develop_quantity_model(
         )
 
         # ==================================================================
-        # Canonical model-development view
+        # Canonical diagnostics-development view
         # ==================================================================
         #
         # The unit-value plausibility comparison intentionally uses
@@ -422,7 +392,7 @@ def develop_quantity_model(
         con.execute(
             f"""
             CREATE OR REPLACE TEMP VIEW
-                validation_model_base
+                validation_diagnostics_base
             AS
 
             SELECT
@@ -455,6 +425,94 @@ def develop_quantity_model(
 
                 {relative_difference_sql}
                     AS quantity_relative_difference,
+
+                                    CASE
+                    WHEN
+                        {export_quantity_sql} IS NOT NULL
+                        AND {import_quantity_sql} IS NOT NULL
+
+                        AND {export_quantity_sql} > 0
+                        AND {import_quantity_sql} > 0
+
+                        AND isfinite(
+                            CAST(
+                                {export_quantity_sql}
+                                AS DOUBLE
+                            )
+                        )
+
+                        AND isfinite(
+                            CAST(
+                                {import_quantity_sql}
+                                AS DOUBLE
+                            )
+                        )
+
+                    THEN
+                        (
+                            CAST(
+                                {export_quantity_sql}
+                                AS DOUBLE
+                            )
+                            -
+                            CAST(
+                                {import_quantity_sql}
+                                AS DOUBLE
+                            )
+                        )
+                        /
+                        CAST(
+                            {import_quantity_sql}
+                            AS DOUBLE
+                        )
+
+                    ELSE NULL
+                END
+                    AS quantity_difference_vs_import,
+
+                CASE
+                    WHEN
+                        {export_quantity_sql} IS NOT NULL
+                        AND {import_quantity_sql} IS NOT NULL
+
+                        AND {export_quantity_sql} > 0
+                        AND {import_quantity_sql} > 0
+
+                        AND isfinite(
+                            CAST(
+                                {export_quantity_sql}
+                                AS DOUBLE
+                            )
+                        )
+
+                        AND isfinite(
+                            CAST(
+                                {import_quantity_sql}
+                                AS DOUBLE
+                            )
+                        )
+
+                    THEN
+                        ABS(
+                            CAST(
+                                {export_quantity_sql}
+                                AS DOUBLE
+                            )
+                            -
+                            CAST(
+                                {import_quantity_sql}
+                                AS DOUBLE
+                            )
+                        )
+                        /
+                        CAST(
+                            {import_quantity_sql}
+                            AS DOUBLE
+                        )
+
+                    ELSE NULL
+                END
+                    AS quantity_absolute_difference_vs_import,
 
                 {uv_reference_sql}
                     AS product_year_median_unit_value,
@@ -758,7 +816,7 @@ def develop_quantity_model(
                 )
                     AS n_complete_training_evidence
 
-            FROM validation_model_base
+            FROM validation_diagnostics_base
             """
         ).fetchone()
 
@@ -966,7 +1024,7 @@ def develop_quantity_model(
             f"""
             SELECT
                 {", ".join(threshold_expressions)}
-            FROM validation_model_base
+            FROM validation_diagnostics_base
             """
         ).fetchone()
 
@@ -1107,7 +1165,7 @@ def develop_quantity_model(
             f"""
             SELECT
                 {", ".join(grid_expressions)}
-            FROM validation_model_base
+            FROM validation_diagnostics_base
             """
         ).fetchone()
 
@@ -1277,7 +1335,7 @@ def develop_quantity_model(
                     {uv_band_sql}
                         AS uv_distance_band
 
-                FROM validation_model_base
+                FROM validation_diagnostics_base
 
                 WHERE both_quantities_observed
 
@@ -1382,7 +1440,7 @@ def develop_quantity_model(
                     )
                         AS bilateral_max_distance
 
-                FROM validation_model_base
+                FROM validation_diagnostics_base
 
                 WHERE both_quantities_observed
 
@@ -1513,8 +1571,175 @@ def develop_quantity_model(
                         ),
                     }
                 )
+
+
         # ==================================================================
-        # 5. Year coverage
+        # 6. Exporter quantity relative to importer reference
+        # ==================================================================
+        #
+        # Import quantity is used as the reference denominator.
+        #
+        # Signed difference:
+        #
+        #     (Q_export - Q_import) / Q_import
+        #
+        # Positive  -> exporter quantity is larger.
+        # Negative  -> exporter quantity is smaller.
+        # Zero      -> exact agreement.
+        #
+        # The absolute version measures only the magnitude of disagreement.
+        # ==================================================================
+
+        importer_reference = con.execute(
+            """
+            SELECT
+                COUNT(*) FILTER (
+                    WHERE both_quantities_observed
+                      AND quantity_difference_vs_import IS NOT NULL
+                )
+                    AS n_comparable_rows,
+
+                AVG(
+                    quantity_difference_vs_import
+                ) FILTER (
+                    WHERE both_quantities_observed
+                      AND quantity_difference_vs_import IS NOT NULL
+                )
+                    AS mean_signed_difference,
+
+                MEDIAN(
+                    quantity_difference_vs_import
+                ) FILTER (
+                    WHERE both_quantities_observed
+                      AND quantity_difference_vs_import IS NOT NULL
+                )
+                    AS median_signed_difference,
+
+                MEDIAN(
+                    quantity_absolute_difference_vs_import
+                ) FILTER (
+                    WHERE both_quantities_observed
+                      AND quantity_absolute_difference_vs_import IS NOT NULL
+                )
+                    AS median_absolute_difference,
+
+                AVG(
+                    CASE
+                        WHEN quantity_difference_vs_import > 0
+                            THEN 1.0
+                        ELSE 0.0
+                    END
+                ) FILTER (
+                    WHERE both_quantities_observed
+                      AND quantity_difference_vs_import IS NOT NULL
+                )
+                    AS exporter_higher_share,
+
+                AVG(
+                    CASE
+                        WHEN quantity_difference_vs_import < 0
+                            THEN 1.0
+                        ELSE 0.0
+                    END
+                ) FILTER (
+                    WHERE both_quantities_observed
+                      AND quantity_difference_vs_import IS NOT NULL
+                )
+                    AS importer_higher_share,
+
+                AVG(
+                    CASE
+                        WHEN quantity_difference_vs_import = 0
+                            THEN 1.0
+                        ELSE 0.0
+                    END
+                ) FILTER (
+                    WHERE both_quantities_observed
+                      AND quantity_difference_vs_import IS NOT NULL
+                )
+                    AS exact_agreement_share
+
+            FROM validation_diagnostics_base
+            """
+        ).fetchone()
+
+        (
+            n_import_reference_rows,
+            mean_signed_difference,
+            median_signed_difference,
+            median_absolute_difference,
+            exporter_higher_share,
+            importer_higher_share,
+            exact_agreement_share,
+        ) = importer_reference
+
+        importer_reference_metrics = {
+            "mean_quantity_difference_vs_import": (
+                mean_signed_difference
+            ),
+            "median_quantity_difference_vs_import": (
+                median_signed_difference
+            ),
+            "median_absolute_quantity_difference_vs_import": (
+                median_absolute_difference
+            ),
+            "exporter_quantity_higher_share": (
+                exporter_higher_share
+            ),
+            "importer_quantity_higher_share": (
+                importer_higher_share
+            ),
+            "exact_quantity_agreement_share": (
+                exact_agreement_share
+            ),
+        }
+
+        for metric, value in importer_reference_metrics.items():
+
+            diagnostics_rows.append(
+                {
+                    "scope": "importer_reference",
+
+                    "criterion": (
+                        "exporter_quantity_relative_to_importer"
+                    ),
+
+                    "disagreement_threshold": None,
+                    "uv_support_threshold": None,
+                    "uv_distance_threshold": None,
+
+                    "disagreement_band": None,
+                    "uv_distance_band": None,
+
+                    "year": None,
+                    "target_cmd": None,
+
+                    "variable": metric,
+                    "quantile": None,
+
+                    "n_rows": int(
+                        n_import_reference_rows
+                    ),
+
+                    "share_of_all": _share(
+                        int(n_import_reference_rows),
+                        n_all_rows,
+                    ),
+
+                    "share_of_parent": _share(
+                        int(n_import_reference_rows),
+                        n_both_observed,
+                    ),
+
+                    "value": (
+                        float(value)
+                        if value is not None
+                        else None
+                    ),
+                }
+            )
+        # ==================================================================
+        # 7. Year coverage
         # ==================================================================
 
         year_frame = con.execute(
@@ -1560,9 +1785,37 @@ def develop_quantity_model(
                       AND unit_value_reference_observations
                           IS NOT NULL
                 )
-                    AS median_uv_reference_observations
+                    AS median_uv_reference_observations,
 
-            FROM validation_model_base
+                MEDIAN(
+                    quantity_difference_vs_import
+                ) FILTER (
+                    WHERE both_quantities_observed
+                      AND quantity_difference_vs_import IS NOT NULL
+                )
+                    AS median_quantity_difference_vs_import,
+
+                MEDIAN(
+                    quantity_absolute_difference_vs_import
+                ) FILTER (
+                    WHERE both_quantities_observed
+                      AND quantity_absolute_difference_vs_import IS NOT NULL
+                )
+                    AS median_absolute_quantity_difference_vs_import,
+
+                AVG(
+                    CASE
+                        WHEN quantity_difference_vs_import > 0
+                            THEN 1.0
+                        ELSE 0.0
+                    END
+                ) FILTER (
+                    WHERE both_quantities_observed
+                      AND quantity_difference_vs_import IS NOT NULL
+                )
+                    AS exporter_higher_share
+
+            FROM validation_diagnostics_base
 
             GROUP BY year
             ORDER BY year
@@ -1634,6 +1887,35 @@ def develop_quantity_model(
                         else None
                     ),
 
+                    "median_quantity_difference_vs_import": (
+                        float(
+                            row.median_quantity_difference_vs_import
+                        )
+                        if pd.notna(
+                            row.median_quantity_difference_vs_import
+                        )
+                        else None
+                    ),
+
+                    "median_absolute_quantity_difference_vs_import": (
+                        float(
+                            row.median_absolute_quantity_difference_vs_import
+                        )
+                        if pd.notna(
+                            row.median_absolute_quantity_difference_vs_import
+                        )
+                        else None
+                    ),
+
+                    "exporter_higher_share": (
+                        float(
+                            row.exporter_higher_share
+                        )
+                        if pd.notna(
+                            row.exporter_higher_share
+                        )
+                        else None
+                    ),
                     "median_uv_reference_observations": (
                         float(
                             row.median_uv_reference_observations
@@ -1647,7 +1929,7 @@ def develop_quantity_model(
             )
 
         # ==================================================================
-        # 5. Product coverage
+        # 8. Product coverage
         # ==================================================================
 
         product_frame = con.execute(
@@ -1695,7 +1977,7 @@ def develop_quantity_model(
                 )
                     AS median_uv_reference_observations
 
-            FROM validation_model_base
+            FROM validation_diagnostics_base
 
             GROUP BY target_cmd
             ORDER BY target_cmd
@@ -1780,7 +2062,7 @@ def develop_quantity_model(
             )
 
         # ==================================================================
-        # 6. Distribution evidence
+        # 9. Distribution evidence
         # ==================================================================
 
         quantiles = (
@@ -1797,6 +2079,10 @@ def develop_quantity_model(
 
         distribution_variables = (
             "quantity_relative_difference",
+
+            "quantity_difference_vs_import",
+            "quantity_absolute_difference_vs_import",
+
             "synced_unit_value_log_distance",
             "unit_value_reference_observations",
         )
@@ -1828,7 +2114,7 @@ def develop_quantity_model(
                     COUNT(*) AS n_rows,
                     {variable_quantile_sql}
 
-                FROM validation_model_base
+                FROM validation_diagnostics_base
 
                 WHERE both_quantities_observed
                   AND {variable} IS NOT NULL
@@ -1892,7 +2178,7 @@ def develop_quantity_model(
 
         if diagnostics.empty:
             raise RuntimeError(
-                "Validation model diagnostics contain no rows."
+                "Validation diagnostics contain no rows."
             )
 
         # Ensure optional columns exist consistently across scopes.
@@ -1906,6 +2192,9 @@ def develop_quantity_model(
             "median_quantity_relative_difference",
             "median_synced_uv_log_distance",
             "median_uv_reference_observations",
+            "median_quantity_difference_vs_import",
+            "median_absolute_quantity_difference_vs_import",
+            "exporter_higher_share",
         )
 
         for column in optional_columns:
@@ -1944,6 +2233,9 @@ def develop_quantity_model(
                 "median_quantity_relative_difference",
                 "median_synced_uv_log_distance",
                 "median_uv_reference_observations",
+                "median_quantity_difference_vs_import",
+                "median_absolute_quantity_difference_vs_import",
+                "exporter_higher_share",
             ]
         ]
 
@@ -1959,7 +2251,7 @@ def develop_quantity_model(
         )
 
         con.register(
-            "_validation_model_diagnostics",
+            "_validation_diagnostics",
             diagnostics,
         )
 
@@ -1967,7 +2259,7 @@ def develop_quantity_model(
             f"""
             COPY (
                 SELECT *
-                FROM _validation_model_diagnostics
+                FROM _validation_diagnostics
             )
             TO {temporary_sql}
             (
@@ -2021,7 +2313,7 @@ def develop_quantity_model(
     )
 
     logger.info(
-        "  Model diagnostics rows: %s",
+        "  Diagnostics rows: %s",
         f"{len(diagnostics):,}",
     )
 
@@ -2040,7 +2332,7 @@ def develop_quantity_model(
         "run_id": run_id,
 
         "output_path": output_path,
-        "model_diagnostics_path": output_path,
+        "diagnostics_path": output_path,
 
         "n_rows": n_all_rows,
 
@@ -2072,7 +2364,7 @@ def develop_quantity_model(
             grid_metadata
         ),
 
-        "model_fitted": False,
+        "fitted": False,
 
         "ready_for_training_decision": True,
 

@@ -65,6 +65,7 @@ def build_markdown_toc(
     min_level: int = 2,
     max_level: int = 3,
     title: str = "Table of contents",
+    flat_sublevels: bool = False,
 ) -> list[str]:
     """Build a Markdown table of contents from report heading lines."""
     toc = [
@@ -88,11 +89,16 @@ def build_markdown_toc(
 
         anchor = markdown_anchor(heading)
 
-        indent = "  " * (level - min_level)
-
-        toc.append(
-            f"{indent}- [{heading}](#{anchor})"
-        )
+        if flat_sublevels:
+            indent = "&nbsp;" * 4 * (level - min_level)
+            toc.append(
+                f"{indent}[{heading}](#{anchor})<br>"
+            )
+        else:
+            indent = "  " * (level - min_level)
+            toc.append(
+                f"{indent}- [{heading}](#{anchor})"
+            )
 
     toc.append("")
 
@@ -106,6 +112,7 @@ def insert_markdown_toc(
     min_level: int = 2,
     max_level: int = 3,
     title: str = "Table of contents",
+    flat_sublevels: bool = False,
 ) -> None:
     """Replace a TOC placeholder with a generated Markdown TOC."""
     try:
@@ -120,6 +127,7 @@ def insert_markdown_toc(
         min_level=min_level,
         max_level=max_level,
         title=title,
+        flat_sublevels=flat_sublevels,
     )
 
     lines[toc_index:toc_index + 1] = toc

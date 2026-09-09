@@ -18,7 +18,7 @@ from vacoda.config.steps.validation import ValidationConfig
 
 from vacoda.steps.validation.prepare_input import prepare_validation_input
 from vacoda.steps.validation.structural import  audit_structural_integrity
-from vacoda.steps.validation.model import  develop_quantity_model
+from vacoda.steps.validation.diagnostics import  build_diagnostics
 # from vacoda.steps.validation.consistency import  audit_cross_variable_consistency
 # from vacoda.steps.validation.finalize import build_validated_trade
 # from vacoda.steps.validation.release import build_release_dataset
@@ -50,7 +50,7 @@ REQUIRED_PRODUCTS = (
 WORKFLOW_STEPS = [
     "Prepare Validation input",
     "Audit structural integrity",
-    "Build Model diagnostics",
+    "Build diagnostics",
     # "Build validated trade",
     # "Audit cross-variable consistency",
     # "Build VACODA release dataset",
@@ -221,7 +221,7 @@ def run_validation_workflow(
             step_number=3,
             total_steps=TOTAL_WORKFLOW_STEPS,
             title=WORKFLOW_STEPS[2],
-            runner=lambda: develop_quantity_model(
+            runner=lambda: build_diagnostics(
                 cfg=cfg,
                 input_path=prepared_path,
                 structural_audit_path=structural_audit_path,
@@ -231,9 +231,9 @@ def run_validation_workflow(
             ),
         )
 
-        model_diagnostics_path = require_artifact(
+        diagnostics_path = require_artifact(
             result=model_diagnostic_result,
-            path_key="model_diagnostics_path",
+            path_key="diagnostics_path",
             consumer_step=WORKFLOW_STEPS[3],
             producer_product="quantity-model diagnostics",
         )
@@ -317,7 +317,7 @@ def run_validation_workflow(
                 cfg=cfg,
                 prepared_input_path=prepared_path,
                 structural_audit_path=structural_audit_path,
-                model_diagnostics_path=model_diagnostics_path,
+                diagnostics_path=diagnostics_path,
                 run_id=run_id,
                 force=force,
                 logger=logger,

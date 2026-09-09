@@ -264,7 +264,7 @@ class ValidationProductConfig:
 class ValidationProductsConfig:
     prepared_input: ValidationProductConfig
     structural_audit: ValidationProductConfig
-    model_diagnostics: ValidationProductConfig
+    diagnostics: ValidationProductConfig
     validated_trade: ValidationProductConfig
     consistency_audit: ValidationProductConfig
     release: ValidationProductConfig
@@ -277,9 +277,18 @@ class ValidationProductsConfig:
         def product(name: str) -> ValidationProductConfig:
             key = f"validation.products.{name}"
 
+            value = cfg.get(name)
+
+            if name == "diagnostics" and value is None:
+                value = cfg.get("model_diagnostics")
+                key = (
+                    "validation.products.diagnostics "
+                    "(or validation.products.model_diagnostics)"
+                )
+
             return ValidationProductConfig.from_dict(
                 require_dict(
-                    cfg.get(name),
+                    value,
                     key=key,
                 ),
                 key=key,
@@ -288,7 +297,7 @@ class ValidationProductsConfig:
         return cls(
             prepared_input=product("prepared_input"),
             structural_audit=product("structural_audit"),
-            model_diagnostics=product("model_diagnostics"),
+            diagnostics=product("diagnostics"),
             validated_trade=product("validated_trade"),
             consistency_audit=product("consistency_audit"),
             release=product("release"),
@@ -502,12 +511,12 @@ class ValidationReleaseConfig:
 
 
 # ---------------------------------------------------------------------
-# Model
+# Diagnostics
 # ---------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
-class ValidationModelColumnsConfig:
+class ValidationDiagnosticsColumnsConfig:
     year: str
     product: str
     quantity: str
@@ -525,59 +534,59 @@ class ValidationModelColumnsConfig:
     def from_dict(
         cls,
         cfg: dict[str, Any],
-    ) -> "ValidationModelColumnsConfig":
+    ) -> "ValidationDiagnosticsColumnsConfig":
         return cls(
             year=require_str(
                 cfg.get("year"),
-                key="validation.model.columns.year",
+                key="validation.diagnostics.columns.year",
             ),
             product=require_str(
                 cfg.get("product"),
-                key="validation.model.columns.product",
+                key="validation.diagnostics.columns.product",
             ),
             quantity=require_str(
                 cfg.get("quantity"),
-                key="validation.model.columns.quantity",
+                key="validation.diagnostics.columns.quantity",
             ),
             nominal_value=require_str(
                 cfg.get("nominal_value"),
-                key="validation.model.columns.nominal_value",
+                key="validation.diagnostics.columns.nominal_value",
             ),
             constant_value=require_str(
                 cfg.get("constant_value"),
-                key="validation.model.columns.constant_value",
+                key="validation.diagnostics.columns.constant_value",
             ),
             export_quantity=require_str(
                 cfg.get("export_quantity"),
-                key="validation.model.columns.export_quantity",
+                key="validation.diagnostics.columns.export_quantity",
             ),
             import_quantity=require_str(
                 cfg.get("import_quantity"),
-                key="validation.model.columns.import_quantity",
+                key="validation.diagnostics.columns.import_quantity",
             ),
             export_estimated=require_str(
                 cfg.get("export_estimated"),
-                key="validation.model.columns.export_estimated",
+                key="validation.diagnostics.columns.export_estimated",
             ),
             import_estimated=require_str(
                 cfg.get("import_estimated"),
-                key="validation.model.columns.import_estimated",
+                key="validation.diagnostics.columns.import_estimated",
             ),
             quantity_relative_difference=require_str(
                 cfg.get("quantity_relative_difference"),
                 key=(
-                    "validation.model.columns."
+                    "validation.diagnostics.columns."
                     "quantity_relative_difference"
                 ),
             ),
             unit_value_reference=require_str(
                 cfg.get("unit_value_reference"),
-                key="validation.model.columns.unit_value_reference",
+                key="validation.diagnostics.columns.unit_value_reference",
             ),
             unit_value_reference_observations=require_str(
                 cfg.get("unit_value_reference_observations"),
                 key=(
-                    "validation.model.columns."
+                    "validation.diagnostics.columns."
                     "unit_value_reference_observations"
                 ),
             ),
@@ -585,7 +594,7 @@ class ValidationModelColumnsConfig:
 
 
 @dataclass(frozen=True)
-class ValidationModelTrainingPopulationConfig:
+class ValidationDiagnosticsTrainingPopulationConfig:
     require_bilateral_quantities: bool
     require_non_estimated_quantities: bool
     disagreement_thresholds: tuple[float, ...]
@@ -596,26 +605,26 @@ class ValidationModelTrainingPopulationConfig:
     def from_dict(
         cls,
         cfg: dict[str, Any],
-    ) -> "ValidationModelTrainingPopulationConfig":
+    ) -> "ValidationDiagnosticsTrainingPopulationConfig":
         return cls(
             require_bilateral_quantities=require_bool(
                 cfg.get("require_bilateral_quantities"),
                 key=(
-                    "validation.model.training_population."
+                    "validation.diagnostics.training_population."
                     "require_bilateral_quantities"
                 ),
             ),
             require_non_estimated_quantities=require_bool(
                 cfg.get("require_non_estimated_quantities"),
                 key=(
-                    "validation.model.training_population."
+                    "validation.diagnostics.training_population."
                     "require_non_estimated_quantities"
                 ),
             ),
             disagreement_thresholds=_require_float_list(
                 cfg.get("disagreement_thresholds"),
                 key=(
-                    "validation.model.training_population."
+                    "validation.diagnostics.training_population."
                     "disagreement_thresholds"
                 ),
                 min_value=0.0,
@@ -623,7 +632,7 @@ class ValidationModelTrainingPopulationConfig:
             unit_value_reference_min_observations=_require_int_list(
                 cfg.get("unit_value_reference_min_observations"),
                 key=(
-                    "validation.model.training_population."
+                    "validation.diagnostics.training_population."
                     "unit_value_reference_min_observations"
                 ),
                 min_value=1,
@@ -631,7 +640,7 @@ class ValidationModelTrainingPopulationConfig:
             unit_value_log_distance_thresholds=_require_float_list(
                 cfg.get("unit_value_log_distance_thresholds"),
                 key=(
-                    "validation.model.training_population."
+                    "validation.diagnostics.training_population."
                     "unit_value_log_distance_thresholds"
                 ),
                 min_value=0.0,
@@ -640,23 +649,23 @@ class ValidationModelTrainingPopulationConfig:
 
 
 @dataclass(frozen=True)
-class ValidationModelTargetConfig:
+class ValidationDiagnosticsTargetConfig:
     transform: Literal["none", "log"]
 
     @classmethod
     def from_dict(
         cls,
         cfg: dict[str, Any],
-    ) -> "ValidationModelTargetConfig":
+    ) -> "ValidationDiagnosticsTargetConfig":
         transform = require_str(
             cfg.get("transform"),
-            key="validation.model.target.transform",
+            key="validation.diagnostics.target.transform",
         ).strip().lower()
 
         allowed = {"none", "log"}
         if transform not in allowed:
             raise ValueError(
-                "validation.model.target.transform must be one of "
+                "validation.diagnostics.target.transform must be one of "
                 f"{sorted(allowed)}, got {transform!r}."
             )
 
@@ -664,57 +673,57 @@ class ValidationModelTargetConfig:
 
 
 @dataclass(frozen=True)
-class ValidationModelSelectionConfig:
+class ValidationDiagnosticsSelectionConfig:
     enabled: bool
 
     @classmethod
     def from_dict(
         cls,
         cfg: dict[str, Any],
-    ) -> "ValidationModelSelectionConfig":
+    ) -> "ValidationDiagnosticsSelectionConfig":
         return cls(
             enabled=require_bool(
                 cfg.get("enabled"),
-                key="validation.model.selection.enabled",
+                key="validation.diagnostics.selection.enabled",
             )
         )
 
 
 @dataclass(frozen=True)
-class ValidationModelConfig:
-    columns: ValidationModelColumnsConfig
-    training_population: ValidationModelTrainingPopulationConfig
-    target: ValidationModelTargetConfig
-    selection: ValidationModelSelectionConfig
+class ValidationDiagnosticsConfig:
+    columns: ValidationDiagnosticsColumnsConfig
+    training_population: ValidationDiagnosticsTrainingPopulationConfig
+    target: ValidationDiagnosticsTargetConfig
+    selection: ValidationDiagnosticsSelectionConfig
 
     @classmethod
     def from_dict(
         cls,
         cfg: dict[str, Any],
-    ) -> "ValidationModelConfig":
+    ) -> "ValidationDiagnosticsConfig":
         return cls(
-            columns=ValidationModelColumnsConfig.from_dict(
+            columns=ValidationDiagnosticsColumnsConfig.from_dict(
                 require_dict(
                     cfg.get("columns"),
-                    key="validation.model.columns",
+                    key="validation.diagnostics.columns",
                 )
             ),
-            training_population=ValidationModelTrainingPopulationConfig.from_dict(
+            training_population=ValidationDiagnosticsTrainingPopulationConfig.from_dict(
                 require_dict(
                     cfg.get("training_population"),
-                    key="validation.model.training_population",
+                    key="validation.diagnostics.training_population",
                 )
             ),
-            target=ValidationModelTargetConfig.from_dict(
+            target=ValidationDiagnosticsTargetConfig.from_dict(
                 require_dict(
                     cfg.get("target"),
-                    key="validation.model.target",
+                    key="validation.diagnostics.target",
                 )
             ),
-            selection=ValidationModelSelectionConfig.from_dict(
+            selection=ValidationDiagnosticsSelectionConfig.from_dict(
                 require_dict(
                     cfg.get("selection"),
-                    key="validation.model.selection",
+                    key="validation.diagnostics.selection",
                 )
             ),
         )
@@ -941,7 +950,7 @@ class ValidationConfig:
     output: ValidationOutputConfig
     products: ValidationProductsConfig
     method: ValidationMethodConfig
-    model: ValidationModelConfig
+    diagnostics: ValidationDiagnosticsConfig
     release: ValidationReleaseConfig
     decision: ValidationDecisionConfig
     logging: ValidationLoggingConfig
@@ -1019,10 +1028,10 @@ class ValidationConfig:
                     key="validation.method",
                 )
             ),
-            model=ValidationModelConfig.from_dict(
+            diagnostics=ValidationDiagnosticsConfig.from_dict(
                 require_dict(
-                    rendered.get("model"),
-                    key="validation.model",
+                    rendered.get("diagnostics"),
+                    key="validation.diagnostics",
                 )
             ),
             release=ValidationReleaseConfig.from_dict(
@@ -1063,7 +1072,8 @@ class ValidationConfig:
         products = {
             "prepared_input": self.products.prepared_input,
             "structural_audit": self.products.structural_audit,
-            "model_diagnostics": self.products.model_diagnostics,
+            "model_diagnostics": self.products.diagnostics,
+            "diagnostics": self.products.diagnostics,
             "validated_trade": self.products.validated_trade,
             "consistency_audit": self.products.consistency_audit,
             "release": self.products.release,
@@ -1086,6 +1096,7 @@ class ValidationConfig:
                 "prepared_input",
                 "structural_audit",
                 "model_diagnostics",
+                "diagnostics",
                 "validated_trade",
                 "consistency_audit",
                 "release",
@@ -1096,7 +1107,8 @@ class ValidationConfig:
         return {
             "prepared_input": self.products.prepared_input.enable,
             "structural_audit": self.products.structural_audit.enable,
-            "model_diagnostics": self.products.model_diagnostics.enable,
+            "model_diagnostics": self.products.diagnostics.enable,
+            "diagnostics": self.products.diagnostics.enable,
             "validated_trade": self.products.validated_trade.enable,
             "consistency_audit": self.products.consistency_audit.enable,
             "release": self.products.release.enable,
