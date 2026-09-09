@@ -514,6 +514,87 @@ def build_diagnostics(
                 END
                     AS quantity_absolute_difference_vs_import,
 
+                CASE
+                    WHEN
+                        {export_quantity_sql} IS NOT NULL
+                        AND {import_quantity_sql} IS NOT NULL
+                        AND {export_quantity_sql} > 0
+                        AND {import_quantity_sql} > 0
+                        AND isfinite(
+                            CAST(
+                                {export_quantity_sql}
+                                AS DOUBLE
+                            )
+                        )
+                        AND isfinite(
+                            CAST(
+                                {import_quantity_sql}
+                                AS DOUBLE
+                            )
+                        )
+                    THEN SQRT(
+                        CAST(
+                            {export_quantity_sql}
+                            AS DOUBLE
+                        )
+                        * CAST(
+                            {import_quantity_sql}
+                            AS DOUBLE
+                        )
+                    )
+                END
+                    AS bilateral_quantity_kg,
+
+                CASE
+                    WHEN
+                        {export_quantity_sql} IS NOT NULL
+                        AND {import_quantity_sql} IS NOT NULL
+                        AND {export_quantity_sql} > 0
+                        AND {import_quantity_sql} > 0
+                        AND {nominal_value_sql} IS NOT NULL
+                        AND {nominal_value_sql} > 0
+                        AND isfinite(CAST({export_quantity_sql} AS DOUBLE))
+                        AND isfinite(CAST({import_quantity_sql} AS DOUBLE))
+                        AND isfinite(CAST({nominal_value_sql} AS DOUBLE))
+                    THEN
+                        CAST({nominal_value_sql} AS DOUBLE)
+                        /
+                        SQRT(
+                            CAST({export_quantity_sql} AS DOUBLE)
+                            * CAST({import_quantity_sql} AS DOUBLE)
+                        )
+                END
+                    AS bilateral_unit_value,
+
+                CASE
+                    WHEN
+                        {export_quantity_sql} > 0
+                        AND {import_quantity_sql} > 0
+                    THEN LN(
+                        SQRT(
+                            CAST({export_quantity_sql} AS DOUBLE)
+                            * CAST({import_quantity_sql} AS DOUBLE)
+                        )
+                    )
+                END
+                    AS log_bilateral_quantity,
+
+                CASE
+                    WHEN
+                        {export_quantity_sql} > 0
+                        AND {import_quantity_sql} > 0
+                        AND {nominal_value_sql} > 0
+                    THEN LN(
+                        CAST({nominal_value_sql} AS DOUBLE)
+                        /
+                        SQRT(
+                            CAST({export_quantity_sql} AS DOUBLE)
+                            * CAST({import_quantity_sql} AS DOUBLE)
+                        )
+                    )
+                END
+                    AS log_bilateral_unit_value,
+
                 {uv_reference_sql}
                     AS product_year_median_unit_value,
 
@@ -1738,6 +1819,246 @@ def build_diagnostics(
                     ),
                 }
             )
+
+
+            # ==================================================================
+        # Quantity–UV relationship
+        # ==================================================================
+        #
+        # Explore whether unit value systematically varies with trade
+        # quantity. This is diagnostic only and does not currently affect
+        # candidate-training selection.
+        #
+        # A symmetric bilateral quantity proxy is used so that neither
+        # exporter nor importer quantity is treated as the true quantity.
+        # ==================================================================
+
+        quantity_uv_relationship = con.execute(
+            """
+            SELECT
+                year,
+                target_cmd,
+
+                COUNT(*) AS n_rows,
+
+                REGR_SLOPE(
+                    log_bilateral_unit_value,
+                    log_bilateral_quantity
+                ) AS log_uv_quantity_slope,
+
+                REGR_R2(
+                    log_bilateral_unit_value,
+                    log_bilateral_quantity
+                ) AS log_uv_quantity_r2,
+
+                CORR(
+                    log_bilateral_unit_value,
+                    log_bilateral_quantity
+                ) AS log_uv_quantity_correlation
+
+            FROM validation_diagnostics_base
+
+            WHERE both_quantities_observed
+              AND log_bilateral_quantity IS NOT NULL
+              AND log_bilateral_unit_value IS NOT NULL
+
+            GROUP BY
+                year,
+                target_cmd
+
+            ORDER BY
+                year,
+                target_cmd
+            """
+        ).fetchdf()
+
+        for row in quantity_uv_relationship.itertuples(
+            index=False
+        ):
+
+            metrics = {
+                "log_uv_quantity_slope": (
+                    row.log_uv_quantity_slope
+                ),
+                "log_uv_quantity_r2": (
+                    row.log_uv_quantity_r2
+                ),
+                "log_uv_quantity_correlation": (
+                    row.log_uv_quantity_correlation
+                ),
+            }
+
+            for variable, value in metrics.items():
+
+                diagnostics_rows.append(
+                    {
+                        "scope": "quantity_uv_relationship",
+
+                        "criterion": (
+                            "direct_bilateral_quantity_observations"
+                        ),
+
+                        "disagreement_threshold": None,
+                        "uv_support_threshold": None,
+                        "uv_distance_threshold": None,
+
+                        "disagreement_band": None,
+                        "uv_distance_band": None,
+
+                        "year": int(
+                            row.year
+                        ),
+
+                        "target_cmd": str(
+                            row.target_cmd
+                        ),
+
+                        "variable": variable,
+                        "quantile": None,
+
+                        "n_rows": int(
+                            row.n_rows
+                        ),
+
+                        "share_of_all": None,
+                        "share_of_parent": None,
+
+                        "value": (
+                            float(value)
+                            if value is not None
+                            and pd.notna(value)
+                            else None
+                        ),
+                    }
+                )
+
+        quantity_uv_summary = con.execute(
+            """
+            WITH relationship AS (
+                SELECT
+                    year,
+                    target_cmd,
+
+                    COUNT(*) AS n_rows,
+
+                    REGR_SLOPE(
+                        log_bilateral_unit_value,
+                        log_bilateral_quantity
+                    ) AS slope,
+
+                    REGR_R2(
+                        log_bilateral_unit_value,
+                        log_bilateral_quantity
+                    ) AS r2
+
+                FROM validation_diagnostics_base
+
+                WHERE both_quantities_observed
+                  AND log_bilateral_quantity IS NOT NULL
+                  AND log_bilateral_unit_value IS NOT NULL
+
+                GROUP BY
+                    year,
+                    target_cmd
+            )
+
+            SELECT
+                COUNT(*) AS n_product_year_groups,
+
+                MEDIAN(slope)
+                    AS median_slope,
+
+                QUANTILE_CONT(slope, 0.25)
+                    AS p25_slope,
+
+                QUANTILE_CONT(slope, 0.75)
+                    AS p75_slope,
+
+                AVG(
+                    CASE
+                        WHEN slope < 0 THEN 1.0
+                        ELSE 0.0
+                    END
+                )
+                    AS negative_slope_share,
+
+                MEDIAN(r2)
+                    AS median_r2
+
+            FROM relationship
+
+            WHERE n_rows >= 30
+              AND slope IS NOT NULL
+            """
+        ).fetchone()
+
+        (
+            n_quantity_uv_groups,
+            median_quantity_uv_slope,
+            p25_quantity_uv_slope,
+            p75_quantity_uv_slope,
+            negative_quantity_uv_share,
+            median_quantity_uv_r2,
+        ) = quantity_uv_summary
+
+        summary_metrics = {
+            "n_product_year_groups": (
+                n_quantity_uv_groups
+            ),
+            "median_log_uv_quantity_slope": (
+                median_quantity_uv_slope
+            ),
+            "p25_log_uv_quantity_slope": (
+                p25_quantity_uv_slope
+            ),
+            "p75_log_uv_quantity_slope": (
+                p75_quantity_uv_slope
+            ),
+            "negative_slope_share": (
+                negative_quantity_uv_share
+            ),
+            "median_log_uv_quantity_r2": (
+                median_quantity_uv_r2
+            ),
+        }
+
+        for variable, value in summary_metrics.items():
+
+            diagnostics_rows.append(
+                {
+                    "scope": "quantity_uv_summary",
+                    "criterion": (
+                        "product_year_groups_with_at_least_30_rows"
+                    ),
+
+                    "disagreement_threshold": None,
+                    "uv_support_threshold": None,
+                    "uv_distance_threshold": None,
+
+                    "disagreement_band": None,
+                    "uv_distance_band": None,
+
+                    "year": None,
+                    "target_cmd": None,
+
+                    "variable": variable,
+                    "quantile": None,
+
+                    "n_rows": int(
+                        n_quantity_uv_groups
+                    ),
+
+                    "share_of_all": None,
+                    "share_of_parent": None,
+
+                    "value": (
+                        float(value)
+                        if value is not None
+                        else None
+                    ),
+                }
+            )
+
         # ==================================================================
         # 7. Year coverage
         # ==================================================================

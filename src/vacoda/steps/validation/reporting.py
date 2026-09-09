@@ -1729,6 +1729,134 @@ def build_validation_report(
         )
 
         # ==============================================================
+        # Quantity–UV relationship
+        # ==============================================================
+
+        quantity_uv_relationship = _scope_frame(
+            diagnostics,
+            "quantity_uv_relationship",
+        )
+
+        quantity_uv_summary = _scope_frame(
+            diagnostics,
+            "quantity_uv_summary",
+        )
+
+        if quantity_uv_relationship.empty:
+            raise RuntimeError(
+                "Quantity–UV relationship diagnostics are unavailable."
+            )
+
+        if quantity_uv_summary.empty:
+            raise RuntimeError(
+                "Quantity–UV summary diagnostics are unavailable."
+            )
+        
+        quantity_uv_summary_lookup = {
+            str(row.variable): (
+                float(row.value)
+                if pd.notna(row.value)
+                else None
+            )
+            for row in quantity_uv_summary.itertuples(
+                index=False
+            )
+        }
+
+
+        n_quantity_uv_groups = int(
+            quantity_uv_summary_lookup[
+                "n_product_year_groups"
+            ]
+        )
+
+        median_quantity_uv_slope = (
+            quantity_uv_summary_lookup[
+                "median_log_uv_quantity_slope"
+            ]
+        )
+
+        p25_quantity_uv_slope = (
+            quantity_uv_summary_lookup[
+                "p25_log_uv_quantity_slope"
+            ]
+        )
+
+        p75_quantity_uv_slope = (
+            quantity_uv_summary_lookup[
+                "p75_log_uv_quantity_slope"
+            ]
+        )
+
+        negative_quantity_uv_share = (
+            quantity_uv_summary_lookup[
+                "negative_slope_share"
+            ]
+        )
+
+        median_quantity_uv_r2 = (
+            quantity_uv_summary_lookup[
+                "median_log_uv_quantity_r2"
+            ]
+        )
+
+        quantity_uv_summary_display = pd.DataFrame(
+            [
+                {
+                    "Measure": (
+                        "HS × year groups with at least 30 observations"
+                    ),
+                    "Result": _format_integer(
+                        n_quantity_uv_groups
+                    ),
+                },
+                {
+                    "Measure": (
+                        "Median quantity–UV slope"
+                    ),
+                    "Result": _format_number(
+                        median_quantity_uv_slope,
+                        digits=3,
+                    ),
+                },
+                {
+                    "Measure": (
+                        "25th percentile slope"
+                    ),
+                    "Result": _format_number(
+                        p25_quantity_uv_slope,
+                        digits=3,
+                    ),
+                },
+                {
+                    "Measure": (
+                        "75th percentile slope"
+                    ),
+                    "Result": _format_number(
+                        p75_quantity_uv_slope,
+                        digits=3,
+                    ),
+                },
+                {
+                    "Measure": (
+                        "Groups with negative slope"
+                    ),
+                    "Result": _format_percent(
+                        negative_quantity_uv_share
+                    ),
+                },
+                {
+                    "Measure": (
+                        "Median R²"
+                    ),
+                    "Result": _format_number(
+                        median_quantity_uv_r2,
+                        digits=3,
+                    ),
+                },
+            ]
+        )
+        # ==============================================================
         # Report
         # ==============================================================
 
@@ -2154,6 +2282,82 @@ def build_validation_report(
                 "unit-value reference is defined on the same nominal "
                 "within-year basis. Constant-price trade value remains "
                 "available for later cross-year predictive modelling."
+            ),
+            "",
+            "",
+            "### 3.8. Quantity–UV relationship",
+            "",
+            (
+                "The previous UV diagnostics compare implied unit values "
+                "with a Product-year UV reference. This assumes that a single "
+                "reference is informative across different trade quantities. "
+                "Before relying strongly on that assumption, Validation also "
+                "examines whether unit value systematically varies with "
+                "quantity."
+            ),
+            "",
+            (
+                "For this study, only direct bilateral quantity observations "
+                "are used. To avoid choosing either exporter or importer as "
+                "the true quantity, a symmetric bilateral quantity is defined "
+                "as:"
+            ),
+            "",
+            (
+                "`bilateral quantity = "
+                "sqrt(exporter quantity × importer quantity)`"
+            ),
+            "",
+            (
+                "The corresponding bilateral unit value is:"
+            ),
+            "",
+            (
+                "`bilateral UV = reconciled nominal trade value "
+                "/ bilateral quantity`"
+            ),
+            "",
+            (
+                "For each HS product and year, Validation estimates the "
+                "log-log relationship:"
+            ),
+            "",
+            (
+                "`log(bilateral UV) = α + β × "
+                "log(bilateral quantity)`"
+            ),
+            "",
+            (
+                "The coefficient `β` measures how unit value changes with "
+                "trade quantity. A negative value means that larger quantities "
+                "tend to have lower unit values; a value near zero indicates "
+                "little systematic relationship; and a positive value means "
+                "that unit value tends to increase with quantity."
+            ),
+            "",
+            (
+                "For example, a slope of `−0.20` means that a 1% increase "
+                "in quantity is associated with approximately a 0.20% "
+                "decrease in unit value."
+            ),
+            "",
+            (
+                "The summary below uses HS × year groups containing at least "
+                "30 direct bilateral observations. The minimum group size is "
+                "used only to summarize reasonably supported relationships; "
+                "the underlying diagnostics retain all available groups."
+            ),
+            "",
+            _markdown_table(
+                quantity_uv_summary_display
+            ),
+            "",
+            (
+                "This diagnostic is exploratory and does not currently alter "
+                "the candidate training population. Its purpose is to test "
+                "whether UV plausibility should eventually be conditioned on "
+                "trade quantity rather than evaluated only against a single "
+                "Product-year UV reference."
             ),
             "",
             "## 4. Diagnostic Coverage",
