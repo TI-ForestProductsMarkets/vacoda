@@ -128,7 +128,184 @@ def _scope_frame(
 # ======================================================================
 # Figures
 # ======================================================================
+def _plot_quantity_uv_slope_distribution(
+    *,
+    diagnostics: pd.DataFrame,
+    output_path: Path,
+) -> None:
+    """Plot the distribution of HS × year quantity–UV slopes."""
 
+    frame = _scope_frame(
+        diagnostics,
+        "quantity_uv_relationship_groups",
+    )
+
+    frame = frame[
+        frame["variable"] == "quantity_uv_slope"
+    ].copy()
+
+    if frame.empty:
+        raise RuntimeError(
+            "No quantity–UV slope diagnostics are available."
+        )
+
+    values = pd.to_numeric(
+        frame["value"],
+        errors="coerce",
+    ).dropna()
+
+    if values.empty:
+        raise RuntimeError(
+            "No valid quantity–UV slope values are available."
+        )
+
+    median = float(values.median())
+    q25 = float(values.quantile(0.25))
+    q75 = float(values.quantile(0.75))
+
+    figure, axis = plt.subplots(
+        figsize=(11, 6)
+    )
+
+    axis.hist(
+        values,
+        bins=40,
+    )
+
+    axis.axvline(
+        0.0,
+        linestyle="--",
+        linewidth=1.5,
+        label="No relationship (β = 0)",
+    )
+
+    axis.axvline(
+        median,
+        linestyle="-",
+        linewidth=1.8,
+        label=f"Median β = {median:.3f}",
+        color='darkorange'
+    )
+
+    axis.axvline(
+        q25,
+        linestyle=":",
+        linewidth=1.2,
+        label=f"P25 = {q25:.3f}",
+        color='orange'
+    )
+
+    axis.axvline(
+        q75,
+        linestyle=":",
+        linewidth=1.2,
+        label=f"P75 = {q75:.3f}",
+        color='orange'
+    )
+
+    axis.set_title(
+        "Distribution of HS × year quantity–UV slopes"
+    )
+    axis.set_xlabel(
+        "Log-log slope β"
+    )
+    axis.set_ylabel(
+        "Number of HS × year groups"
+    )
+    axis.grid(
+        axis="y",
+        linestyle="--",
+        alpha=0.5,
+    )
+    axis.set_axisbelow(True)
+    axis.legend()
+
+    figure.tight_layout()
+
+    figure.savefig(
+        output_path,
+        dpi=180,
+        bbox_inches="tight",
+    )
+
+    plt.close(figure)
+
+def _plot_quantity_uv_r_squared_distribution(
+    *,
+    diagnostics: pd.DataFrame,
+    output_path: Path,
+) -> None:
+    """Plot the distribution of HS × year quantity–UV R² values."""
+
+    frame = _scope_frame(
+        diagnostics,
+        "quantity_uv_relationship_groups",
+    )
+
+    frame = frame[
+        frame["variable"] == "quantity_uv_r_squared"
+    ].copy()
+
+    if frame.empty:
+        raise RuntimeError(
+            "No quantity–UV R² diagnostics are available."
+        )
+
+    values = pd.to_numeric(
+        frame["value"],
+        errors="coerce",
+    ).dropna()
+
+    if values.empty:
+        raise RuntimeError(
+            "No valid quantity–UV R² values are available."
+        )
+
+    median = float(values.median())
+
+    figure, axis = plt.subplots(
+        figsize=(11, 6)
+    )
+
+    axis.hist(
+        values,
+        bins=40,
+    )
+
+    axis.axvline(
+        median,
+        linestyle="-",
+        linewidth=1.8,
+        label=f"Median R² = {median:.3f}",
+        color='darkorange'
+    )
+
+    axis.set_title(
+        "Distribution of HS × year quantity–UV R²"
+    )
+    axis.set_xlabel(
+        "R²"
+    )
+    axis.set_ylabel(
+        "Number of HS × year groups"
+    )
+    axis.grid(
+        axis="y",
+        linestyle="--",
+        alpha=0.5,
+    )
+    axis.set_axisbelow(True)
+    axis.legend()
+
+    figure.tight_layout()
+
+    figure.savefig(
+        output_path,
+        dpi=180,
+        bbox_inches="tight",
+    )
+
+    plt.close(figure)
 
 def _plot_training_population_funnel(
     *,
@@ -1462,6 +1639,37 @@ def build_validation_report(
             )
         )
 
+        percentile_order = [
+            "P1",
+            "P5",
+            "P10",
+            "P25",
+            "P50",
+            "P75",
+            "P90",
+            "P95",
+            "P99",
+        ]
+
+        distribution_display = distribution_display[
+            [
+                "Evidence",
+                *percentile_order,
+            ]
+        ]
+
+        mirror_disagreement_p75 = "NA"
+        mirror_p75_series = distribution_display.loc[
+            distribution_display["Evidence"].eq(
+                "Mirror quantity disagreement"
+            ),
+            "P75",
+        ]
+        if not mirror_p75_series.empty:
+            mirror_disagreement_p75 = str(
+                mirror_p75_series.iloc[0]
+            )
+
         # ==============================================================
         # Current population totals
         # ==============================================================
@@ -1530,6 +1738,22 @@ def build_validation_report(
                     "_validation_export_import_quantity_ratio_distribution.png"
                 )
             ),
+
+            "quantity_uv_slope_distribution": (
+                figure_dir
+                / (
+                    f"target_{cfg.scope.target_hs.lower()}"
+                    "_validation_quantity_uv_slope_distribution.png"
+                )
+            ),
+
+            "quantity_uv_r_squared_distribution": (
+                figure_dir
+                / (
+                    f"target_{cfg.scope.target_hs.lower()}"
+                    "_validation_quantity_uv_r_squared_distribution.png"
+                )
+            ),
         }
 
         _plot_training_population_funnel(
@@ -1559,6 +1783,21 @@ def build_validation_report(
                 "export_import_quantity_ratio_distribution"
             ],
         )
+        
+        _plot_quantity_uv_slope_distribution(
+            diagnostics=diagnostics,
+            output_path=figure_paths[
+                "quantity_uv_slope_distribution"
+            ],
+        )
+
+        _plot_quantity_uv_r_squared_distribution(
+            diagnostics=diagnostics,
+            output_path=figure_paths[
+                "quantity_uv_r_squared_distribution"
+            ],
+        )
+    
 
         # ==============================================================
         # Current methodological status
@@ -2388,6 +2627,26 @@ def build_validation_report(
             ),
             "",
             (
+                "Key take aways from these distributions:\n"
+                "- For Mirror quantity disagreement, the blue line rises quickly and is already around 0.59 at the median. "
+                "That means disagreement is not just an issue in a small number of extreme rows — it is widespread. By the 75th "
+                f"percentile it is about {mirror_disagreement_p75}, so three quarters "
+                f"of rows have disagreement up to {mirror_disagreement_p75}, and " 
+                f"the upper tail is essentially near the maximum possible disagreement."
+            ),
+            "",
+            (
+            "- For Trade-Synced UV distance, the orange line is much lower through the middle of the distribution, then rises sharply" 
+                "in the upper tail. So most rows are relatively closer to their Product-year UV reference, while a smaller fraction " 
+                "becomes very far away."
+            ),
+            "",
+            (
+                "- Mirror disagreement is broadly high across the population, whereas very large UV-distance problems are concentrated " 
+                "more in the upper tail."
+            ),
+            "",
+            (
                 "The synchronized unit-value distance is calculated using "
                 "nominal reconciled trade value because the product-year "
                 "unit-value reference is defined on the same nominal "
@@ -2459,8 +2718,32 @@ def build_validation_report(
                 "the underlying diagnostics retain all available groups."
             ),
             "",
-            _markdown_table(
-                quantity_uv_summary_display
+            _markdown_table(quantity_uv_summary_display),
+            "",
+            markdown_image(
+                "Distribution of HS × year quantity–UV slopes",
+                figure_paths["quantity_uv_slope_distribution"],
+                document_path=report_path,
+                width=850,
+            ),
+            "",
+            (
+                "The slope distribution shows how strongly bilateral unit value "
+                "changes with bilateral quantity across supported HS × year groups. "
+                "A negative slope means that larger quantities tend to be associated "
+                "with lower unit values."
+            ),
+            "",
+            markdown_image(
+                "Distribution of HS × year quantity–UV R² values",
+                figure_paths["quantity_uv_r_squared_distribution"],
+                document_path=report_path,
+                width=850,
+            ),
+            "",
+            (
+                "The R² distribution shows how much of the within-group variation "
+                "in bilateral unit value is explained by bilateral quantity."
             ),
             "",
             (

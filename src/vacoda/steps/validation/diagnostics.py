@@ -2187,6 +2187,96 @@ def build_diagnostics(
                 }
             )
 
+        supported_quantity_uv = quantity_uv_relationship[
+            quantity_uv_relationship["n_rows"] >= 30
+        ].copy()
+
+        for row in supported_quantity_uv.itertuples(
+            index=False):
+
+            diagnostics_rows.append(
+                {
+                    "scope": "quantity_uv_relationship_groups",
+                    "criterion": "hs_year_group_with_min_30_rows",
+
+                    "disagreement_threshold": None,
+                    "uv_support_threshold": None,
+                    "uv_distance_threshold": None,
+
+                    "disagreement_band": None,
+                    "uv_distance_band": None,
+
+                    "year": int(
+                        row.year
+                    ),
+
+                    "target_cmd": str(
+                        row.target_cmd
+                    ),
+
+                    "variable": "quantity_uv_slope",
+                    "quantile": None,
+
+                    "n_rows": int(
+                        row.n_rows
+                    ),
+
+                    "share_of_all": None,
+                    "share_of_parent": None,
+
+                    "value": (
+                        float(
+                            row.log_uv_quantity_slope
+                        )
+                        if pd.notna(
+                            row.log_uv_quantity_slope
+                        )
+                        else None
+                    ),
+                }
+            )
+
+            diagnostics_rows.append(
+                {
+                    "scope": "quantity_uv_relationship_groups",
+                    "criterion": "hs_year_group_with_min_30_rows",
+
+                    "disagreement_threshold": None,
+                    "uv_support_threshold": None,
+                    "uv_distance_threshold": None,
+
+                    "disagreement_band": None,
+                    "uv_distance_band": None,
+
+                    "year": int(
+                        row.year
+                    ),
+
+                    "target_cmd": str(
+                        row.target_cmd
+                    ),
+
+                    "variable": "quantity_uv_r_squared",
+                    "quantile": None,
+
+                    "n_rows": int(
+                        row.n_rows
+                    ),
+
+                    "share_of_all": None,
+                    "share_of_parent": None,
+
+                    "value": (
+                        float(
+                            row.log_uv_quantity_r2
+                        )
+                        if pd.notna(
+                            row.log_uv_quantity_r2
+                        )
+                        else None
+                    ),
+                }
+            )
         # ==================================================================
         # 7. Year coverage
         # ==================================================================
