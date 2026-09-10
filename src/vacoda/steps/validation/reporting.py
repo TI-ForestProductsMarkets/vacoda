@@ -2077,7 +2077,7 @@ def build_validation_report(
             ),
             "",
             "",
-            "### 3.1. Candidate training population",
+            "### 3.1. Quantity-evidence population",
             "",
             (
                 "The first diagnostic identifies the subset of Validation "
@@ -2159,7 +2159,18 @@ def build_validation_report(
                 "disagreement and UV distance available."
             ),
             "",
-            "### 3.2. Exporter quantity relative to importer",
+            "### 3.2. Diagnostics for directly observed bilateral quantities",
+            "",
+            (
+                "- Unless stated otherwise, all diagnostics in this section are "
+                f"evaluated on the `{_format_integer(n_both_observed)}` observations for which both exporter "
+                "and importer quantities are available and directly reported, "
+                "rather than estimated."
+            ),
+            "",
+           '<h4 style="font-size:1.25em; margin-top:1.2em;">'
+            '3.2.1. Exporter quantity relative to importer'
+            '</h4>',
             "",
             (
                 "For bilateral rows where both exporter and importer "
@@ -2255,14 +2266,25 @@ def build_validation_report(
                 "extreme asymmetric observations."
             ),
             "",
-            "### 3.3. Threshold sensitivity",
+            "#### **3.2.2. Threshold sensitivity**",
             "",
             (
-                "No scientific threshold has yet been selected as the "
-                "definition of a clean training observation. Instead, "
-                "thresholds for Mirror quantity disagreement, Product-year "
-                "UV support, and Trade-Synced UV distance are evaluated "
-                "independently."
+                "- This diagnostic evaluates three evidence measures within the directly observed bilateral population, "
+                "where both exporter and importer quantities are available and neither quantity is estimated. For each measure, "
+                "the table shows how many observations satisfy increasingly permissive or restrictive thresholds. "
+            ),
+            "",
+            (
+                "- The thresholds "
+                "are cumulative rather than mutually exclusive; for example, the ≤10% Mirror-disagreement group includes all "
+                "observations in the ≤5% group."
+            ),
+            "",
+            (
+                "- Mirror quantity disagreement measures exporter–importer quantity inconsistency, Product-year UV support measures "
+                "the number of observations underlying the product-year unit-value reference, and Trade-Synced UV distance measures "
+                "how far the Trade-Synced unit value lies from that reference."
+
             ),
             "",
             _markdown_table(
@@ -2272,11 +2294,10 @@ def build_validation_report(
             (
                 "These results show how restrictive each individual "
                 "criterion would be within the directly observed bilateral "
-                "quantity population. They should not yet be interpreted "
-                "as alternative final training samples."
+                "quantity population."
             ),
             "",
-            "### 3.4. Joint candidate-training populations",
+            "#### **3.2.3. Joint threshold combinations**",
             "",
             (
                 "The following grid applies the three candidate-selection "
@@ -2302,7 +2323,7 @@ def build_validation_report(
                 "a large or small population."
             ),
             ""
-            "### 3.5. Mirror quantity disagreement and bilateral UV plausibility"
+            "#### **3.2.4. Mirror quantity disagreement and bilateral UV plausibility**",
             "",
             (
                 "- Mirror quantity disagreement and bilateral UV distance "
@@ -2333,7 +2354,7 @@ def build_validation_report(
                 "can agree on a quantity that is economically unusual."
             ),
             "",
-            "### 3.6. Side-specific unit-value plausibility",
+            "#### **3.2.5. Side-specific unit-value plausibility**",
             "",
             (
                 "The following table evaluates Exporter UV distance and "
@@ -2346,7 +2367,7 @@ def build_validation_report(
                 side_plausibility_display
             ),
             "",
-            "### 3.7. Distributional evidence",
+            "#### **3.2.6. Distributional evidence**",
             "",
             (
                 "The following diagnostics describe the distribution of "
@@ -2376,7 +2397,7 @@ def build_validation_report(
             ),
             "",
             "",
-            "### 3.8. Quantity–UV relationship",
+            "#### **3.2.7. Quantity–UV relationship**",
             "",
             (
                 "The previous UV diagnostics compare implied unit values "
@@ -2549,7 +2570,7 @@ def build_validation_report(
         insert_markdown_toc(
             lines,
             min_level=2,
-            max_level=3,
+            max_level=4,
             flat_sublevels=True,
         )
 

@@ -58,25 +58,29 @@ def markdown_anchor(text: str) -> str:
 
     return text
 
-
 def build_markdown_toc(
     lines: list[str],
     *,
     min_level: int = 2,
-    max_level: int = 3,
+    max_level: int = 4,
     title: str = "Table of contents",
     flat_sublevels: bool = False,
 ) -> list[str]:
     """Build a Markdown table of contents from report heading lines."""
+
     toc = [
         f"{'#' * min_level} {title}",
         "",
     ]
 
-    heading_pattern = re.compile(r"^(#{1,6})\s+(.+)$")
+    heading_pattern = re.compile(
+        r"^(#{1,6})\s+(.+)$"
+    )
 
     for line in lines:
-        match = heading_pattern.match(line)
+        match = heading_pattern.match(
+            line
+        )
 
         if match is None:
             continue
@@ -87,17 +91,35 @@ def build_markdown_toc(
         if not min_level <= level <= max_level:
             continue
 
-        anchor = markdown_anchor(heading)
+        anchor = markdown_anchor(
+            heading
+        )
+
+        toc_heading = re.sub(
+            r"[*_`~]",
+            "",
+            heading,
+        )
 
         if flat_sublevels:
-            indent = "&nbsp;" * 4 * (level - min_level)
-            toc.append(
-                f"{indent}[{heading}](#{anchor})<br>"
+            indent = (
+                "&nbsp;"
+                * 4
+                * (level - min_level)
             )
-        else:
-            indent = "  " * (level - min_level)
+
             toc.append(
-                f"{indent}- [{heading}](#{anchor})"
+                f"{indent}[{toc_heading}](#{anchor})<br>"
+            )
+
+        else:
+            indent = (
+                "  "
+                * (level - min_level)
+            )
+
+            toc.append(
+                f"{indent}- [{toc_heading}](#{anchor})"
             )
 
     toc.append("")
@@ -110,7 +132,7 @@ def insert_markdown_toc(
     *,
     placeholder: str = "__TOC__",
     min_level: int = 2,
-    max_level: int = 3,
+    max_level: int = 4,
     title: str = "Table of contents",
     flat_sublevels: bool = False,
 ) -> None:
