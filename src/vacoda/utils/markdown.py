@@ -58,7 +58,152 @@ def markdown_anchor(text: str) -> str:
 
     return text
 
+
 def build_markdown_toc(
+    lines: list[str],
+    *,
+    min_level: int = 2,
+    max_level: int = 4,
+    title: str = "Table of contents",
+    flat_sublevels: bool = False,
+) -> list[str]:
+    """Build a Markdown table of contents from report heading lines."""
+
+    toc = [
+        f"{'#' * min_level} {title}",
+        "",
+    ]
+
+    markdown_heading_pattern = re.compile(
+        r"^(#{1,6})\s+(.+)$"
+    )
+
+    html_heading_pattern = re.compile(
+        r'^<h([1-6])(?:\s+[^>]*)?>(.*?)</h\1>$',
+        re.IGNORECASE,
+    )
+
+    html_id_pattern = re.compile(
+        r'\bid=["\']([^"\']+)["\']',
+        re.IGNORECASE,
+    )
+
+    for line in lines:
+
+        markdown_match = markdown_heading_pattern.match(
+            line
+        )
+
+        html_match = html_heading_pattern.match(
+            line
+        )
+
+        if markdown_match is not None:
+
+            hashes, heading = markdown_match.groups()
+
+            level = len(
+                hashes
+            )
+
+            anchor = markdown_anchor(
+                heading
+            )
+
+        elif html_match is not None:
+
+            level_text, heading = html_match.groups()
+
+            level = int(
+                level_text
+            )
+
+            heading = re.sub(
+                r"<[^>]+>",
+                "",
+                heading,
+            )
+
+            id_match = html_id_pattern.search(
+                line
+            )
+
+            if id_match is not None:
+                anchor = id_match.group(
+                    1
+                )
+            else:
+                anchor = markdown_anchor(
+                    heading
+                )
+
+        else:
+            continue
+
+        if not min_level <= level <= max_level:
+            continue
+
+        toc_heading = re.sub(
+            r"[*_`~]",
+            "",
+            heading,
+        )
+
+        if flat_sublevels:
+
+            indent = (
+                "&nbsp;"
+                * 4
+                * (level - min_level)
+            )
+
+            toc.append(
+                f"{indent}[{toc_heading}](#{anchor})<br>"
+            )
+
+        else:
+
+            indent = (
+                "  "
+                * (level - min_level)
+            )
+
+            toc.append(
+                f"{indent}- [{toc_heading}](#{anchor})"
+            )
+
+    toc.append("")
+
+    return toc
+
+def markdown_styled_heading(
+    text: str,
+    *,
+    level: int = 4,
+    font_size: str = "1.25em",
+    margin_top: str = "1.2em",
+) -> str:
+    """Return a styled HTML heading for Markdown reports."""
+
+    if not 1 <= level <= 6:
+        raise ValueError(
+            f"Markdown heading level must be between 1 and 6: {level}"
+        )
+
+    anchor = markdown_anchor(
+        text
+    )
+
+    return (
+        f'<h{level} '
+        f'id="{anchor}" '
+        f'style="font-size:{font_size}; '
+        f'margin-top:{margin_top};">'
+        f'{text}'
+        f'</h{level}>'
+    )
+
+def build_markdown_toc_deprecated(
     lines: list[str],
     *,
     min_level: int = 2,

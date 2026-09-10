@@ -38,6 +38,7 @@ from vacoda.utils.display import get_symbols
 from vacoda.utils.markdown import (
     insert_markdown_toc,
     markdown_image,
+    markdown_styled_heading
 )
 from vacoda.utils.sql import sql_literal
 
@@ -2168,9 +2169,7 @@ def build_validation_report(
                 "rather than estimated."
             ),
             "",
-           '<h4 style="font-size:1.25em; margin-top:1.2em;">'
-            '3.2.1. Exporter quantity relative to importer'
-            '</h4>',
+            markdown_styled_heading("3.2.1. Exporter quantity relative to importer"),
             "",
             (
                 "For bilateral rows where both exporter and importer "
@@ -2266,7 +2265,7 @@ def build_validation_report(
                 "extreme asymmetric observations."
             ),
             "",
-            "#### **3.2.2. Threshold sensitivity**",
+            markdown_styled_heading("3.2.2. Threshold sensitivity"),
             "",
             (
                 "- This diagnostic evaluates three evidence measures within the directly observed bilateral population, "
@@ -2297,7 +2296,7 @@ def build_validation_report(
                 "quantity population."
             ),
             "",
-            "#### **3.2.3. Joint threshold combinations**",
+            markdown_styled_heading("3.2.3. Joint threshold combinations"),
             "",
             (
                 "The following grid applies the three candidate-selection "
@@ -2322,8 +2321,8 @@ def build_validation_report(
                 "the production training definition merely because it has "
                 "a large or small population."
             ),
-            ""
-            "#### **3.2.4. Mirror quantity disagreement and bilateral UV plausibility**",
+            "",
+            markdown_styled_heading("3.2.4. Mirror quantity disagreement and bilateral UV plausibility"),
             "",
             (
                 "- Mirror quantity disagreement and bilateral UV distance "
@@ -2354,7 +2353,7 @@ def build_validation_report(
                 "can agree on a quantity that is economically unusual."
             ),
             "",
-            "#### **3.2.5. Side-specific unit-value plausibility**",
+            markdown_styled_heading("3.2.5. Side-specific unit-value plausibility"),
             "",
             (
                 "The following table evaluates Exporter UV distance and "
@@ -2367,7 +2366,7 @@ def build_validation_report(
                 side_plausibility_display
             ),
             "",
-            "#### **3.2.6. Distributional evidence**",
+            markdown_styled_heading("3.2.6. Distributional evidence"),
             "",
             (
                 "The following diagnostics describe the distribution of "
@@ -2397,7 +2396,7 @@ def build_validation_report(
             ),
             "",
             "",
-            "#### **3.2.7. Quantity–UV relationship**",
+            markdown_styled_heading("3.2.7. Quantity–UV relationship"),
             "",
             (
                 "The previous UV diagnostics compare implied unit values "
