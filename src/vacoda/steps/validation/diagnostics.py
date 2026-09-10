@@ -131,30 +131,30 @@ def build_diagnostics(
         exist_ok=True,
     )
 
-    # # ------------------------------------------------------------------
-    # # Reuse
-    # # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Reuse
+    # ------------------------------------------------------------------
 
-    # if (
-    #     not force
-    #     and output_path.is_file()
-    #     and output_path.stat().st_size > 0
-    # ):
-    #     logger.info(
-    #         "%s REUSE — Validation diagnostics: %s",
-    #         get_symbols("reuse"),
-    #         output_path,
-    #     )
+    if (
+        not force
+        and output_path.is_file()
+        and output_path.stat().st_size > 0
+    ):
+        logger.info(
+            "%s REUSE — Validation diagnostics: %s",
+            get_symbols("reuse"),
+            output_path,
+        )
 
-    #     return {
-    #         "status": "completed",
-    #         "run_id": run_id,
-    #         "output_path": output_path,
-    #         "diagnostics_path": output_path,
-    #         "reused": True,
-    #         "fitted": False,
-    #         "ready_for_training_decision": True,
-    #     }
+        return {
+            "status": "completed",
+            "run_id": run_id,
+            "output_path": output_path,
+            "diagnostics_path": output_path,
+            "reused": True,
+            "fitted": False,
+            "ready_for_training_decision": True,
+        }
 
     logger.info(
         "%s REBUILD — Validation diagnostics",
@@ -1655,7 +1655,7 @@ def build_diagnostics(
 
 
         # ==================================================================
-        # 6. Exporter quantity relative to importer reference
+        # 6a. Exporter quantity relative to importer reference
         # ==================================================================
         #
         # Import quantity is used as the reference denominator.
@@ -1820,8 +1820,136 @@ def build_diagnostics(
                 }
             )
 
+        # ==================================================================
+        # 6b. Exporter / importer quantity-ratio distribution
+        # ==================================================================
 
-            # ==================================================================
+        quantity_ratio_distribution = con.execute(
+            """
+            WITH ratios AS (
+                SELECT
+                    LN(
+                        export_quantity_kg
+                        / import_quantity_kg
+                    ) AS log_ratio
+
+                FROM validation_diagnostics_base
+
+                WHERE both_quantities_observed
+                  AND export_quantity_kg > 0
+                  AND import_quantity_kg > 0
+                  AND isfinite(
+                      LN(
+                          export_quantity_kg
+                          / import_quantity_kg
+                      )
+                  )
+            ),
+
+            bounds AS (
+                SELECT
+                    QUANTILE_CONT(
+                        log_ratio,
+                        0.005
+                    ) AS lower_bound,
+
+                    QUANTILE_CONT(
+                        log_ratio,
+                        0.995
+                    ) AS upper_bound
+
+                FROM ratios
+            ),
+
+            displayed AS (
+                SELECT
+                    log_ratio
+
+                FROM ratios
+                CROSS JOIN bounds
+
+                WHERE log_ratio >= lower_bound
+                  AND log_ratio <= upper_bound
+            ),
+
+            binned AS (
+                SELECT
+                    FLOOR(log_ratio / 0.10) * 0.10
+                        AS log_ratio_bin,
+
+                    COUNT(*) AS n_rows
+
+                FROM displayed
+
+                GROUP BY log_ratio_bin
+            )
+
+            SELECT
+                log_ratio_bin,
+                n_rows
+
+            FROM binned
+
+            ORDER BY log_ratio_bin
+            """
+        ).fetchdf()
+
+        n_quantity_ratio_rows = int(
+            quantity_ratio_distribution[
+                "n_rows"
+            ].sum()
+        )
+
+        for row in quantity_ratio_distribution.itertuples(
+            index=False
+        ):
+
+            diagnostics_rows.append(
+                {
+                    "scope": "quantity_ratio_distribution",
+
+                    "criterion": (
+                        "direct_bilateral_quantity_observations"
+                    ),
+
+                    "disagreement_threshold": None,
+                    "uv_support_threshold": None,
+                    "uv_distance_threshold": None,
+
+                    "disagreement_band": None,
+                    "uv_distance_band": None,
+
+                    "year": None,
+                    "target_cmd": None,
+
+                    "variable": (
+                        "export_import_log_quantity_ratio"
+                    ),
+
+                    "quantile": None,
+
+                    "n_rows": int(
+                        row.n_rows
+                    ),
+
+                    "share_of_all": _share(
+                        int(row.n_rows),
+                        n_all_rows,
+                    ),
+
+                    "share_of_parent": _share(
+                        int(row.n_rows),
+                        n_quantity_ratio_rows,
+                    ),
+
+                    "value": float(
+                        row.log_ratio_bin
+                    ),
+                }
+            )
+
+
+        # ==================================================================
         # Quantity–UV relationship
         # ==================================================================
         #

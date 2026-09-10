@@ -414,6 +414,75 @@ def _plot_training_evidence_distributions(
     )
 
 
+def _plot_export_import_quantity_ratio_distribution(
+    *,
+    diagnostics: pd.DataFrame,
+    output_path: Path,
+) -> None:
+    """Plot the distribution of exporter/importer log quantity ratios."""
+
+    frame = _scope_frame(
+        diagnostics,
+        "quantity_ratio_distribution",
+    )
+
+    if frame.empty:
+        raise RuntimeError(
+            "No quantity-ratio distribution diagnostics are available."
+        )
+
+    frame = frame.sort_values(
+        "value"
+    ).copy()
+
+    figure, axis = plt.subplots(
+        figsize=(10, 6)
+    )
+
+    axis.bar(
+        frame["value"],
+        frame["n_rows"],
+        width=0.08,
+        alpha=0.85,
+    )
+
+    axis.axvline(
+        0.0,
+        linestyle="--",
+        linewidth=1.5,
+        label="Exporter = importer",
+        color="red",
+    )
+
+    axis.set_title(
+        "Exporter/importer quantity ratio distribution"
+    )
+    axis.set_xlabel(
+        "log(exporter quantity / importer quantity)"
+    )
+    axis.set_ylabel(
+        "Number of observations"
+    )
+    axis.grid(
+        axis="y",
+        linestyle="--",
+        alpha=0.5,
+    )
+    axis.legend()
+
+    figure.tight_layout()
+
+    figure.savefig(
+        output_path,
+        dpi=180,
+        bbox_inches="tight",
+    )
+
+    plt.close(
+        figure
+    )
+
+
 # ======================================================================
 # Main reporting function
 # ======================================================================
@@ -1453,6 +1522,13 @@ def build_validation_report(
                     "_validation_training_evidence_distributions.png"
                 )
             ),
+            "export_import_quantity_ratio_distribution": (
+                figure_dir
+                / (
+                    f"target_{cfg.scope.target_hs.lower()}"
+                    "_validation_export_import_quantity_ratio_distribution.png"
+                )
+            ),
         }
 
         _plot_training_population_funnel(
@@ -1473,6 +1549,13 @@ def build_validation_report(
             diagnostics=diagnostics,
             output_path=figure_paths[
                 "training_evidence_distributions"
+            ],
+        )
+
+        _plot_export_import_quantity_ratio_distribution(
+            diagnostics=diagnostics,
+            output_path=figure_paths[
+                "export_import_quantity_ratio_distribution"
             ],
         )
 
@@ -2113,6 +2196,14 @@ def build_validation_report(
             "",
             _markdown_table(
                 importer_reference_display
+            ),
+            "",
+            markdown_image(
+                "Exporter/importer quantity ratio distribution",
+                figure_paths[
+                    "export_import_quantity_ratio_distribution"
+                ],
+                document_path=report_path,
             ),
             "",
             (
