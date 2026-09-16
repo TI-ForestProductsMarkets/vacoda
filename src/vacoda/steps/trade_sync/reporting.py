@@ -3459,18 +3459,13 @@ def build_trade_sync_report(
         markdown_styled_heading(text="9.1.2 Mirror-report disagreement"),
         "",
         (
-            "Among rows with usable quantities on both sides, the median "
+            "- Among rows with usable quantities on both sides, the median "
             "difference relative to the larger quantity is "
             f"`{_format_percent(median_quantity_difference)}`. "
             "The P90, P95, and P99 differences are "
             f"`{_format_percent(p90_quantity_difference)}`, "
             f"`{_format_percent(p95_quantity_difference)}`, and "
             f"`{_format_percent(p99_quantity_difference)}`, respectively."
-        ),
-        "",
-        (
-            f"`{_format_percent(quantity_within_10pct)}` of bilateral "
-            "quantity pairs agree within 10%."
         ),
         "",
         markdown_image(
@@ -3527,9 +3522,10 @@ def build_trade_sync_report(
             "quantities equal influence:"
         ),
         "",
-        (
-            "`Q_mean = (Q_export + Q_import) / 2`"
-        ),
+        "$$",
+        r"Q_{\mathrm{mean}} = "
+        r"\frac{Q_{\mathrm{export}} + Q_{\mathrm{import}}}{2}",
+        "$$",
         "",
         (
             "This candidate does not assume that either reporting side is more "
@@ -3537,18 +3533,21 @@ def build_trade_sync_report(
             "against which weighted reconciliation methods can be compared."
         ),
         "",
-        markdown_styled_heading(text="9.2.2 Value-reliability weights applied to quantity"),
+        markdown_styled_heading(
+            text="9.2.2 Value-reliability weights applied to quantity"
+        ),
         "",
         (
             "One candidate applies the same reporter weights used for trade-value "
             "reconciliation to the corresponding exporter and importer quantities:"
         ),
         "",
-        (
-            "`Q_value_weighted = "
-            "w_export_value × Q_export + "
-            "w_import_value × Q_import`"
-        ),
+        "$$",
+        r"Q_{\mathrm{value\text{-}weighted}} = "
+        r"w_{\mathrm{export,value}} Q_{\mathrm{export}} "
+        r"+ "
+        r"w_{\mathrm{import,value}} Q_{\mathrm{import}}",
+        "$$",
         "",
         (
             "These weights originate from mirror-value reporting consistency. "
@@ -3560,7 +3559,7 @@ def build_trade_sync_report(
         "",
         markdown_styled_heading(
             text="9.2.3 Quantity-specific reliability weights"
-            ),
+        ),
         "",
         (
             "A second weighted candidate estimates reliability directly from "
@@ -3568,11 +3567,13 @@ def build_trade_sync_report(
             "weights to combine the two reports:"
         ),
         "",
-        (
-            "`Q_quantity_weighted = "
-            "w_export_quantity × Q_export + "
-            "w_import_quantity × Q_import`"
-        ),
+        "$$",
+        r"Q_{\mathrm{quantity\text{-}weighted}} = "
+        r"w_{\mathrm{export,quantity}} Q_{\mathrm{export}} "
+        r"+ "
+        r"w_{\mathrm{import,quantity}} Q_{\mathrm{import}}",
+        "$$",
+        "",
         "",
         (
             "This approach separates quantity reliability from the reliability "
@@ -3937,25 +3938,6 @@ def build_trade_sync_report(
         "## 12. Interpretation and limitations",
         "",
         (
-            "- Trade Sync harmonizes reporting evidence; it does not "
-            "establish the unobservable true trade value with certainty."
-        ),
-        (
-            "- Reliability scores incorporate positive-positive disagreement and, where present, implicit-zero evidence."
-        ),
-        (
-            "- Retained unilateral values are usable but are not "
-            "corroborated by a corresponding usable mirror report."
-        ),
-        (
-            "- The results depend on the upstream CIF/FOB correction because importer FOB-equivalent "
-            "values enter Trade Sync directly."
-        ),
-        (
-            "- The configured agreement tolerance is diagnostic only. "
-            "It does not override the final adjusted reconciliation weights."
-        ),
-        (
             f"- Results for {maximum_year} should be treated as "
             "provisional when their reporting coverage is materially "
             "lower than preceding years."
@@ -4011,7 +3993,7 @@ def build_trade_sync_report(
                 },
                 3: {
                     "font_size": "1.35em",
-                    "color": "#7A3E00",
+                    "color": "#790586",
                 },
             }
         )
