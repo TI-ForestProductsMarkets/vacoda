@@ -33,6 +33,7 @@ from vacoda.config.paths import get_figure_dir
 from vacoda.utils.markdown import (
     insert_markdown_toc,
     markdown_image,
+    markdown_styled_heading
 )
 from vacoda.config.steps.trade_sync import TradeSyncConfig
 from vacoda.utils.display import get_symbols
@@ -2760,6 +2761,30 @@ def build_trade_sync_report(
             quantity_band_display[
                 "median_reference_vs_current_fraction"
             ] *= 100
+        quantity_disagreement_evaluation_display = (
+            quantity_disagreement_bands[
+                [
+                    "band_label",
+                    "n_rows",
+                    "median_reconciled_vs_mean_fraction",
+                    "clear_plausibility_preference_share",
+                    "plausibility_first_trigger_share",
+                    "plausibility_first_improves_share",
+                ]
+            ].copy()
+        )
+        quantity_reference_band_display = (
+            quantity_disagreement_bands[
+                [
+                    "band_label",
+                    "reference_between_reporters_share",
+                    "current_closest_to_reference_share",
+                    "export_closest_to_reference_share",
+                    "import_closest_to_reference_share",
+                    "median_reference_vs_current_fraction",
+                ]
+            ].copy()
+        )
         # --------------------------------------------------------------
         # Markdown
         # --------------------------------------------------------------
@@ -3382,66 +3407,35 @@ def build_trade_sync_report(
             document_path=report_path,
         ),
         "",
-        "",
         "## 9. Bilateral quantity reconciliation",
         "",
         (
             "The Quantity module provides standardized kilogram quantities "
-            "for the exporter and importer sides. Trade Sync converts this "
-            "bilateral evidence into one `trade_synced_quantity_kg` for each "
-            "`year × exporter × importer × product` observation."
+            "for the exporter and importer sides. When both usable quantities "
+            "are available for the same `year × exporter × importer × product` "
+            "observation, Trade Sync must reconcile two potentially different "
+            "physical-quantity reports into one bilateral quantity."
         ),
         "",
         (
-            "When both usable quantities are available, the reconciled trade "
-            "value is used as the common value anchor. Exporter quantity, "
-            "importer quantity, and their simple bilateral mean each imply a "
-            "unit value. Trade Sync selects the quantity candidate whose "
-            "implied unit value is closest to the robust product-year "
-            "unit-value reference. If only one usable quantity exists, it is "
-            "retained unchanged; if neither exists, the synchronized quantity "
-            "remains missing."
+            "Several reconciliation approaches were evaluated rather than "
+            "assuming that one quantity construction is automatically correct. "
+            "The sections below first describe the available quantity evidence, "
+            "then define the candidate approaches, compare their behaviour, and "
+            "finally document the production decision."
         ),
         "",
-        "### 9.1 Final Trade-Synced quantity",
+        "### 9.1 Quantity evidence",
         "",
         (
-            "The following table summarizes the final quantity outcome applied "
-            "by Trade Sync. Percentages for the unit-value-guided methods use "
-            "rows with usable quantities on both sides as the denominator."
+            "Before comparing reconciliation methods, Trade Sync describes "
+            "the quantity evidence available from the two reporting sides: "
+            "how often both quantities exist, how strongly they disagree, "
+            "and how consistently each reporting direction agrees with its "
+            "mirror evidence."
         ),
         "",
-        _markdown_table(quantity_trade_sync_summary),
-        "",
-        (
-            "For bilateral observations, the next table shows how candidate "
-            "selection changes as exporter–importer quantity disagreement "
-            "becomes more severe."
-        ),
-        "",
-        _markdown_table(
-            quantity_trade_sync_band_display.rename(
-                columns={
-                    "band_label": "Quantity difference",
-                    "n_rows": "Rows",
-                    "trade_synced_export_share": (
-                        "Exporter selected (%)"
-                    ),
-                    "trade_synced_import_share": (
-                        "Importer selected (%)"
-                    ),
-                    "trade_synced_mean_share": (
-                        "Mean selected (%)"
-                    ),
-                    "trade_synced_no_reference_share": (
-                        "Mean — no reference (%)"
-                    ),
-                }
-            )
-        ),
-        "",
-        "",
-        "### 9.2 Quantity availability",
+        markdown_styled_heading(text="9.1.1 Quantity availability"),
         "",
         "| Quantity availability | Rows |",
         "|---|---:|",
@@ -3462,7 +3456,7 @@ def build_trade_sync_report(
             f"{_format_integer(n_no_quantity)} |"
         ),
         "",
-        "### 9.3 Mirror-report disagreement",
+        markdown_styled_heading(text="9.1.2 Mirror-report disagreement"),
         "",
         (
             "Among rows with usable quantities on both sides, the median "
@@ -3485,43 +3479,140 @@ def build_trade_sync_report(
             document_path=report_path,
         ),
         "",
-        "### 9.4 Quantity reporting reliability",
+        markdown_styled_heading(text="9.1.3 Quantity-reporting reliability"),
         "",
-        (
-            "The median quantity-specific reliability index is "
-            f"`{_format_percent(median_export_quantity_reliability)}` "
-            "for exporter-side reporting and "
-            f"`{_format_percent(median_import_quantity_reliability)}` "
-            "for importer-side reporting."
+        _markdown_table(
+            pd.DataFrame(
+                [
+                    {
+                        "Measure": "Exporter-side median reliability",
+                        "Value": _format_percent(
+                            median_export_quantity_reliability
+                        ),
+                    },
+                    {
+                        "Measure": "Importer-side median reliability",
+                        "Value": _format_percent(
+                            median_import_quantity_reliability
+                        ),
+                    },
+                    {
+                        "Measure": "Median absolute exporter–importer gap",
+                        "Value": _format_percent(
+                            median_quantity_reliability_gap
+                        ),
+                    },
+                ]
+            )
         ),
         "",
         (
-            "The median absolute exporter–importer reliability gap within "
-            "bilateral quantity observations is "
-            f"`{_format_percent(median_quantity_reliability_gap)}`."
+            "Interpretation: quantity reliability is a mirror-consistency "
+            "signal, not a direct observation of the unknown true quantity."
+        ),
+        "",
+        "### 9.2 Candidate reconciliation approaches",
+        "",
+        (
+            "Trade Sync evaluated several ways of combining or assessing the "
+            "two bilateral quantity reports. These approaches use different "
+            "sources of evidence and therefore answer different methodological "
+            "questions."
+        ),
+        "",
+        markdown_styled_heading(text="9.2.1 Simple bilateral mean"),
+        "",
+        (
+            "The simplest symmetric candidate gives exporter and importer "
+            "quantities equal influence:"
         ),
         "",
         (
-            "These quantity reliability measures are mirror-consistency "
-            "signals. They indicate how consistently a reporting side agrees "
-            "with its mirror evidence; they are not direct observations of "
+            "`Q_mean = (Q_export + Q_import) / 2`"
+        ),
+        "",
+        (
+            "This candidate does not assume that either reporting side is more "
+            "reliable. It therefore provides a transparent neutral benchmark "
+            "against which weighted reconciliation methods can be compared."
+        ),
+        "",
+        markdown_styled_heading(text="9.2.2 Value-reliability weights applied to quantity"),
+        "",
+        (
+            "One candidate applies the same reporter weights used for trade-value "
+            "reconciliation to the corresponding exporter and importer quantities:"
+        ),
+        "",
+        (
+            "`Q_value_weighted = "
+            "w_export_value × Q_export + "
+            "w_import_value × Q_import`"
+        ),
+        "",
+        (
+            "These weights originate from mirror-value reporting consistency. "
+            "Using them for quantity preserves the same relative reporter influence "
+            "across the value and quantity dimensions, but it also assumes that "
+            "value-reporting reliability is informative about quantity-reporting "
+            "reliability."
+        ),
+        "",
+        markdown_styled_heading(
+            text="9.2.3 Quantity-specific reliability weights"
+            ),
+        "",
+        (
+            "A second weighted candidate estimates reliability directly from "
+            "quantity mirror-report consistency and uses those quantity-specific "
+            "weights to combine the two reports:"
+        ),
+        "",
+        (
+            "`Q_quantity_weighted = "
+            "w_export_quantity × Q_export + "
+            "w_import_quantity × Q_import`"
+        ),
+        "",
+        (
+            "This approach separates quantity reliability from the reliability "
+            "evidence used to reconcile monetary trade values. The resulting "
+            "weights are mirror-consistency signals rather than observations of "
             "the unknown true quantity."
         ),
         "",
-        "### 9.5 Reconciliation method composition",
-        "",
-        _markdown_table(quantity_method_summary),
-        "",
-        (
-            "When both usable quantities are available and quantity-specific "
-            "reliability weights can be formed, Trade Sync applies the "
-            "reliability-weighted quantity. Bilateral rows without usable "
-            "quantity reliability fall back to the simple mean. Unilateral "
-            "usable quantities are retained unchanged."
+        markdown_styled_heading(
+            text="9.2.4 Unit-value plausibility"
         ),
         "",
-        "### 9.6 Effect of reconciliation",
+        (
+            "A separate diagnostic approach evaluates quantity candidates through "
+            "the unit values they imply when combined with the reconciled trade value."
+        ),
         "",
+        (
+            "Exporter quantity, importer quantity, and alternative reconciled "
+            "quantities can therefore be compared against the robust product-year "
+            "unit-value reference."
+        ),
+        "",
+        (
+            "This evidence is used as a diagnostic cross-check rather than as "
+            "direct evidence of the unknown true quantity. A candidate being "
+            "closer to the product-year reference does not by itself establish "
+            "that the candidate is correct."
+        ),
+        "### 9.3 Candidate evaluation",
+        "",
+        "",
+        (
+            "The candidate constructions are evaluated against each other rather "
+            "than treating any one of them as observed truth."
+        ),
+        "",
+        markdown_styled_heading(
+            text="9.3.1 Comparison with the simple bilateral mean"
+            ),
         (
             "Relative to a simple bilateral mean, the final reconciled "
             "quantity differs by a median absolute amount of "
@@ -3529,6 +3620,10 @@ def build_trade_sync_report(
             "and by "
             f"`{_format_percent(p90_quantity_reconciled_vs_mean)}` "
             "at the 90th percentile."
+        ),
+        "",
+        markdown_styled_heading(
+            text="9.3.2 Comparison with value-reliability weighting"
         ),
         "",
         (
@@ -3546,8 +3641,14 @@ def build_trade_sync_report(
             document_path=report_path,
         ),
         "",
-        "### 9.7 Unit-value plausibility",
+        markdown_styled_heading(
+            text="9.3.3 Unit-value plausibility"
+            ),
         "",
+        (
+            "This section evaluates the unit-value plausibility of candidate quantities."
+        ),
+        _markdown_table(quantity_disagreement_evaluation_display),
         (
             "A product-year implied-unit-value reference can be evaluated for "
             f"`{_format_integer(n_plausibility_comparable)}` bilateral "
@@ -3567,58 +3668,7 @@ def build_trade_sync_report(
             "stage. It has not been folded into the production quantity "
             "weights."
         ),
-        "",
-        "### 9.8 Extreme-disagreement evidence",
-        "",
-        (
-            f"`{_format_integer(n_extreme_quantity_disagreement)}` bilateral "
-            "quantity observations differ by more than 90% relative to the "
-            "larger report."
-        ),
-        "",
-        (
-            "Of these extreme-disagreement rows, "
-            f"`{_format_integer(n_extreme_with_plausibility)}` have usable "
-            "unit-value plausibility evidence."
-        ),
-        "",
-        (
-            "A clear difference of at least one robust-distance unit between "
-            "the two implied-unit-value candidates occurs in "
-            f"`{_format_percent(extreme_clear_plausibility_share)}` of the "
-            "extreme rows with comparable plausibility evidence."
-        ),
-        "",
-        _markdown_table(
-            quantity_band_display.rename(
-                columns={
-                    "band_label": "Quantity difference",
-                    "n_rows": "Rows",
-                    "median_quantity_reliability_gap": (
-                        "Median reliability gap (%)"
-                    ),
-                    "median_reconciled_vs_mean_fraction": (
-                        "Median reconciliation effect (%)"
-                    ),
-                    "plausibility_evidence_share": (
-                        "Plausibility evidence (%)"
-                    ),
-                    "clear_plausibility_preference_share": (
-                        "Clear plausibility preference (%)"
-                    ),
-                }
-            )
-        ),
-        "",
-        markdown_image(
-            "Unit-value plausibility by quantity-disagreement severity",
-            figure_paths[
-                "quantity_plausibility_by_disagreement"
-            ],
-            document_path=report_path,
-        ),
-        "",
-        "### 9.9 Plausibility-first counterfactual",
+        "**Plausibility-first counterfactual**",
         "",
         (
             "To evaluate whether row-specific unit-value evidence could improve "
@@ -3673,8 +3723,90 @@ def build_trade_sync_report(
             "`quantity_reconciled_kg` is unchanged."
         ),
         "",
-
-        "### 9.10 Product-year unit-value reference quantity",
+        "",
+        markdown_styled_heading(text="9.3.4 Extreme-disagreement behaviour"),
+        "",
+        (
+            "This section evaluates the reference-band behaviour of candidate quantities."
+        ),
+        _markdown_table(quantity_reference_band_display),
+        (
+            f"`{_format_integer(n_extreme_quantity_disagreement)}` bilateral "
+            "quantity observations differ by more than 90% relative to the "
+            "larger report."
+        ),
+        "",
+        (
+            "Of these extreme-disagreement rows, "
+            f"`{_format_integer(n_extreme_with_plausibility)}` have usable "
+            "unit-value plausibility evidence."
+        ),
+        "",
+        (
+            "A clear difference of at least one robust-distance unit between "
+            "the two implied-unit-value candidates occurs in "
+            f"`{_format_percent(extreme_clear_plausibility_share)}` of the "
+            "extreme rows with comparable plausibility evidence."
+        ),
+        "",
+        _markdown_table(
+            quantity_band_display.rename(
+                columns={
+                    "band_label": "Quantity difference",
+                    "n_rows": "Rows",
+                    "median_quantity_reliability_gap": (
+                        "Median reliability gap (%)"
+                    ),
+                    "median_reconciled_vs_mean_fraction": (
+                        "Median reconciliation effect (%)"
+                    ),
+                    "plausibility_evidence_share": (
+                        "Plausibility evidence (%)"
+                    ),
+                    "clear_plausibility_preference_share": (
+                        "Clear plausibility preference (%)"
+                    ),
+                }
+            )
+        ),
+        "",
+        markdown_image(
+            "Unit-value plausibility by quantity-disagreement severity",
+            figure_paths[
+                "quantity_plausibility_by_disagreement"
+            ],
+            document_path=report_path,
+        ),
+        "",
+        "",
+        (
+            "For bilateral observations, the next table shows how candidate "
+            "selection changes as exporter–importer quantity disagreement "
+            "becomes more severe."
+        ),
+        "",
+        _markdown_table(
+            quantity_trade_sync_band_display.rename(
+                columns={
+                    "band_label": "Quantity difference",
+                    "n_rows": "Rows",
+                    "trade_synced_export_share": (
+                        "Exporter selected (%)"
+                    ),
+                    "trade_synced_import_share": (
+                        "Importer selected (%)"
+                    ),
+                    "trade_synced_mean_share": (
+                        "Mean selected (%)"
+                    ),
+                    "trade_synced_no_reference_share": (
+                        "Mean — no reference (%)"
+                    ),
+                }
+            )
+        ),
+        "",
+        markdown_styled_heading(text="9.3.5 Product-year reference-quantity diagnostics"),
         "",
         (
             "For each bilateral product-year observation, Trade Sync "
@@ -3703,25 +3835,49 @@ def build_trade_sync_report(
         "",
         _markdown_table(quantity_band_display),
         "",
-        "### 9.11 Methodological assessment",
+        "### 9.4 Reconciliation decision",
+        "",
+        markdown_styled_heading(text="9.4.1 Production quantity rule"),
         "",
         (
-            "The current quantity reconciliation therefore uses two distinct "
-            "levels of evidence. Quantity-specific reporter reliability "
-            "determines the production bilateral weights, while reconciled-value "
-            "unit-value plausibility independently tests whether one quantity "
-            "candidate appears substantially more consistent with the "
-            "product-year value structure."
+            "The following table summarizes the final quantity outcome applied "
+            "by Trade Sync. Percentages for the unit-value-guided methods use "
+            "rows with usable quantities on both sides as the denominator."
+        ),
+        "",
+        _markdown_table(quantity_trade_sync_summary),
+        "",
+        markdown_styled_heading(text="9.4.2 Method composition"),
+        "",
+        _markdown_table(quantity_method_summary),
+        "",
+        (
+            "When both usable quantities are available and quantity-specific "
+            "reliability weights can be formed, Trade Sync applies the "
+            "reliability-weighted quantity. Bilateral rows without usable "
+            "quantity reliability fall back to the simple mean. Unilateral "
+            "usable quantities are retained unchanged."
+        ),
+        "",
+        markdown_styled_heading(
+            text="9.4.3 Methodological assessment"
         ),
         "",
         (
-            "The unit-value evidence should be interpreted as a diagnostic "
-            "cross-check rather than proof that one reporter is correct. "
-            "The disagreement-band and extreme-case results determine whether "
-            "this evidence is sufficiently discriminating and stable to justify "
-            "incorporating it into a later quantity-reconciliation formulation."
+            "The quantity analysis distinguishes three sources of evidence. "
+            "Trade-value reliability measures consistency in monetary mirror "
+            "reports; quantity-specific reliability measures consistency in "
+            "physical-quantity mirror reports; and unit-value plausibility "
+            "evaluates the resulting value–quantity relationship against "
+            "broader product-year evidence."
         ),
         "",
+        (
+            "None of these signals is a direct observation of the unknown true "
+            "quantity. Reporter-reliability measures define or compare "
+            "reconciliation candidates, while unit-value evidence provides an "
+            "independent diagnostic cross-check."
+        ),
     
         "## 10. Reconciliation composition",
         "",
@@ -3846,7 +4002,18 @@ def build_trade_sync_report(
         insert_markdown_toc(
             lines,
             min_level=2,
-            max_level=3,
+            max_level=4,
+            flat_sublevels=True,
+            heading_styles={
+                2: {
+                    "font_size": "1.60em",
+                    "color": "#1F5A94",
+                },
+                3: {
+                    "font_size": "1.35em",
+                    "color": "#7A3E00",
+                },
+            }
         )
 
         report_path.write_text(
