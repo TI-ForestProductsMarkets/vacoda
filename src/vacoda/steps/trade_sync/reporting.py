@@ -173,7 +173,7 @@ def _plot_quantity_reconciliation_effect_by_year(
     diagnostics: pd.DataFrame,
     output_path: Path,
 ) -> None:
-    """Plot the effect of final quantity reconciliation by year."""
+    """Compare quantity-reliability-weighted quantity with the simple mean by year."""
 
     median_frame = diagnostics[
         diagnostics["diagnostic_scope"].eq("quantity_year")
@@ -226,7 +226,7 @@ def _plot_quantity_reconciliation_effect_by_year(
     )
 
     axis.set_title(
-        "Final reconciled quantity versus simple bilateral mean"
+        "Quantity-reliability-weighted quantity versus simple mean"
     )
     axis.set_xlabel("Year")
     axis.set_ylabel("Absolute difference (%)")
@@ -1075,7 +1075,7 @@ def _plot_reconciliation_status_by_year(
     figure, axis = plt.subplots(figsize=(11, 6))
     pivot.plot(kind="bar", stacked=True, ax=axis)
 
-    axis.set_title("Trade Sync reconciliation status by year")
+    axis.set_title("Trade Sync value reconciliation status by year")
     axis.set_xlabel("Year")
     axis.set_ylabel("Number of bilateral product rows")
     axis.grid(axis="y", linestyle="--", alpha=0.5)
@@ -3583,25 +3583,13 @@ def build_trade_sync_report(
         ),
         "",
         markdown_styled_heading(
-            text="9.2.4 Unit-value plausibility"
+            text="9.2.4 Unit-value diagnostics"
         ),
         "",
         (
-            "A separate diagnostic approach evaluates quantity candidates through "
-            "the unit values they imply when combined with the reconciled trade value."
-        ),
-        "",
-        (
-            "Exporter quantity, importer quantity, and alternative reconciled "
-            "quantities can therefore be compared against the robust product-year "
-            "unit-value reference."
-        ),
-        "",
-        (
-            "This evidence is used as a diagnostic cross-check rather than as "
-            "direct evidence of the unknown true quantity. A candidate being "
-            "closer to the product-year reference does not by itself establish "
-            "that the candidate is correct."
+            "The unit-value diagnostic compares the value/kg implied by each "
+            "quantity candidate with the robust product-year value/kg reference. "
+            "It is used to assess candidates, not to identify a known true quantity."
         ),
         "### 9.3 Candidate evaluation",
         "",
@@ -3612,131 +3600,133 @@ def build_trade_sync_report(
         ),
         "",
         markdown_styled_heading(
-            text="9.3.1 Comparison with the simple bilateral mean"
-            ),
-        (
-            "Relative to a simple bilateral mean, the final reconciled "
-            "quantity differs by a median absolute amount of "
-            f"`{_format_percent(median_quantity_reconciled_vs_mean)}` "
-            "and by "
-            f"`{_format_percent(p90_quantity_reconciled_vs_mean)}` "
-            "at the 90th percentile."
+            text="9.3.1 Quantity-reconciliation effect"
         ),
         "",
-        markdown_styled_heading(
-            text="9.3.2 Comparison with value-reliability weighting"
+        _markdown_table(
+            pd.DataFrame(
+                [
+                    {
+                        "Comparison": (
+                            "Quantity-reliability vs simple mean"
+                        ),
+                        "Median difference": _format_percent(
+                            median_quantity_reconciled_vs_mean
+                        ),
+                        "P90 difference": _format_percent(
+                            p90_quantity_reconciled_vs_mean
+                        ),
+                    },
+                    {
+                        "Comparison": (
+                            "Quantity-reliability vs value-weighted"
+                        ),
+                        "Median difference": _format_percent(
+                            median_quantity_reliability_vs_value_weighted
+                        ),
+                        "P90 difference": _format_percent(
+                            p90_quantity_reliability_vs_value_weighted
+                        ),
+                    },
+                ]
+            )
         ),
-        "",
         (
-            "Compared with applying the existing trade-value reliability "
-            "weights to quantity, the quantity-specific reliability candidate "
-            "differs by a median absolute amount of "
-            f"`{_format_percent(median_quantity_reliability_vs_value_weighted)}` "
-            "and a P90 amount of "
-            f"`{_format_percent(p90_quantity_reliability_vs_value_weighted)}`."
+            "The figure below shows the first comparison by year: "
+            "quantity-specific reliability versus the simple bilateral mean. "
+            "The two lines show the median and P90 absolute differences."
         ),
         "",
         markdown_image(
-            "Final quantity reconciliation versus simple bilateral mean",
+            "Quantity-reliability reconciliation versus simple bilateral mean by year",
             figure_paths["quantity_reconciliation_effect"],
             document_path=report_path,
         ),
         "",
+        (
+            "- Takeaway: quantity-specific reliability remains relatively close "
+            "to the simple mean, while the difference from applying value-side "
+            "weights to quantity is substantially larger."
+        ),
+        "",
         markdown_styled_heading(
-            text="9.3.3 Unit-value plausibility"
-            ),
-        "",
-        (
-            "This section evaluates the unit-value plausibility of candidate quantities."
-        ),
-        _markdown_table(quantity_disagreement_evaluation_display),
-        (
-            "A product-year implied-unit-value reference can be evaluated for "
-            f"`{_format_integer(n_plausibility_comparable)}` bilateral "
-            "quantity observations."
+            text="9.3.2 Unit-value diagnostic results"
         ),
         "",
-        (
-            "Among rows with comparable plausibility evidence, the exporter "
-            "quantity is closer to the product-year unit-value reference in "
-            f"`{_format_percent(export_more_plausible_share)}` of cases, "
-            "while the importer quantity is closer in "
-            f"`{_format_percent(import_more_plausible_share)}`."
-        ),
-        "",
-        (
-            "This plausibility evidence is intentionally diagnostic at this "
-            "stage. It has not been folded into the production quantity "
-            "weights."
-        ),
-        "**Plausibility-first counterfactual**",
-        "",
-        (
-            "To evaluate whether row-specific unit-value evidence could improve "
-            "the current reliability-only reconciliation, a counterfactual "
-            "quantity was constructed. When exporter and importer implied "
-            "unit-value robust distances differ by at least one unit, the "
-            "quantity associated with the smaller distance is selected. "
-            "Otherwise the current reliability-weighted quantity is retained."
-        ),
-        "",
-        (
-            f"This rule is decisive for "
-            f"`{_format_integer(n_plausibility_decisive)}` bilateral rows "
-            f"({_format_percent(plausibility_decisive_share)} of bilateral "
-            "quantity observations)."
-        ),
-        "",
-        (
-            f"The exporter quantity is selected in "
-            f"`{_format_integer(n_plausibility_export_selected)}` cases and "
-            f"the importer quantity in "
-            f"`{_format_integer(n_plausibility_import_selected)}` cases."
-        ),
-        "",
-        (
-            "Where the plausibility-first rule is decisive, it changes the "
-            "current reconciled quantity by a median absolute amount of "
-            f"`{_format_percent(median_plausibility_first_change)}` and a "
-            f"P90 amount of "
-            f"`{_format_percent(p90_plausibility_first_change)}`."
-        ),
-        "",
-        (
-            "Most importantly, the plausibility-first candidate produces a "
-            "smaller product-year unit-value robust distance than the current "
-            "reliability-weighted quantity in "
-            f"`{_format_percent(plausibility_first_improves_share)}` of "
-            "comparable decisive cases."
-        ),
-        "",
-        (
-            "The median reduction in robust unit-value distance is "
-            f"`{median_robust_distance_improvement:.3f}`."
-            if median_robust_distance_improvement is not None
-            else (
-                "The median robust-distance improvement could not be evaluated."
+        _markdown_table(
+            pd.DataFrame(
+                [
+                    {
+                        "Measure": "Bilateral rows evaluated",
+                        "Result": _format_integer(n_plausibility_comparable),
+                    },
+                    {
+                        "Measure": "Exporter quantity closer to reference",
+                        "Result": _format_percent(export_more_plausible_share),
+                    },
+                    {
+                        "Measure": "Importer quantity closer to reference",
+                        "Result": _format_percent(import_more_plausible_share),
+                    },
+                    {
+                        "Measure": "Rows with a clear reporter difference",
+                        "Result": (
+                            f"{_format_integer(n_plausibility_decisive)} "
+                            f"({_format_percent(plausibility_decisive_share)})"
+                        ),
+                    },
+                    {
+                        "Measure": (
+                            "Median quantity change if the closer reporter were used"
+                        ),
+                        "Result": _format_percent(
+                            median_plausibility_first_change
+                        ),
+                    },
+                    {
+                        "Measure": (
+                            "P90 quantity change if the closer reporter were used"
+                        ),
+                        "Result": _format_percent(
+                            p90_plausibility_first_change
+                        ),
+                    },
+                ]
             )
         ),
         "",
         (
-            "This remains a counterfactual diagnostic. The production "
-            "`quantity_reconciled_kg` is unchanged."
+            "- Takeaway: the product-year value/kg reference often distinguishes "
+            "between the two reporter quantities, but following it can produce "
+            "large quantity changes. It is therefore retained as a diagnostic."
         ),
         "",
         "",
-        markdown_styled_heading(text="9.3.4 Extreme-disagreement behaviour"),
+        markdown_styled_heading(text="9.3.3 Quantity-disagreement band analysis"),
         "",
         (
             "This section evaluates the reference-band behaviour of candidate quantities."
         ),
-        _markdown_table(quantity_reference_band_display),
-        (
-            f"`{_format_integer(n_extreme_quantity_disagreement)}` bilateral "
-            "quantity observations differ by more than 90% relative to the "
-            "larger report."
+        _markdown_table(
+            quantity_disagreement_evaluation_display.rename(
+                columns={
+                    "band_label": "Quantity difference",
+                    "n_rows": "Rows",
+                    "median_reconciled_vs_mean_fraction": (
+                        "Median difference from simple mean (%)"
+                    ),
+                    "clear_plausibility_preference_share": (
+                        "Clear reporter difference from value/kg diagnostic (%)"
+                    ),
+                    "plausibility_first_trigger_share": (
+                        "Rows where diagnostic distinguishes reporters (%)"
+                    ),
+                    "plausibility_first_improves_share": (
+                        "Closer reporter improves value/kg fit (%)"
+                    ),
+                }
+            )
         ),
-        "",
         (
             "Of these extreme-disagreement rows, "
             f"`{_format_integer(n_extreme_with_plausibility)}` have usable "
@@ -3807,7 +3797,7 @@ def build_trade_sync_report(
             )
         ),
         "",
-        markdown_styled_heading(text="9.3.5 Product-year reference-quantity diagnostics"),
+        markdown_styled_heading(text="9.3.4 Product-year reference-quantity diagnostics"),
         "",
         (
             "For each bilateral product-year observation, Trade Sync "
@@ -3834,7 +3824,30 @@ def build_trade_sync_report(
             "as exporter-importer quantity disagreement becomes more severe."
         ),
         "",
-        _markdown_table(quantity_band_display),
+        _markdown_table(
+            quantity_reference_band_display.rename(
+                columns={
+                    "band_label": "Quantity difference",
+                    "reference_between_reporters_share": (
+                        "Reference between reporter quantities (%)"
+                    ),
+                    "current_closest_to_reference_share": (
+                        "Quantity-reliability result closest (%)"
+                    ),
+                    "export_closest_to_reference_share": (
+                        "Exporter quantity closest (%)"
+                    ),
+                    "import_closest_to_reference_share": (
+                        "Importer quantity closest (%)"
+                    ),
+                    "median_reference_vs_current_fraction": (
+                        "Median reference-vs-reliability difference (%)"
+                    ),
+                }
+            )
+        ),
+        "",
+        _markdown_table(quantity_reference_band_display),
         "",
         "### 9.4 Reconciliation decision",
         "",
@@ -3880,7 +3893,7 @@ def build_trade_sync_report(
             "independent diagnostic cross-check."
         ),
     
-        "## 10. Reconciliation composition",
+        "## 10. Value reconciliation composition",
         "",
         (
             "The following table reports how the complete CIF/FOB input "
