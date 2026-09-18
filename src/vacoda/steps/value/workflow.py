@@ -32,17 +32,11 @@ from vacoda.steps.value.deflate import deflate_trade_values
 from vacoda.steps.value.audit import run_value_output_audit
 from vacoda.steps.value.reporting import build_value_report
 
-# These will be added as the module is built:
-# from vacoda.value.deflate import deflate_trade_values
-# from vacoda.value.audit import run_value_output_audit
-# from vacoda.value.reporting import build_value_report
-
 
 REQUIRED_PRODUCTS = (
     "deflated_trade",
     "audit",
 )
-
 
 WORKFLOW_STEPS = [
     "Prepare US GDP deflator",
