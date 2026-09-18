@@ -500,7 +500,33 @@ def build_trade_sync_diagnostics(
                     )
                 ELSE NULL
             END AS quantity_reliability_vs_mean_fraction,
+        
+            CASE
+                WHEN quantity_simple_mean_kg > 0
+                 AND quantity_value_weighted_kg IS NOT NULL
+                    THEN (
+                        ABS(
+                            quantity_value_weighted_kg
+                            - quantity_simple_mean_kg
+                        )
+                        / quantity_simple_mean_kg
+                    )
+                ELSE NULL
+            END AS quantity_value_weighted_vs_mean_fraction,
 
+            CASE
+                WHEN quantity_simple_mean_kg > 0
+                 AND trade_synced_quantity_kg IS NOT NULL
+                    THEN (
+                        ABS(
+                            trade_synced_quantity_kg
+                            - quantity_simple_mean_kg
+                        )
+                        / quantity_simple_mean_kg
+                    )
+                ELSE NULL
+            END AS quantity_trade_synced_vs_mean_fraction,
+            
             CASE
                 WHEN quantity_value_weighted_kg > 0
                  AND quantity_reliability_weighted_kg IS NOT NULL
@@ -574,6 +600,78 @@ def build_trade_sync_diagnostics(
 
                 ELSE quantity_reconciled_kg
             END AS quantity_plausibility_first_kg,
+    
+            CASE
+                WHEN trade_value_reconciled > 0
+                 AND quantity_simple_mean_kg > 0
+                 AND product_year_median_unit_value > 0
+                 AND product_year_log_unit_value_mad > 0
+                    THEN (
+                        ABS(
+                            LN(
+                                trade_value_reconciled
+                                / quantity_simple_mean_kg
+                            )
+                            - LN(product_year_median_unit_value)
+                        )
+                        / product_year_log_unit_value_mad
+                    )
+                ELSE NULL
+            END AS simple_mean_unit_value_robust_distance,
+
+            CASE
+                WHEN trade_value_reconciled > 0
+                 AND quantity_value_weighted_kg > 0
+                 AND product_year_median_unit_value > 0
+                 AND product_year_log_unit_value_mad > 0
+                    THEN (
+                        ABS(
+                            LN(
+                                trade_value_reconciled
+                                / quantity_value_weighted_kg
+                            )
+                            - LN(product_year_median_unit_value)
+                        )
+                        / product_year_log_unit_value_mad
+                    )
+                ELSE NULL
+            END AS value_weighted_unit_value_robust_distance,
+
+            CASE
+                WHEN trade_value_reconciled > 0
+                 AND quantity_reliability_weighted_kg > 0
+                 AND product_year_median_unit_value > 0
+                 AND product_year_log_unit_value_mad > 0
+                    THEN (
+                        ABS(
+                            LN(
+                                trade_value_reconciled
+                                / quantity_reliability_weighted_kg
+                            )
+                            - LN(product_year_median_unit_value)
+                        )
+                        / product_year_log_unit_value_mad
+                    )
+                ELSE NULL
+            END AS quantity_reliability_unit_value_robust_distance,
+
+            CASE
+                WHEN trade_value_reconciled > 0
+                 AND trade_synced_quantity_kg > 0
+                 AND product_year_median_unit_value > 0
+                 AND product_year_log_unit_value_mad > 0
+                    THEN (
+                        ABS(
+                            LN(
+                                trade_value_reconciled
+                                / trade_synced_quantity_kg
+                            )
+                            - LN(product_year_median_unit_value)
+                        )
+                        / product_year_log_unit_value_mad
+                    )
+                ELSE NULL
+            END AS trade_synced_unit_value_robust_distance,
 
             -- --------------------------------------------------------------
             -- Existing value diagnostics
@@ -767,6 +865,686 @@ def build_trade_sync_diagnostics(
                     AS quantity_plausibility_first_vs_current_fraction
 
             FROM reconciliation_base
+        ),
+    
+        -- ==============================================================
+        -- Common evaluation of the four bilateral quantity candidates
+        -- ==============================================================
+
+        quantity_candidate_long AS (
+
+            SELECT
+                year,
+                quantity_relative_difference,
+
+                exporter_iso,
+                importer_iso,
+                target_cmd,
+                export_synchronized_quantity_kg,
+                import_synchronized_quantity_kg,
+
+                export_implied_unit_value,
+                import_implied_unit_value,
+
+                trade_value_reconciled,
+                product_year_median_unit_value,
+                product_year_log_unit_value_mad,
+
+                'simple_mean' AS candidate_method,
+                quantity_simple_mean_kg AS candidate_quantity_kg
+
+            FROM plausibility_counterfactual
+            WHERE quantity_availability_case = 'both_quantity'
+
+            UNION ALL
+
+            SELECT
+                year,
+                quantity_relative_difference,
+
+                exporter_iso,
+                importer_iso,
+                target_cmd,
+
+                export_synchronized_quantity_kg,
+                import_synchronized_quantity_kg,
+
+                export_implied_unit_value,
+                import_implied_unit_value,
+
+                trade_value_reconciled,
+                product_year_median_unit_value,
+                product_year_log_unit_value_mad,
+
+                'value_weighted' AS candidate_method,
+                quantity_value_weighted_kg AS candidate_quantity_kg
+
+            FROM plausibility_counterfactual
+            WHERE quantity_availability_case = 'both_quantity'
+
+            UNION ALL
+
+            SELECT
+                year,
+                quantity_relative_difference,
+
+                exporter_iso,
+                importer_iso,
+                target_cmd,
+
+                export_synchronized_quantity_kg,
+                import_synchronized_quantity_kg,
+
+                export_implied_unit_value,
+                import_implied_unit_value,
+
+                trade_value_reconciled,
+                product_year_median_unit_value,
+                product_year_log_unit_value_mad,
+
+                'quantity_reliability_weighted' AS candidate_method,
+                quantity_reliability_weighted_kg AS candidate_quantity_kg
+
+            FROM plausibility_counterfactual
+            WHERE quantity_availability_case = 'both_quantity'
+
+            UNION ALL
+
+            SELECT
+                year,
+                quantity_relative_difference,
+
+                exporter_iso,
+                importer_iso,
+                target_cmd,
+
+                export_synchronized_quantity_kg,
+                import_synchronized_quantity_kg,
+
+                export_implied_unit_value,
+                import_implied_unit_value,
+
+                trade_value_reconciled,
+                product_year_median_unit_value,
+                product_year_log_unit_value_mad,
+
+                'unit_value_guided' AS candidate_method,
+                trade_synced_quantity_kg AS candidate_quantity_kg
+
+            FROM plausibility_counterfactual
+            WHERE quantity_availability_case = 'both_quantity'
+        ),
+
+        quantity_candidate_post_sync AS (
+            SELECT
+                *,
+
+                CASE
+                    WHEN trade_value_reconciled > 0
+                     AND candidate_quantity_kg > 0
+                        THEN (
+                            trade_value_reconciled
+                            / candidate_quantity_kg
+                        )
+                    ELSE NULL
+                END AS candidate_unit_value
+
+            FROM quantity_candidate_long
+        ),
+
+        quantity_candidate_evaluated AS (
+            SELECT
+                *,
+
+                -- ------------------------------------------------------
+                -- 1. Preservation of original reporter-pair structure
+                -- ------------------------------------------------------
+
+                CASE
+                    WHEN candidate_unit_value > 0
+                     AND export_implied_unit_value > 0
+                     AND import_implied_unit_value > 0
+                        THEN (
+                            candidate_unit_value
+                            BETWEEN
+                                LEAST(
+                                    export_implied_unit_value,
+                                    import_implied_unit_value
+                                )
+                            AND
+                                GREATEST(
+                                    export_implied_unit_value,
+                                    import_implied_unit_value
+                                )
+                        )
+                    ELSE NULL
+                END AS unit_value_inside_reporter_range,
+
+                CASE
+                    WHEN candidate_unit_value > 0
+                     AND export_implied_unit_value > 0
+                     AND import_implied_unit_value > 0
+                     AND candidate_unit_value
+                         < LEAST(
+                             export_implied_unit_value,
+                             import_implied_unit_value
+                         )
+                        THEN ABS(
+                            LN(
+                                candidate_unit_value
+                                / LEAST(
+                                    export_implied_unit_value,
+                                    import_implied_unit_value
+                                )
+                            )
+                        )
+
+                    WHEN candidate_unit_value > 0
+                     AND export_implied_unit_value > 0
+                     AND import_implied_unit_value > 0
+                     AND candidate_unit_value
+                         > GREATEST(
+                             export_implied_unit_value,
+                             import_implied_unit_value
+                         )
+                        THEN ABS(
+                            LN(
+                                candidate_unit_value
+                                / GREATEST(
+                                    export_implied_unit_value,
+                                    import_implied_unit_value
+                                )
+                            )
+                        )
+
+                    WHEN candidate_unit_value > 0
+                     AND export_implied_unit_value > 0
+                     AND import_implied_unit_value > 0
+                        THEN 0.0
+
+                    ELSE NULL
+                END AS unit_value_outside_reporter_log_distance,
+
+                -- ------------------------------------------------------
+                -- 2. Consistency with product-year value/kg reference
+                -- ------------------------------------------------------
+
+                CASE
+                    WHEN candidate_unit_value > 0
+                     AND product_year_median_unit_value > 0
+                     AND product_year_log_unit_value_mad > 0
+                        THEN (
+                            ABS(
+                                LN(candidate_unit_value)
+                                - LN(product_year_median_unit_value)
+                            )
+                            / product_year_log_unit_value_mad
+                        )
+                    ELSE NULL
+                END AS reference_robust_distance,
+
+                -- ------------------------------------------------------
+                -- 4. Amount of transformation away from observations
+                -- ------------------------------------------------------
+
+                CASE
+                    WHEN candidate_quantity_kg > 0
+                     AND export_synchronized_quantity_kg > 0
+                     AND import_synchronized_quantity_kg > 0
+                        THEN (
+                            LEAST(
+                                ABS(
+                                    candidate_quantity_kg
+                                    - export_synchronized_quantity_kg
+                                ),
+                                ABS(
+                                    candidate_quantity_kg
+                                    - import_synchronized_quantity_kg
+                                )
+                            )
+                            /
+                            GREATEST(
+                                export_synchronized_quantity_kg,
+                                import_synchronized_quantity_kg
+                            )
+                        )
+                    ELSE NULL
+                END AS nearest_report_quantity_fraction
+
+            FROM quantity_candidate_post_sync
+        ),
+
+                quantity_three_candidate_match AS (
+            SELECT
+                year,
+                exporter_iso,
+                importer_iso,
+                target_cmd,
+                candidate_method,
+                candidate_quantity_kg,
+                candidate_unit_value,
+                reference_robust_distance,
+
+                MIN(reference_robust_distance) OVER (
+                    PARTITION BY
+                        year,
+                        exporter_iso,
+                        importer_iso,
+                        target_cmd
+                ) AS minimum_reference_distance
+
+            FROM quantity_candidate_evaluated
+
+            WHERE candidate_method IN (
+                'simple_mean',
+                'value_weighted',
+                'quantity_reliability_weighted'
+            )
+              AND reference_robust_distance IS NOT NULL
+        ),
+
+        quantity_three_candidate_classified AS (
+            SELECT
+                *,
+
+                CASE
+                    WHEN ABS(
+                        reference_robust_distance
+                        - minimum_reference_distance
+                    ) < 1e-12
+                        THEN 1
+                    ELSE 0
+                END AS is_best_candidate
+
+            FROM quantity_three_candidate_match
+        ),
+
+        quantity_three_candidate_row_result AS (
+            SELECT
+                year,
+                exporter_iso,
+                importer_iso,
+                target_cmd,
+
+                SUM(is_best_candidate) AS n_best_candidates,
+
+                MAX(
+                    CASE
+                        WHEN is_best_candidate = 1
+                            THEN candidate_method
+                        ELSE NULL
+                    END
+                ) AS best_candidate_if_unique
+
+            FROM quantity_three_candidate_classified
+
+            GROUP BY
+                year,
+                exporter_iso,
+                importer_iso,
+                target_cmd
+        ),
+        
+        quantity_three_candidate_summary_wide AS (
+            SELECT
+
+                CAST(
+                    COUNT(*)
+                    AS DOUBLE
+                ) AS n_comparable_rows,
+
+                CAST(
+                    COUNT(*) FILTER (
+                        WHERE n_best_candidates = 1
+                          AND best_candidate_if_unique = 'simple_mean'
+                    )
+                    AS DOUBLE
+                ) AS n_simple_mean_best,
+
+                CAST(
+                    COUNT(*) FILTER (
+                        WHERE n_best_candidates = 1
+                          AND best_candidate_if_unique = 'value_weighted'
+                    )
+                    AS DOUBLE
+                ) AS n_value_weighted_best,
+
+                CAST(
+                    COUNT(*) FILTER (
+                        WHERE n_best_candidates = 1
+                          AND best_candidate_if_unique
+                                = 'quantity_reliability_weighted'
+                    )
+                    AS DOUBLE
+                ) AS n_quantity_reliability_best,
+
+                CAST(
+                    COUNT(*) FILTER (
+                        WHERE n_best_candidates > 1
+                    )
+                    AS DOUBLE
+                ) AS n_ties,
+
+                CAST(
+                    AVG(
+                        CASE
+                            WHEN n_best_candidates = 1
+                             AND best_candidate_if_unique = 'simple_mean'
+                                THEN 1.0
+                            WHEN n_best_candidates = 1
+                                THEN 0.0
+                            ELSE NULL
+                        END
+                    )
+                    AS DOUBLE
+                ) AS simple_mean_best_share,
+
+                CAST(
+                    AVG(
+                        CASE
+                            WHEN n_best_candidates = 1
+                             AND best_candidate_if_unique = 'value_weighted'
+                                THEN 1.0
+                            WHEN n_best_candidates = 1
+                                THEN 0.0
+                            ELSE NULL
+                        END
+                    )
+                    AS DOUBLE
+                ) AS value_weighted_best_share,
+
+                CAST(
+                    AVG(
+                        CASE
+                            WHEN n_best_candidates = 1
+                             AND best_candidate_if_unique
+                                    = 'quantity_reliability_weighted'
+                                THEN 1.0
+                            WHEN n_best_candidates = 1
+                                THEN 0.0
+                            ELSE NULL
+                        END
+                    )
+                    AS DOUBLE
+                ) AS quantity_reliability_best_share
+
+            FROM quantity_three_candidate_row_result
+        ),
+
+        quantity_three_candidate_extreme_result AS (
+            SELECT
+                classified.year,
+                classified.exporter_iso,
+                classified.importer_iso,
+                classified.target_cmd,
+
+                SUM(classified.is_best_candidate)
+                    AS n_best_candidates,
+
+                MAX(
+                    CASE
+                        WHEN classified.is_best_candidate = 1
+                            THEN classified.candidate_method
+                        ELSE NULL
+                    END
+                ) AS best_candidate_if_unique
+
+            FROM quantity_three_candidate_classified AS classified
+
+            INNER JOIN quantity_candidate_evaluated AS source
+                ON classified.year = source.year
+               AND classified.exporter_iso = source.exporter_iso
+               AND classified.importer_iso = source.importer_iso
+               AND classified.target_cmd = source.target_cmd
+               AND source.candidate_method = 'simple_mean'
+
+            WHERE source.quantity_relative_difference > 0.90
+
+            GROUP BY
+                classified.year,
+                classified.exporter_iso,
+                classified.importer_iso,
+                classified.target_cmd
+        ),
+
+        quantity_three_candidate_extreme_wide AS (
+            SELECT
+                CAST(COUNT(*) AS DOUBLE)
+                    AS n_comparable_rows,
+
+                CAST(
+                    AVG(
+                        CASE
+                            WHEN n_best_candidates = 1
+                             AND best_candidate_if_unique = 'simple_mean'
+                                THEN 1.0
+                            WHEN n_best_candidates = 1
+                                THEN 0.0
+                            ELSE NULL
+                        END
+                    )
+                    AS DOUBLE
+                ) AS simple_mean_best_share,
+
+                CAST(
+                    AVG(
+                        CASE
+                            WHEN n_best_candidates = 1
+                             AND best_candidate_if_unique = 'value_weighted'
+                                THEN 1.0
+                            WHEN n_best_candidates = 1
+                                THEN 0.0
+                            ELSE NULL
+                        END
+                    )
+                    AS DOUBLE
+                ) AS value_weighted_best_share,
+
+                CAST(
+                    AVG(
+                        CASE
+                            WHEN n_best_candidates = 1
+                             AND best_candidate_if_unique
+                                    = 'quantity_reliability_weighted'
+                                THEN 1.0
+                            WHEN n_best_candidates = 1
+                                THEN 0.0
+                            ELSE NULL
+                        END
+                    )
+                    AS DOUBLE
+                ) AS quantity_reliability_best_share,
+
+                CAST(
+                    AVG(
+                        CASE
+                            WHEN n_best_candidates > 1
+                                THEN 1.0
+                            ELSE 0.0
+                        END
+                    )
+                    AS DOUBLE
+                ) AS tie_share
+
+            FROM quantity_three_candidate_extreme_result
+        ),
+        quantity_original_pair_wide AS (
+            SELECT
+
+                CAST(
+                    COUNT(*) FILTER (
+                        WHERE quantity_availability_case = 'both_quantity'
+                          AND export_implied_unit_value > 0
+                          AND import_implied_unit_value > 0
+                    )
+                    AS DOUBLE
+                ) AS n_original_pair_rows,
+
+                CAST(
+                    AVG(
+                        CASE
+                            WHEN export_unit_value_robust_distance
+                                    < import_unit_value_robust_distance
+                                THEN 1.0
+                            WHEN export_unit_value_robust_distance IS NOT NULL
+                             AND import_unit_value_robust_distance IS NOT NULL
+                                THEN 0.0
+                            ELSE NULL
+                        END
+                    )
+                    AS DOUBLE
+                ) AS export_closer_to_reference_share,
+
+                CAST(
+                    AVG(
+                        CASE
+                            WHEN import_unit_value_robust_distance
+                                    < export_unit_value_robust_distance
+                                THEN 1.0
+                            WHEN export_unit_value_robust_distance IS NOT NULL
+                             AND import_unit_value_robust_distance IS NOT NULL
+                                THEN 0.0
+                            ELSE NULL
+                        END
+                    )
+                    AS DOUBLE
+                ) AS import_closer_to_reference_share,
+
+                CAST(
+                    AVG(
+                        CASE
+                            WHEN export_unit_value_robust_distance IS NOT NULL
+                             AND import_unit_value_robust_distance IS NOT NULL
+                             AND ABS(
+                                 export_unit_value_robust_distance
+                                 - import_unit_value_robust_distance
+                             ) >= 1.0
+                                THEN 1.0
+                            WHEN export_unit_value_robust_distance IS NOT NULL
+                             AND import_unit_value_robust_distance IS NOT NULL
+                                THEN 0.0
+                            ELSE NULL
+                        END
+                    )
+                    AS DOUBLE
+                ) AS clear_reference_preference_share,
+
+                CAST(
+                    MEDIAN(
+                        ABS(
+                            LN(
+                                export_implied_unit_value
+                                / import_implied_unit_value
+                            )
+                        )
+                    ) FILTER (
+                        WHERE export_implied_unit_value > 0
+                          AND import_implied_unit_value > 0
+                    )
+                    AS DOUBLE
+                ) AS median_original_unit_value_log_gap
+
+            FROM plausibility_counterfactual
+        ),
+
+        quantity_candidate_overall_wide AS (
+            SELECT
+                candidate_method,
+
+                CAST(COUNT(*) AS DOUBLE) AS n_rows,
+
+                CAST(
+                    AVG(
+                        CASE
+                            WHEN unit_value_inside_reporter_range
+                                THEN 1.0
+                            WHEN unit_value_inside_reporter_range IS NOT NULL
+                                THEN 0.0
+                            ELSE NULL
+                        END
+                    )
+                    AS DOUBLE
+                ) AS reporter_unit_value_range_share,
+
+                CAST(
+                    MEDIAN(
+                        unit_value_outside_reporter_log_distance
+                    ) FILTER (
+                        WHERE unit_value_outside_reporter_log_distance > 0
+                    )
+                    AS DOUBLE
+                ) AS median_outside_reporter_log_distance,
+
+                CAST(
+                    MEDIAN(reference_robust_distance)
+                    AS DOUBLE
+                ) AS median_reference_robust_distance,
+
+                CAST(
+                    QUANTILE_CONT(
+                        reference_robust_distance,
+                        0.90
+                    )
+                    AS DOUBLE
+                ) AS p90_reference_robust_distance,
+
+                CAST(
+                    MEDIAN(nearest_report_quantity_fraction)
+                    AS DOUBLE
+                ) AS median_nearest_report_quantity_fraction,
+
+                CAST(
+                    QUANTILE_CONT(
+                        nearest_report_quantity_fraction,
+                        0.90
+                    )
+                    AS DOUBLE
+                ) AS p90_nearest_report_quantity_fraction
+
+            FROM quantity_candidate_evaluated
+
+            WHERE candidate_quantity_kg IS NOT NULL
+              AND candidate_quantity_kg > 0
+
+            GROUP BY candidate_method
+        ),
+
+        quantity_candidate_extreme_wide AS (
+            SELECT
+                candidate_method,
+
+                CAST(COUNT(*) AS DOUBLE) AS n_rows,
+
+                CAST(
+                    AVG(
+                        CASE
+                            WHEN unit_value_inside_reporter_range
+                                THEN 1.0
+                            WHEN unit_value_inside_reporter_range IS NOT NULL
+                                THEN 0.0
+                            ELSE NULL
+                        END
+                    )
+                    AS DOUBLE
+                ) AS reporter_unit_value_range_share,
+
+                CAST(
+                    MEDIAN(reference_robust_distance)
+                    AS DOUBLE
+                ) AS median_reference_robust_distance,
+
+                CAST(
+                    MEDIAN(nearest_report_quantity_fraction)
+                    AS DOUBLE
+                ) AS median_nearest_report_quantity_fraction
+
+            FROM quantity_candidate_evaluated
+
+            WHERE quantity_relative_difference > 0.90
+              AND candidate_quantity_kg IS NOT NULL
+              AND candidate_quantity_kg > 0
+
+            GROUP BY candidate_method
         ),
 
         quantity_reference_target AS (
@@ -1200,6 +1978,81 @@ def build_trade_sync_diagnostics(
                     )
                     AS DOUBLE
                 ) AS p90_quantity_reconciled_vs_mean_fraction,
+
+                CAST(
+                    MEDIAN(
+                        quantity_value_weighted_vs_mean_fraction
+                    )
+                    AS DOUBLE
+                ) AS median_quantity_value_weighted_vs_mean_fraction,
+
+                CAST(
+                    QUANTILE_CONT(
+                        quantity_value_weighted_vs_mean_fraction,
+                        0.90
+                    )
+                    AS DOUBLE
+                ) AS p90_quantity_value_weighted_vs_mean_fraction,
+
+                CAST(
+                    MEDIAN(
+                        quantity_trade_synced_vs_mean_fraction
+                    )
+                    AS DOUBLE
+                ) AS median_quantity_trade_synced_vs_mean_fraction,
+
+                CAST(
+                    QUANTILE_CONT(
+                        quantity_trade_synced_vs_mean_fraction,
+                        0.90
+                    )
+                    AS DOUBLE
+                ) AS p90_quantity_trade_synced_vs_mean_fraction,
+
+                CAST(
+                    QUANTILE_CONT(
+                        simple_mean_unit_value_robust_distance,
+                        0.90
+                    )
+                    AS DOUBLE
+                ) AS p90_simple_mean_unit_value_distance,
+
+
+                CAST(
+                    QUANTILE_CONT(
+                        value_weighted_unit_value_robust_distance,
+                        0.90
+                    )
+                    AS DOUBLE
+                ) AS p90_value_weighted_unit_value_distance,
+
+                CAST(
+                    MEDIAN(
+                        quantity_reliability_unit_value_robust_distance
+                    )
+                    AS DOUBLE
+                ) AS median_quantity_reliability_unit_value_distance,
+
+                CAST(
+                    QUANTILE_CONT(
+                        quantity_reliability_unit_value_robust_distance,
+                        0.90
+                    )
+                    AS DOUBLE
+                ) AS p90_quantity_reliability_unit_value_distance,
+
+                CAST(
+                    MEDIAN(trade_synced_unit_value_robust_distance)
+                    AS DOUBLE
+                ) AS median_trade_synced_unit_value_distance,
+
+                CAST(
+                    QUANTILE_CONT(
+                        trade_synced_unit_value_robust_distance,
+                        0.90
+                    )
+                    AS DOUBLE
+                ) AS p90_trade_synced_unit_value_distance,
 
                 CAST(
                     MEDIAN(quantity_reliability_vs_value_weighted_fraction)
@@ -1767,6 +2620,18 @@ def build_trade_sync_diagnostics(
                     quantity_reconciled_vs_mean_fraction
                 ) AS median_reconciled_vs_mean_fraction,
 
+                                MEDIAN(
+                    quantity_value_weighted_vs_mean_fraction
+                ) AS median_value_weighted_vs_mean_fraction,
+
+                MEDIAN(
+                    quantity_reliability_vs_mean_fraction
+                ) AS median_quantity_reliability_vs_mean_fraction,
+
+                MEDIAN(
+                    quantity_trade_synced_vs_mean_fraction
+                ) AS median_trade_synced_vs_mean_fraction,
+                
                 AVG(
                     CASE
                         WHEN export_unit_value_robust_distance IS NOT NULL
@@ -2252,6 +3117,150 @@ def build_trade_sync_diagnostics(
                 'n_rows'::VARCHAR AS metric,
                 n_rows AS metric_value
             FROM overall_wide
+
+            
+            UNION ALL
+
+            SELECT
+                'quantity_three_candidate_match',
+                NULL,
+                NULL,
+                NULL,
+                'n_comparable_rows',
+                n_comparable_rows
+            FROM quantity_three_candidate_summary_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_three_candidate_match',
+                NULL,
+                NULL,
+                NULL,
+                'n_simple_mean_best',
+                n_simple_mean_best
+            FROM quantity_three_candidate_summary_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_three_candidate_match',
+                NULL,
+                NULL,
+                NULL,
+                'n_value_weighted_best',
+                n_value_weighted_best
+            FROM quantity_three_candidate_summary_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_three_candidate_match',
+                NULL,
+                NULL,
+                NULL,
+                'n_quantity_reliability_best',
+                n_quantity_reliability_best
+            FROM quantity_three_candidate_summary_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_three_candidate_match',
+                NULL,
+                NULL,
+                NULL,
+                'n_ties',
+                n_ties
+            FROM quantity_three_candidate_summary_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_three_candidate_match',
+                NULL,
+                NULL,
+                NULL,
+                'simple_mean_best_share',
+                simple_mean_best_share
+            FROM quantity_three_candidate_summary_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_three_candidate_match',
+                NULL,
+                NULL,
+                NULL,
+                'value_weighted_best_share',
+                value_weighted_best_share
+            FROM quantity_three_candidate_summary_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_three_candidate_match',
+                NULL,
+                NULL,
+                NULL,
+                'quantity_reliability_best_share',
+                quantity_reliability_best_share
+            FROM quantity_three_candidate_summary_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_three_candidate_extreme',
+                NULL,
+                NULL,
+                NULL,
+                'n_comparable_rows',
+                n_comparable_rows
+            FROM quantity_three_candidate_extreme_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_three_candidate_extreme',
+                NULL,
+                NULL,
+                NULL,
+                'simple_mean_best_share',
+                simple_mean_best_share
+            FROM quantity_three_candidate_extreme_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_three_candidate_extreme',
+                NULL,
+                NULL,
+                NULL,
+                'value_weighted_best_share',
+                value_weighted_best_share
+            FROM quantity_three_candidate_extreme_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_three_candidate_extreme',
+                NULL,
+                NULL,
+                NULL,
+                'quantity_reliability_best_share',
+                quantity_reliability_best_share
+            FROM quantity_three_candidate_extreme_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_three_candidate_extreme',
+                NULL,
+                NULL,
+                NULL,
+                'tie_share',
+                tie_share
+            FROM quantity_three_candidate_extreme_wide
 
             UNION ALL
 
@@ -2855,6 +3864,50 @@ def build_trade_sync_diagnostics(
                 NULL,
                 NULL,
                 NULL,
+                'median_quantity_value_weighted_vs_mean_fraction',
+                median_quantity_value_weighted_vs_mean_fraction
+            FROM quantity_overall_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_overall',
+                NULL,
+                NULL,
+                NULL,
+                'p90_quantity_value_weighted_vs_mean_fraction',
+                p90_quantity_value_weighted_vs_mean_fraction
+            FROM quantity_overall_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_overall',
+                NULL,
+                NULL,
+                NULL,
+                'median_quantity_trade_synced_vs_mean_fraction',
+                median_quantity_trade_synced_vs_mean_fraction
+            FROM quantity_overall_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_overall',
+                NULL,
+                NULL,
+                NULL,
+                'p90_quantity_trade_synced_vs_mean_fraction',
+                p90_quantity_trade_synced_vs_mean_fraction
+            FROM quantity_overall_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_overall',
+                NULL,
+                NULL,
+                NULL,
                 'median_quantity_reliability_vs_value_weighted_fraction',
                 median_quantity_reliability_vs_value_weighted_fraction
             FROM quantity_overall_wide
@@ -3095,7 +4148,7 @@ def build_trade_sync_diagnostics(
             FROM quantity_extreme_plausibility_wide
 
 
-                        -- ==========================================================
+            -- ==========================================================
             -- Final Trade-Synced quantity metrics
             -- ==========================================================
 
@@ -3232,7 +4285,7 @@ def build_trade_sync_diagnostics(
             FROM quantity_trade_sync_wide
 
 
-                        UNION ALL
+            UNION ALL
 
             SELECT
                 'quantity_disagreement_band',
@@ -3534,6 +4587,39 @@ def build_trade_sync_diagnostics(
                 NULL,
                 quantity_disagreement_band,
                 NULL,
+                'median_value_weighted_vs_mean_fraction',
+                median_value_weighted_vs_mean_fraction
+            FROM quantity_disagreement_band_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_disagreement_band',
+                NULL,
+                quantity_disagreement_band,
+                NULL,
+                'median_quantity_reliability_vs_mean_fraction',
+                median_quantity_reliability_vs_mean_fraction
+            FROM quantity_disagreement_band_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_disagreement_band',
+                NULL,
+                quantity_disagreement_band,
+                NULL,
+                'median_trade_synced_vs_mean_fraction',
+                median_trade_synced_vs_mean_fraction
+            FROM quantity_disagreement_band_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_disagreement_band',
+                NULL,
+                quantity_disagreement_band,
+                NULL,
                 'plausibility_evidence_share',
                 plausibility_evidence_share
             FROM quantity_disagreement_band_wide
@@ -3757,6 +4843,182 @@ def build_trade_sync_diagnostics(
                 'quantity_within_10pct_share',
                 quantity_within_10pct_share
             FROM quantity_year_wide
+
+                    UNION ALL
+
+            SELECT
+                'quantity_original_pair',
+                NULL,
+                NULL,
+                NULL,
+                'n_original_pair_rows',
+                n_original_pair_rows
+            FROM quantity_original_pair_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_original_pair',
+                NULL,
+                NULL,
+                NULL,
+                'export_closer_to_reference_share',
+                export_closer_to_reference_share
+            FROM quantity_original_pair_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_original_pair',
+                NULL,
+                NULL,
+                NULL,
+                'import_closer_to_reference_share',
+                import_closer_to_reference_share
+            FROM quantity_original_pair_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_original_pair',
+                NULL,
+                NULL,
+                NULL,
+                'clear_reference_preference_share',
+                clear_reference_preference_share
+            FROM quantity_original_pair_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_original_pair',
+                NULL,
+                NULL,
+                NULL,
+                'median_original_unit_value_log_gap',
+                median_original_unit_value_log_gap
+            FROM quantity_original_pair_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_candidate_overall',
+                NULL,
+                candidate_method,
+                NULL,
+                'n_rows',
+                n_rows
+            FROM quantity_candidate_overall_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_candidate_overall',
+                NULL,
+                candidate_method,
+                NULL,
+                'reporter_unit_value_range_share',
+                reporter_unit_value_range_share
+            FROM quantity_candidate_overall_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_candidate_overall',
+                NULL,
+                candidate_method,
+                NULL,
+                'median_outside_reporter_log_distance',
+                median_outside_reporter_log_distance
+            FROM quantity_candidate_overall_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_candidate_overall',
+                NULL,
+                candidate_method,
+                NULL,
+                'median_reference_robust_distance',
+                median_reference_robust_distance
+            FROM quantity_candidate_overall_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_candidate_overall',
+                NULL,
+                candidate_method,
+                NULL,
+                'p90_reference_robust_distance',
+                p90_reference_robust_distance
+            FROM quantity_candidate_overall_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_candidate_overall',
+                NULL,
+                candidate_method,
+                NULL,
+                'median_nearest_report_quantity_fraction',
+                median_nearest_report_quantity_fraction
+            FROM quantity_candidate_overall_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_candidate_overall',
+                NULL,
+                candidate_method,
+                NULL,
+                'p90_nearest_report_quantity_fraction',
+                p90_nearest_report_quantity_fraction
+            FROM quantity_candidate_overall_wide
+
+                        UNION ALL
+
+            SELECT
+                'quantity_candidate_extreme',
+                NULL,
+                candidate_method,
+                NULL,
+                'n_rows',
+                n_rows
+            FROM quantity_candidate_extreme_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_candidate_extreme',
+                NULL,
+                candidate_method,
+                NULL,
+                'reporter_unit_value_range_share',
+                reporter_unit_value_range_share
+            FROM quantity_candidate_extreme_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_candidate_extreme',
+                NULL,
+                candidate_method,
+                NULL,
+                'median_reference_robust_distance',
+                median_reference_robust_distance
+            FROM quantity_candidate_extreme_wide
+
+            UNION ALL
+
+            SELECT
+                'quantity_candidate_extreme',
+                NULL,
+                candidate_method,
+                NULL,
+                'median_nearest_report_quantity_fraction',
+                median_nearest_report_quantity_fraction
+            FROM quantity_candidate_extreme_wide
         )
 
         SELECT *
@@ -3942,13 +5204,51 @@ def build_trade_sync_diagnostics(
                 f"{int(n_nonfinite_metric_values):,} non-finite metrics."
             )
 
-        if int(n_diagnostic_scopes) != 11:
+        actual_diagnostic_scopes = {
+            str(row[0])
+            for row in con.execute(
+                f"""
+                SELECT DISTINCT diagnostic_scope
+                FROM read_parquet({output_sql})
+                WHERE diagnostic_scope IS NOT NULL
+                """
+            ).fetchall()
+        }
+
+        expected_diagnostic_scopes = {
+            "overall",
+            "year",
+            "year_status",
+            "country_reliability",
+            "quantity_overall",
+            "quantity_plausibility",
+            "quantity_plausibility_first",
+            "quantity_disagreement_band",
+            "quantity_reference",
+            "quantity_trade_sync",
+            "quantity_year",
+            "quantity_original_pair",
+            "quantity_candidate_overall",
+            "quantity_candidate_extreme",
+            "quantity_three_candidate_match",
+            "quantity_three_candidate_extreme",
+        }
+
+        missing_scopes = (
+            expected_diagnostic_scopes
+            - actual_diagnostic_scopes
+        )
+
+        unexpected_scopes = (
+            actual_diagnostic_scopes
+            - expected_diagnostic_scopes
+        )
+
+        if missing_scopes or unexpected_scopes:
             raise RuntimeError(
-                "Trade Sync diagnostics did not produce all expected "
-                "scopes: overall, year, year_status, country_reliability, "
-                "quantity_overall, quantity_plausibility, "
-                "quantity_plausibility_first, quantity_disagreement_band, "
-                "quantity_reference, quantity_trade_sync,and quantity_year."
+                "Unexpected Trade Sync diagnostic scopes. "
+                f"Missing: {sorted(missing_scopes)}; "
+                f"Unexpected: {sorted(unexpected_scopes)}."
             )
 
         if overall_both_quantity_rows is None:

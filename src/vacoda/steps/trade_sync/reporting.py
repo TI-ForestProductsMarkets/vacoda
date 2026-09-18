@@ -1383,6 +1383,74 @@ def build_trade_sync_report(
             """
         ).fetchdf()
 
+        candidate_labels = {
+            "simple_mean": "Simple mean",
+            "value_weighted": "Value-weighted quantity",
+            "quantity_reliability_weighted": (
+                "Quantity-reliability-weighted quantity"
+            ),
+            "unit_value_guided": "Unit-value-guided quantity",
+        }
+
+        candidate_order = [
+            "simple_mean",
+            "value_weighted",
+            "quantity_reliability_weighted",
+            "unit_value_guided",
+        ]
+
+        quantity_candidate_overall = (
+            diagnostics[
+                diagnostics["diagnostic_scope"].eq(
+                    "quantity_candidate_overall"
+                )
+            ]
+            .pivot_table(
+                index="reconciliation_status",
+                columns="metric",
+                values="metric_value",
+                aggfunc="first",
+            )
+            .reindex(candidate_order)
+            .reset_index()
+            .rename(
+                columns={
+                    "reconciliation_status": "candidate_method"
+                }
+            )
+        )
+
+        quantity_candidate_overall["Candidate"] = (
+            quantity_candidate_overall["candidate_method"]
+            .map(candidate_labels)
+        )
+
+        quantity_candidate_extreme = (
+            diagnostics[
+                diagnostics["diagnostic_scope"].eq(
+                    "quantity_candidate_extreme"
+                )
+            ]
+            .pivot_table(
+                index="reconciliation_status",
+                columns="metric",
+                values="metric_value",
+                aggfunc="first",
+            )
+            .reindex(candidate_order)
+            .reset_index()
+            .rename(
+                columns={
+                    "reconciliation_status": "candidate_method"
+                }
+            )
+        )
+
+        quantity_candidate_extreme["Candidate"] = (
+            quantity_candidate_extreme["candidate_method"]
+            .map(candidate_labels)
+        )
+
         audit = con.execute(
             f"""
             SELECT *
@@ -1601,6 +1669,87 @@ def build_trade_sync_report(
             diagnostics,
             scope="quantity_plausibility_first",
             metric="median_robust_distance_improvement",
+        )
+
+        three_candidate_rows = _metric_lookup(
+            diagnostics,
+            scope="quantity_three_candidate_match",
+            metric="n_comparable_rows",
+        )
+
+        n_simple_mean_best = _metric_lookup(
+            diagnostics,
+            scope="quantity_three_candidate_match",
+            metric="n_simple_mean_best",
+        )
+
+        n_value_weighted_best = _metric_lookup(
+            diagnostics,
+            scope="quantity_three_candidate_match",
+            metric="n_value_weighted_best",
+        )
+
+        n_quantity_reliability_best = _metric_lookup(
+            diagnostics,
+            scope="quantity_three_candidate_match",
+            metric="n_quantity_reliability_best",
+        )
+
+        n_three_candidate_ties = _metric_lookup(
+            diagnostics,
+            scope="quantity_three_candidate_match",
+            metric="n_ties",
+        )
+
+        simple_mean_best_share = _metric_lookup(
+            diagnostics,
+            scope="quantity_three_candidate_match",
+            metric="simple_mean_best_share",
+        )
+
+        value_weighted_best_share = _metric_lookup(
+            diagnostics,
+            scope="quantity_three_candidate_match",
+            metric="value_weighted_best_share",
+        )
+
+        quantity_reliability_best_share = _metric_lookup(
+            diagnostics,
+            scope="quantity_three_candidate_match",
+            metric="quantity_reliability_best_share",
+        )
+        # --------------------------------------------------------------
+        # Original reporter-pair evidence
+        # --------------------------------------------------------------
+
+        n_original_pair_rows = _metric_lookup(
+            diagnostics,
+            scope="quantity_original_pair",
+            metric="n_original_pair_rows",
+        )
+
+        export_closer_to_reference_share = _metric_lookup(
+            diagnostics,
+            scope="quantity_original_pair",
+            metric="export_closer_to_reference_share",
+        )
+
+        import_closer_to_reference_share = _metric_lookup(
+            diagnostics,
+            scope="quantity_original_pair",
+            metric="import_closer_to_reference_share",
+        )
+
+        clear_reference_preference_share = _metric_lookup(
+            diagnostics,
+            scope="quantity_original_pair",
+            metric="clear_reference_preference_share",
+        )
+
+        median_original_unit_value_log_gap = _metric_lookup(
+            diagnostics,
+            scope="quantity_original_pair",
+            metric="median_original_unit_value_log_gap",
         )
 
         # --------------------------------------------------------------
@@ -1840,6 +1989,7 @@ def build_trade_sync_report(
             scope="quantity_trade_sync",
             metric="bilateral_mean_no_reference_share",
         )
+
         quantity_disagreement_bands = diagnostics[
             diagnostics["diagnostic_scope"].eq(
                 "quantity_disagreement_band"
@@ -2761,18 +2911,29 @@ def build_trade_sync_report(
             quantity_band_display[
                 "median_reference_vs_current_fraction"
             ] *= 100
+
         quantity_disagreement_evaluation_display = (
             quantity_disagreement_bands[
                 [
                     "band_label",
                     "n_rows",
-                    "median_reconciled_vs_mean_fraction",
-                    "clear_plausibility_preference_share",
-                    "plausibility_first_trigger_share",
-                    "plausibility_first_improves_share",
+                    "median_value_weighted_vs_mean_fraction",
+                    "median_quantity_reliability_vs_mean_fraction",
+                    "median_trade_synced_vs_mean_fraction",
                 ]
             ].copy()
+            if not quantity_disagreement_bands.empty
+            else pd.DataFrame()
         )
+
+        if not quantity_disagreement_evaluation_display.empty:
+            for column in (
+                "median_value_weighted_vs_mean_fraction",
+                "median_quantity_reliability_vs_mean_fraction",
+                "median_trade_synced_vs_mean_fraction",
+            ):
+                quantity_disagreement_evaluation_display[column] *= 100
+
         quantity_reference_band_display = (
             quantity_disagreement_bands[
                 [
@@ -3583,112 +3744,81 @@ def build_trade_sync_report(
         ),
         "",
         markdown_styled_heading(
-            text="9.2.4 Unit-value diagnostics"
+            text="9.2.4 Unit-value-guided quantity"
         ),
         "",
         (
-            "The unit-value diagnostic compares the value/kg implied by each "
-            "quantity candidate with the robust product-year value/kg reference. "
-            "It is used to assess candidates, not to identify a known true quantity."
+            "This candidate compares the exporter quantity, importer quantity, "
+            "and their simple mean using the original reporter-pair value/kg "
+            "evidence and the robust product-year value/kg reference. The selected "
+            "quantity is then combined with the reconciled Trade-Sync value."
         ),
+        "",
+        (
+            "Unlike the other three candidates, this method uses product-year "
+            "value/kg information directly when choosing among reported quantities "
+            "and their simple mean."
+        ),
+        "",
         "### 9.3 Candidate evaluation",
         "",
+        (
+            "Before Trade Sync, exporter value and quantity form one reporter "
+            "pair and importer value and quantity form another. After value "
+            "reconciliation, the two reported values are replaced by one "
+            "Trade-Sync value while the two reported quantities remain."
+        ),
         "",
         (
-            "The candidate constructions are evaluated against each other rather "
-            "than treating any one of them as observed truth."
+            "Each quantity candidate therefore produces a new post-sync "
+            "value/kg: `Trade-Sync value / candidate quantity`. The candidates "
+            "are evaluated by how they preserve information in the original "
+            "reporter pairs, their consistency with the product-year value/kg "
+            "reference, their behaviour under large quantity disagreement, "
+            "and how far they move from quantities that were actually reported."
         ),
         "",
         markdown_styled_heading(
-            text="9.3.1 Quantity-reconciliation effect"
+            text="9.3.1 Original reporter-pair evidence"
         ),
         "",
         _markdown_table(
             pd.DataFrame(
                 [
                     {
-                        "Comparison": (
-                            "Quantity-reliability vs simple mean"
+                        "Measure": "Bilateral reporter pairs evaluated",
+                        "Result": _format_integer(n_original_pair_rows),
+                    },
+                    {
+                        "Measure": (
+                            "Exporter pair closer to product-year reference"
                         ),
-                        "Median difference": _format_percent(
-                            median_quantity_reconciled_vs_mean
-                        ),
-                        "P90 difference": _format_percent(
-                            p90_quantity_reconciled_vs_mean
+                        "Result": _format_percent(
+                            export_closer_to_reference_share
                         ),
                     },
                     {
-                        "Comparison": (
-                            "Quantity-reliability vs value-weighted"
+                        "Measure": (
+                            "Importer pair closer to product-year reference"
                         ),
-                        "Median difference": _format_percent(
-                            median_quantity_reliability_vs_value_weighted
-                        ),
-                        "P90 difference": _format_percent(
-                            p90_quantity_reliability_vs_value_weighted
+                        "Result": _format_percent(
+                            import_closer_to_reference_share
                         ),
                     },
-                ]
-            )
-        ),
-        (
-            "The figure below shows the first comparison by year: "
-            "quantity-specific reliability versus the simple bilateral mean. "
-            "The two lines show the median and P90 absolute differences."
-        ),
-        "",
-        markdown_image(
-            "Quantity-reliability reconciliation versus simple bilateral mean by year",
-            figure_paths["quantity_reconciliation_effect"],
-            document_path=report_path,
-        ),
-        "",
-        (
-            "- Takeaway: quantity-specific reliability remains relatively close "
-            "to the simple mean, while the difference from applying value-side "
-            "weights to quantity is substantially larger."
-        ),
-        "",
-        markdown_styled_heading(
-            text="9.3.2 Unit-value diagnostic results"
-        ),
-        "",
-        _markdown_table(
-            pd.DataFrame(
-                [
                     {
-                        "Measure": "Bilateral rows evaluated",
-                        "Result": _format_integer(n_plausibility_comparable),
+                        "Measure": (
+                            "Rows with a clear difference between reporter pairs"
+                        ),
+                        "Result": _format_percent(
+                            clear_reference_preference_share
+                        ),
                     },
                     {
-                        "Measure": "Exporter quantity closer to reference",
-                        "Result": _format_percent(export_more_plausible_share),
-                    },
-                    {
-                        "Measure": "Importer quantity closer to reference",
-                        "Result": _format_percent(import_more_plausible_share),
-                    },
-                    {
-                        "Measure": "Rows with a clear reporter difference",
+                        "Measure": "Median exporter–importer value/kg log gap",
                         "Result": (
-                            f"{_format_integer(n_plausibility_decisive)} "
-                            f"({_format_percent(plausibility_decisive_share)})"
-                        ),
-                    },
-                    {
-                        "Measure": (
-                            "Median quantity change if the closer reporter were used"
-                        ),
-                        "Result": _format_percent(
-                            median_plausibility_first_change
-                        ),
-                    },
-                    {
-                        "Measure": (
-                            "P90 quantity change if the closer reporter were used"
-                        ),
-                        "Result": _format_percent(
-                            p90_plausibility_first_change
+                            f"{median_original_unit_value_log_gap:.3f}"
+                            if median_original_unit_value_log_gap is not None
+                            else "NA"
                         ),
                     },
                 ]
@@ -3696,203 +3826,265 @@ def build_trade_sync_report(
         ),
         "",
         (
-            "- Takeaway: the product-year value/kg reference often distinguishes "
-            "between the two reporter quantities, but following it can produce "
-            "large quantity changes. It is therefore retained as a diagnostic."
+            "These diagnostics use the original `(value, quantity)` reporter "
+            "pairs, before either quantity is combined with the reconciled "
+            "Trade-Sync value."
         ),
         "",
-        "",
-        markdown_styled_heading(text="9.3.3 Quantity-disagreement band analysis"),
-        "",
-        (
-            "This section evaluates the reference-band behaviour of candidate quantities."
-        ),
-        _markdown_table(
-            quantity_disagreement_evaluation_display.rename(
-                columns={
-                    "band_label": "Quantity difference",
-                    "n_rows": "Rows",
-                    "median_reconciled_vs_mean_fraction": (
-                        "Median difference from simple mean (%)"
-                    ),
-                    "clear_plausibility_preference_share": (
-                        "Clear reporter difference from value/kg diagnostic (%)"
-                    ),
-                    "plausibility_first_trigger_share": (
-                        "Rows where diagnostic distinguishes reporters (%)"
-                    ),
-                    "plausibility_first_improves_share": (
-                        "Closer reporter improves value/kg fit (%)"
-                    ),
-                }
-            )
-        ),
-        (
-            "Of these extreme-disagreement rows, "
-            f"`{_format_integer(n_extreme_with_plausibility)}` have usable "
-            "unit-value plausibility evidence."
+
+        markdown_styled_heading(
+            text="9.3.2 Preservation of original reporter-pair structure"
         ),
         "",
         (
-            "A clear difference of at least one robust-distance unit between "
-            "the two implied-unit-value candidates occurs in "
-            f"`{_format_percent(extreme_clear_plausibility_share)}` of the "
-            "extreme rows with comparable plausibility evidence."
+            "For each candidate quantity, the post-sync value/kg is compared "
+            "with the interval defined by the original exporter and importer "
+            "value/kg observations."
         ),
         "",
         _markdown_table(
-            quantity_band_display.rename(
-                columns={
-                    "band_label": "Quantity difference",
-                    "n_rows": "Rows",
-                    "median_quantity_reliability_gap": (
-                        "Median reliability gap (%)"
-                    ),
-                    "median_reconciled_vs_mean_fraction": (
-                        "Median reconciliation effect (%)"
-                    ),
-                    "plausibility_evidence_share": (
-                        "Plausibility evidence (%)"
-                    ),
-                    "clear_plausibility_preference_share": (
-                        "Clear plausibility preference (%)"
-                    ),
+            pd.DataFrame(
+                {
+                    "Candidate": quantity_candidate_overall["Candidate"],
+                    "Post-sync value/kg inside original reporter range": [
+                        _format_percent(value)
+                        for value in quantity_candidate_overall[
+                            "reporter_unit_value_range_share"
+                        ]
+                    ],
+                    "Median distance outside range": [
+                        (
+                            f"{value:.3f}"
+                            if pd.notna(value)
+                            else "—"
+                        )
+                        for value in quantity_candidate_overall[
+                            "median_outside_reporter_log_distance"
+                        ]
+                    ],
                 }
             )
         ),
         "",
-        markdown_image(
-            "Unit-value plausibility by quantity-disagreement severity",
-            figure_paths[
-                "quantity_plausibility_by_disagreement"
-            ],
-            document_path=report_path,
-        ),
-        "",
-        "",
         (
-            "For bilateral observations, the next table shows how candidate "
-            "selection changes as exporter–importer quantity disagreement "
-            "becomes more severe."
-        ),
-        "",
-        _markdown_table(
-            quantity_trade_sync_band_display.rename(
-                columns={
-                    "band_label": "Quantity difference",
-                    "n_rows": "Rows",
-                    "trade_synced_export_share": (
-                        "Exporter selected (%)"
-                    ),
-                    "trade_synced_import_share": (
-                        "Importer selected (%)"
-                    ),
-                    "trade_synced_mean_share": (
-                        "Mean selected (%)"
-                    ),
-                    "trade_synced_no_reference_share": (
-                        "Mean — no reference (%)"
-                    ),
-                }
-            )
-        ),
-        "",
-        markdown_styled_heading(text="9.3.4 Product-year reference-quantity diagnostics"),
-        "",
-        (
-            "For each bilateral product-year observation, Trade Sync "
-            "derives a diagnostic reference quantity from the reconciled "
-            "trade value and the robust product-year median unit value:"
-        ),
-        "",
-        (
-            "`reference quantity = reconciled trade value / "
-            "product-year median unit value`"
-        ),
-        "",
-        (
-            "This reference is not treated as the true quantity. It is "
-            "used as a product-year benchmark against which the exporter "
-            "quantity, importer quantity, and current reliability-weighted "
-            "quantity can be compared."
-        ),
-        "",
-        _markdown_table(quantity_reference_summary),
-        "",
-        (
-            "The following table shows how these relationships change "
-            "as exporter-importer quantity disagreement becomes more severe."
-        ),
-        "",
-        _markdown_table(
-            quantity_reference_band_display.rename(
-                columns={
-                    "band_label": "Quantity difference",
-                    "reference_between_reporters_share": (
-                        "Reference between reporter quantities (%)"
-                    ),
-                    "current_closest_to_reference_share": (
-                        "Quantity-reliability result closest (%)"
-                    ),
-                    "export_closest_to_reference_share": (
-                        "Exporter quantity closest (%)"
-                    ),
-                    "import_closest_to_reference_share": (
-                        "Importer quantity closest (%)"
-                    ),
-                    "median_reference_vs_current_fraction": (
-                        "Median reference-vs-reliability difference (%)"
-                    ),
-                }
-            )
-        ),
-        "",
-        _markdown_table(quantity_reference_band_display),
-        "",
-        "### 9.4 Reconciliation decision",
-        "",
-        markdown_styled_heading(text="9.4.1 Production quantity rule"),
-        "",
-        (
-            "The following table summarizes the final quantity outcome applied "
-            "by Trade Sync. Percentages for the unit-value-guided methods use "
-            "rows with usable quantities on both sides as the denominator."
-        ),
-        "",
-        _markdown_table(quantity_trade_sync_summary),
-        "",
-        markdown_styled_heading(text="9.4.2 Method composition"),
-        "",
-        _markdown_table(quantity_method_summary),
-        "",
-        (
-            "When both usable quantities are available and quantity-specific "
-            "reliability weights can be formed, Trade Sync applies the "
-            "reliability-weighted quantity. Bilateral rows without usable "
-            "quantity reliability fall back to the simple mean. Unilateral "
-            "usable quantities are retained unchanged."
+            "A candidate inside the original reporter value/kg range preserves "
+            "the value–quantity relationship represented by the two original "
+            "reporter pairs. A value outside that range represents a "
+            "post-reconciliation relationship not observed on either side."
         ),
         "",
         markdown_styled_heading(
-            text="9.4.3 Methodological assessment"
+            text="9.3.3 Consistency with product-year value/kg"
+        ),
+        "",
+        _markdown_table(
+            pd.DataFrame(
+                {
+                    "Candidate": quantity_candidate_overall["Candidate"],
+                    "Median reference distance": [
+                        f"{value:.3f}" if pd.notna(value) else "NA"
+                        for value in quantity_candidate_overall[
+                            "median_reference_robust_distance"
+                        ]
+                    ],
+                    "P90 reference distance": [
+                        f"{value:.3f}" if pd.notna(value) else "NA"
+                        for value in quantity_candidate_overall[
+                            "p90_reference_robust_distance"
+                        ]
+                    ],
+                }
+            )
         ),
         "",
         (
-            "The quantity analysis distinguishes three sources of evidence. "
-            "Trade-value reliability measures consistency in monetary mirror "
-            "reports; quantity-specific reliability measures consistency in "
-            "physical-quantity mirror reports; and unit-value plausibility "
-            "evaluates the resulting value–quantity relationship against "
-            "broader product-year evidence."
+            "The product-year reference is contextual evidence rather than an "
+            "observation of the true bilateral quantity. Lower distances mean "
+            "that the post-sync value/kg is more typical for that product-year."
+        ),
+        markdown_styled_heading(
+            text="9.3.4 Best-matching constructed quantity"
         ),
         "",
         (
-            "None of these signals is a direct observation of the unknown true "
-            "quantity. Reporter-reliability measures define or compare "
-            "reconciliation candidates, while unit-value evidence provides an "
-            "independent diagnostic cross-check."
+            "Trade Sync constructs three bilateral quantity candidates independently "
+            "of the product-year value/kg reference: the simple mean, the "
+            "value-weighted quantity, and the quantity-reliability-weighted quantity. "
+            "For each bilateral row, the reconciled Trade-Sync value is divided by "
+            "each candidate quantity. The candidate whose resulting value/kg is "
+            "closest to the product-year reference is identified below."
         ),
-    
+        "",
+        _markdown_table(
+            pd.DataFrame(
+                [
+                    {
+                        "Constructed candidate": "Simple mean",
+                        "Rows closest to HS×year value/kg": (
+                            _format_integer(n_simple_mean_best)
+                        ),
+                        "Share of unique best matches": (
+                            _format_percent(simple_mean_best_share)
+                        ),
+                    },
+                    {
+                        "Constructed candidate": "Value-weighted quantity",
+                        "Rows closest to HS×year value/kg": (
+                            _format_integer(n_value_weighted_best)
+                        ),
+                        "Share of unique best matches": (
+                            _format_percent(value_weighted_best_share)
+                        ),
+                    },
+                    {
+                        "Constructed candidate": (
+                            "Quantity-reliability-weighted quantity"
+                        ),
+                        "Rows closest to HS×year value/kg": (
+                            _format_integer(n_quantity_reliability_best)
+                        ),
+                        "Share of unique best matches": (
+                            _format_percent(quantity_reliability_best_share)
+                        ),
+                    },
+                ]
+            )
+        ),
+        "",
+        (
+            f"The comparison covers {_format_integer(three_candidate_rows)} "
+            "bilateral rows with usable product-year reference information. "
+            f"{_format_integer(n_three_candidate_ties)} rows produced a tie for "
+            "the closest candidate and are excluded from the percentage shares."
+        ),
+        "",
+        (
+            "This diagnostic does not alter the quantity candidate. It only compares "
+            "the three independently constructed quantities against the same "
+            "post-reconciliation value/kg reference."
+        ),
+        "",
+        "",
+         markdown_styled_heading(
+            text="9.3.5 Behaviour under strong quantity disagreement"
+        ),
+        "",
+        (
+            "The following diagnostics are restricted to bilateral rows where "
+            "exporter and importer quantities differ by more than 90% relative "
+            "to the larger report."
+        ),
+        "",
+        _markdown_table(
+            pd.DataFrame(
+                {
+                    "Candidate": quantity_candidate_extreme["Candidate"],
+                    "Rows": [
+                        _format_integer(value)
+                        for value in quantity_candidate_extreme["n_rows"]
+                    ],
+                    "Value/kg inside original reporter range": [
+                        _format_percent(value)
+                        for value in quantity_candidate_extreme[
+                            "reporter_unit_value_range_share"
+                        ]
+                    ],
+                    "Median product-year reference distance": [
+                        f"{value:.3f}" if pd.notna(value) else "NA"
+                        for value in quantity_candidate_extreme[
+                            "median_reference_robust_distance"
+                        ]
+                    ],
+                    "Median distance from nearest reported quantity": [
+                        _format_percent(value)
+                        for value in quantity_candidate_extreme[
+                            "median_nearest_report_quantity_fraction"
+                        ]
+                    ],
+                }
+            )
+        ),
+        "",
+            markdown_styled_heading(
+            text="9.3.6 Amount of quantity transformation"
+        ),
+        "",
+        (
+            "This diagnostic measures how far each candidate lies from the "
+            "nearest quantity actually reported by either side. It is "
+            "descriptive: a larger transformation is not automatically wrong, "
+            "but it represents more construction beyond the observed quantities."
+        ),
+        "",
+        _markdown_table(
+            pd.DataFrame(
+                {
+                    "Candidate": quantity_candidate_overall["Candidate"],
+                    "Median distance from nearest reported quantity": [
+                        _format_percent(value)
+                        for value in quantity_candidate_overall[
+                            "median_nearest_report_quantity_fraction"
+                        ]
+                    ],
+                    "P90 distance from nearest reported quantity": [
+                        _format_percent(value)
+                        for value in quantity_candidate_overall[
+                            "p90_nearest_report_quantity_fraction"
+                        ]
+                    ],
+                }
+            )
+        ),
+        "",
+
+        "### 9.4 Trade-Sync quantity decision",
+        "",
+        (
+            "The four candidate methods are compared below using the same "
+            "criteria. The production choice should preserve the information "
+            "contained in the original reporter pairs while avoiding undue "
+            "dependence on any one diagnostic signal."
+        ),
+        "",
+        _markdown_table(
+            pd.DataFrame(
+                {
+                    "Candidate": quantity_candidate_overall["Candidate"],
+                    "Reporter-pair range preserved": [
+                        _format_percent(value)
+                        for value in quantity_candidate_overall[
+                            "reporter_unit_value_range_share"
+                        ]
+                    ],
+                    "Median product-year reference distance": [
+                        f"{value:.3f}" if pd.notna(value) else "NA"
+                        for value in quantity_candidate_overall[
+                            "median_reference_robust_distance"
+                        ]
+                    ],
+                    "Median distance from nearest reported quantity": [
+                        _format_percent(value)
+                        for value in quantity_candidate_overall[
+                            "median_nearest_report_quantity_fraction"
+                        ]
+                    ],
+                }
+            )
+        ),
+        "",
+        (
+            "The current implementation of `trade_synced_quantity_kg` remains "
+            "the unit-value-guided construction until the comparison above is "
+            "used to make the final methodological choice."
+        ),
+        "",
+        (
+            "Once that choice is made, `trade_synced_quantity_kg` should be "
+            "defined exclusively by the selected bilateral method, with "
+            "exporter-only and importer-only quantities retained unchanged and "
+            "rows with no usable quantity left missing."
+        ),
+        "",
         "## 10. Value reconciliation composition",
         "",
         (
