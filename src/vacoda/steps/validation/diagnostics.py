@@ -195,6 +195,14 @@ def build_diagnostics(
         columns_cfg.quantity
     )
 
+    # Fixed quantity candidates retained from Trade Sync.
+    # These are compared in Validation; none is treated as final here.
+    simple_mean_col = "quantity_simple_mean_kg"
+    value_weighted_col = "quantity_value_weighted_kg"
+    quantity_reliability_weighted_col = (
+        "quantity_reliability_weighted_kg"
+    )
+
     nominal_value_col = str(
         columns_cfg.nominal_value
     )
@@ -293,7 +301,12 @@ def build_diagnostics(
     required_columns = {
         year_col,
         product_col,
+        "exporter_iso",
+        "importer_iso",
         quantity_col,
+        simple_mean_col,
+        value_weighted_col,
+        quantity_reliability_weighted_col,
         nominal_value_col,
         constant_value_col,
         export_quantity_col,
@@ -336,6 +349,18 @@ def build_diagnostics(
 
         quantity_sql = _safe_identifier(
             quantity_col
+        )
+
+        simple_mean_sql = _safe_identifier(
+            simple_mean_col
+        )
+
+        value_weighted_sql = _safe_identifier(
+            value_weighted_col
+        )
+
+        quantity_reliability_weighted_sql = _safe_identifier(
+            quantity_reliability_weighted_col
         )
 
         nominal_value_sql = _safe_identifier(
@@ -399,11 +424,23 @@ def build_diagnostics(
                 {year_sql}
                     AS year,
 
+                exporter_iso,
+                importer_iso,
+
                 {product_sql}
                     AS target_cmd,
 
                 {quantity_sql}
                     AS trade_synced_quantity_kg,
+
+                {simple_mean_sql}
+                    AS quantity_simple_mean_kg,
+
+                {value_weighted_sql}
+                    AS quantity_value_weighted_kg,
+
+                {quantity_reliability_weighted_sql}
+                    AS quantity_reliability_weighted_kg,
 
                 {nominal_value_sql}
                     AS trade_value_reconciled,
@@ -844,6 +881,101 @@ def build_diagnostics(
                     AS synced_unit_value_log_distance
 
             FROM read_parquet({input_sql})
+            """
+        )
+
+        # ==================================================================
+        # Quantity-candidate comparison view
+        # ==================================================================
+        #
+        # Keep the three fixed Trade Sync candidates in long form so every
+        # diagnostic is evaluated on the same definitions and price basis.
+        # Nominal reconciled value is used for unit-value plausibility because
+        # the product-year reference is nominal.
+        # ==================================================================
+
+        con.execute(
+            """
+            CREATE OR REPLACE TEMP VIEW
+                validation_quantity_candidates
+            AS
+
+            WITH candidates AS (
+                SELECT
+                    *,
+                    'simple_mean' AS candidate,
+                    quantity_simple_mean_kg AS candidate_quantity_kg
+                FROM validation_diagnostics_base
+
+                UNION ALL
+
+                SELECT
+                    *,
+                    'value_weighted' AS candidate,
+                    quantity_value_weighted_kg AS candidate_quantity_kg
+                FROM validation_diagnostics_base
+
+                UNION ALL
+
+                SELECT
+                    *,
+                    'quantity_reliability_weighted' AS candidate,
+                    quantity_reliability_weighted_kg AS candidate_quantity_kg
+                FROM validation_diagnostics_base
+            )
+
+            SELECT
+                *,
+
+                CASE
+                    WHEN candidate_quantity_kg IS NOT NULL
+                     AND candidate_quantity_kg > 0
+                     AND isfinite(candidate_quantity_kg)
+                        THEN TRUE
+                    ELSE FALSE
+                END AS candidate_available,
+
+                CASE
+                    WHEN candidate_quantity_kg IS NOT NULL
+                     AND candidate_quantity_kg > 0
+                     AND trade_value_reconciled IS NOT NULL
+                     AND trade_value_reconciled > 0
+                     AND product_year_median_unit_value IS NOT NULL
+                     AND product_year_median_unit_value > 0
+                     AND isfinite(candidate_quantity_kg)
+                     AND isfinite(trade_value_reconciled)
+                     AND isfinite(product_year_median_unit_value)
+                        THEN ABS(
+                            LN(
+                                trade_value_reconciled
+                                / candidate_quantity_kg
+                            )
+                            - LN(product_year_median_unit_value)
+                        )
+                    ELSE NULL
+                END AS candidate_uv_log_distance,
+
+                CASE
+                    WHEN candidate_quantity_kg > 0
+                     AND export_quantity_kg > 0
+                        THEN ABS(
+                            LN(candidate_quantity_kg)
+                            - LN(export_quantity_kg)
+                        )
+                    ELSE NULL
+                END AS candidate_export_log_gap,
+
+                CASE
+                    WHEN candidate_quantity_kg > 0
+                     AND import_quantity_kg > 0
+                        THEN ABS(
+                            LN(candidate_quantity_kg)
+                            - LN(import_quantity_kg)
+                        )
+                    ELSE NULL
+                END AS candidate_import_log_gap
+
+            FROM candidates
             """
         )
 
@@ -2708,6 +2840,496 @@ def build_diagnostics(
                 )
 
         # ==================================================================
+        # 10. Fixed quantity-candidate comparison
+        # ==================================================================
+        #
+        # These diagnostics compare the three fixed quantity candidates.
+        # They are evidence for a later final-quantity decision; no candidate
+        # is selected automatically here.
+        # ==================================================================
+
+        candidate_summary = con.execute(
+            """
+            SELECT
+                candidate,
+                COUNT(*) FILTER (
+                    WHERE candidate_available
+                ) AS n_available,
+                COUNT(*) FILTER (
+                    WHERE candidate_uv_log_distance IS NOT NULL
+                ) AS n_with_uv_distance,
+                MEDIAN(candidate_uv_log_distance)
+                    FILTER (
+                        WHERE candidate_uv_log_distance IS NOT NULL
+                    ) AS median_uv_distance,
+                QUANTILE_CONT(candidate_uv_log_distance, 0.90)
+                    FILTER (
+                        WHERE candidate_uv_log_distance IS NOT NULL
+                    ) AS p90_uv_distance,
+                QUANTILE_CONT(candidate_uv_log_distance, 0.95)
+                    FILTER (
+                        WHERE candidate_uv_log_distance IS NOT NULL
+                    ) AS p95_uv_distance,
+                QUANTILE_CONT(candidate_uv_log_distance, 0.99)
+                    FILTER (
+                        WHERE candidate_uv_log_distance IS NOT NULL
+                    ) AS p99_uv_distance,
+                MEDIAN(candidate_export_log_gap)
+                    FILTER (
+                        WHERE candidate_export_log_gap IS NOT NULL
+                    ) AS median_export_log_gap,
+                MEDIAN(candidate_import_log_gap)
+                    FILTER (
+                        WHERE candidate_import_log_gap IS NOT NULL
+                    ) AS median_import_log_gap
+            FROM validation_quantity_candidates
+            WHERE both_quantities_observed
+            GROUP BY candidate
+            ORDER BY candidate
+            """
+        ).fetchdf()
+
+        for row in candidate_summary.itertuples(index=False):
+            metrics = {
+                "median_uv_log_distance": row.median_uv_distance,
+                "p90_uv_log_distance": row.p90_uv_distance,
+                "p95_uv_log_distance": row.p95_uv_distance,
+                "p99_uv_log_distance": row.p99_uv_distance,
+                "median_export_log_gap": row.median_export_log_gap,
+                "median_import_log_gap": row.median_import_log_gap,
+            }
+
+            for variable, value in metrics.items():
+                diagnostics_rows.append(
+                    {
+                        "scope": "quantity_candidate_summary",
+                        "criterion": "both_quantities_non_estimated",
+                        "candidate": str(row.candidate),
+                        "disagreement_threshold": None,
+                        "uv_support_threshold": None,
+                        "uv_distance_threshold": None,
+                        "disagreement_band": None,
+                        "uv_distance_band": None,
+                        "year": None,
+                        "target_cmd": None,
+                        "variable": variable,
+                        "quantile": None,
+                        "n_rows": int(row.n_available),
+                        "share_of_all": _share(
+                            int(row.n_available),
+                            n_all_rows,
+                        ),
+                        "share_of_parent": None,
+                        "value": (
+                            float(value)
+                            if value is not None and pd.notna(value)
+                            else None
+                        ),
+                        "n_candidate_uv_rows": int(row.n_with_uv_distance),
+                    }
+                )
+
+        # ------------------------------------------------------------------
+        # Candidate performance by mirror-disagreement band
+        # ------------------------------------------------------------------
+
+        candidate_by_disagreement = con.execute(
+            f"""
+            SELECT
+                candidate,
+                {disagreement_band_sql} AS disagreement_band,
+                COUNT(*) AS n_rows,
+                MEDIAN(candidate_uv_log_distance)
+                    AS median_uv_distance,
+                QUANTILE_CONT(candidate_uv_log_distance, 0.90)
+                    AS p90_uv_distance,
+                QUANTILE_CONT(candidate_uv_log_distance, 0.95)
+                    AS p95_uv_distance
+            FROM validation_quantity_candidates
+            WHERE both_quantities_observed
+              AND quantity_relative_difference IS NOT NULL
+              AND candidate_uv_log_distance IS NOT NULL
+            GROUP BY
+                candidate,
+                disagreement_band
+            ORDER BY
+                candidate,
+                disagreement_band
+            """
+        ).fetchdf()
+
+        for row in candidate_by_disagreement.itertuples(index=False):
+            for variable, value in {
+                "median_uv_log_distance": row.median_uv_distance,
+                "p90_uv_log_distance": row.p90_uv_distance,
+                "p95_uv_log_distance": row.p95_uv_distance,
+            }.items():
+                diagnostics_rows.append(
+                    {
+                        "scope": "quantity_candidate_by_disagreement",
+                        "criterion": "fixed_quantity_candidate",
+                        "candidate": str(row.candidate),
+                        "disagreement_threshold": None,
+                        "uv_support_threshold": None,
+                        "uv_distance_threshold": None,
+                        "disagreement_band": str(row.disagreement_band),
+                        "uv_distance_band": None,
+                        "year": None,
+                        "target_cmd": None,
+                        "variable": variable,
+                        "quantile": None,
+                        "n_rows": int(row.n_rows),
+                        "share_of_all": _share(
+                            int(row.n_rows),
+                            n_all_rows,
+                        ),
+                        "share_of_parent": None,
+                        "value": (
+                            float(value)
+                            if value is not None and pd.notna(value)
+                            else None
+                        ),
+                    }
+                )
+
+        # ------------------------------------------------------------------
+        # Closest candidate to the product-year UV reference
+        # ------------------------------------------------------------------
+        # Evaluate only rows where all three candidate distances exist.
+        # Ties are retained explicitly rather than broken arbitrarily.
+        # ------------------------------------------------------------------
+
+        candidate_closest = con.execute(
+            """
+            WITH wide AS (
+                SELECT
+                    year,
+                    exporter_iso,
+                    importer_iso,
+                    target_cmd,
+                    quantity_relative_difference,
+
+                    MAX(candidate_uv_log_distance)
+                        FILTER (WHERE candidate = 'simple_mean')
+                        AS d_simple,
+
+                    MAX(candidate_uv_log_distance)
+                        FILTER (WHERE candidate = 'value_weighted')
+                        AS d_value,
+
+                    MAX(candidate_uv_log_distance)
+                        FILTER (
+                            WHERE candidate = 'quantity_reliability_weighted'
+                        ) AS d_reliability
+
+                FROM validation_quantity_candidates
+
+                WHERE both_quantities_observed
+
+                GROUP BY
+                    year,
+                    exporter_iso,
+                    importer_iso,
+                    target_cmd,
+                    quantity_relative_difference
+            ),
+
+            scored AS (
+                SELECT
+                    *,
+                    LEAST(
+                        d_simple,
+                        d_value,
+                        d_reliability
+                    ) AS best_distance
+                FROM wide
+                WHERE d_simple IS NOT NULL
+                  AND d_value IS NOT NULL
+                  AND d_reliability IS NOT NULL
+            ),
+
+            classified AS (
+                SELECT
+                    *,
+                    (
+                        CAST(ABS(d_simple - best_distance) <= 1e-12 AS INTEGER)
+                        + CAST(ABS(d_value - best_distance) <= 1e-12 AS INTEGER)
+                        + CAST(ABS(d_reliability - best_distance) <= 1e-12 AS INTEGER)
+                    ) AS n_best,
+
+                    CASE
+                        WHEN ABS(d_simple - best_distance) <= 1e-12
+                         AND ABS(d_value - best_distance) > 1e-12
+                         AND ABS(d_reliability - best_distance) > 1e-12
+                            THEN 'simple_mean'
+
+                        WHEN ABS(d_value - best_distance) <= 1e-12
+                         AND ABS(d_simple - best_distance) > 1e-12
+                         AND ABS(d_reliability - best_distance) > 1e-12
+                            THEN 'value_weighted'
+
+                        WHEN ABS(d_reliability - best_distance) <= 1e-12
+                         AND ABS(d_simple - best_distance) > 1e-12
+                         AND ABS(d_value - best_distance) > 1e-12
+                            THEN 'quantity_reliability_weighted'
+
+                        ELSE 'tie'
+                    END AS closest_candidate
+
+                FROM scored
+            )
+
+            SELECT
+                closest_candidate,
+                COUNT(*) AS n_rows
+            FROM classified
+            GROUP BY closest_candidate
+            ORDER BY closest_candidate
+            """
+        ).fetchdf()
+
+        n_closest_rows = int(candidate_closest["n_rows"].sum())
+
+        for row in candidate_closest.itertuples(index=False):
+            diagnostics_rows.append(
+                {
+                    "scope": "quantity_candidate_closest_reference",
+                    "criterion": "all_three_candidate_uv_distances_available",
+                    "candidate": str(row.closest_candidate),
+                    "disagreement_threshold": None,
+                    "uv_support_threshold": None,
+                    "uv_distance_threshold": None,
+                    "disagreement_band": None,
+                    "uv_distance_band": None,
+                    "year": None,
+                    "target_cmd": None,
+                    "variable": "closest_reference_share",
+                    "quantile": None,
+                    "n_rows": int(row.n_rows),
+                    "share_of_all": _share(
+                        int(row.n_rows),
+                        n_all_rows,
+                    ),
+                    "share_of_parent": _share(
+                        int(row.n_rows),
+                        n_closest_rows,
+                    ),
+                    "value": _share(
+                        int(row.n_rows),
+                        n_closest_rows,
+                    ),
+                }
+            )
+
+        # ------------------------------------------------------------------
+        # Candidate temporal stability
+        # ------------------------------------------------------------------
+
+        candidate_by_year = con.execute(
+            """
+            SELECT
+                year,
+                candidate,
+                COUNT(*) FILTER (
+                    WHERE candidate_uv_log_distance IS NOT NULL
+                ) AS n_rows,
+                MEDIAN(candidate_uv_log_distance)
+                    FILTER (
+                        WHERE candidate_uv_log_distance IS NOT NULL
+                    ) AS median_uv_distance,
+                QUANTILE_CONT(candidate_uv_log_distance, 0.90)
+                    FILTER (
+                        WHERE candidate_uv_log_distance IS NOT NULL
+                    ) AS p90_uv_distance
+            FROM validation_quantity_candidates
+            WHERE both_quantities_observed
+            GROUP BY year, candidate
+            ORDER BY year, candidate
+            """
+        ).fetchdf()
+
+        for row in candidate_by_year.itertuples(index=False):
+            for variable, value in {
+                "median_uv_log_distance": row.median_uv_distance,
+                "p90_uv_log_distance": row.p90_uv_distance,
+            }.items():
+                diagnostics_rows.append(
+                    {
+                        "scope": "quantity_candidate_by_year",
+                        "criterion": "fixed_quantity_candidate",
+                        "candidate": str(row.candidate),
+                        "disagreement_threshold": None,
+                        "uv_support_threshold": None,
+                        "uv_distance_threshold": None,
+                        "disagreement_band": None,
+                        "uv_distance_band": None,
+                        "year": int(row.year),
+                        "target_cmd": None,
+                        "variable": variable,
+                        "quantile": None,
+                        "n_rows": int(row.n_rows),
+                        "share_of_all": None,
+                        "share_of_parent": None,
+                        "value": (
+                            float(value)
+                            if value is not None and pd.notna(value)
+                            else None
+                        ),
+                    }
+                )
+
+        # ------------------------------------------------------------------
+        # Candidate product stability
+        # ------------------------------------------------------------------
+
+        candidate_by_product = con.execute(
+            """
+            SELECT
+                target_cmd,
+                candidate,
+                COUNT(*) FILTER (
+                    WHERE candidate_uv_log_distance IS NOT NULL
+                ) AS n_rows,
+                MEDIAN(candidate_uv_log_distance)
+                    FILTER (
+                        WHERE candidate_uv_log_distance IS NOT NULL
+                    ) AS median_uv_distance,
+                QUANTILE_CONT(candidate_uv_log_distance, 0.90)
+                    FILTER (
+                        WHERE candidate_uv_log_distance IS NOT NULL
+                    ) AS p90_uv_distance
+            FROM validation_quantity_candidates
+            WHERE both_quantities_observed
+            GROUP BY target_cmd, candidate
+            ORDER BY target_cmd, candidate
+            """
+        ).fetchdf()
+
+        for row in candidate_by_product.itertuples(index=False):
+            for variable, value in {
+                "median_uv_log_distance": row.median_uv_distance,
+                "p90_uv_log_distance": row.p90_uv_distance,
+            }.items():
+                diagnostics_rows.append(
+                    {
+                        "scope": "quantity_candidate_by_product",
+                        "criterion": "fixed_quantity_candidate",
+                        "candidate": str(row.candidate),
+                        "disagreement_threshold": None,
+                        "uv_support_threshold": None,
+                        "uv_distance_threshold": None,
+                        "disagreement_band": None,
+                        "uv_distance_band": None,
+                        "year": None,
+                        "target_cmd": str(row.target_cmd),
+                        "variable": variable,
+                        "quantile": None,
+                        "n_rows": int(row.n_rows),
+                        "share_of_all": None,
+                        "share_of_parent": None,
+                        "value": (
+                            float(value)
+                            if value is not None and pd.notna(value)
+                            else None
+                        ),
+                    }
+                )
+
+        # ------------------------------------------------------------------
+        # How much do the three candidates actually differ?
+        # ------------------------------------------------------------------
+
+        candidate_spread = con.execute(
+            f"""
+            SELECT
+                {disagreement_band_sql} AS disagreement_band,
+                COUNT(*) AS n_rows,
+                MEDIAN(
+                    (
+                        GREATEST(
+                            quantity_simple_mean_kg,
+                            quantity_value_weighted_kg,
+                            quantity_reliability_weighted_kg
+                        )
+                        - LEAST(
+                            quantity_simple_mean_kg,
+                            quantity_value_weighted_kg,
+                            quantity_reliability_weighted_kg
+                        )
+                    )
+                    /
+                    GREATEST(
+                        quantity_simple_mean_kg,
+                        quantity_value_weighted_kg,
+                        quantity_reliability_weighted_kg
+                    )
+                ) AS median_relative_spread,
+                QUANTILE_CONT(
+                    (
+                        GREATEST(
+                            quantity_simple_mean_kg,
+                            quantity_value_weighted_kg,
+                            quantity_reliability_weighted_kg
+                        )
+                        - LEAST(
+                            quantity_simple_mean_kg,
+                            quantity_value_weighted_kg,
+                            quantity_reliability_weighted_kg
+                        )
+                    )
+                    /
+                    GREATEST(
+                        quantity_simple_mean_kg,
+                        quantity_value_weighted_kg,
+                        quantity_reliability_weighted_kg
+                    ),
+                    0.95
+                ) AS p95_relative_spread
+            FROM validation_diagnostics_base
+            WHERE both_quantities_observed
+              AND quantity_relative_difference IS NOT NULL
+              AND quantity_simple_mean_kg > 0
+              AND quantity_value_weighted_kg > 0
+              AND quantity_reliability_weighted_kg > 0
+            GROUP BY disagreement_band
+            ORDER BY disagreement_band
+            """
+        ).fetchdf()
+
+        for row in candidate_spread.itertuples(index=False):
+            for variable, value in {
+                "median_relative_candidate_spread": row.median_relative_spread,
+                "p95_relative_candidate_spread": row.p95_relative_spread,
+            }.items():
+                diagnostics_rows.append(
+                    {
+                        "scope": "quantity_candidate_spread",
+                        "criterion": "all_three_candidates_available",
+                        "candidate": None,
+                        "disagreement_threshold": None,
+                        "uv_support_threshold": None,
+                        "uv_distance_threshold": None,
+                        "disagreement_band": str(row.disagreement_band),
+                        "uv_distance_band": None,
+                        "year": None,
+                        "target_cmd": None,
+                        "variable": variable,
+                        "quantile": None,
+                        "n_rows": int(row.n_rows),
+                        "share_of_all": _share(
+                            int(row.n_rows),
+                            n_all_rows,
+                        ),
+                        "share_of_parent": None,
+                        "value": (
+                            float(value)
+                            if value is not None and pd.notna(value)
+                            else None
+                        ),
+                    }
+                )
+
+        # ==================================================================
         # Diagnostics artifact
         # ==================================================================
 
@@ -2722,10 +3344,12 @@ def build_diagnostics(
 
         # Ensure optional columns exist consistently across scopes.
         optional_columns = (
+            "candidate",
             "disagreement_band",
             "uv_distance_band",
 
             "total_rows",
+            "n_candidate_uv_rows",
             "n_both_quantities",
 
             "median_quantity_relative_difference",
@@ -2746,6 +3370,7 @@ def build_diagnostics(
             [
                 "scope",
                 "criterion",
+                "candidate",
 
                 "disagreement_threshold",
                 "uv_support_threshold",
@@ -2763,6 +3388,7 @@ def build_diagnostics(
                 "n_rows",
                 "total_rows",
                 "n_both_quantities",
+                "n_candidate_uv_rows",
 
                 "share_of_all",
                 "share_of_parent",

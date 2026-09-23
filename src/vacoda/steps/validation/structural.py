@@ -243,17 +243,28 @@ def audit_structural_integrity(
                 ) AS n_invalid_constant_value_rows,
 
                 COUNT(*) FILTER (
-                    WHERE trade_synced_quantity_kg IS NOT NULL
-                      AND (
-                            NOT isfinite(
-                                CAST(
-                                    trade_synced_quantity_kg
-                                    AS DOUBLE
-                                )
-                            )
-                            OR trade_synced_quantity_kg <= 0
-                      )
-                ) AS n_invalid_quantity_rows,
+                    WHERE quantity_simple_mean_kg IS NOT NULL
+                    AND (
+                        NOT isfinite(quantity_simple_mean_kg)
+                        OR quantity_simple_mean_kg <= 0
+                    )
+                ) AS n_invalid_simple_mean_rows,
+
+                COUNT(*) FILTER (
+                    WHERE quantity_value_weighted_kg IS NOT NULL
+                    AND (
+                        NOT isfinite(quantity_value_weighted_kg)
+                        OR quantity_value_weighted_kg <= 0
+                    )
+                ) AS n_invalid_value_weighted_rows,
+
+                COUNT(*) FILTER (
+                    WHERE quantity_reliability_weighted_kg IS NOT NULL
+                    AND (
+                        NOT isfinite(quantity_reliability_weighted_kg)
+                        OR quantity_reliability_weighted_kg <= 0
+                    )
+                ) AS n_invalid_quantity_reliability_weighted_rows,
 
                 COUNT(*) FILTER (
                     WHERE trade_synced_quantity_kg IS NULL
@@ -280,7 +291,9 @@ def audit_structural_integrity(
             n_invalid_hs_rows,
             n_invalid_nominal_value_rows,
             n_invalid_constant_value_rows,
-            n_invalid_quantity_rows,
+            n_invalid_simple_mean_rows,
+            n_invalid_value_weighted_rows,
+            n_invalid_quantity_reliability_weighted_rows,
             n_missing_quantity_rows,
             n_available_quantity_rows,
         ) = stats
@@ -295,8 +308,14 @@ def audit_structural_integrity(
         n_invalid_constant_value_rows = int(
             n_invalid_constant_value_rows
         )
-        n_invalid_quantity_rows = int(
-            n_invalid_quantity_rows
+        n_invalid_simple_mean_rows = int(
+            n_invalid_simple_mean_rows
+        )
+        n_invalid_value_weighted_rows = int(
+            n_invalid_value_weighted_rows
+        )
+        n_invalid_quantity_reliability_weighted_rows = int(
+            n_invalid_quantity_reliability_weighted_rows
         )
         n_missing_quantity_rows = int(
             n_missing_quantity_rows
@@ -305,6 +324,11 @@ def audit_structural_integrity(
             n_available_quantity_rows
         )
 
+        quantity_candidates_numeric_valid = (
+            n_invalid_simple_mean_rows == 0
+            and n_invalid_value_weighted_rows == 0
+            and n_invalid_quantity_reliability_weighted_rows == 0
+        )
         # --------------------------------------------------------------
         # Duplicate canonical keys
         # --------------------------------------------------------------
@@ -446,7 +470,7 @@ def audit_structural_integrity(
         )
 
         quantity_numeric_valid = (
-            n_invalid_quantity_rows == 0
+            quantity_candidates_numeric_valid
             if require_positive_quantity
             else True
         )
@@ -483,6 +507,7 @@ def audit_structural_integrity(
             and missing_quantity_contract_valid
         )
 
+        ready_for_diagnostics = audit_passed
         # --------------------------------------------------------------
         # Write audit artifact
         # --------------------------------------------------------------
@@ -538,9 +563,6 @@ def audit_structural_integrity(
             "quantity_numeric_valid": (
                 quantity_numeric_valid
             ),
-            "n_invalid_quantity_rows": (
-                n_invalid_quantity_rows
-            ),
 
             "n_available_quantity_rows": (
                 n_available_quantity_rows
@@ -575,6 +597,21 @@ def audit_structural_integrity(
             ),
             "n_invalid_missing_quantity_contract": (
                 n_invalid_missing_quantity_contract
+            ),
+            "quantity_candidates_numeric_valid": (
+                quantity_candidates_numeric_valid
+            ),
+
+            "n_invalid_simple_mean_rows": (
+                n_invalid_simple_mean_rows
+            ),
+
+            "n_invalid_value_weighted_rows": (
+                n_invalid_value_weighted_rows
+            ),
+
+            "n_invalid_quantity_reliability_weighted_rows": (
+                n_invalid_quantity_reliability_weighted_rows
             ),
 
             "duration_seconds": elapsed,
@@ -654,12 +691,22 @@ def audit_structural_integrity(
         f"{n_invalid_constant_value_rows:,}",
     )
     logger.info(
-        "  Invalid synchronized quantities: %s",
-        f"{n_invalid_quantity_rows:,}",
-    )
-    logger.info(
         "  Missing synchronized quantities: %s",
         f"{n_missing_quantity_rows:,}",
+    )
+    logger.info(
+        "  Invalid simple-mean quantities: %s",
+        f"{n_invalid_simple_mean_rows:,}",
+    )
+
+    logger.info(
+        "  Invalid value-weighted quantities: %s",
+        f"{n_invalid_value_weighted_rows:,}",
+    )
+
+    logger.info(
+        "  Invalid reliability-weighted quantities: %s",
+        f"{n_invalid_quantity_reliability_weighted_rows:,}",
     )
     logger.info(
         "  Invalid quantity contracts: %s",
@@ -703,7 +750,7 @@ def audit_structural_integrity(
         "structural_audit_path": output_path,
 
         "audit_passed": True,
-        "ready_for_model": True,
+        "ready_for_diagnostics": ready_for_diagnostics,
 
         "n_rows": n_rows,
         "n_missing_quantity_rows": (

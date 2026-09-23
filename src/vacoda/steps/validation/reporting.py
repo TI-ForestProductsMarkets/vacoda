@@ -661,6 +661,439 @@ def _plot_export_import_quantity_ratio_distribution(
     )
 
 
+
+
+def _candidate_label(value: str) -> str:
+    """Return a readable label for a fixed quantity candidate."""
+
+    labels = {
+        "simple_mean": "Simple mean",
+        "value_weighted": "Value-weighted",
+        "quantity_reliability_weighted": "Quantity-reliability-weighted",
+        "tie": "Tie",
+    }
+
+    return labels.get(str(value), str(value))
+
+
+def _disagreement_band_order(value: str) -> tuple[float, str]:
+    """Return a stable numeric sort key for mirror-disagreement bands."""
+
+    label = str(value).strip()
+
+    if label.startswith('>'):
+        try:
+            return (float(label.replace('>', '').replace('%', '').strip()), label)
+        except ValueError:
+            return (float('inf'), label)
+
+    if '–' in label:
+        left = label.split('–', 1)[0].replace('%', '').strip()
+        try:
+            return (float(left), label)
+        except ValueError:
+            return (float('inf'), label)
+
+    if '-' in label:
+        left = label.split('-', 1)[0].replace('%', '').strip()
+        try:
+            return (float(left), label)
+        except ValueError:
+            return (float('inf'), label)
+
+    try:
+        return (float(label.replace('%', '')), label)
+    except ValueError:
+        return (float('inf'), label)
+
+
+def _plot_quantity_candidate_uv_summary(
+    *,
+    diagnostics: pd.DataFrame,
+    output_path: Path,
+) -> None:
+    """Plot overall UV-distance evidence for the fixed quantity candidates."""
+
+    frame = _scope_frame(
+        diagnostics,
+        "quantity_candidate_summary",
+    )
+
+    frame = frame[
+        frame["variable"].isin(
+            [
+                "median_uv_log_distance",
+                "p90_uv_log_distance",
+                "p95_uv_log_distance",
+            ]
+        )
+    ].copy()
+
+    if frame.empty:
+        raise RuntimeError(
+            "No fixed quantity-candidate summary diagnostics are available."
+        )
+
+    pivot = frame.pivot_table(
+        index="candidate",
+        columns="variable",
+        values="value",
+        aggfunc="first",
+    )
+
+    candidates = [
+        value
+        for value in (
+            "simple_mean",
+            "value_weighted",
+            "quantity_reliability_weighted",
+        )
+        if value in pivot.index
+    ]
+
+    metrics = [
+        ("median_uv_log_distance", "Median"),
+        ("p90_uv_log_distance", "P90"),
+        ("p95_uv_log_distance", "P95"),
+    ]
+
+    figure, axis = plt.subplots(figsize=(10, 6))
+
+    x = list(range(len(candidates)))
+    width = 0.24
+
+    for offset, (metric, label) in enumerate(metrics):
+        values = [
+            float(pivot.loc[candidate, metric])
+            if metric in pivot.columns and pd.notna(pivot.loc[candidate, metric])
+            else float("nan")
+            for candidate in candidates
+        ]
+        positions = [
+            value + (offset - 1) * width
+            for value in x
+        ]
+        axis.bar(
+            positions,
+            values,
+            width=width,
+            label=label,
+        )
+
+    axis.set_xticks(x)
+    axis.set_xticklabels(
+        [_candidate_label(value) for value in candidates]
+    )
+    axis.set_ylabel("UV log distance")
+    axis.set_title("Fixed quantity candidates: unit-value plausibility")
+    axis.grid(axis="y", linestyle="--", alpha=0.5)
+    axis.set_axisbelow(True)
+    axis.legend()
+    figure.tight_layout()
+    figure.savefig(output_path, dpi=180, bbox_inches="tight")
+    plt.close(figure)
+
+
+def _plot_quantity_candidate_by_disagreement(
+    *,
+    diagnostics: pd.DataFrame,
+    output_path: Path,
+) -> None:
+    """Plot candidate median UV distance across mirror-disagreement bands."""
+
+    frame = _scope_frame(
+        diagnostics,
+        "quantity_candidate_by_disagreement",
+    )
+
+    frame = frame[
+        frame["variable"].eq("median_uv_log_distance")
+    ].copy()
+
+    if frame.empty:
+        raise RuntimeError(
+            "No quantity-candidate disagreement diagnostics are available."
+        )
+
+    bands = sorted(
+        frame["disagreement_band"].dropna().astype(str).unique(),
+        key=_disagreement_band_order,
+    )
+
+    figure, axis = plt.subplots(figsize=(11, 6))
+
+    for candidate in (
+        "simple_mean",
+        "value_weighted",
+        "quantity_reliability_weighted",
+    ):
+        subset = frame[
+            frame["candidate"].eq(candidate)
+        ].copy()
+
+        if subset.empty:
+            continue
+
+        lookup = {
+            str(row.disagreement_band): row.value
+            for row in subset.itertuples(index=False)
+        }
+
+        values = [
+            float(lookup[band])
+            if band in lookup and pd.notna(lookup[band])
+            else float("nan")
+            for band in bands
+        ]
+
+        axis.plot(
+            bands,
+            values,
+            marker="o",
+            label=_candidate_label(candidate),
+        )
+
+    axis.set_title(
+        "Candidate UV plausibility by mirror-quantity disagreement"
+    )
+    axis.set_xlabel("Mirror quantity disagreement")
+    axis.set_ylabel("Median UV log distance")
+    axis.grid(axis="y", linestyle="--", alpha=0.5)
+    axis.set_axisbelow(True)
+    axis.legend()
+    figure.tight_layout()
+    figure.savefig(output_path, dpi=180, bbox_inches="tight")
+    plt.close(figure)
+
+
+def _plot_quantity_candidate_closest_reference(
+    *,
+    diagnostics: pd.DataFrame,
+    output_path: Path,
+) -> None:
+    """Plot closest-to-reference shares for the fixed quantity candidates."""
+
+    frame = _scope_frame(
+        diagnostics,
+        "quantity_candidate_closest_reference",
+    )
+
+    if frame.empty:
+        raise RuntimeError(
+            "No closest-reference quantity-candidate diagnostics are available."
+        )
+
+    order = [
+        "simple_mean",
+        "value_weighted",
+        "quantity_reliability_weighted",
+        "tie",
+    ]
+
+    frame = frame[
+        frame["candidate"].isin(order)
+    ].copy()
+
+    frame["order"] = frame["candidate"].map(
+        {value: index for index, value in enumerate(order)}
+    )
+    frame = frame.sort_values("order")
+
+    figure, axis = plt.subplots(figsize=(10, 6))
+    bars = axis.bar(
+        [_candidate_label(value) for value in frame["candidate"]],
+        100.0 * pd.to_numeric(frame["value"], errors="coerce"),
+    )
+    axis.bar_label(
+        bars,
+        labels=[
+            f"{100.0 * float(value):.1f}%"
+            if pd.notna(value)
+            else "NA"
+            for value in frame["value"]
+        ],
+        padding=3,
+        fontsize=8,
+    )
+    axis.set_ylabel("Share of comparable rows (%)")
+    axis.set_title("Candidate closest to the product-year UV reference")
+    axis.grid(axis="y", linestyle="--", alpha=0.5)
+    axis.set_axisbelow(True)
+    figure.tight_layout()
+    figure.savefig(output_path, dpi=180, bbox_inches="tight")
+    plt.close(figure)
+
+
+def _plot_quantity_candidate_by_year(
+    *,
+    diagnostics: pd.DataFrame,
+    output_path: Path,
+) -> None:
+    """Plot candidate median UV distance by year."""
+
+    frame = _scope_frame(
+        diagnostics,
+        "quantity_candidate_by_year",
+    )
+
+    frame = frame[
+        frame["variable"].eq("median_uv_log_distance")
+    ].copy()
+
+    if frame.empty:
+        raise RuntimeError(
+            "No quantity-candidate temporal diagnostics are available."
+        )
+
+    figure, axis = plt.subplots(figsize=(11, 6))
+
+    for candidate in (
+        "simple_mean",
+        "value_weighted",
+        "quantity_reliability_weighted",
+    ):
+        subset = frame[
+            frame["candidate"].eq(candidate)
+        ].copy()
+
+        if subset.empty:
+            continue
+
+        subset = subset.sort_values("year")
+
+        axis.plot(
+            pd.to_numeric(subset["year"], errors="coerce"),
+            pd.to_numeric(subset["value"], errors="coerce"),
+            marker="o",
+            label=_candidate_label(candidate),
+        )
+
+    axis.set_title("Candidate unit-value plausibility by year")
+    axis.set_xlabel("Year")
+    axis.set_ylabel("Median UV log distance")
+    axis.grid(axis="y", linestyle="--", alpha=0.5)
+    axis.set_axisbelow(True)
+    axis.legend()
+    figure.tight_layout()
+    figure.savefig(output_path, dpi=180, bbox_inches="tight")
+    plt.close(figure)
+
+
+def _plot_quantity_candidate_product_distribution(
+    *,
+    diagnostics: pd.DataFrame,
+    output_path: Path,
+) -> None:
+    """Plot product-level distributions of candidate median UV distance."""
+
+    frame = _scope_frame(
+        diagnostics,
+        "quantity_candidate_by_product",
+    )
+
+    frame = frame[
+        frame["variable"].eq("median_uv_log_distance")
+    ].copy()
+
+    if frame.empty:
+        raise RuntimeError(
+            "No quantity-candidate product diagnostics are available."
+        )
+
+    candidates = [
+        value
+        for value in (
+            "simple_mean",
+            "value_weighted",
+            "quantity_reliability_weighted",
+        )
+        if frame["candidate"].eq(value).any()
+    ]
+
+    data = [
+        pd.to_numeric(
+            frame.loc[frame["candidate"].eq(candidate), "value"],
+            errors="coerce",
+        ).dropna().to_numpy()
+        for candidate in candidates
+    ]
+
+    figure, axis = plt.subplots(figsize=(10, 6))
+    axis.boxplot(
+        data,
+        labels=[_candidate_label(value) for value in candidates],
+        showfliers=False,
+    )
+    axis.set_title(
+        "Product-level distribution of candidate median UV distance"
+    )
+    axis.set_ylabel("Median UV log distance within HS product")
+    axis.grid(axis="y", linestyle="--", alpha=0.5)
+    axis.set_axisbelow(True)
+    figure.tight_layout()
+    figure.savefig(output_path, dpi=180, bbox_inches="tight")
+    plt.close(figure)
+
+
+def _plot_quantity_candidate_spread(
+    *,
+    diagnostics: pd.DataFrame,
+    output_path: Path,
+) -> None:
+    """Plot the spread among fixed quantity candidates by disagreement band."""
+
+    frame = _scope_frame(
+        diagnostics,
+        "quantity_candidate_spread",
+    )
+
+    if frame.empty:
+        raise RuntimeError(
+            "No quantity-candidate spread diagnostics are available."
+        )
+
+    bands = sorted(
+        frame["disagreement_band"].dropna().astype(str).unique(),
+        key=_disagreement_band_order,
+    )
+
+    figure, axis = plt.subplots(figsize=(11, 6))
+
+    for variable, label in (
+        ("median_relative_candidate_spread", "Median"),
+        ("p95_relative_candidate_spread", "P95"),
+    ):
+        subset = frame[
+            frame["variable"].eq(variable)
+        ].copy()
+        lookup = {
+            str(row.disagreement_band): row.value
+            for row in subset.itertuples(index=False)
+        }
+        values = [
+            100.0 * float(lookup[band])
+            if band in lookup and pd.notna(lookup[band])
+            else float("nan")
+            for band in bands
+        ]
+        axis.plot(
+            bands,
+            values,
+            marker="o",
+            label=label,
+        )
+
+    axis.set_title("Spread among the three fixed quantity candidates")
+    axis.set_xlabel("Mirror quantity disagreement")
+    axis.set_ylabel("Relative candidate spread (%)")
+    axis.grid(axis="y", linestyle="--", alpha=0.5)
+    axis.set_axisbelow(True)
+    axis.legend()
+    figure.tight_layout()
+    figure.savefig(output_path, dpi=180, bbox_inches="tight")
+    plt.close(figure)
+
+
 # ======================================================================
 # Main reporting function
 # ======================================================================
@@ -857,6 +1290,7 @@ def build_validation_report(
         required_diagnostic_columns = {
             "scope",
             "criterion",
+            "candidate",
             "n_rows",
             "share_of_all",
             "share_of_parent",
@@ -930,9 +1364,21 @@ def build_validation_report(
             ]
         )
 
-        n_invalid_quantity_rows = int(
+        n_invalid_simple_mean_rows = int(
             audit_row[
-                "n_invalid_quantity_rows"
+                "n_invalid_simple_mean_rows"
+            ]
+        )
+
+        n_invalid_value_weighted_rows = int(
+            audit_row[
+                "n_invalid_value_weighted_rows"
+            ]
+        )
+
+        n_invalid_quantity_reliability_weighted_rows = int(
+            audit_row[
+                "n_invalid_quantity_reliability_weighted_rows"
             ]
         )
 
@@ -998,10 +1444,26 @@ def build_validation_report(
                 },
                 {
                     "Check": (
-                        "Invalid synchronized quantities"
+                        "Invalid simple-mean quantities"
                     ),
                     "Result": _format_integer(
-                        n_invalid_quantity_rows
+                        n_invalid_simple_mean_rows
+                    ),
+                },
+                {
+                    "Check": (
+                        "Invalid value-weighted quantities"
+                    ),
+                    "Result": _format_integer(
+                        n_invalid_value_weighted_rows
+                    ),
+                },
+                {
+                    "Check": (
+                        "Invalid quantity-reliability-weighted quantities"
+                    ),
+                    "Result": _format_integer(
+                        n_invalid_quantity_reliability_weighted_rows
                     ),
                 },
                 {
@@ -1706,6 +2168,314 @@ def build_validation_report(
         )
 
         # ==============================================================
+        # Fixed quantity-candidate comparison
+        # ==============================================================
+
+        candidate_summary = _scope_frame(
+            diagnostics,
+            "quantity_candidate_summary",
+        )
+
+        candidate_by_disagreement = _scope_frame(
+            diagnostics,
+            "quantity_candidate_by_disagreement",
+        )
+
+        candidate_closest = _scope_frame(
+            diagnostics,
+            "quantity_candidate_closest_reference",
+        )
+
+        candidate_by_year = _scope_frame(
+            diagnostics,
+            "quantity_candidate_by_year",
+        )
+
+        candidate_by_product = _scope_frame(
+            diagnostics,
+            "quantity_candidate_by_product",
+        )
+
+        candidate_spread = _scope_frame(
+            diagnostics,
+            "quantity_candidate_spread",
+        )
+
+        candidate_scopes = {
+            "quantity_candidate_summary": candidate_summary,
+            "quantity_candidate_by_disagreement": candidate_by_disagreement,
+            "quantity_candidate_closest_reference": candidate_closest,
+            "quantity_candidate_by_year": candidate_by_year,
+            "quantity_candidate_by_product": candidate_by_product,
+            "quantity_candidate_spread": candidate_spread,
+        }
+
+        missing_candidate_scopes = [
+            scope
+            for scope, frame in candidate_scopes.items()
+            if frame.empty
+        ]
+
+        if missing_candidate_scopes:
+            raise RuntimeError(
+                "Validation quantity-candidate diagnostics are incomplete: "
+                + ", ".join(missing_candidate_scopes)
+            )
+
+        candidate_order = [
+            "simple_mean",
+            "value_weighted",
+            "quantity_reliability_weighted",
+        ]
+
+        candidate_summary_wide = (
+            candidate_summary
+            .pivot_table(
+                index="candidate",
+                columns="variable",
+                values="value",
+                aggfunc="first",
+            )
+            .reindex(candidate_order)
+        )
+
+        candidate_counts = (
+            candidate_summary
+            .groupby("candidate", as_index=True)
+            .agg(
+                n_rows=("n_rows", "max"),
+                n_candidate_uv_rows=("n_candidate_uv_rows", "max"),
+            )
+            .reindex(candidate_order)
+        )
+
+        candidate_summary_display = (
+            candidate_counts
+            .join(candidate_summary_wide)
+            .reset_index()
+            .rename(
+                columns={
+                    "candidate": "Candidate",
+                    "n_rows": "Available rows",
+                    "n_candidate_uv_rows": "Rows with UV distance",
+                    "median_uv_log_distance": "Median UV distance",
+                    "p90_uv_log_distance": "P90 UV distance",
+                    "p95_uv_log_distance": "P95 UV distance",
+                    "p99_uv_log_distance": "P99 UV distance",
+                    "median_export_log_gap": "Median log-gap to exporter",
+                    "median_import_log_gap": "Median log-gap to importer",
+                }
+            )
+        )
+
+        candidate_summary_display["Candidate"] = (
+            candidate_summary_display["Candidate"].map(_candidate_label)
+        )
+
+        for column in (
+            "Available rows",
+            "Rows with UV distance",
+        ):
+            candidate_summary_display[column] = (
+                candidate_summary_display[column].map(_format_integer)
+            )
+
+        for column in (
+            "Median UV distance",
+            "P90 UV distance",
+            "P95 UV distance",
+            "P99 UV distance",
+            "Median log-gap to exporter",
+            "Median log-gap to importer",
+        ):
+            candidate_summary_display[column] = (
+                candidate_summary_display[column]
+                .map(lambda value: _format_number(value, digits=4))
+            )
+
+        disagreement_display = candidate_by_disagreement[
+            candidate_by_disagreement["variable"].isin(
+                [
+                    "median_uv_log_distance",
+                    "p90_uv_log_distance",
+                    "p95_uv_log_distance",
+                ]
+            )
+        ].copy()
+
+        disagreement_display = (
+            disagreement_display
+            .pivot_table(
+                index=["disagreement_band", "candidate"],
+                columns="variable",
+                values="value",
+                aggfunc="first",
+            )
+            .reset_index()
+            .rename(
+                columns={
+                    "disagreement_band": "Mirror disagreement",
+                    "candidate": "Candidate",
+                    "median_uv_log_distance": "Median UV distance",
+                    "p90_uv_log_distance": "P90 UV distance",
+                    "p95_uv_log_distance": "P95 UV distance",
+                }
+            )
+        )
+
+        disagreement_display["_band_order"] = (
+            disagreement_display["Mirror disagreement"]
+            .map(lambda value: _disagreement_band_order(value)[0])
+        )
+        disagreement_display["_candidate_order"] = (
+            disagreement_display["Candidate"].map(
+                {value: index for index, value in enumerate(candidate_order)}
+            )
+        )
+        disagreement_display = (
+            disagreement_display
+            .sort_values(["_band_order", "_candidate_order"])
+            .drop(columns=["_band_order", "_candidate_order"])
+        )
+        disagreement_display["Candidate"] = (
+            disagreement_display["Candidate"].map(_candidate_label)
+        )
+
+        for column in (
+            "Median UV distance",
+            "P90 UV distance",
+            "P95 UV distance",
+        ):
+            disagreement_display[column] = (
+                disagreement_display[column]
+                .map(lambda value: _format_number(value, digits=4))
+            )
+
+        closest_order = [
+            "simple_mean",
+            "value_weighted",
+            "quantity_reliability_weighted",
+            "tie",
+        ]
+
+        closest_display = candidate_closest[
+            ["candidate", "n_rows", "value"]
+        ].copy()
+        closest_display["_order"] = closest_display["candidate"].map(
+            {value: index for index, value in enumerate(closest_order)}
+        )
+        closest_display = (
+            closest_display
+            .sort_values("_order")
+            .drop(columns="_order")
+            .rename(
+                columns={
+                    "candidate": "Closest candidate",
+                    "n_rows": "Rows",
+                    "value": "Share",
+                }
+            )
+        )
+        closest_display["Closest candidate"] = (
+            closest_display["Closest candidate"].map(_candidate_label)
+        )
+        closest_display["Rows"] = closest_display["Rows"].map(
+            _format_integer
+        )
+        closest_display["Share"] = closest_display["Share"].map(
+            _format_percent
+        )
+
+        spread_display = (
+            candidate_spread
+            .pivot_table(
+                index="disagreement_band",
+                columns="variable",
+                values="value",
+                aggfunc="first",
+            )
+            .reset_index()
+            .rename(
+                columns={
+                    "disagreement_band": "Mirror disagreement",
+                    "median_relative_candidate_spread": "Median candidate spread",
+                    "p95_relative_candidate_spread": "P95 candidate spread",
+                }
+            )
+        )
+        spread_display["_order"] = spread_display[
+            "Mirror disagreement"
+        ].map(lambda value: _disagreement_band_order(value)[0])
+        spread_display = (
+            spread_display.sort_values("_order").drop(columns="_order")
+        )
+        for column in (
+            "Median candidate spread",
+            "P95 candidate spread",
+        ):
+            spread_display[column] = spread_display[column].map(
+                _format_percent
+            )
+
+        candidate_year_display = candidate_by_year[
+            candidate_by_year["variable"].eq("median_uv_log_distance")
+        ].copy()
+        candidate_year_display = (
+            candidate_year_display
+            .pivot_table(
+                index="year",
+                columns="candidate",
+                values="value",
+                aggfunc="first",
+            )
+            .reset_index()
+            .rename(
+                columns={
+                    "year": "Year",
+                    "simple_mean": "Simple mean",
+                    "value_weighted": "Value-weighted",
+                    "quantity_reliability_weighted": (
+                        "Quantity-reliability-weighted"
+                    ),
+                }
+            )
+        )
+        for column in (
+            "Simple mean",
+            "Value-weighted",
+            "Quantity-reliability-weighted",
+        ):
+            if column in candidate_year_display.columns:
+                candidate_year_display[column] = (
+                    candidate_year_display[column]
+                    .map(lambda value: _format_number(value, digits=4))
+                )
+
+        candidate_product_display = candidate_by_product[
+            candidate_by_product["variable"].eq("median_uv_log_distance")
+        ][
+            ["target_cmd", "candidate", "n_rows", "value"]
+        ].copy()
+        candidate_product_display = candidate_product_display.rename(
+            columns={
+                "target_cmd": "HS product",
+                "candidate": "Candidate",
+                "n_rows": "Rows",
+                "value": "Median UV distance",
+            }
+        )
+        candidate_product_display["Candidate"] = (
+            candidate_product_display["Candidate"].map(_candidate_label)
+        )
+        candidate_product_display["Rows"] = (
+            candidate_product_display["Rows"].map(_format_integer)
+        )
+        candidate_product_display["Median UV distance"] = (
+            candidate_product_display["Median UV distance"]
+            .map(lambda value: _format_number(value, digits=4))
+        )
+
+        # ==============================================================
         # Figures
         # ==============================================================
 
@@ -1754,6 +2524,48 @@ def build_validation_report(
                     "_validation_quantity_uv_r_squared_distribution.png"
                 )
             ),
+            "quantity_candidate_uv_summary": (
+                figure_dir
+                / (
+                    f"target_{cfg.scope.target_hs.lower()}"
+                    "_validation_quantity_candidate_uv_summary.png"
+                )
+            ),
+            "quantity_candidate_by_disagreement": (
+                figure_dir
+                / (
+                    f"target_{cfg.scope.target_hs.lower()}"
+                    "_validation_quantity_candidate_by_disagreement.png"
+                )
+            ),
+            "quantity_candidate_closest_reference": (
+                figure_dir
+                / (
+                    f"target_{cfg.scope.target_hs.lower()}"
+                    "_validation_quantity_candidate_closest_reference.png"
+                )
+            ),
+            "quantity_candidate_by_year": (
+                figure_dir
+                / (
+                    f"target_{cfg.scope.target_hs.lower()}"
+                    "_validation_quantity_candidate_by_year.png"
+                )
+            ),
+            "quantity_candidate_product_distribution": (
+                figure_dir
+                / (
+                    f"target_{cfg.scope.target_hs.lower()}"
+                    "_validation_quantity_candidate_product_distribution.png"
+                )
+            ),
+            "quantity_candidate_spread": (
+                figure_dir
+                / (
+                    f"target_{cfg.scope.target_hs.lower()}"
+                    "_validation_quantity_candidate_spread.png"
+                )
+            ),
         }
 
         _plot_training_population_funnel(
@@ -1795,6 +2607,48 @@ def build_validation_report(
             diagnostics=diagnostics,
             output_path=figure_paths[
                 "quantity_uv_r_squared_distribution"
+            ],
+        )
+
+        _plot_quantity_candidate_uv_summary(
+            diagnostics=diagnostics,
+            output_path=figure_paths[
+                "quantity_candidate_uv_summary"
+            ],
+        )
+
+        _plot_quantity_candidate_by_disagreement(
+            diagnostics=diagnostics,
+            output_path=figure_paths[
+                "quantity_candidate_by_disagreement"
+            ],
+        )
+
+        _plot_quantity_candidate_closest_reference(
+            diagnostics=diagnostics,
+            output_path=figure_paths[
+                "quantity_candidate_closest_reference"
+            ],
+        )
+
+        _plot_quantity_candidate_by_year(
+            diagnostics=diagnostics,
+            output_path=figure_paths[
+                "quantity_candidate_by_year"
+            ],
+        )
+
+        _plot_quantity_candidate_product_distribution(
+            diagnostics=diagnostics,
+            output_path=figure_paths[
+                "quantity_candidate_product_distribution"
+            ],
+        )
+
+        _plot_quantity_candidate_spread(
+            diagnostics=diagnostics,
+            output_path=figure_paths[
+                "quantity_candidate_spread"
             ],
         )
     
@@ -2220,9 +3074,9 @@ def build_validation_report(
             "",
             (
                 "The final VACODA Validation workflow assesses whether "
-                "the synchronized bilateral trade quantity is credible, "
+                "the available bilateral quantity evidence is credible, "
                 "identifies observations that require further attention, "
-                "and ultimately determines whether missing or implausible "
+                "compares fixed reconciliation candidates, and ultimately determines whether missing or implausible "
                 "quantities can be reconstructed with sufficient evidence."
             ),
             "",
@@ -2237,7 +3091,7 @@ def build_validation_report(
             "",
             (
                 f"- `{_format_integer(n_available_quantity_rows)}` rows "
-                "contain a Trade-Synced quantity and "
+                "contain the legacy Trade-Synced quantity and "
                 f"`{_format_integer(n_missing_quantity_rows)}` rows "
                 "enter Validation without a usable synchronized quantity."
             ),
@@ -2754,7 +3608,132 @@ def build_validation_report(
                 "Product-year UV reference."
             ),
             "",
-            "## 4. Diagnostic Coverage",
+            "## 4. Fixed Quantity Candidate Evaluation",
+            "",
+            (
+                "Validation retains exporter and importer quantities as the "
+                "underlying reporter evidence and compares three fixed bilateral "
+                "quantity candidates: the simple mean, the value-weighted "
+                "candidate, and the quantity-reliability-weighted candidate. "
+                "No final quantity is selected automatically in this report."
+            ),
+            "",
+            (
+                "All candidate unit-value diagnostics use the same reconciled "
+                "nominal trade value and the same product-year UV reference. "
+                "The comparison is therefore like-for-like across candidates."
+            ),
+            "",
+            "### 4.1. Overall candidate comparison",
+            "",
+            _markdown_table(candidate_summary_display),
+            "",
+            markdown_image(
+                "Fixed quantity candidates: unit-value plausibility",
+                figure_paths["quantity_candidate_uv_summary"],
+                document_path=report_path,
+                width=850,
+            ),
+            "",
+            (
+                "The median and upper-tail UV distances show how each fixed "
+                "candidate behaves against the common product-year UV reference. "
+                "The exporter/importer log-gap columns show how far each candidate "
+                "typically moves from the two underlying reporter quantities."
+            ),
+            "",
+            "### 4.2. Candidate behavior as mirror disagreement increases",
+            "",
+            _markdown_table(disagreement_display),
+            "",
+            markdown_image(
+                "Candidate UV plausibility by mirror disagreement",
+                figure_paths["quantity_candidate_by_disagreement"],
+                document_path=report_path,
+                width=850,
+            ),
+            "",
+            (
+                "This comparison is especially important because candidate "
+                "construction matters most when exporter and importer quantities "
+                "diverge. Similar performance in low-disagreement rows does not "
+                "establish that the candidates behave similarly when mirror "
+                "disagreement is large."
+            ),
+            "",
+            "### 4.3. Closest candidate to the product-year UV reference",
+            "",
+            _markdown_table(closest_display),
+            "",
+            markdown_image(
+                "Candidate closest to the product-year UV reference",
+                figure_paths["quantity_candidate_closest_reference"],
+                document_path=report_path,
+                width=850,
+            ),
+            "",
+            (
+                "Closest-reference frequency is retained as one diagnostic, "
+                "not as an automatic selection rule. The product-year UV "
+                "reference is itself derived from the observed trade data, so "
+                "this evidence must be interpreted together with disagreement, "
+                "temporal stability, product stability, and candidate spread."
+            ),
+            "",
+            "### 4.4. Candidate spread",
+            "",
+            _markdown_table(spread_display),
+            "",
+            markdown_image(
+                "Spread among the three fixed quantity candidates",
+                figure_paths["quantity_candidate_spread"],
+                document_path=report_path,
+                width=850,
+            ),
+            "",
+            (
+                "Candidate spread measures how much the three fixed quantities "
+                "differ from one another on the same bilateral row. A small "
+                "spread means the final methodological choice has little numerical "
+                "effect for that disagreement regime; a large spread means the "
+                "choice is consequential."
+            ),
+            "",
+            "### 4.5. Temporal stability",
+            "",
+            _markdown_table(candidate_year_display),
+            "",
+            markdown_image(
+                "Candidate unit-value plausibility by year",
+                figure_paths["quantity_candidate_by_year"],
+                document_path=report_path,
+                width=850,
+            ),
+            "",
+            (
+                "The year comparison checks whether a candidate's apparent "
+                "plausibility is persistent through time rather than driven by "
+                "a small number of years."
+            ),
+            "",
+            "### 4.6. Product stability",
+            "",
+            markdown_image(
+                "Product-level distribution of candidate median UV distance",
+                figure_paths["quantity_candidate_product_distribution"],
+                document_path=report_path,
+                width=850,
+            ),
+            "",
+            (
+                "The product-level distribution shows whether candidate behavior "
+                "is broadly shared across HS products or concentrated in a subset "
+                "of products. The full per-product diagnostics remain in the "
+                "diagnostics artifact rather than being expanded into a very large "
+                "report table."
+            ),
+            "",
+            "## 5. Diagnostic Coverage",
             "",
             (
                 "The following diagnostics describe the temporal and "
@@ -2765,7 +3744,7 @@ def build_validation_report(
                 "years and products."
             ),
             "",
-            "### 4.1. Temporal coverage",
+            "### 5.1. Temporal coverage",
             "",
             (
                 "A candidate training population must provide "
@@ -2785,7 +3764,7 @@ def build_validation_report(
                 document_path=report_path,
             ),
             "",
-            "### 4.2. Product coverage",
+            "### 5.2. Product coverage",
             "",
             (
                 f"- The current diagnostics contain `{_format_integer(n_products)}` "
@@ -2812,16 +3791,16 @@ def build_validation_report(
                 product_display
             ),
             "",
-            "## 5. Current methodological assessment",
+            "## 6. Current methodological assessment",
             "",
             training_status,
             "",
             (
-                "- The next scientific decision is therefore not yet the "
-                "choice of machine-learning algorithm. It is the selection "
-                "of a defensible training population that is "
-                "large enough, sufficiently clean, and adequately "
-                "represented across years and products."
+                "- Two methodological decisions remain before model fitting: "
+                "the final bilateral quantity definition and the defensible "
+                "training population. The fixed-candidate diagnostics above "
+                "are intended to support the quantity decision without "
+                "automatically declaring a preferred candidate."
             ),
             "",
             (
@@ -2831,7 +3810,7 @@ def build_validation_report(
                 "all synchronized quantities are true."
             ),
             "",
-            "## 6. Output artifacts",
+            "## 7. Output artifacts",
             "",
             (
                 f"- Prepared Validation input: "

@@ -235,24 +235,17 @@ def prepare_validation_input(
         # Preserve the upstream dataset here.
         # Validation-specific scientific transformations happen later.
         # --------------------------------------------------------------
-
-        input_sql = sql_literal(input_path)
-        output_sql = sql_literal(output_path)
-
-        selected_columns = ",\n                    ".join(
-            f'"{column}"'
-            for column in required_fields
-        )
+        input_sql = sql_literal(str(input_path))
+        output_sql = sql_literal(str(output_path))
 
         logger.info(
-            "  Writing %s canonical Validation columns.",
-            len(required_fields),
+            "  Preserving all upstream Value columns."
         )
+
         con.execute(
             f"""
             COPY (
-                SELECT
-                    {selected_columns}
+                SELECT *
                 FROM read_parquet({input_sql})
                 WHERE year BETWEEN ? AND ?
             )
