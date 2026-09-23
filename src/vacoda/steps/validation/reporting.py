@@ -326,7 +326,6 @@ def _plot_training_population_funnel(
 
     order = [
         "all_rows",
-        "trade_synced_quantity_available",
         "both_quantities_available",
         "both_quantities_non_estimated",
         "both_observed_with_disagreement",
@@ -336,9 +335,6 @@ def _plot_training_population_funnel(
 
     labels = {
         "all_rows": "All rows",
-        "trade_synced_quantity_available": (
-            "Trade-Synced quantity"
-        ),
         "both_quantities_available": (
             "Bilateral quantity observations"
         ),
@@ -524,8 +520,8 @@ def _plot_training_evidence_distributions(
         "quantity_relative_difference": (
             "Mirror quantity disagreement"
         ),
-        "synced_unit_value_log_distance": (
-            "Trade-Synced UV distance"
+        "bilateral_max_unit_value_log_distance": (
+            "Worst-side reporter UV distance"
         ),
     }
 
@@ -1094,6 +1090,138 @@ def _plot_quantity_candidate_spread(
     plt.close(figure)
 
 
+def _plot_quantity_candidate_conditioned_summary(
+    *,
+    diagnostics: pd.DataFrame,
+    output_path: Path,
+) -> None:
+    """Plot quantity-conditioned UV residuals for fixed candidates."""
+
+    frame = _scope_frame(
+        diagnostics,
+        "quantity_candidate_conditioned_summary",
+    )
+    frame = frame[
+        frame["variable"].eq("median_conditioned_uv_abs_residual")
+    ].copy()
+
+    if frame.empty:
+        raise RuntimeError(
+            "No quantity-conditioned candidate summary diagnostics are available."
+        )
+
+    labels = {
+        "simple_mean": "Simple mean",
+        "value_weighted": "Value-weighted",
+        "quantity_reliability_weighted": "Quantity-reliability-weighted",
+    }
+    frame["label"] = frame["candidate"].map(labels).fillna(frame["candidate"])
+
+    figure, axis = plt.subplots(figsize=(10, 6))
+    axis.bar(frame["label"], frame["value"])
+    axis.set_title("Quantity-conditioned UV plausibility by candidate")
+    axis.set_ylabel("Median absolute log-UV residual")
+    axis.grid(axis="y", linestyle="--", alpha=0.5)
+    axis.set_axisbelow(True)
+    figure.tight_layout()
+    figure.savefig(output_path, dpi=180, bbox_inches="tight")
+    plt.close(figure)
+
+
+def _plot_quantity_candidate_conditioned_by_disagreement(
+    *,
+    diagnostics: pd.DataFrame,
+    output_path: Path,
+) -> None:
+    """Plot conditioned candidate residuals by mirror-disagreement band."""
+
+    frame = _scope_frame(
+        diagnostics,
+        "quantity_candidate_conditioned_by_disagreement",
+    )
+    frame = frame[
+        frame["variable"].eq("median_conditioned_uv_abs_residual")
+    ].copy()
+
+    if frame.empty:
+        raise RuntimeError(
+            "No conditioned candidate-by-disagreement diagnostics are available."
+        )
+
+    band_order = [
+        "5% or less",
+        "5–10%",
+        "10–20%",
+        "20–30%",
+        "30–50%",
+        "50–90%",
+        "> 90%",
+    ]
+    candidate_labels = {
+        "simple_mean": "Simple mean",
+        "value_weighted": "Value-weighted",
+        "quantity_reliability_weighted": "Quantity-reliability-weighted",
+    }
+
+    figure, axis = plt.subplots(figsize=(11, 6))
+    for candidate, group in frame.groupby("candidate", sort=False):
+        group = group.copy()
+        group["order"] = group["disagreement_band"].map(
+            {value: index for index, value in enumerate(band_order)}
+        )
+        group = group.sort_values("order")
+        axis.plot(
+            group["disagreement_band"],
+            group["value"],
+            marker="o",
+            label=candidate_labels.get(candidate, candidate),
+        )
+
+    axis.set_title("Quantity-conditioned UV plausibility by mirror disagreement")
+    axis.set_xlabel("Mirror quantity disagreement")
+    axis.set_ylabel("Median absolute log-UV residual")
+    axis.grid(axis="y", linestyle="--", alpha=0.5)
+    axis.legend()
+    figure.tight_layout()
+    figure.savefig(output_path, dpi=180, bbox_inches="tight")
+    plt.close(figure)
+
+
+def _plot_quantity_candidate_closest_conditioned(
+    *,
+    diagnostics: pd.DataFrame,
+    output_path: Path,
+) -> None:
+    """Plot closest candidate under quantity-conditioned UV residuals."""
+
+    frame = _scope_frame(
+        diagnostics,
+        "quantity_candidate_closest_conditioned",
+    )
+    if frame.empty:
+        raise RuntimeError(
+            "No closest quantity-conditioned candidate diagnostics are available."
+        )
+
+    labels = {
+        "simple_mean": "Simple mean",
+        "value_weighted": "Value-weighted",
+        "quantity_reliability_weighted": "Quantity-reliability-weighted",
+        "tie": "Tie",
+    }
+    frame["label"] = frame["candidate"].map(labels).fillna(frame["candidate"])
+
+    figure, axis = plt.subplots(figsize=(10, 6))
+    axis.bar(frame["label"], 100.0 * frame["value"])
+    axis.set_title("Candidate closest to quantity-conditioned expected UV")
+    axis.set_ylabel("Share of comparable rows (%)")
+    axis.grid(axis="y", linestyle="--", alpha=0.5)
+    axis.set_axisbelow(True)
+    figure.tight_layout()
+    figure.savefig(output_path, dpi=180, bbox_inches="tight")
+    plt.close(figure)
+
+
 # ======================================================================
 # Main reporting function
 # ======================================================================
@@ -1443,17 +1571,13 @@ def build_validation_report(
                     ),
                 },
                 {
-                    "Check": (
-                        "Invalid simple-mean quantities"
-                    ),
+                    "Check": "Invalid simple-mean quantities",
                     "Result": _format_integer(
                         n_invalid_simple_mean_rows
                     ),
                 },
                 {
-                    "Check": (
-                        "Invalid value-weighted quantities"
-                    ),
+                    "Check": "Invalid value-weighted quantities",
                     "Result": _format_integer(
                         n_invalid_value_weighted_rows
                     ),
@@ -1464,14 +1588,6 @@ def build_validation_report(
                     ),
                     "Result": _format_integer(
                         n_invalid_quantity_reliability_weighted_rows
-                    ),
-                },
-                {
-                    "Check": (
-                        "Missing synchronized quantities"
-                    ),
-                    "Result": _format_integer(
-                        n_missing_quantity_rows
                     ),
                 },
                 {
@@ -1494,7 +1610,6 @@ def build_validation_report(
 
         funnel_order = [
             "all_rows",
-            "trade_synced_quantity_available",
             "both_quantities_available",
             "both_quantities_non_estimated",
             "both_observed_with_disagreement",
@@ -1504,9 +1619,6 @@ def build_validation_report(
 
         funnel_labels = {
             "all_rows": "All Validation rows",
-            "trade_synced_quantity_available": (
-                "Trade-Synced quantity available"
-            ),
             "both_quantities_available": (
                 "Bilateral quantity observation"
             ),
@@ -1618,7 +1730,7 @@ def build_validation_report(
 
             elif (
                 criterion
-                == "synced_unit_value_log_distance"
+                == "bilateral_max_unit_value_log_distance"
             ):
                 threshold_label = (
                     f"≤ "
@@ -1626,7 +1738,7 @@ def build_validation_report(
                 )
 
                 evidence_label = (
-                    "Trade-Synced UV distance"
+                    "Worst-side reporter UV distance"
                 )
 
             else:
@@ -1699,7 +1811,7 @@ def build_validation_report(
                         )
                     )
                 ),
-                "Maximum Trade-Synced UV distance": (
+                "Maximum Worst-side reporter UV distance": (
                     threshold_grid[
                         "uv_distance_threshold"
                     ].map(
@@ -1831,9 +1943,9 @@ def build_validation_report(
                         _format_percent
                     )
                 ),
-                "Median Trade-Synced UV distance": (
+                "Median Worst-side reporter UV distance": (
                     year_coverage[
-                        "median_synced_uv_log_distance"
+                        "median_worst_side_uv_log_distance"
                     ].map(
                         lambda value: (
                             _format_number(
@@ -1916,7 +2028,7 @@ def build_validation_report(
                 "n_rows",
                 "share_of_all",
                 "median_quantity_relative_difference",
-                "median_synced_uv_log_distance",
+                "median_worst_side_uv_log_distance",
             ]
         ].copy()
 
@@ -1970,10 +2082,10 @@ def build_validation_report(
         )
 
         product_display[
-            "median_synced_uv_log_distance"
+            "median_worst_side_uv_log_distance"
         ] = (
             product_display[
-                "median_synced_uv_log_distance"
+                "median_worst_side_uv_log_distance"
             ].map(
                 lambda value: (
                     _format_number(
@@ -1995,8 +2107,8 @@ def build_validation_report(
                 "median_quantity_relative_difference": (
                     "Median Mirror quantity disagreement"
                 ),
-                "median_synced_uv_log_distance": (
-                    "Median Trade-Synced UV distance"
+                "median_worst_side_uv_log_distance": (
+                    "Median Worst-side reporter UV distance"
                 ),
             }
         )
@@ -2020,8 +2132,8 @@ def build_validation_report(
             "quantity_absolute_difference_vs_import": (
                 "Absolute exporter quantity difference relative to importer"
             ),
-            "synced_unit_value_log_distance": (
-                "Trade-Synced UV distance"
+            "bilateral_max_unit_value_log_distance": (
+                "Worst-side reporter UV distance"
             ),
             "unit_value_reference_observations": (
                 "Product-year UV support"
@@ -2145,10 +2257,6 @@ def build_validation_report(
             )
         }
 
-        n_synced_quantity = funnel_lookup.get(
-            "trade_synced_quantity_available",
-            0,
-        )
 
         n_both_quantities = funnel_lookup.get(
             "both_quantities_available",
@@ -2201,6 +2309,21 @@ def build_validation_report(
             "quantity_candidate_spread",
         )
 
+        candidate_conditioned_summary = _scope_frame(
+            diagnostics,
+            "quantity_candidate_conditioned_summary",
+        )
+
+        candidate_conditioned_by_disagreement = _scope_frame(
+            diagnostics,
+            "quantity_candidate_conditioned_by_disagreement",
+        )
+
+        candidate_closest_conditioned = _scope_frame(
+            diagnostics,
+            "quantity_candidate_closest_conditioned",
+        )
+
         candidate_scopes = {
             "quantity_candidate_summary": candidate_summary,
             "quantity_candidate_by_disagreement": candidate_by_disagreement,
@@ -2208,6 +2331,9 @@ def build_validation_report(
             "quantity_candidate_by_year": candidate_by_year,
             "quantity_candidate_by_product": candidate_by_product,
             "quantity_candidate_spread": candidate_spread,
+            "quantity_candidate_conditioned_summary": candidate_conditioned_summary,
+            "quantity_candidate_conditioned_by_disagreement": candidate_conditioned_by_disagreement,
+            "quantity_candidate_closest_conditioned": candidate_closest_conditioned,
         }
 
         missing_candidate_scopes = [
@@ -2221,6 +2347,85 @@ def build_validation_report(
                 "Validation quantity-candidate diagnostics are incomplete: "
                 + ", ".join(missing_candidate_scopes)
             )
+
+        # ==============================================================
+        # Quantity-conditioned candidate comparison
+        # ==============================================================
+
+        candidate_labels = {
+            "simple_mean": "Simple mean",
+            "value_weighted": "Value-weighted",
+            "quantity_reliability_weighted": "Quantity-reliability-weighted",
+            "tie": "Tie",
+        }
+
+        conditioned_summary_display = (
+            candidate_conditioned_summary
+            .pivot_table(
+                index="candidate",
+                columns="variable",
+                values="value",
+                aggfunc="first",
+            )
+            .reset_index()
+            .rename(
+                columns={
+                    "candidate": "Candidate",
+                    "median_conditioned_uv_abs_residual": "Median residual",
+                    "p90_conditioned_uv_abs_residual": "P90 residual",
+                    "p95_conditioned_uv_abs_residual": "P95 residual",
+                }
+            )
+        )
+        conditioned_summary_display["Candidate"] = (
+            conditioned_summary_display["Candidate"]
+            .map(candidate_labels)
+            .fillna(conditioned_summary_display["Candidate"])
+        )
+
+        conditioned_disagreement_display = (
+            candidate_conditioned_by_disagreement
+            .pivot_table(
+                index=["disagreement_band", "candidate"],
+                columns="variable",
+                values="value",
+                aggfunc="first",
+            )
+            .reset_index()
+            .rename(
+                columns={
+                    "disagreement_band": "Mirror disagreement",
+                    "candidate": "Candidate",
+                    "median_conditioned_uv_abs_residual": "Median residual",
+                    "p90_conditioned_uv_abs_residual": "P90 residual",
+                    "p95_conditioned_uv_abs_residual": "P95 residual",
+                }
+            )
+        )
+        conditioned_disagreement_display["Candidate"] = (
+            conditioned_disagreement_display["Candidate"]
+            .map(candidate_labels)
+            .fillna(conditioned_disagreement_display["Candidate"])
+        )
+
+        conditioned_closest_display = candidate_closest_conditioned[[
+            "candidate", "n_rows", "value"
+        ]].copy()
+        conditioned_closest_display["candidate"] = (
+            conditioned_closest_display["candidate"]
+            .map(candidate_labels)
+            .fillna(conditioned_closest_display["candidate"])
+        )
+        conditioned_closest_display["value"] = conditioned_closest_display[
+            "value"
+        ].apply(_format_percent)
+        conditioned_closest_display = conditioned_closest_display.rename(
+            columns={
+                "candidate": "Closest candidate",
+                "n_rows": "Rows",
+                "value": "Share",
+            }
+        )
 
         candidate_order = [
             "simple_mean",
@@ -2566,6 +2771,27 @@ def build_validation_report(
                     "_validation_quantity_candidate_spread.png"
                 )
             ),
+            "quantity_candidate_conditioned_summary": (
+                figure_dir
+                / (
+                    f"target_{cfg.scope.target_hs.lower()}"
+                    "_validation_quantity_candidate_conditioned_summary.png"
+                )
+            ),
+            "quantity_candidate_conditioned_by_disagreement": (
+                figure_dir
+                / (
+                    f"target_{cfg.scope.target_hs.lower()}"
+                    "_validation_quantity_candidate_conditioned_by_disagreement.png"
+                )
+            ),
+            "quantity_candidate_closest_conditioned": (
+                figure_dir
+                / (
+                    f"target_{cfg.scope.target_hs.lower()}"
+                    "_validation_quantity_candidate_closest_conditioned.png"
+                )
+            ),
         }
 
         _plot_training_population_funnel(
@@ -2649,6 +2875,27 @@ def build_validation_report(
             diagnostics=diagnostics,
             output_path=figure_paths[
                 "quantity_candidate_spread"
+            ],
+        )
+
+        _plot_quantity_candidate_conditioned_summary(
+            diagnostics=diagnostics,
+            output_path=figure_paths[
+                "quantity_candidate_conditioned_summary"
+            ],
+        )
+
+        _plot_quantity_candidate_conditioned_by_disagreement(
+            diagnostics=diagnostics,
+            output_path=figure_paths[
+                "quantity_candidate_conditioned_by_disagreement"
+            ],
+        )
+
+        _plot_quantity_candidate_closest_conditioned(
+            diagnostics=diagnostics,
+            output_path=figure_paths[
+                "quantity_candidate_closest_conditioned"
             ],
         )
     
@@ -3090,10 +3337,9 @@ def build_validation_report(
             ),
             "",
             (
-                f"- `{_format_integer(n_available_quantity_rows)}` rows "
-                "contain the legacy Trade-Synced quantity and "
-                f"`{_format_integer(n_missing_quantity_rows)}` rows "
-                "enter Validation without a usable synchronized quantity."
+                "The structural audit verifies the retained reporter quantities "
+                "and all three fixed bilateral quantity candidates before "
+                "scientific candidate evaluation."
             ),
             "",
             _markdown_table(
@@ -3103,8 +3349,8 @@ def build_validation_report(
             (
                 "The structural audit is deliberately limited to technical "
                 "integrity: canonical grain, required fields, year and HS "
-                "scope, numeric validity, and synchronization-method/status "
-                "consistency. Economic plausibility is not decided here."
+                "scope and numeric validity of the retained quantity evidence. "
+                "Economic plausibility is not decided here."
             ),
             "",
             "## 3. Quantity diagnostics",
@@ -3153,8 +3399,9 @@ def build_validation_report(
             ),
             "",
             (
-                "- **Trade-Synced UV distance** — the UV distance calculated "
-                "using the Trade-Synced quantity."
+                "- **Worst-side reporter UV distance** — the larger of the "
+                "exporter and importer UV distances. A low value therefore "
+                "requires both reporter quantities to imply plausible unit values."
             ),
             "",
             (
@@ -3183,12 +3430,6 @@ def build_validation_report(
             (
                 "The population is narrowed using the following terms and "
                 "data requirements:"
-            ),
-            "",
-            (
-                "- **Trade-Synced quantity available** — a synchronized "
-                "quantity produced by the earlier Trade Sync stage is "
-                "available for the observation."
             ),
             "",
             (
@@ -3374,8 +3615,8 @@ def build_validation_report(
             "",
             (
                 "- Mirror quantity disagreement measures exporter–importer quantity inconsistency, Product-year UV support measures "
-                "the number of observations underlying the product-year unit-value reference, and Trade-Synced UV distance measures "
-                "how far the Trade-Synced unit value lies from that reference."
+                "the number of observations underlying the product-year unit-value reference, and Worst-side reporter UV distance "
+                "measures how far the less plausible reporter-implied unit value lies from that reference."
 
             ),
             "",
@@ -3401,7 +3642,7 @@ def build_validation_report(
                 "`direct bilateral quantities` + "
                 "`maximum Mirror quantity disagreement` + "
                 "`minimum Product-year UV support` + "
-                "`maximum Trade-Synced UV distance`."
+                "`maximum Worst-side reporter UV distance`."
             ),
             "",
             _markdown_table(
@@ -3464,7 +3705,7 @@ def build_validation_report(
             (
                 "The following diagnostics describe the distribution of "
                 "`Mirror quantity disagreement`, `Product-year UV support`, "
-                "and `Trade-Synced UV distance` among directly observed "
+                "and `Worst-side reporter UV distance` among directly observed "
                 "bilateral quantity rows."
             ),
             "",
@@ -3490,7 +3731,7 @@ def build_validation_report(
             ),
             "",
             (
-            "- For Trade-Synced UV distance, the orange line is much lower through the middle of the distribution, then rises sharply" 
+            "- For Worst-side reporter UV distance, the orange line is much lower through the middle of the distribution, then rises sharply" 
                 "in the upper tail. So most rows are relatively closer to their Product-year UV reference, while a smaller fraction " 
                 "becomes very far away."
             ),
@@ -3731,6 +3972,64 @@ def build_validation_report(
                 "of products. The full per-product diagnostics remain in the "
                 "diagnostics artifact rather than being expanded into a very large "
                 "report table."
+            ),
+            "",
+            "### 4.7. Quantity-conditioned UV plausibility",
+            "",
+            (
+                "The unconditional Product-year UV reference does not account "
+                "for the systematic relationship between trade quantity and "
+                "unit value documented in Section 3.2.7. Validation therefore "
+                "also evaluates each fixed candidate against the UV expected "
+                "at that candidate's own quantity level."
+            ),
+            "",
+            (
+                "Within each HS × year group containing at least 30 direct "
+                "bilateral observations, Validation estimates "
+                "`log(UV) = α + β × log(quantity)`. For each candidate, the "
+                "absolute residual from this relationship is then calculated. "
+                "Smaller residuals indicate greater quantity-conditioned UV "
+                "plausibility. This is a diagnostic comparison, not an automatic "
+                "candidate-selection rule."
+            ),
+            "",
+            _markdown_table(conditioned_summary_display),
+            "",
+            markdown_image(
+                "Quantity-conditioned UV plausibility by candidate",
+                figure_paths["quantity_candidate_conditioned_summary"],
+                document_path=report_path,
+                width=850,
+            ),
+            "",
+            "#### 4.7.1. Quantity-conditioned plausibility by mirror disagreement",
+            "",
+            _markdown_table(conditioned_disagreement_display),
+            "",
+            markdown_image(
+                "Quantity-conditioned candidate plausibility by mirror disagreement",
+                figure_paths["quantity_candidate_conditioned_by_disagreement"],
+                document_path=report_path,
+                width=850,
+            ),
+            "",
+            "#### 4.7.2. Candidate closest to quantity-conditioned expected UV",
+            "",
+            _markdown_table(conditioned_closest_display),
+            "",
+            markdown_image(
+                "Candidate closest to quantity-conditioned expected UV",
+                figure_paths["quantity_candidate_closest_conditioned"],
+                document_path=report_path,
+                width=850,
+            ),
+            "",
+            (
+                "This quantity-conditioned comparison is particularly useful "
+                "for the high-disagreement bands, where the three candidate "
+                "quantities differ most and where an unconditional Product-year "
+                "median UV can be least informative."
             ),
             "",
             "## 5. Diagnostic Coverage",

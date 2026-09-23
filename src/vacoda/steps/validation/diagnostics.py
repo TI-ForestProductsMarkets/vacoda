@@ -821,6 +821,34 @@ def build_diagnostics(
             ELSE NULL
         END
             AS import_unit_value_log_distance,
+
+        CASE
+            WHEN
+                {export_quantity_sql} IS NOT NULL
+                AND {export_quantity_sql} > 0
+                AND {import_quantity_sql} IS NOT NULL
+                AND {import_quantity_sql} > 0
+                AND {nominal_value_sql} IS NOT NULL
+                AND {nominal_value_sql} > 0
+                AND {uv_reference_sql} IS NOT NULL
+                AND {uv_reference_sql} > 0
+                AND isfinite(CAST({export_quantity_sql} AS DOUBLE))
+                AND isfinite(CAST({import_quantity_sql} AS DOUBLE))
+                AND isfinite(CAST({nominal_value_sql} AS DOUBLE))
+                AND isfinite(CAST({uv_reference_sql} AS DOUBLE))
+            THEN GREATEST(
+                ABS(
+                    LN(CAST({nominal_value_sql} AS DOUBLE) / CAST({export_quantity_sql} AS DOUBLE))
+                    - LN(CAST({uv_reference_sql} AS DOUBLE))
+                ),
+                ABS(
+                    LN(CAST({nominal_value_sql} AS DOUBLE) / CAST({import_quantity_sql} AS DOUBLE))
+                    - LN(CAST({uv_reference_sql} AS DOUBLE))
+                )
+            )
+            ELSE NULL
+        END
+            AS bilateral_max_unit_value_log_distance,
                     
                 CASE
                     WHEN
@@ -980,7 +1008,101 @@ def build_diagnostics(
         )
 
         # ==================================================================
+        # Quantity-conditioned UV models
+        # ==================================================================
+        #
+        # Fit one log(UV) ~ log(quantity) relationship per HS × year using
+        # symmetric direct bilateral evidence. Candidate quantities can then
+        # be evaluated against the UV expected at their own quantity level,
+        # rather than only against an unconditional product-year median UV.
+        # Groups with fewer than 30 direct bilateral observations are not
+        # used for this conditioned diagnostic.
+        # ==================================================================
+
+        con.execute(
+            """
+            CREATE OR REPLACE TEMP VIEW
+                validation_quantity_uv_models
+            AS
+
+            SELECT
+                year,
+                target_cmd,
+                COUNT(*) AS n_model_rows,
+                REGR_INTERCEPT(
+                    log_bilateral_unit_value,
+                    log_bilateral_quantity
+                ) AS log_uv_intercept,
+                REGR_SLOPE(
+                    log_bilateral_unit_value,
+                    log_bilateral_quantity
+                ) AS log_uv_slope,
+                REGR_R2(
+                    log_bilateral_unit_value,
+                    log_bilateral_quantity
+                ) AS log_uv_r2
+            FROM validation_diagnostics_base
+            WHERE both_quantities_observed
+              AND log_bilateral_quantity IS NOT NULL
+              AND log_bilateral_unit_value IS NOT NULL
+            GROUP BY year, target_cmd
+            HAVING COUNT(*) >= 30
+               AND REGR_INTERCEPT(
+                    log_bilateral_unit_value,
+                    log_bilateral_quantity
+               ) IS NOT NULL
+               AND REGR_SLOPE(
+                    log_bilateral_unit_value,
+                    log_bilateral_quantity
+               ) IS NOT NULL
+            """
+        )
+
+        con.execute(
+            """
+            CREATE OR REPLACE TEMP VIEW
+                validation_quantity_candidates_conditioned
+            AS
+
+            SELECT
+                c.*,
+                m.n_model_rows,
+                m.log_uv_intercept,
+                m.log_uv_slope,
+                m.log_uv_r2,
+
+                CASE
+                    WHEN c.candidate_quantity_kg > 0
+                     AND c.trade_value_reconciled > 0
+                     AND m.log_uv_intercept IS NOT NULL
+                     AND m.log_uv_slope IS NOT NULL
+                        THEN ABS(
+                            LN(
+                                c.trade_value_reconciled
+                                / c.candidate_quantity_kg
+                            )
+                            - (
+                                m.log_uv_intercept
+                                + m.log_uv_slope
+                                  * LN(c.candidate_quantity_kg)
+                            )
+                        )
+                    ELSE NULL
+                END AS candidate_conditioned_uv_abs_residual
+
+            FROM validation_quantity_candidates AS c
+            LEFT JOIN validation_quantity_uv_models AS m
+              USING (year, target_cmd)
+            """
+        )
+
+        # ==================================================================
         # 1. Population funnel
+        # ==================================================================
+        #
+        # The funnel is based on reporter-side quantity evidence. The legacy
+        # Trade-Synced quantity is deliberately not used as an eligibility
+        # step because no final bilateral quantity has yet been selected.
         # ==================================================================
 
         funnel = con.execute(
@@ -988,11 +1110,6 @@ def build_diagnostics(
             SELECT
                 COUNT(*)
                     AS n_all_rows,
-
-                COUNT(*) FILTER (
-                    WHERE has_synced_quantity
-                )
-                    AS n_synced_quantity,
 
                 COUNT(*) FILTER (
                     WHERE has_both_quantities
@@ -1006,26 +1123,21 @@ def build_diagnostics(
 
                 COUNT(*) FILTER (
                     WHERE both_quantities_observed
-                      AND quantity_relative_difference
-                          IS NOT NULL
+                      AND quantity_relative_difference IS NOT NULL
                 )
                     AS n_both_observed_with_disagreement,
 
                 COUNT(*) FILTER (
                     WHERE both_quantities_observed
-                      AND synced_unit_value_log_distance
-                          IS NOT NULL
+                      AND bilateral_max_unit_value_log_distance IS NOT NULL
                 )
                     AS n_both_observed_with_uv_distance,
 
                 COUNT(*) FILTER (
                     WHERE both_quantities_observed
-                      AND quantity_relative_difference
-                          IS NOT NULL
-                      AND synced_unit_value_log_distance
-                          IS NOT NULL
-                      AND unit_value_reference_observations
-                          IS NOT NULL
+                      AND quantity_relative_difference IS NOT NULL
+                      AND bilateral_max_unit_value_log_distance IS NOT NULL
+                      AND unit_value_reference_observations IS NOT NULL
                 )
                     AS n_complete_training_evidence
 
@@ -1035,42 +1147,19 @@ def build_diagnostics(
 
         (
             n_all_rows,
-            n_synced_quantity,
             n_both_quantities,
             n_both_observed,
             n_both_observed_with_disagreement,
             n_both_observed_with_uv_distance,
             n_complete_training_evidence,
-        ) = map(
-            int,
-            funnel,
-        )
+        ) = map(int, funnel)
 
-        diagnostics_rows: list[
-            dict[str, Any]
-        ] = []
+        diagnostics_rows: list[dict[str, Any]] = []
 
         funnel_specs = (
-            (
-                "all_rows",
-                n_all_rows,
-                n_all_rows,
-            ),
-            (
-                "trade_synced_quantity_available",
-                n_synced_quantity,
-                n_all_rows,
-            ),
-            (
-                "both_quantities_available",
-                n_both_quantities,
-                n_synced_quantity,
-            ),
-            (
-                "both_quantities_non_estimated",
-                n_both_observed,
-                n_both_quantities,
-            ),
+            ("all_rows", n_all_rows, n_all_rows),
+            ("both_quantities_available", n_both_quantities, n_all_rows),
+            ("both_quantities_non_estimated", n_both_observed, n_both_quantities),
             (
                 "both_observed_with_disagreement",
                 n_both_observed_with_disagreement,
@@ -1088,39 +1177,21 @@ def build_diagnostics(
             ),
         )
 
-        for (
-            criterion,
-            n_rows,
-            n_parent_rows,
-        ) in funnel_specs:
-
+        for criterion, n_rows, n_parent_rows in funnel_specs:
             diagnostics_rows.append(
                 {
                     "scope": "population_funnel",
                     "criterion": criterion,
-
                     "disagreement_threshold": None,
                     "uv_support_threshold": None,
                     "uv_distance_threshold": None,
-
                     "year": None,
                     "target_cmd": None,
-
                     "variable": None,
                     "quantile": None,
-
                     "n_rows": int(n_rows),
-
-                    "share_of_all": _share(
-                        n_rows,
-                        n_all_rows,
-                    ),
-
-                    "share_of_parent": _share(
-                        n_rows,
-                        n_parent_rows,
-                    ),
-
+                    "share_of_all": _share(n_rows, n_all_rows),
+                    "share_of_parent": _share(n_rows, n_parent_rows),
                     "value": None,
                 }
             )
@@ -1201,7 +1272,7 @@ def build_diagnostics(
             )
 
         # --------------------------------------------------------------
-        # Synchronized unit-value distance
+        # Worst-side reporter unit-value distance
         # --------------------------------------------------------------
 
         for index, threshold in enumerate(
@@ -1216,10 +1287,10 @@ def build_diagnostics(
                 COUNT(*) FILTER (
                     WHERE both_quantities_observed
 
-                      AND synced_unit_value_log_distance
+                      AND bilateral_max_unit_value_log_distance
                           IS NOT NULL
 
-                      AND synced_unit_value_log_distance
+                      AND bilateral_max_unit_value_log_distance
                           <= {float(threshold):.17g}
                 ) AS {alias}
                 """
@@ -1227,7 +1298,7 @@ def build_diagnostics(
 
             threshold_metadata.append(
                 (
-                    "synced_unit_value_log_distance",
+                    "bilateral_max_unit_value_log_distance",
                     float(threshold),
                     alias,
                 )
@@ -1278,7 +1349,7 @@ def build_diagnostics(
                     "uv_distance_threshold": (
                         float(threshold)
                         if variable
-                        == "synced_unit_value_log_distance"
+                        == "bilateral_max_unit_value_log_distance"
                         else None
                     ),
 
@@ -1354,10 +1425,10 @@ def build_diagnostics(
                               AND unit_value_reference_observations
                                   >= {int(support)}
 
-                              AND synced_unit_value_log_distance
+                              AND bilateral_max_unit_value_log_distance
                                   IS NOT NULL
 
-                              AND synced_unit_value_log_distance
+                              AND bilateral_max_unit_value_log_distance
                                   <= {float(uv_distance):.17g}
                         ) AS {alias}
                         """
@@ -2441,13 +2512,13 @@ def build_diagnostics(
                     AS median_quantity_relative_difference,
 
                 MEDIAN(
-                    synced_unit_value_log_distance
+                    bilateral_max_unit_value_log_distance
                 ) FILTER (
                     WHERE both_quantities_observed
-                      AND synced_unit_value_log_distance
+                      AND bilateral_max_unit_value_log_distance
                           IS NOT NULL
                 )
-                    AS median_synced_uv_log_distance,
+                    AS median_worst_side_uv_log_distance,
 
                 MEDIAN(
                     unit_value_reference_observations
@@ -2548,12 +2619,12 @@ def build_diagnostics(
                         else None
                     ),
 
-                    "median_synced_uv_log_distance": (
+                    "median_worst_side_uv_log_distance": (
                         float(
-                            row.median_synced_uv_log_distance
+                            row.median_worst_side_uv_log_distance
                         )
                         if pd.notna(
-                            row.median_synced_uv_log_distance
+                            row.median_worst_side_uv_log_distance
                         )
                         else None
                     ),
@@ -2631,13 +2702,13 @@ def build_diagnostics(
                     AS median_quantity_relative_difference,
 
                 MEDIAN(
-                    synced_unit_value_log_distance
+                    bilateral_max_unit_value_log_distance
                 ) FILTER (
                     WHERE both_quantities_observed
-                      AND synced_unit_value_log_distance
+                      AND bilateral_max_unit_value_log_distance
                           IS NOT NULL
                 )
-                    AS median_synced_uv_log_distance,
+                    AS median_worst_side_uv_log_distance,
 
                 MEDIAN(
                     unit_value_reference_observations
@@ -2710,12 +2781,12 @@ def build_diagnostics(
                         else None
                     ),
 
-                    "median_synced_uv_log_distance": (
+                    "median_worst_side_uv_log_distance": (
                         float(
-                            row.median_synced_uv_log_distance
+                            row.median_worst_side_uv_log_distance
                         )
                         if pd.notna(
-                            row.median_synced_uv_log_distance
+                            row.median_worst_side_uv_log_distance
                         )
                         else None
                     ),
@@ -2754,7 +2825,7 @@ def build_diagnostics(
             "quantity_difference_vs_import",
             "quantity_absolute_difference_vs_import",
 
-            "synced_unit_value_log_distance",
+            "bilateral_max_unit_value_log_distance",
             "unit_value_reference_observations",
         )
 
@@ -3236,6 +3307,217 @@ def build_diagnostics(
                 )
 
         # ------------------------------------------------------------------
+        # Quantity-conditioned candidate UV plausibility
+        # ------------------------------------------------------------------
+
+        candidate_conditioned_summary = con.execute(
+            """
+            SELECT
+                candidate,
+                COUNT(*) FILTER (
+                    WHERE candidate_conditioned_uv_abs_residual IS NOT NULL
+                ) AS n_rows,
+                MEDIAN(candidate_conditioned_uv_abs_residual)
+                    FILTER (
+                        WHERE candidate_conditioned_uv_abs_residual IS NOT NULL
+                    ) AS median_abs_residual,
+                QUANTILE_CONT(candidate_conditioned_uv_abs_residual, 0.90)
+                    FILTER (
+                        WHERE candidate_conditioned_uv_abs_residual IS NOT NULL
+                    ) AS p90_abs_residual,
+                QUANTILE_CONT(candidate_conditioned_uv_abs_residual, 0.95)
+                    FILTER (
+                        WHERE candidate_conditioned_uv_abs_residual IS NOT NULL
+                    ) AS p95_abs_residual
+            FROM validation_quantity_candidates_conditioned
+            WHERE both_quantities_observed
+            GROUP BY candidate
+            ORDER BY candidate
+            """
+        ).fetchdf()
+
+        for row in candidate_conditioned_summary.itertuples(index=False):
+            for variable, value in {
+                "median_conditioned_uv_abs_residual": row.median_abs_residual,
+                "p90_conditioned_uv_abs_residual": row.p90_abs_residual,
+                "p95_conditioned_uv_abs_residual": row.p95_abs_residual,
+            }.items():
+                diagnostics_rows.append(
+                    {
+                        "scope": "quantity_candidate_conditioned_summary",
+                        "criterion": "hs_year_quantity_conditioned_uv_model_min_30",
+                        "candidate": str(row.candidate),
+                        "disagreement_threshold": None,
+                        "uv_support_threshold": None,
+                        "uv_distance_threshold": None,
+                        "disagreement_band": None,
+                        "uv_distance_band": None,
+                        "year": None,
+                        "target_cmd": None,
+                        "variable": variable,
+                        "quantile": None,
+                        "n_rows": int(row.n_rows),
+                        "share_of_all": _share(int(row.n_rows), n_all_rows),
+                        "share_of_parent": _share(int(row.n_rows), n_both_observed),
+                        "value": (
+                            float(value)
+                            if value is not None and pd.notna(value)
+                            else None
+                        ),
+                    }
+                )
+
+        candidate_conditioned_by_disagreement = con.execute(
+            f"""
+            SELECT
+                {disagreement_band_sql} AS disagreement_band,
+                candidate,
+                COUNT(*) FILTER (
+                    WHERE candidate_conditioned_uv_abs_residual IS NOT NULL
+                ) AS n_rows,
+                MEDIAN(candidate_conditioned_uv_abs_residual)
+                    FILTER (
+                        WHERE candidate_conditioned_uv_abs_residual IS NOT NULL
+                    ) AS median_abs_residual,
+                QUANTILE_CONT(candidate_conditioned_uv_abs_residual, 0.90)
+                    FILTER (
+                        WHERE candidate_conditioned_uv_abs_residual IS NOT NULL
+                    ) AS p90_abs_residual,
+                QUANTILE_CONT(candidate_conditioned_uv_abs_residual, 0.95)
+                    FILTER (
+                        WHERE candidate_conditioned_uv_abs_residual IS NOT NULL
+                    ) AS p95_abs_residual
+            FROM validation_quantity_candidates_conditioned
+            WHERE both_quantities_observed
+              AND quantity_relative_difference IS NOT NULL
+            GROUP BY disagreement_band, candidate
+            ORDER BY disagreement_band, candidate
+            """
+        ).fetchdf()
+
+        for row in candidate_conditioned_by_disagreement.itertuples(index=False):
+            for variable, value in {
+                "median_conditioned_uv_abs_residual": row.median_abs_residual,
+                "p90_conditioned_uv_abs_residual": row.p90_abs_residual,
+                "p95_conditioned_uv_abs_residual": row.p95_abs_residual,
+            }.items():
+                diagnostics_rows.append(
+                    {
+                        "scope": "quantity_candidate_conditioned_by_disagreement",
+                        "criterion": "hs_year_quantity_conditioned_uv_model_min_30",
+                        "candidate": str(row.candidate),
+                        "disagreement_threshold": None,
+                        "uv_support_threshold": None,
+                        "uv_distance_threshold": None,
+                        "disagreement_band": str(row.disagreement_band),
+                        "uv_distance_band": None,
+                        "year": None,
+                        "target_cmd": None,
+                        "variable": variable,
+                        "quantile": None,
+                        "n_rows": int(row.n_rows),
+                        "share_of_all": _share(int(row.n_rows), n_all_rows),
+                        "share_of_parent": None,
+                        "value": (
+                            float(value)
+                            if value is not None and pd.notna(value)
+                            else None
+                        ),
+                    }
+                )
+
+        candidate_closest_conditioned = con.execute(
+            """
+            WITH wide AS (
+                SELECT
+                    year,
+                    exporter_iso,
+                    importer_iso,
+                    target_cmd,
+                    export_quantity_kg,
+                    import_quantity_kg,
+                    MAX(CASE WHEN candidate = 'simple_mean'
+                        THEN candidate_conditioned_uv_abs_residual END) AS d_simple,
+                    MAX(CASE WHEN candidate = 'value_weighted'
+                        THEN candidate_conditioned_uv_abs_residual END) AS d_value,
+                    MAX(CASE WHEN candidate = 'quantity_reliability_weighted'
+                        THEN candidate_conditioned_uv_abs_residual END) AS d_reliability
+                FROM validation_quantity_candidates_conditioned
+                WHERE both_quantities_observed
+                GROUP BY
+                    year, exporter_iso, importer_iso, target_cmd,
+                    export_quantity_kg, import_quantity_kg
+            ),
+            scored AS (
+                SELECT
+                    *,
+                    LEAST(d_simple, d_value, d_reliability) AS best_distance
+                FROM wide
+                WHERE d_simple IS NOT NULL
+                  AND d_value IS NOT NULL
+                  AND d_reliability IS NOT NULL
+            ),
+            classified AS (
+                SELECT
+                    CASE
+                        WHEN ABS(d_simple - best_distance) <= 1e-12
+                         AND ABS(d_value - best_distance) > 1e-12
+                         AND ABS(d_reliability - best_distance) > 1e-12
+                            THEN 'simple_mean'
+                        WHEN ABS(d_value - best_distance) <= 1e-12
+                         AND ABS(d_simple - best_distance) > 1e-12
+                         AND ABS(d_reliability - best_distance) > 1e-12
+                            THEN 'value_weighted'
+                        WHEN ABS(d_reliability - best_distance) <= 1e-12
+                         AND ABS(d_simple - best_distance) > 1e-12
+                         AND ABS(d_value - best_distance) > 1e-12
+                            THEN 'quantity_reliability_weighted'
+                        ELSE 'tie'
+                    END AS closest_candidate
+                FROM scored
+            )
+            SELECT
+                closest_candidate,
+                COUNT(*) AS n_rows
+            FROM classified
+            GROUP BY closest_candidate
+            ORDER BY closest_candidate
+            """
+        ).fetchdf()
+
+        n_closest_conditioned_rows = int(
+            candidate_closest_conditioned["n_rows"].sum()
+        )
+
+        for row in candidate_closest_conditioned.itertuples(index=False):
+            diagnostics_rows.append(
+                {
+                    "scope": "quantity_candidate_closest_conditioned",
+                    "criterion": "all_three_conditioned_residuals_available",
+                    "candidate": str(row.closest_candidate),
+                    "disagreement_threshold": None,
+                    "uv_support_threshold": None,
+                    "uv_distance_threshold": None,
+                    "disagreement_band": None,
+                    "uv_distance_band": None,
+                    "year": None,
+                    "target_cmd": None,
+                    "variable": "closest_conditioned_uv_share",
+                    "quantile": None,
+                    "n_rows": int(row.n_rows),
+                    "share_of_all": _share(int(row.n_rows), n_all_rows),
+                    "share_of_parent": _share(
+                        int(row.n_rows),
+                        n_closest_conditioned_rows,
+                    ),
+                    "value": _share(
+                        int(row.n_rows),
+                        n_closest_conditioned_rows,
+                    ),
+                }
+            )
+
+        # ------------------------------------------------------------------
         # How much do the three candidates actually differ?
         # ------------------------------------------------------------------
 
@@ -3353,7 +3635,7 @@ def build_diagnostics(
             "n_both_quantities",
 
             "median_quantity_relative_difference",
-            "median_synced_uv_log_distance",
+            "median_worst_side_uv_log_distance",
             "median_uv_reference_observations",
             "median_quantity_difference_vs_import",
             "median_absolute_quantity_difference_vs_import",
@@ -3396,7 +3678,7 @@ def build_diagnostics(
                 "value",
 
                 "median_quantity_relative_difference",
-                "median_synced_uv_log_distance",
+                "median_worst_side_uv_log_distance",
                 "median_uv_reference_observations",
                 "median_quantity_difference_vs_import",
                 "median_absolute_quantity_difference_vs_import",
@@ -3453,11 +3735,6 @@ def build_diagnostics(
     )
 
     logger.info(
-        "  Trade-Synced quantity available: %s",
-        f"{n_synced_quantity:,}",
-    )
-
-    logger.info(
         "  Both quantities available: %s",
         f"{n_both_quantities:,}",
     )
@@ -3475,6 +3752,11 @@ def build_diagnostics(
     logger.info(
         "  Threshold combinations evaluated: %s",
         f"{len(grid_metadata):,}",
+    )
+
+    logger.info(
+        "  Quantity-conditioned candidate rows: %s",
+        f"{int(candidate_conditioned_summary['n_rows'].max()):,}",
     )
 
     logger.info(
@@ -3500,10 +3782,6 @@ def build_diagnostics(
         "diagnostics_path": output_path,
 
         "n_rows": n_all_rows,
-
-        "n_synced_quantity": (
-            n_synced_quantity
-        ),
 
         "n_both_quantities": (
             n_both_quantities
