@@ -182,6 +182,12 @@ def audit_quantity_reconciliation(
             "export_synchronized_quantity_kg",
             "import_synchronized_quantity_kg",
 
+            "reconciliation_status",
+            "exporter_adjusted_weight",
+            "importer_adjusted_weight",
+            "export_quantity_reliability_weight",
+            "import_quantity_reliability_weight",
+
             "has_export_quantity_kg",
             "has_import_quantity_kg",
             "quantity_availability_case",
@@ -720,47 +726,223 @@ def audit_quantity_reconciliation(
         trade_synced_unilateral_preserved = (
             trade_synced_unilateral_mismatches == 0
         )
+
         # --------------------------------------------------------------
-        # Both-quantity candidate integrity
+        # Candidate quantity arithmetic
         # --------------------------------------------------------------
 
-        both_quantity_candidate_mismatches = int(
+        simple_mean_mismatches = int(
             con.execute(
                 f"""
                 SELECT COUNT(*)
 
                 FROM read_parquet({quantity_sql})
 
-                WHERE quantity_availability_case
-                        = 'both_quantity'
+                WHERE quantity_availability_case = 'both_quantity'
+                AND (
+                        quantity_simple_mean_kg IS NULL
 
-                  AND (
-                        quantity_simple_mean_kg
-                            IS NULL
-
-                        OR quantity_relative_difference
-                            IS NULL
-
-                        OR NOT isfinite(
+                        OR ABS(
                             quantity_simple_mean_kg
+                            -
+                            (
+                                export_synchronized_quantity_kg
+                                + import_synchronized_quantity_kg
+                            ) / 2.0
                         )
-
-                        OR quantity_simple_mean_kg <= 0
-
-                        OR NOT isfinite(
-                            quantity_relative_difference
+                        >
+                        (
+                            1e-9
+                            * GREATEST(
+                                ABS(
+                                    (
+                                        export_synchronized_quantity_kg
+                                        + import_synchronized_quantity_kg
+                                    ) / 2.0
+                                ),
+                                1.0
+                            )
                         )
-
-                        OR quantity_relative_difference < 0
-
-                        OR quantity_relative_difference > 1
-                  )
+                )
                 """
             ).fetchone()[0]
         )
 
-        both_quantity_candidates_valid = (
-            both_quantity_candidate_mismatches == 0
+        simple_mean_valid = (
+            simple_mean_mismatches == 0
+        )
+
+        bilateral_value_weighted_mismatches = int(
+            con.execute(
+                f"""
+                SELECT COUNT(*)
+
+                FROM read_parquet({quantity_sql})
+
+                WHERE quantity_availability_case = 'both_quantity'
+                AND reconciliation_status IN (
+                        'bilateral_reconciled',
+                        'bilateral_reconciled_import_implicit_zero',
+                        'bilateral_reconciled_export_implicit_zero'
+                )
+                AND (
+                        quantity_value_weighted_kg IS NULL
+
+                        OR exporter_adjusted_weight IS NULL
+                        OR importer_adjusted_weight IS NULL
+
+                        OR ABS(
+                            quantity_value_weighted_kg
+                            -
+                            (
+                                export_synchronized_quantity_kg
+                                * exporter_adjusted_weight
+                                +
+                                import_synchronized_quantity_kg
+                                * importer_adjusted_weight
+                            )
+                        )
+                        >
+                        (
+                            1e-9
+                            * GREATEST(
+                                ABS(quantity_value_weighted_kg),
+                                1.0
+                            )
+                        )
+                )
+                """
+            ).fetchone()[0]
+        )
+
+        export_only_value_weighted_mismatches = int(
+            con.execute(
+                f"""
+                SELECT COUNT(*)
+
+                FROM read_parquet({quantity_sql})
+
+                WHERE quantity_availability_case = 'both_quantity'
+                AND reconciliation_status = 'export_only'
+                AND (
+                        quantity_value_weighted_kg IS NULL
+
+                        OR ABS(
+                            quantity_value_weighted_kg
+                            - export_synchronized_quantity_kg
+                        )
+                        >
+                        (
+                            1e-9
+                            * GREATEST(
+                                ABS(export_synchronized_quantity_kg),
+                                1.0
+                            )
+                        )
+                )
+                """
+            ).fetchone()[0]
+        )
+
+        import_only_value_weighted_mismatches = int(
+            con.execute(
+                f"""
+                SELECT COUNT(*)
+
+                FROM read_parquet({quantity_sql})
+
+                WHERE quantity_availability_case = 'both_quantity'
+                AND reconciliation_status = 'import_only'
+                AND (
+                        quantity_value_weighted_kg IS NULL
+
+                        OR ABS(
+                            quantity_value_weighted_kg
+                            - import_synchronized_quantity_kg
+                        )
+                        >
+                        (
+                            1e-9
+                            * GREATEST(
+                                ABS(import_synchronized_quantity_kg),
+                                1.0
+                            )
+                        )
+                )
+                """
+            ).fetchone()[0]
+        )
+
+        unexpected_value_weighted_rows = int(
+            con.execute(
+                f"""
+                SELECT COUNT(*)
+
+                FROM read_parquet({quantity_sql})
+
+                WHERE quantity_value_weighted_kg IS NOT NULL
+                AND (
+                        quantity_availability_case <> 'both_quantity'
+                        OR reconciliation_status = 'not_eligible'
+                )
+                """
+            ).fetchone()[0]
+        )
+
+        value_weighted_candidate_valid = (
+            bilateral_value_weighted_mismatches == 0
+            and export_only_value_weighted_mismatches == 0
+            and import_only_value_weighted_mismatches == 0
+            and unexpected_value_weighted_rows == 0
+        )
+
+        quantity_reliability_weighted_mismatches = int(
+            con.execute(
+                f"""
+                SELECT COUNT(*)
+
+                FROM read_parquet({quantity_sql})
+
+                WHERE quantity_availability_case = 'both_quantity'
+                AND export_quantity_reliability_weight IS NOT NULL
+                AND import_quantity_reliability_weight IS NOT NULL
+                AND (
+                        quantity_reliability_weighted_kg IS NULL
+
+                        OR ABS(
+                            quantity_reliability_weighted_kg
+                            -
+                            (
+                                export_synchronized_quantity_kg
+                                * export_quantity_reliability_weight
+                                +
+                                import_synchronized_quantity_kg
+                                * import_quantity_reliability_weight
+                            )
+                        )
+                        >
+                        (
+                            1e-9
+                            * GREATEST(
+                                ABS(quantity_reliability_weighted_kg),
+                                1.0
+                            )
+                        )
+                )
+                """
+            ).fetchone()[0]
+        )
+
+        quantity_reliability_candidate_valid = (
+            quantity_reliability_weighted_mismatches == 0
+        )
+
+        both_quantity_candidates_valid = all(
+            (
+                simple_mean_valid,
+                value_weighted_candidate_valid,
+                quantity_reliability_candidate_valid,
+            )
         )
 
         # --------------------------------------------------------------
@@ -1315,6 +1497,10 @@ def audit_quantity_reconciliation(
 
                 trade_value_preserved,
                 bilateral_population_preserved,
+
+                simple_mean_valid,
+                value_weighted_candidate_valid,
+                quantity_reliability_candidate_valid,
             )
         )
 
@@ -1405,8 +1591,32 @@ def audit_quantity_reconciliation(
                     {str(import_only_preserved).upper()}
                         AS import_only_preserved,
 
-                    {both_quantity_candidate_mismatches}
-                        AS both_quantity_candidate_mismatches,
+                    {simple_mean_mismatches}
+                        AS simple_mean_mismatches,
+
+                    {str(simple_mean_valid).upper()}
+                        AS simple_mean_valid,
+
+                    {bilateral_value_weighted_mismatches}
+                        AS bilateral_value_weighted_mismatches,
+
+                    {export_only_value_weighted_mismatches}
+                        AS export_only_value_weighted_mismatches,
+
+                    {import_only_value_weighted_mismatches}
+                        AS import_only_value_weighted_mismatches,
+
+                    {unexpected_value_weighted_rows}
+                        AS unexpected_value_weighted_rows,
+
+                    {str(value_weighted_candidate_valid).upper()}
+                        AS value_weighted_candidate_valid,
+
+                    {quantity_reliability_weighted_mismatches}
+                        AS quantity_reliability_weighted_mismatches,
+
+                    {str(quantity_reliability_candidate_valid).upper()}
+                        AS quantity_reliability_candidate_valid,
 
                     {str(both_quantity_candidates_valid).upper()}
                         AS both_quantity_candidates_valid,
@@ -1585,6 +1795,13 @@ def audit_quantity_reconciliation(
                 "row_count_preserved": row_count_preserved,
                 "input_bilateral_key_unique": (
                     input_bilateral_key_unique
+                ),
+                "simple_mean_valid": simple_mean_valid,
+                "value_weighted_candidate_valid": (
+                    value_weighted_candidate_valid
+                ),
+                "quantity_reliability_candidate_valid": (
+                    quantity_reliability_candidate_valid
                 ),
                 "bilateral_key_unique": bilateral_key_unique,
                 "availability_partition_valid": (

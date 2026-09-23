@@ -179,6 +179,7 @@ def reconcile_bilateral_quantity(
             "importer_iso",
             "target_cmd",
             "trade_value_reconciled",
+            "reconciliation_status",
             "export_synchronized_quantity_kg",
             "import_synchronized_quantity_kg",
             "exporter_adjusted_weight",
@@ -318,16 +319,19 @@ def reconcile_bilateral_quantity(
                         END AS quantity_simple_mean_kg,
 
                         CASE
+                            -- Bilateral value reconciliation:
+                            -- use the same reporter weights as trade-value reconciliation.
                             WHEN has_export_quantity_kg
-                             AND has_import_quantity_kg
-                             AND exporter_adjusted_weight IS NOT NULL
-                             AND importer_adjusted_weight IS NOT NULL
-                             AND isfinite(
-                                 exporter_adjusted_weight
-                             )
-                             AND isfinite(
-                                 importer_adjusted_weight
-                             )
+                            AND has_import_quantity_kg
+                            AND reconciliation_status IN (
+                                'bilateral_reconciled',
+                                'bilateral_reconciled_import_implicit_zero',
+                                'bilateral_reconciled_export_implicit_zero'
+                            )
+                            AND exporter_adjusted_weight IS NOT NULL
+                            AND importer_adjusted_weight IS NOT NULL
+                            AND isfinite(exporter_adjusted_weight)
+                            AND isfinite(importer_adjusted_weight)
                                 THEN (
                                     export_synchronized_quantity_kg
                                     * exporter_adjusted_weight
@@ -335,6 +339,21 @@ def reconcile_bilateral_quantity(
                                     import_synchronized_quantity_kg
                                     * importer_adjusted_weight
                                 )
+
+                            -- Value reconciliation retained exporter report only.
+                            -- Reporter influence on the value side is effectively 1 / 0.
+                            WHEN has_export_quantity_kg
+                            AND has_import_quantity_kg
+                            AND reconciliation_status = 'export_only'
+                                THEN export_synchronized_quantity_kg
+
+                            -- Value reconciliation retained importer report only.
+                            -- Reporter influence on the value side is effectively 0 / 1.
+                            WHEN has_export_quantity_kg
+                            AND has_import_quantity_kg
+                            AND reconciliation_status = 'import_only'
+                                THEN import_synchronized_quantity_kg
+
                             ELSE NULL
                         END AS quantity_value_weighted_kg,
 
@@ -1104,49 +1123,65 @@ def reconcile_bilateral_quantity(
             )
 
         logger.info(
-            "  Rows: %,d",
-            n_rows,
+            "  Rows: %s",
+            f"{n_rows:,}",
         )
+
         logger.info(
-            "  Both quantities usable: %,d",
-            n_both_quantity,
+            "  Both quantities usable: %s",
+            f"{n_both_quantity:,}",
         )
+
         logger.info(
-            "  Export quantity only: %,d",
-            n_export_only,
+            "  Export quantity only: %s",
+            f"{n_export_only:,}",
         )
+
         logger.info(
-            "  Import quantity only: %,d",
-            n_import_only,
+            "  Import quantity only: %s",
+            f"{n_import_only:,}",
         )
+
         logger.info(
-            "  No usable kg quantity: %,d",
-            n_no_quantity,
+            "  No usable kg quantity: %s",
+            f"{n_no_quantity:,}",
         )
+
         logger.info(
-            "  Quantity-reliability weighted: %,d",
-            n_quantity_reliability_weighted,
+            "  Quantity-reliability weighted: %s",
+            f"{n_quantity_reliability_weighted:,}",
         )
+
         logger.info(
-            "  Bilateral mean fallback: %,d",
-            n_simple_mean_fallback,
+            "  Simple-mean fallback: %s",
+            f"{n_simple_mean_fallback:,}",
         )
+
         logger.info(
-            "  Trade synced via export guidance: %,d",
-            n_trade_synced_export,
+            "  Reconciled quantity rows: %s",
+            f"{n_reconciled_quantity:,}",
         )
+
         logger.info(
-            "  Trade synced via import guidance: %,d",
-            n_trade_synced_import,
+            "  Trade synced via export guidance: %s",
+            f"{n_trade_synced_export:,}",
         )
+
         logger.info(
-            "  Trade synced via neutral bilateral mean: %,d",
-            n_trade_synced_mean,
+            "  Trade synced via import guidance: %s",
+            f"{n_trade_synced_import:,}",
         )
+
         logger.info(
-            "  Trade synced without unit-value reference: %,d",
-            n_trade_synced_mean_no_reference,
+            "  Trade synced via neutral bilateral mean: %s",
+            f"{n_trade_synced_mean:,}",
         )
+
+        logger.info(
+            "  Trade synced without unit-value reference: %s",
+            f"{n_trade_synced_mean_no_reference:,}",
+        )
+
         logger.info(
             "✍ WRITE — Reconciled bilateral quantity: %s",
             output_path,

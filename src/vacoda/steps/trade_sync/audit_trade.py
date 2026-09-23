@@ -183,6 +183,12 @@ def audit_trade_reconciliation(
             "importer_iso",
             "target_cmd",
 
+            "export_value_fob",
+            "import_value_fob_corrected",
+
+            "reconciliation_export_value",
+            "reconciliation_import_value",
+
             "reliability_evidence_case",
 
             "exporter_adjusted_weight",
@@ -404,6 +410,80 @@ def audit_trade_reconciliation(
                     AS n_invalid_reconciled_values,
 
                 COUNT(*) FILTER (
+                    WHERE reconciliation_status IN (
+                        'bilateral_reconciled',
+                        'bilateral_reconciled_import_implicit_zero',
+                        'bilateral_reconciled_export_implicit_zero'
+                    )
+                    AND (
+                            trade_value_reconciled IS NULL
+                        OR reconciliation_export_value IS NULL
+                        OR reconciliation_import_value IS NULL
+                        OR exporter_adjusted_weight IS NULL
+                        OR importer_adjusted_weight IS NULL
+                        OR ABS(
+                                trade_value_reconciled
+                                -
+                                (
+                                    reconciliation_export_value
+                                    * exporter_adjusted_weight
+                                    +
+                                    reconciliation_import_value
+                                    * importer_adjusted_weight
+                                )
+                            )
+                            >
+                            (
+                                1e-9
+                                * GREATEST(
+                                    ABS(trade_value_reconciled),
+                                    1.0
+                                )
+                            )
+                    )
+                ) AS n_bilateral_formula_mismatches,
+
+                COUNT(*) FILTER (
+                    WHERE reconciliation_status = 'export_only'
+                    AND (
+                            trade_value_reconciled IS NULL
+                        OR export_value_fob IS NULL
+                        OR ABS(
+                                trade_value_reconciled
+                                - export_value_fob
+                            )
+                            >
+                            (
+                                1e-9
+                                * GREATEST(
+                                    ABS(export_value_fob),
+                                    1.0
+                                )
+                            )
+                    )
+                ) AS n_export_only_formula_mismatches,
+
+                COUNT(*) FILTER (
+                    WHERE reconciliation_status = 'import_only'
+                    AND (
+                            trade_value_reconciled IS NULL
+                        OR import_value_fob_corrected IS NULL
+                        OR ABS(
+                                trade_value_reconciled
+                                - import_value_fob_corrected
+                            )
+                            >
+                            (
+                                1e-9
+                                * GREATEST(
+                                    ABS(import_value_fob_corrected),
+                                    1.0
+                                )
+                            )
+                    )
+                ) AS n_import_only_formula_mismatches,
+
+                COUNT(*) FILTER (
                     WHERE reconciliation_status
                             <> 'not_eligible'
                       AND trade_value_reconciled IS NULL
@@ -466,10 +546,14 @@ def audit_trade_reconciliation(
             n_invalid_reconciled_values,
             n_missing_expected_reconciled_values,
             n_unexpected_not_eligible_values,
+            n_bilateral_formula_mismatches,
+            n_export_only_formula_mismatches,
+            n_import_only_formula_mismatches,
             n_duplicate_keys,
             n_missing_key_rows,
             total_reconciled_value,
             median_reconciled_value,
+            
         ) = output_audit_row
 
         n_output_rows = int(
@@ -512,6 +596,17 @@ def audit_trade_reconciliation(
             n_unexpected_not_eligible_values or 0
         )
 
+        n_bilateral_formula_mismatches = int(
+            n_bilateral_formula_mismatches or 0
+        )
+
+        n_export_only_formula_mismatches = int(
+            n_export_only_formula_mismatches or 0
+        )
+
+        n_import_only_formula_mismatches = int(
+            n_import_only_formula_mismatches or 0
+        )
         n_duplicate_keys = int(
             n_duplicate_keys or 0
         )
@@ -576,6 +671,18 @@ def audit_trade_reconciliation(
             n_unexpected_not_eligible_values == 0
         )
 
+        bilateral_formula_valid = (
+            n_bilateral_formula_mismatches == 0
+        )
+
+        export_only_formula_valid = (
+            n_export_only_formula_mismatches == 0
+        )
+
+        import_only_formula_valid = (
+            n_import_only_formula_mismatches == 0
+        )
+
         audit_passed = all(
             (
                 weights_complete,
@@ -588,6 +695,9 @@ def audit_trade_reconciliation(
                 reconciled_values_valid,
                 expected_values_present,
                 not_eligible_values_valid,
+                bilateral_formula_valid,
+                export_only_formula_valid,
+                import_only_formula_valid,
             )
         )
 
@@ -712,6 +822,23 @@ def audit_trade_reconciliation(
                     {str(not_eligible_values_valid).upper()}
                         AS not_eligible_values_valid,
 
+                    {n_bilateral_formula_mismatches}
+                        AS n_bilateral_formula_mismatches,
+
+                    {str(bilateral_formula_valid).upper()}
+                        AS bilateral_formula_valid,
+
+                    {n_export_only_formula_mismatches}
+                        AS n_export_only_formula_mismatches,
+
+                    {str(export_only_formula_valid).upper()}
+                        AS export_only_formula_valid,
+
+                    {n_import_only_formula_mismatches}
+                        AS n_import_only_formula_mismatches,
+
+                    {str(import_only_formula_valid).upper()}
+                        AS import_only_formula_valid,
                     {
                         "NULL"
                         if total_reconciled_value is None
@@ -772,6 +899,20 @@ def audit_trade_reconciliation(
             f"{n_import_only:,}",
         )
         logger.info(
+            "  Bilateral formula mismatches: %s",
+            f"{n_bilateral_formula_mismatches:,}",
+        )
+
+        logger.info(
+            "  Export-only formula mismatches: %s",
+            f"{n_export_only_formula_mismatches:,}",
+        )
+
+        logger.info(
+            "  Import-only formula mismatches: %s",
+            f"{n_import_only_formula_mismatches:,}",
+        )
+        logger.info(
             "  Not eligible: %s",
             f"{n_not_eligible:,}",
         )
@@ -830,6 +971,15 @@ def audit_trade_reconciliation(
                 ),
                 "not_eligible_values_valid": (
                     not_eligible_values_valid
+                ),
+                "bilateral_formula_valid": (
+                    bilateral_formula_valid
+                ),
+                "export_only_formula_valid": (
+                    export_only_formula_valid
+                ),
+                "import_only_formula_valid": (
+                    import_only_formula_valid
                 ),
             }
 
