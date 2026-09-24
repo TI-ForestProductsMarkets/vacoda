@@ -30,7 +30,6 @@ from vacoda.utils.artifacts import (
 )
 from vacoda.utils.display import get_symbols
 from vacoda.utils.runtime import (
-    require_result_path,
     run_step,
     separator,
     timed_workflow,
@@ -50,10 +49,11 @@ REQUIRED_PRODUCTS = (
 WORKFLOW_STEPS = [
     "Prepare Validation input",
     "Audit structural integrity",
-    "Build diagnostics",
+    #"Select quantity candidate",
     # "Build validated trade",
     # "Audit cross-variable consistency",
     # "Build VACODA release dataset",
+    "Build diagnostics",
     "Write Validation decision report",
 ]
 
