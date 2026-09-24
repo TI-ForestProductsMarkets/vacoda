@@ -652,6 +652,30 @@ def build_diagnostics(
 
                 (
                     {export_quantity_sql} IS NOT NULL
+                    AND {export_quantity_sql} > 0
+                    AND isfinite(
+                        CAST(
+                            {export_quantity_sql}
+                            AS DOUBLE
+                        )
+                    )
+                )
+                    AS has_export_quantity,
+
+                (
+                    {import_quantity_sql} IS NOT NULL
+                    AND {import_quantity_sql} > 0
+                    AND isfinite(
+                        CAST(
+                            {import_quantity_sql}
+                            AS DOUBLE
+                        )
+                    )
+                )
+                    AS has_import_quantity,
+
+                (
+                    {export_quantity_sql} IS NOT NULL
                     AND {import_quantity_sql} IS NOT NULL
 
                     AND {export_quantity_sql} > 0
@@ -1097,6 +1121,101 @@ def build_diagnostics(
         )
 
         # ==================================================================
+        # 1. Quantity availability by reporting side
+        # ==================================================================
+        #
+        # This is a mutually exclusive accounting of usable reporter-side
+        # quantity information. Estimated/direct-report flags are deliberately
+        # ignored here. The purpose is only to establish which reporting side
+        # supplies a usable quantity.
+        # ==================================================================
+
+        quantity_availability = con.execute(
+            """
+            SELECT
+                COUNT(*)
+                    AS n_all_rows,
+
+                COUNT(*) FILTER (
+                    WHERE has_export_quantity
+                    AND has_import_quantity
+                )
+                    AS n_both,
+
+                COUNT(*) FILTER (
+                    WHERE has_export_quantity
+                    AND NOT has_import_quantity
+                )
+                    AS n_export_only,
+
+                COUNT(*) FILTER (
+                    WHERE NOT has_export_quantity
+                    AND has_import_quantity
+                )
+                    AS n_import_only,
+
+                COUNT(*) FILTER (
+                    WHERE NOT has_export_quantity
+                    AND NOT has_import_quantity
+                )
+                    AS n_neither
+
+            FROM validation_diagnostics_base
+            """
+        ).fetchone()
+
+        (
+            n_all_rows,
+            n_quantity_both,
+            n_quantity_export_only,
+            n_quantity_import_only,
+            n_quantity_neither,
+        ) = map(int, quantity_availability)
+
+        diagnostics_rows: list[dict[str, Any]] = []
+
+        quantity_availability_specs = (
+            (
+                "both",
+                n_quantity_both,
+            ),
+            (
+                "export_only",
+                n_quantity_export_only,
+            ),
+            (
+                "import_only",
+                n_quantity_import_only,
+            ),
+            (
+                "neither",
+                n_quantity_neither,
+            ),
+        )
+
+        for criterion, n_rows in quantity_availability_specs:
+            diagnostics_rows.append(
+                {
+                    "scope": "quantity_availability",
+                    "criterion": criterion,
+                    "disagreement_threshold": None,
+                    "uv_support_threshold": None,
+                    "uv_distance_threshold": None,
+                    "year": None,
+                    "target_cmd": None,
+                    "variable": None,
+                    "quantile": None,
+                    "n_rows": int(n_rows),
+                    "share_of_all": _share(
+                        n_rows,
+                        n_all_rows,
+                    ),
+                    "share_of_parent": None,
+                    "value": None,
+                }
+            )
+
+        # ==================================================================
         # 1. Population funnel
         # ==================================================================
         #
@@ -1146,7 +1265,7 @@ def build_diagnostics(
         ).fetchone()
 
         (
-            n_all_rows,
+            n_funnel_all_rows,
             n_both_quantities,
             n_both_observed,
             n_both_observed_with_disagreement,
@@ -1154,8 +1273,11 @@ def build_diagnostics(
             n_complete_training_evidence,
         ) = map(int, funnel)
 
-        diagnostics_rows: list[dict[str, Any]] = []
-
+        if n_funnel_all_rows != n_all_rows:
+            raise RuntimeError(
+                "Quantity-availability and population-funnel row totals differ."
+            )
+        
         funnel_specs = (
             ("all_rows", n_all_rows, n_all_rows),
             ("both_quantities_available", n_both_quantities, n_all_rows),

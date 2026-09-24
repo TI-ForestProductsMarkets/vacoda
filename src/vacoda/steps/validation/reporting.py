@@ -387,7 +387,7 @@ def _plot_training_population_funnel(
         figsize=(11, 6)
     )
 
-    bars = axis.bar(
+    bars = axis.barh(
         display_labels,
         frame["n_rows"],
     )
@@ -398,25 +398,32 @@ def _plot_training_population_funnel(
             f"{int(value):,}"
             for value in frame["n_rows"]
         ],
-        padding=3,
+        padding=4,
         fontsize=8,
     )
+
+    # First funnel stage at the top
+    axis.invert_yaxis()
 
     axis.set_title(
         "Candidate quantity-training population"
     )
     axis.set_xlabel(
-        "Evidence requirement"
-    )
-    axis.set_ylabel(
         "Number of observations"
     )
+    axis.set_ylabel(
+        "Evidence requirement"
+    )
+
     axis.grid(
-        axis="y",
+        axis="x",
         linestyle="--",
         alpha=0.5,
     )
     axis.set_axisbelow(True)
+
+    # Give the value labels some room to the right
+    axis.margins(x=0.12)
 
     figure.tight_layout()
 
@@ -429,7 +436,6 @@ def _plot_training_population_funnel(
     plt.close(
         figure
     )
-
 
 def _plot_training_evidence_by_year(
     *,
@@ -1598,6 +1604,159 @@ def build_validation_report(
                 },
             ]
         )
+
+        # ==============================================================
+        # Quantity availability by reporting side
+        # ==============================================================
+
+        quantity_availability = _scope_frame(
+            diagnostics,
+            "quantity_availability",
+        )
+
+        if quantity_availability.empty:
+            raise RuntimeError(
+                "No quantity-availability diagnostics are available."
+            )
+
+        quantity_availability_order = [
+            "both",
+            "export_only",
+            "import_only",
+            "neither",
+        ]
+
+        quantity_availability_labels = {
+            "both": (
+                "Both exporter and importer quantities available"
+            ),
+            "export_only": (
+                "Exporter quantity only"
+            ),
+            "import_only": (
+                "Importer quantity only"
+            ),
+            "neither": (
+                "Neither exporter nor importer quantity available"
+            ),
+        }
+
+        quantity_availability["order"] = (
+            quantity_availability[
+                "criterion"
+            ].map(
+                {
+                    criterion: index
+                    for index, criterion
+                    in enumerate(
+                        quantity_availability_order
+                    )
+                }
+            )
+        )
+
+        quantity_availability = (
+            quantity_availability[
+                quantity_availability[
+                    "criterion"
+                ].isin(
+                    quantity_availability_order
+                )
+            ]
+            .sort_values("order")
+            .reset_index(drop=True)
+        )
+
+        if len(quantity_availability) != 4:
+            raise RuntimeError(
+                "Quantity-availability diagnostics must contain "
+                "exactly four mutually exclusive categories."
+            )
+
+        n_quantity_availability_rows = int(
+            quantity_availability[
+                "n_rows"
+            ].sum()
+        )
+
+        if n_quantity_availability_rows != n_rows:
+            raise RuntimeError(
+                "Quantity-availability categories do not sum to "
+                "the full Validation population."
+            )
+
+        quantity_availability_display = pd.DataFrame(
+            {
+                "Quantity availability": (
+                    quantity_availability[
+                        "criterion"
+                    ].map(
+                        quantity_availability_labels
+                    )
+                ),
+                "Rows": (
+                    quantity_availability[
+                        "n_rows"
+                    ].map(
+                        _format_integer
+                    )
+                ),
+                "Share of all Validation rows": (
+                    quantity_availability[
+                        "share_of_all"
+                    ].map(
+                        _format_percent
+                    )
+                ),
+            }
+        )
+
+
+        quantity_availability_counts = {
+            str(row.criterion): int(row.n_rows)
+            for row in quantity_availability.itertuples(
+                index=False
+            )
+        }
+
+        n_quantity_both = (
+            quantity_availability_counts["both"]
+        )
+
+        n_quantity_export_only = (
+            quantity_availability_counts[
+                "export_only"
+            ]
+        )
+
+        n_quantity_import_only = (
+            quantity_availability_counts[
+                "import_only"
+            ]
+        )
+
+        n_quantity_neither = (
+            quantity_availability_counts["neither"]
+        )
+
+        n_quantity_any = (
+            n_quantity_both
+            + n_quantity_export_only
+            + n_quantity_import_only
+        )
+
+        quantity_any_share = (
+            n_quantity_any / n_rows
+            if n_rows > 0
+            else 0.0
+        )
+
+        quantity_bilateral_share = (
+            n_quantity_both / n_rows
+            if n_rows > 0
+            else 0.0
+        )
+
 
         # ==============================================================
         # Training-population funnel
@@ -2995,7 +3154,7 @@ def build_validation_report(
                     ),
 
                     "median_bilateral_max_uv_distance": (
-                        "Median Worst-side UV distance"
+                        "Median Worst-side reporter UV distance"
                     ),
 
                     "both_within_025_share": (
@@ -3382,9 +3541,20 @@ def build_validation_report(
             ),
             "",
             (
-                "- **Product-year UV reference** — a robust reference unit "
-                "value for the same HS product and year."
+                "- **Product-year UV reference** — for each HS product `p` and year "
+                "`t`, the reference is the exponential of the median log unit value "
+                "across all valid exporter- and importer-implied unit values:"
             ),
+            "",
+            "$$",
+            r"UV^{\mathrm{ref}}_{p,t}"
+            r" = "
+            r"\exp\left("
+            r"\operatorname{median}_{i}"
+            r"\left[\log\left(UV_{i,p,t}\right)\right]"
+            r"\right)",
+            "$$",
+            "",
             "",
             (
                 "- **Product-year UV support** — the number of observations "
@@ -3411,17 +3581,52 @@ def build_validation_report(
             ),
             "",
             (
-                "- **Worst-side UV distance** — the larger of the exporter "
+                "- **Worst-side reporter UV distance** — the larger of the exporter "
                 "and importer UV distances. A small value therefore requires "
                 "both reporting sides to be close to the product-year UV "
                 "reference."
             ),
             "",
-            "",
-            "### 3.1. Quantity-evidence population",
+            "### 3.1. Quantity availability by reporting side",
             "",
             (
-                "The first diagnostic identifies the subset of Validation "
+                "Validation first establishes which reporter-side quantity "
+                "information is actually available before applying any distinction "
+                "between directly reported and estimated quantities. The categories "
+                "below are mutually exclusive and depend only on whether a usable "
+                "positive finite quantity is available from the exporter, importer, "
+                "both, or neither."
+            ),
+            "",
+            _markdown_table(
+                quantity_availability_display
+            ),
+            "",
+            (
+                f"A usable quantity is available from at least one reporting side "
+                f"for `{_format_integer(n_quantity_any)}` observations "
+                f"(`{_format_percent(quantity_any_share)}` of all Validation rows)."
+            ),
+            "",
+            (
+                f"Both exporter and importer quantities are simultaneously available "
+                f"for `{_format_integer(n_quantity_both)}` observations "
+                f"(`{_format_percent(quantity_bilateral_share)}` of all Validation "
+                f"rows). These rows form the bilateral quantity population on which "
+                f"reporter agreement can subsequently be evaluated."
+            ),
+            "",
+            (
+                "The difference between overall quantity coverage and bilateral "
+                "quantity coverage therefore reflects rows for which quantity "
+                "information is supplied by only one reporting side."
+            ),
+            "",
+            "",
+            "### 3.2. Quantity-evidence population",
+            "",
+            (
+                "This diagnostic identifies the subset of Validation "
                 "rows for which quantity information from both reporting "
                 "sides is available and the diagnostics needed for later "
                 "candidate selection can be calculated."
@@ -3494,7 +3699,7 @@ def build_validation_report(
                 "disagreement and UV distance available."
             ),
             "",
-            "### 3.2. Diagnostics for directly observed bilateral quantities",
+            "### 3.3. Diagnostics for directly observed bilateral quantities",
             "",
             (
                 "- Unless stated otherwise, all diagnostics in this section are "
@@ -3503,7 +3708,7 @@ def build_validation_report(
                 "rather than estimated."
             ),
             "",
-            markdown_styled_heading("3.2.1. Exporter quantity relative to importer"),
+            markdown_styled_heading("3.3.1. Exporter quantity relative to importer"),
             "",
             (
                 "For bilateral rows where both exporter and importer "
@@ -3599,7 +3804,7 @@ def build_validation_report(
                 "extreme asymmetric observations."
             ),
             "",
-            markdown_styled_heading("3.2.2. Threshold sensitivity"),
+            markdown_styled_heading("3.3.2. Threshold sensitivity"),
             "",
             (
                 "- This diagnostic evaluates three evidence measures within the directly observed bilateral population, "
@@ -3630,7 +3835,7 @@ def build_validation_report(
                 "quantity population."
             ),
             "",
-            markdown_styled_heading("3.2.3. Joint threshold combinations"),
+            markdown_styled_heading("3.3.3. Joint threshold combinations"),
             "",
             (
                 "The following grid applies the three candidate-selection "
@@ -3656,20 +3861,20 @@ def build_validation_report(
                 "a large or small population."
             ),
             "",
-            markdown_styled_heading("3.2.4. Mirror quantity disagreement and bilateral UV plausibility"),
+            markdown_styled_heading("3.3.4. Mirror quantity disagreement and bilateral UV plausibility"),
             "",
             (
                 "- Mirror quantity disagreement and bilateral UV distance "
                 "provide complementary evidence about quantity credibility. "
                 "The following matrix groups direct bilateral observations "
                 "simultaneously by Mirror quantity disagreement and "
-                "Worst-side UV distance."
+                "Worst-side reporter UV distance."
             ),
             "",
             (
-                "- Worst-side UV distance is the larger of the exporter and "
+                "- Worst-side reporter UV distance is the larger of the exporter and "
                 "importer UV distances. A row therefore enters a low "
-                "Worst-side UV-distance category only when both reporting "
+                "Worst-side reporter UV-distance category only when both reporting "
                 "sides imply unit values close to the Product-year UV "
                 "reference."
             ),
@@ -3687,12 +3892,12 @@ def build_validation_report(
                 "can agree on a quantity that is economically unusual."
             ),
             "",
-            markdown_styled_heading("3.2.5. Side-specific unit-value plausibility"),
+            markdown_styled_heading("3.3.5. Side-specific unit-value plausibility"),
             "",
             (
                 "The following table evaluates Exporter UV distance and "
                 "Importer UV distance separately within each Mirror quantity "
-                "disagreement band. Worst-side UV distance shows the less "
+                "disagreement band. Worst-side reporter UV distance shows the less "
                 "plausible of the two reporting sides."
             ),
             "",
@@ -3700,7 +3905,7 @@ def build_validation_report(
                 side_plausibility_display
             ),
             "",
-            markdown_styled_heading("3.2.6. Distributional evidence"),
+            markdown_styled_heading("3.3.6. Distributional evidence"),
             "",
             (
                 "The following diagnostics describe the distribution of "
@@ -3742,15 +3947,13 @@ def build_validation_report(
             ),
             "",
             (
-                "The synchronized unit-value distance is calculated using "
-                "nominal reconciled trade value because the product-year "
-                "unit-value reference is defined on the same nominal "
-                "within-year basis. Constant-price trade value remains "
-                "available for later cross-year predictive modelling."
+                "Reporter-side unit-value distances are calculated using nominal reconciled "
+                "trade value because the product-year UV reference is defined on the same "
+                "nominal within-year basis."
             ),
             "",
             "",
-            markdown_styled_heading("3.2.7. Quantity–UV relationship"),
+            markdown_styled_heading("3.3.7. Quantity–UV relationship"),
             "",
             (
                 "The previous UV diagnostics compare implied unit values "
