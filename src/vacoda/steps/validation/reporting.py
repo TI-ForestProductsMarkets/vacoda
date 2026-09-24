@@ -3527,6 +3527,126 @@ def build_validation_report(
             ),
             "",
             (
+                "- **Mirror quantity disagreement** —  for each HS product `p` and year `t`, the symmetric relative difference "
+                "between exporter- and importer-reported quantities. A value of `0%` means exact agreement. Larger values indicate greater disagreement."
+            ),
+            "",
+            "$$",
+            r"d^{Q}_{p,t}"
+            r" = "
+            r"\frac{\left|Q^{E}_{p,t} - Q^{I}_{p,t}\right|}"
+            r"{\max\left(Q^{E}_{p,t}, Q^{I}_{p,t}\right)}",
+            "$$",
+            (
+                "- **Unit value (UV)** — for each HS product `p` and year `t`, trade value per kilogram:"
+            ),
+            "",
+            "$$",
+            r"UV_{i,p,t}"
+            r" = "
+            r"\frac{V_{i,p,t}}{Q_{i,p,t}}",
+            "$$",
+            "",
+            (
+                "- **Product-year UV reference** — for each HS product `p` and year "
+                "`t`, the reference is the exponential of the median log unit value "
+                "across all valid exporter- and importer-implied unit values:"
+            ),
+            "",
+            "$$",
+            r"UV^{\mathrm{ref}}_{p,t}"
+            r" = "
+            r"\exp\left("
+            r"\operatorname{median}_{i}"
+            r"\left[\log\left(UV_{i,p,t}\right)\right]"
+            r"\right)",
+            "$$",
+            "",
+            (
+                "- **Product-year UV support** — for each HS product `p` and year `t`,the number of observations "
+                "supporting the product-year UV reference, where "
+                r"$\mathcal{I}_{p,t}$ "
+                "is the set of valid observations used to construct the product-year UV reference."
+            ),
+            "",
+            "$$",
+            r"N^{\mathrm{ref}}_{p,t}"
+            r" = "
+            r"\left|\mathcal{I}_{p,t}\right|",
+            "$$",
+            "",
+            (
+                "- **UV distance** — for each HS product `p` and year `t`, the absolute log-distance between an observation's "
+                "implied unit value and the product-year UV reference. A value close to `0` means that the implied unit value is close "
+                "to the reference. Larger values indicate greater separation."
+            ),
+            "",
+            "$$",
+            r"D^{UV}_{i,p,t}"
+            r" = "
+            r"\left|"
+            r"\log\left(UV_{i,p,t}\right)"
+            r" - "
+            r"\log\left(UV^{\mathrm{ref}}_{p,t}\right)"
+            r"\right|",
+            "$$",
+            "",
+            (
+                "- **Exporter UV distance** and **Importer UV distance** — for each HS product `p` and year `t`, the "
+                "corresponding UV distances calculated separately using the exporter- "
+                "and importer-reported quantities:"
+            ),
+            "",
+            "$$",
+            r"D^{UV,E}_{p,t}"
+            r" = "
+            r"\left|"
+            r"\log\left(UV^{E}_{p,t}\right)"
+            r" - "
+            r"\log\left(UV^{\mathrm{ref}}_{p,t}\right)"
+            r"\right|",
+            "$$",
+            "",
+            "$$",
+            r"D^{UV,I}_{p,t}"
+            r" = "
+            r"\left|"
+            r"\log\left(UV^{I}_{p,t}\right)"
+            r" - "
+            r"\log\left(UV^{\mathrm{ref}}_{p,t}\right)"
+            r"\right|",
+            "$$",
+            "",
+            (
+                "- **Worst-side reporter UV distance** — for each HS product `p` and year `t`, the larger of the exporter "
+                "and importer UV distances. A small value therefore requires both "
+                "reporting sides to be close to the product-year UV reference:"
+            ),
+            "",
+            "$$",
+            r"D^{UV,\mathrm{worst}}_{p,t}"
+            r" = "
+            r"\max\left("
+            r"D^{UV,E}_{p,t}, "
+            r"D^{UV,I}_{p,t}"
+            r"\right)",
+            "$$",
+            "",
+            "## 3. Quantity diagnostics",
+            "",
+            (
+                "Quantity diagnostics examine the available quantity "
+                "information before model development. They provide evidence "
+                "on agreement between reporting partners, consistency with "
+                "product-year unit values, and the amount of usable evidence "
+                "available for candidate training selection."
+            ),
+            "",
+            (
+                "The following terminology is used throughout this section:"
+            ),
+            "",
+            (
                 "- **Mirror quantity disagreement** —  `|exporter quantity - importer quantity| / max(exporter quantity, importer quantity)`<br>"
                 "&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;&emsp; symmetric relative difference between exporter- and importer-reported quantities:<br>"
             ),
@@ -4052,15 +4172,18 @@ def build_validation_report(
                 "Product-year UV reference."
             ),
             "",
-            "## 4. Fixed Quantity Candidate Evaluation",
+            "## 4. Quantity Candidate Evaluation",
             "",
             (
                 "Validation retains exporter and importer quantities as the "
                 "underlying reporter evidence and compares three fixed bilateral "
-                "quantity candidates: the simple mean, the value-weighted "
-                "candidate, and the quantity-reliability-weighted candidate. "
-                "No final quantity is selected automatically in this report."
+                "quantity candidates:"
             ),
+            "",
+            "- **Simple mean** — gives exporter and importer quantities equal weight.",
+            "- **Value-weighted** — applies the existing Trade Sync value-reliability weights to the two quantities.",
+            "- **Quantity-reliability-weighted** — combines the two quantities using reliability estimated directly from quantity mirror consistency.",
+            "",
             "",
             (
                 "All candidate unit-value diagnostics use the same reconciled "
@@ -4125,6 +4248,17 @@ def build_validation_report(
             ),
             "",
             "### 4.4. Candidate spread",
+            (
+                "- Candidate spread measures how much the three fixed quantities "
+                "differ from one another on the same bilateral row. "
+            ),
+            (
+                "   - A small spread means the final methodological choice has little numerical "
+                "effect for that disagreement regime "
+            ),
+            (
+                "   - A large spread means the choice is consequential."
+            ),
             "",
             _markdown_table(spread_display),
             "",
@@ -4133,14 +4267,6 @@ def build_validation_report(
                 figure_paths["quantity_candidate_spread"],
                 document_path=report_path,
                 width=850,
-            ),
-            "",
-            (
-                "Candidate spread measures how much the three fixed quantities "
-                "differ from one another on the same bilateral row. A small "
-                "spread means the final methodological choice has little numerical "
-                "effect for that disagreement regime; a large spread means the "
-                "choice is consequential."
             ),
             "",
             "### 4.5. Temporal stability",
