@@ -64,6 +64,23 @@ validation:
       enable: true
       filename: "vacoda_target_{target_hs_lower}_trade.parquet"
 
+  # --------------------------------------------------------------
+  # Model training
+  # --------------------------------------------------------------
+
+  model:
+
+    training_sample:
+      # Training rows must:
+      #   - belong to the direct bilateral, non-estimated reference population;
+      #   - have sufficient HS × year reference support;
+      #   - lie within the selected dispersion-normalized unit-value distance.
+
+      require_reference_eligible: true
+      min_hs_year_reference_observations: 30
+      max_normalized_uv_distance_mad: 2.5
+      require_positive_uv_mad: true
+
   # --------------------------------------------------------------------
   # Method
   # --------------------------------------------------------------------
