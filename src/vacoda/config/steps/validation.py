@@ -776,9 +776,30 @@ class ValidationModelSelectionConfig:
             primary_metric=primary_metric,
         )
 
+@dataclass(frozen=True)
+class ValidationModelCheckpointsConfig:
+    enable: bool
+    subdir: str
+
+    @classmethod
+    def from_dict(
+        cls,
+        cfg: dict[str, Any],
+    ) -> "ValidationModelCheckpointsConfig":
+        return cls(
+            enable=require_bool(
+                cfg.get("enable"),
+                key="validation.model.checkpoints.enable",
+            ),
+            subdir=require_str(
+                cfg.get("subdir"),
+                key="validation.model.checkpoints.subdir",
+            ).strip(),
+        )
 
 @dataclass(frozen=True)
 class ValidationModelConfig:
+    checkpoints: ValidationModelCheckpointsConfig
     training_sample: ValidationTrainingSampleConfig
     target: ValidationModelTargetConfig
     features: ValidationModelFeaturesConfig
@@ -862,13 +883,22 @@ class ValidationModelConfig:
                 "document target-leakage protection."
             )
 
-        if validation.year_column not in features.categorical:
+        if (
+            validation.year_column
+            not in features.feature_columns
+        ):
             raise ValueError(
                 "validation.model.validation.year_column must appear "
-                "in validation.model.features.categorical."
+                "in validation.model.features."
             )
 
         return cls(
+            checkpoints=ValidationModelCheckpointsConfig.from_dict(
+                require_dict(
+                    cfg.get("checkpoints"),
+                    key="validation.model.checkpoints",
+                )
+            ),
             training_sample=training_sample,
             target=target,
             features=features,

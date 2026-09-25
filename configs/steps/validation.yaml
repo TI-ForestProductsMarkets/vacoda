@@ -70,6 +70,11 @@ validation:
   # --------------------------------------------------------------
 
   model:
+
+    checkpoints:
+      enable: true
+      subdir: "model/checkpoints"
+      
     # ------------------------------------------------------------
     # Training population
     # ------------------------------------------------------------
@@ -91,13 +96,12 @@ validation:
     # ------------------------------------------------------------
     features:
       numeric:
-        - trade_value_reconciled_constant_usd
-            transform: "log"
-        - year:
-            transform: "none"
+        trade_value_reconciled_constant_usd:
+          transform: "log"
+        year:
+          transform: "none"
 
       categorical:
-        - year
         - exporter_iso
         - importer_iso
         - target_cmd
