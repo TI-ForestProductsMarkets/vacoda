@@ -4248,13 +4248,40 @@ def build_validation_report(
             ),
             "",
             "### 4.4. Candidate spread",
+            "",
             (
-                "- Candidate spread measures how much the three fixed quantities "
-                "differ from one another on the same bilateral row. "
+                "- Candidate spread measures how far apart the three fixed quantity "
+                "candidates are on the same bilateral row. The spread is therefore the distance between the largest and "
+                "smallest candidate quantity, expressed relative to the simple bilateral mean."
             ),
+            "",
+            "$$",
+            r"S_Q"
+            r" = "
+            r"\frac{"
+            r"\max\left("
+            r"Q_{\mathrm{mean}},"
+            r"Q_{\mathrm{value\text{-}weighted}},"
+            r"Q_{\mathrm{quantity\text{-}weighted}}"
+            r"\right)"
+            r" - "
+            r"\min\left("
+            r"Q_{\mathrm{mean}},"
+            r"Q_{\mathrm{value\text{-}weighted}},"
+            r"Q_{\mathrm{quantity\text{-}weighted}}"
+            r"\right)"
+            r"}{"
+            r"\max\left("
+            r"Q_{\mathrm{mean}},"
+            r"Q_{\mathrm{value\text{-}weighted}},"
+            r"Q_{\mathrm{quantity\text{-}weighted}}"
+            r"\right)"
+            r"}",
+            "$$",
+            "",
             (
-                "   - A small spread means the final methodological choice has little numerical "
-                "effect for that disagreement regime "
+                "   - A small spread means the final methodological choice has little "
+                "numerical effect for that disagreement regime."
             ),
             (
                 "   - A large spread means the choice is consequential."

@@ -264,6 +264,8 @@ class ValidationProductConfig:
 class ValidationProductsConfig:
     prepared_input: ValidationProductConfig
     structural_audit: ValidationProductConfig
+    quantity_selection: ValidationProductConfig
+    quantity_selection_audit: ValidationProductConfig
     diagnostics: ValidationProductConfig
     validated_trade: ValidationProductConfig
     consistency_audit: ValidationProductConfig
@@ -297,6 +299,8 @@ class ValidationProductsConfig:
         return cls(
             prepared_input=product("prepared_input"),
             structural_audit=product("structural_audit"),
+            quantity_selection=product("quantity_selection"),
+            quantity_selection_audit=product("quantity_selection_audit"),
             diagnostics=product("diagnostics"),
             validated_trade=product("validated_trade"),
             consistency_audit=product("consistency_audit"),
@@ -1072,6 +1076,8 @@ class ValidationConfig:
         products = {
             "prepared_input": self.products.prepared_input,
             "structural_audit": self.products.structural_audit,
+            "quantity_selection": self.products.quantity_selection,
+            "quantity_selection_audit": self.products.quantity_selection_audit,
             "model_diagnostics": self.products.diagnostics,
             "diagnostics": self.products.diagnostics,
             "validated_trade": self.products.validated_trade,
@@ -1095,6 +1101,8 @@ class ValidationConfig:
             for name in (
                 "prepared_input",
                 "structural_audit",
+                "quantity_selection",
+                "quantity_selection_audit",
                 "model_diagnostics",
                 "diagnostics",
                 "validated_trade",
@@ -1107,6 +1115,8 @@ class ValidationConfig:
         return {
             "prepared_input": self.products.prepared_input.enable,
             "structural_audit": self.products.structural_audit.enable,
+            "quantity_selection": self.products.quantity_selection.enable,
+            "quantity_selection_audit": self.products.quantity_selection_audit.enable,
             "model_diagnostics": self.products.diagnostics.enable,
             "diagnostics": self.products.diagnostics.enable,
             "validated_trade": self.products.validated_trade.enable,

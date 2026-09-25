@@ -1,7 +1,7 @@
 """
 vacoda.steps.validation.diagnostics
 
-Build the diagnostics used by Validation workflow.
+Build post-selection diagnostics used by the Validation workflow.
 
 """
 
@@ -100,7 +100,7 @@ def build_diagnostics(
     logger,
 ) -> dict[str, Any]:
     """
-    Characterize candidate diagnostics training populations.
+    Build post-selection quantity diagnostics for reporting.
 
     """
 
@@ -154,6 +154,7 @@ def build_diagnostics(
             "reused": True,
             "fitted": False,
             "ready_for_training_decision": True,
+            "selection_already_applied": True,
         }
 
     logger.info(
@@ -161,7 +162,7 @@ def build_diagnostics(
         get_symbols("rebuilt"),
     )
     logger.info(
-        "Characterizing candidate diagnostics training populations."
+        "Building post-selection quantity diagnostics for reporting."
     )
     logger.info(
         "  Input: %s",
@@ -191,9 +192,11 @@ def build_diagnostics(
         columns_cfg.product
     )
 
-    quantity_col = str(
-        columns_cfg.quantity
-    )
+    # The selector now owns the final quantity methodology. Diagnostics
+    # evaluates the selected result and the retained alternatives.
+    quantity_col = "quantity_selected_kg"
+    selected_candidate_col = "quantity_selected_candidate"
+    selected_source_col = "quantity_selected_source"
 
     # Fixed quantity candidates retained from Trade Sync.
     # These are compared in Validation; none is treated as final here.
@@ -289,11 +292,6 @@ def build_diagnostics(
             for value in uv_distance_thresholds
         ),
     )
-    logger.info(
-        "  Final training selection enabled: %s",
-        diagnostics_cfg.selection.enabled,
-    )
-
     # ==================================================================
     # Input contract
     # ==================================================================
@@ -316,6 +314,24 @@ def build_diagnostics(
         relative_difference_col,
         uv_reference_col,
         uv_reference_n_col,
+        selected_candidate_col,
+        selected_source_col,
+        "candidate_simple_mean_uv_log_distance",
+        "candidate_value_weighted_uv_log_distance",
+        "candidate_quantity_reliability_weighted_uv_log_distance",
+        "candidate_simple_mean_export_log_gap",
+        "candidate_simple_mean_import_log_gap",
+        "candidate_value_weighted_export_log_gap",
+        "candidate_value_weighted_import_log_gap",
+        "candidate_quantity_reliability_weighted_export_log_gap",
+        "candidate_quantity_reliability_weighted_import_log_gap",
+        "candidate_simple_mean_conditioned_uv_abs_residual",
+        "candidate_value_weighted_conditioned_uv_abs_residual",
+        "candidate_quantity_reliability_weighted_conditioned_uv_abs_residual",
+        "quantity_conditioned_model_n_rows",
+        "quantity_conditioned_log_uv_intercept",
+        "quantity_conditioned_log_uv_slope",
+        "quantity_conditioned_log_uv_r2",
     }
 
     con = duckdb.connect()
@@ -930,20 +946,43 @@ def build_diagnostics(
 
                     ELSE NULL
                 END
-                    AS synced_unit_value_log_distance
+                    AS synced_unit_value_log_distance,
+
+                quantity_selected_candidate,
+                quantity_selected_source,
+
+                candidate_simple_mean_uv_log_distance,
+                candidate_value_weighted_uv_log_distance,
+                candidate_quantity_reliability_weighted_uv_log_distance,
+
+                candidate_simple_mean_export_log_gap,
+                candidate_simple_mean_import_log_gap,
+                candidate_value_weighted_export_log_gap,
+                candidate_value_weighted_import_log_gap,
+                candidate_quantity_reliability_weighted_export_log_gap,
+                candidate_quantity_reliability_weighted_import_log_gap,
+
+                candidate_simple_mean_conditioned_uv_abs_residual,
+                candidate_value_weighted_conditioned_uv_abs_residual,
+                candidate_quantity_reliability_weighted_conditioned_uv_abs_residual,
+
+                quantity_conditioned_model_n_rows,
+                quantity_conditioned_log_uv_intercept,
+                quantity_conditioned_log_uv_slope,
+                quantity_conditioned_log_uv_r2
 
             FROM read_parquet({input_sql})
             """
         )
 
         # ==================================================================
-        # Quantity-candidate comparison view
+        # Quantity-candidate evidence supplied by selector
         # ==================================================================
         #
-        # Keep the three fixed Trade Sync candidates in long form so every
-        # diagnostic is evaluated on the same definitions and price basis.
-        # Nominal reconciled value is used for unit-value plausibility because
-        # the product-year reference is nominal.
+        # Candidate definitions, unconditional UV distances, reporter gaps,
+        # and quantity-conditioned UV residuals are calculated once in
+        # select_quantity_candidate.py. Diagnostics only reshapes that evidence
+        # into the long form required by the existing reporting scopes.
         # ==================================================================
 
         con.execute(
@@ -952,133 +991,66 @@ def build_diagnostics(
                 validation_quantity_candidates
             AS
 
-            WITH candidates AS (
-                SELECT
-                    *,
-                    'simple_mean' AS candidate,
-                    quantity_simple_mean_kg AS candidate_quantity_kg
-                FROM validation_diagnostics_base
+            SELECT
+                *,
+                'simple_mean' AS candidate,
+                quantity_simple_mean_kg AS candidate_quantity_kg,
+                candidate_simple_mean_uv_log_distance
+                    AS candidate_uv_log_distance,
+                candidate_simple_mean_export_log_gap
+                    AS candidate_export_log_gap,
+                candidate_simple_mean_import_log_gap
+                    AS candidate_import_log_gap,
+                candidate_simple_mean_conditioned_uv_abs_residual
+                    AS candidate_conditioned_uv_abs_residual,
+                (
+                    quantity_simple_mean_kg IS NOT NULL
+                    AND quantity_simple_mean_kg > 0
+                    AND isfinite(quantity_simple_mean_kg)
+                ) AS candidate_available
+            FROM validation_diagnostics_base
 
-                UNION ALL
-
-                SELECT
-                    *,
-                    'value_weighted' AS candidate,
-                    quantity_value_weighted_kg AS candidate_quantity_kg
-                FROM validation_diagnostics_base
-
-                UNION ALL
-
-                SELECT
-                    *,
-                    'quantity_reliability_weighted' AS candidate,
-                    quantity_reliability_weighted_kg AS candidate_quantity_kg
-                FROM validation_diagnostics_base
-            )
+            UNION ALL
 
             SELECT
                 *,
+                'value_weighted' AS candidate,
+                quantity_value_weighted_kg AS candidate_quantity_kg,
+                candidate_value_weighted_uv_log_distance
+                    AS candidate_uv_log_distance,
+                candidate_value_weighted_export_log_gap
+                    AS candidate_export_log_gap,
+                candidate_value_weighted_import_log_gap
+                    AS candidate_import_log_gap,
+                candidate_value_weighted_conditioned_uv_abs_residual
+                    AS candidate_conditioned_uv_abs_residual,
+                (
+                    quantity_value_weighted_kg IS NOT NULL
+                    AND quantity_value_weighted_kg > 0
+                    AND isfinite(quantity_value_weighted_kg)
+                ) AS candidate_available
+            FROM validation_diagnostics_base
 
-                CASE
-                    WHEN candidate_quantity_kg IS NOT NULL
-                     AND candidate_quantity_kg > 0
-                     AND isfinite(candidate_quantity_kg)
-                        THEN TRUE
-                    ELSE FALSE
-                END AS candidate_available,
-
-                CASE
-                    WHEN candidate_quantity_kg IS NOT NULL
-                     AND candidate_quantity_kg > 0
-                     AND trade_value_reconciled IS NOT NULL
-                     AND trade_value_reconciled > 0
-                     AND product_year_median_unit_value IS NOT NULL
-                     AND product_year_median_unit_value > 0
-                     AND isfinite(candidate_quantity_kg)
-                     AND isfinite(trade_value_reconciled)
-                     AND isfinite(product_year_median_unit_value)
-                        THEN ABS(
-                            LN(
-                                trade_value_reconciled
-                                / candidate_quantity_kg
-                            )
-                            - LN(product_year_median_unit_value)
-                        )
-                    ELSE NULL
-                END AS candidate_uv_log_distance,
-
-                CASE
-                    WHEN candidate_quantity_kg > 0
-                     AND export_quantity_kg > 0
-                        THEN ABS(
-                            LN(candidate_quantity_kg)
-                            - LN(export_quantity_kg)
-                        )
-                    ELSE NULL
-                END AS candidate_export_log_gap,
-
-                CASE
-                    WHEN candidate_quantity_kg > 0
-                     AND import_quantity_kg > 0
-                        THEN ABS(
-                            LN(candidate_quantity_kg)
-                            - LN(import_quantity_kg)
-                        )
-                    ELSE NULL
-                END AS candidate_import_log_gap
-
-            FROM candidates
-            """
-        )
-
-        # ==================================================================
-        # Quantity-conditioned UV models
-        # ==================================================================
-        #
-        # Fit one log(UV) ~ log(quantity) relationship per HS × year using
-        # symmetric direct bilateral evidence. Candidate quantities can then
-        # be evaluated against the UV expected at their own quantity level,
-        # rather than only against an unconditional product-year median UV.
-        # Groups with fewer than 30 direct bilateral observations are not
-        # used for this conditioned diagnostic.
-        # ==================================================================
-
-        con.execute(
-            """
-            CREATE OR REPLACE TEMP VIEW
-                validation_quantity_uv_models
-            AS
+            UNION ALL
 
             SELECT
-                year,
-                target_cmd,
-                COUNT(*) AS n_model_rows,
-                REGR_INTERCEPT(
-                    log_bilateral_unit_value,
-                    log_bilateral_quantity
-                ) AS log_uv_intercept,
-                REGR_SLOPE(
-                    log_bilateral_unit_value,
-                    log_bilateral_quantity
-                ) AS log_uv_slope,
-                REGR_R2(
-                    log_bilateral_unit_value,
-                    log_bilateral_quantity
-                ) AS log_uv_r2
+                *,
+                'quantity_reliability_weighted' AS candidate,
+                quantity_reliability_weighted_kg AS candidate_quantity_kg,
+                candidate_quantity_reliability_weighted_uv_log_distance
+                    AS candidate_uv_log_distance,
+                candidate_quantity_reliability_weighted_export_log_gap
+                    AS candidate_export_log_gap,
+                candidate_quantity_reliability_weighted_import_log_gap
+                    AS candidate_import_log_gap,
+                candidate_quantity_reliability_weighted_conditioned_uv_abs_residual
+                    AS candidate_conditioned_uv_abs_residual,
+                (
+                    quantity_reliability_weighted_kg IS NOT NULL
+                    AND quantity_reliability_weighted_kg > 0
+                    AND isfinite(quantity_reliability_weighted_kg)
+                ) AS candidate_available
             FROM validation_diagnostics_base
-            WHERE both_quantities_observed
-              AND log_bilateral_quantity IS NOT NULL
-              AND log_bilateral_unit_value IS NOT NULL
-            GROUP BY year, target_cmd
-            HAVING COUNT(*) >= 30
-               AND REGR_INTERCEPT(
-                    log_bilateral_unit_value,
-                    log_bilateral_quantity
-               ) IS NOT NULL
-               AND REGR_SLOPE(
-                    log_bilateral_unit_value,
-                    log_bilateral_quantity
-               ) IS NOT NULL
             """
         )
 
@@ -1089,34 +1061,12 @@ def build_diagnostics(
             AS
 
             SELECT
-                c.*,
-                m.n_model_rows,
-                m.log_uv_intercept,
-                m.log_uv_slope,
-                m.log_uv_r2,
-
-                CASE
-                    WHEN c.candidate_quantity_kg > 0
-                     AND c.trade_value_reconciled > 0
-                     AND m.log_uv_intercept IS NOT NULL
-                     AND m.log_uv_slope IS NOT NULL
-                        THEN ABS(
-                            LN(
-                                c.trade_value_reconciled
-                                / c.candidate_quantity_kg
-                            )
-                            - (
-                                m.log_uv_intercept
-                                + m.log_uv_slope
-                                  * LN(c.candidate_quantity_kg)
-                            )
-                        )
-                    ELSE NULL
-                END AS candidate_conditioned_uv_abs_residual
-
-            FROM validation_quantity_candidates AS c
-            LEFT JOIN validation_quantity_uv_models AS m
-              USING (year, target_cmd)
+                *,
+                quantity_conditioned_model_n_rows AS n_model_rows,
+                quantity_conditioned_log_uv_intercept AS log_uv_intercept,
+                quantity_conditioned_log_uv_slope AS log_uv_slope,
+                quantity_conditioned_log_uv_r2 AS log_uv_r2
+            FROM validation_quantity_candidates
             """
         )
 
@@ -1173,6 +1123,41 @@ def build_diagnostics(
         ) = map(int, quantity_availability)
 
         diagnostics_rows: list[dict[str, Any]] = []
+
+        selected_candidates = con.execute(
+            """
+            SELECT DISTINCT quantity_selected_candidate
+            FROM validation_diagnostics_base
+            WHERE quantity_selected_candidate IS NOT NULL
+            """
+        ).fetchall()
+
+        if len(selected_candidates) != 1:
+            raise RuntimeError(
+                "Validation diagnostics require exactly one selected "
+                "bilateral quantity methodology."
+            )
+
+        selected_candidate = str(selected_candidates[0][0])
+
+        diagnostics_rows.append(
+            {
+                "scope": "quantity_selection",
+                "criterion": "selected_bilateral_quantity_candidate",
+                "candidate": selected_candidate,
+                "disagreement_threshold": None,
+                "uv_support_threshold": None,
+                "uv_distance_threshold": None,
+                "year": None,
+                "target_cmd": None,
+                "variable": "selected_candidate",
+                "quantile": None,
+                "n_rows": n_all_rows,
+                "share_of_all": 1.0,
+                "share_of_parent": None,
+                "value": None,
+            }
+        )
 
         quantity_availability_specs = (
             (
@@ -3036,9 +3021,9 @@ def build_diagnostics(
         # 10. Fixed quantity-candidate comparison
         # ==================================================================
         #
-        # These diagnostics compare the three fixed quantity candidates.
-        # They are evidence for a later final-quantity decision; no candidate
-        # is selected automatically here.
+        # These diagnostics compare the three fixed quantity candidates after
+        # the selector has already made the methodological choice. They are
+        # retained for transparency, robustness checks, and reporting.
         # ==================================================================
 
         candidate_summary = con.execute(
@@ -3892,7 +3877,7 @@ def build_diagnostics(
     )
 
     logger.info(
-        "%s CHECK — Quantity training population characterized.",
+        "%s CHECK — Post-selection quantity diagnostics built.",
         get_symbols("check"),
     )
 
@@ -3932,6 +3917,8 @@ def build_diagnostics(
         "fitted": False,
 
         "ready_for_training_decision": True,
+
+        "selection_already_applied": True,
 
         "duration_seconds": elapsed,
         "reused": False,
