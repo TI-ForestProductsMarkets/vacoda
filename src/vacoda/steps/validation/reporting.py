@@ -307,6 +307,252 @@ def _plot_quantity_uv_r_squared_distribution(
 
     plt.close(figure)
 
+
+def _plot_training_uv_distance_distribution(
+    *,
+    diagnostics: pd.DataFrame,
+    output_path: Path,
+) -> None:
+
+    frame = _scope_frame(
+        diagnostics,
+        "training_uv_distance_distribution",
+    ).copy()
+
+    if frame.empty:
+        raise RuntimeError(
+            "Training UV-distance diagnostics "
+            "are unavailable."
+        )
+
+    frame = frame.sort_values(
+        "quantile"
+    )
+
+    figure, axis = plt.subplots(
+        figsize=(10, 6)
+    )
+
+    axis.plot(
+        100.0 * frame["quantile"],
+        frame["value"],
+        marker="o",
+    )
+
+    axis.set_title(
+        "Selected unit-value distance distribution"
+    )
+
+    axis.set_xlabel(
+        "Quantile (%)"
+    )
+
+    axis.set_ylabel(
+        "Absolute log-distance from HS × year reference"
+    )
+
+    axis.grid(
+        axis="y",
+        linestyle="--",
+        alpha=0.5,
+    )
+
+    figure.tight_layout()
+
+    figure.savefig(
+        output_path,
+        dpi=180,
+        bbox_inches="tight",
+    )
+
+    plt.close(
+        figure
+    )
+
+def _plot_training_reference_support_distribution(
+    *,
+    diagnostics: pd.DataFrame,
+    output_path: Path,
+) -> None:
+    """Plot HS × year reference-support quantiles."""
+
+    frame = _scope_frame(
+        diagnostics,
+        "training_reference_support_distribution",
+    ).copy()
+
+    if frame.empty:
+        raise RuntimeError(
+            "Training reference-support diagnostics are unavailable."
+        )
+
+    frame = frame.sort_values(
+        "quantile"
+    )
+
+    figure, axis = plt.subplots(
+        figsize=(10, 6)
+    )
+
+    axis.plot(
+        100.0 * frame["quantile"],
+        frame["value"],
+        marker="o",
+    )
+
+    axis.set_title(
+        "HS × year unit-value reference support"
+    )
+
+    axis.set_xlabel(
+        "Quantile (%)"
+    )
+
+    axis.set_ylabel(
+        "Reference observations"
+    )
+
+    axis.grid(
+        axis="y",
+        linestyle="--",
+        alpha=0.5,
+    )
+
+    figure.tight_layout()
+
+    figure.savefig(
+        output_path,
+        dpi=180,
+        bbox_inches="tight",
+    )
+
+    plt.close(
+        figure
+    )
+
+def _plot_training_uv_dispersion_distribution(
+    *,
+    diagnostics: pd.DataFrame,
+    output_path: Path,
+) -> None:
+    """Plot HS × year log-UV MAD quantiles."""
+
+    frame = _scope_frame(
+        diagnostics,
+        "training_uv_dispersion_distribution",
+    ).copy()
+
+    if frame.empty:
+        raise RuntimeError(
+            "Training UV-dispersion diagnostics are unavailable."
+        )
+
+    frame = frame.sort_values(
+        "quantile"
+    )
+
+    figure, axis = plt.subplots(
+        figsize=(10, 6)
+    )
+
+    axis.plot(
+        100.0 * frame["quantile"],
+        frame["value"],
+        marker="o",
+    )
+
+    axis.set_title(
+        "HS × year unit-value dispersion"
+    )
+
+    axis.set_xlabel(
+        "Quantile (%)"
+    )
+
+    axis.set_ylabel(
+        "Log-unit-value MAD"
+    )
+
+    axis.grid(
+        axis="y",
+        linestyle="--",
+        alpha=0.5,
+    )
+
+    figure.tight_layout()
+
+    figure.savefig(
+        output_path,
+        dpi=180,
+        bbox_inches="tight",
+    )
+
+    plt.close(
+        figure
+    )
+
+def _plot_training_normalized_uv_distance_distribution(
+    *,
+    diagnostics: pd.DataFrame,
+    output_path: Path,
+) -> None:
+    """Plot selected UV distance relative to HS × year log-UV MAD."""
+
+    frame = _scope_frame(
+        diagnostics,
+        "training_normalized_uv_distance_distribution",
+    ).copy()
+
+    if frame.empty:
+        raise RuntimeError(
+            "Training normalized UV-distance diagnostics "
+            "are unavailable."
+        )
+
+    frame = frame.sort_values(
+        "quantile"
+    )
+
+    figure, axis = plt.subplots(
+        figsize=(10, 6)
+    )
+
+    axis.plot(
+        100.0 * frame["quantile"],
+        frame["value"],
+        marker="o",
+    )
+
+    axis.set_title(
+        "Selected unit-value distance relative to HS × year dispersion"
+    )
+
+    axis.set_xlabel(
+        "Quantile (%)"
+    )
+
+    axis.set_ylabel(
+        "UV log distance / log-UV MAD"
+    )
+
+    axis.grid(
+        axis="y",
+        linestyle="--",
+        alpha=0.5,
+    )
+
+    figure.tight_layout()
+
+    figure.savefig(
+        output_path,
+        dpi=180,
+        bbox_inches="tight",
+    )
+
+    plt.close(
+        figure
+    )
+
 def _plot_training_population_funnel(
     *,
     diagnostics: pd.DataFrame,
@@ -1605,6 +1851,155 @@ def build_validation_report(
             ]
         )
 
+
+        # ============================================================
+        # Training Sample Diagnostics
+        # ============================================================
+
+        training_sample_summary = _scope_frame(
+            diagnostics,
+            "training_sample_summary",
+        )
+
+        training_uv_distance = _scope_frame(
+            diagnostics,
+            "training_uv_distance_distribution",
+        )
+
+        training_reference_support = _scope_frame(
+            diagnostics,
+            "training_reference_support_distribution",
+        )
+
+        training_uv_dispersion = _scope_frame(
+            diagnostics,
+            "training_uv_dispersion_distribution",
+        )
+
+        training_normalized_uv_distance = _scope_frame(
+            diagnostics,
+            "training_normalized_uv_distance_distribution",
+        )
+        training_by_year = _scope_frame(
+            diagnostics,
+            "training_sample_by_year",
+        )
+
+        training_by_product = _scope_frame(
+            diagnostics,
+            "training_sample_by_product",
+        )
+
+        training_summary_labels = {
+            "all_rows": "All Validation rows",
+            "selected_unit_value_available": (
+                "Selected unit value available"
+            ),
+            "reference_population": (
+                "Direct bilateral reference population"
+            ),
+            "hs_year_reference_available": (
+                "HS × year UV reference available"
+            ),
+            "uv_distance_available": (
+                "Selected UV distance available"
+            ),
+            "hard_eligible": (
+                "Mechanically eligible for training evaluation"
+            ),
+        }
+
+        training_sample_summary_display = (
+            training_sample_summary.copy()
+        )
+
+        training_sample_summary_display[
+            "Population"
+        ] = training_sample_summary_display[
+            "criterion"
+        ].map(
+            training_summary_labels
+        )
+
+        training_sample_summary_display[
+            "Rows"
+        ] = training_sample_summary_display[
+            "n_rows"
+        ].map(
+            _format_integer
+        )
+
+        training_sample_summary_display[
+            "Share of Validation rows"
+        ] = training_sample_summary_display[
+            "share_of_all"
+        ].map(
+            _format_percent
+        )
+
+        training_sample_summary_display = (
+            training_sample_summary_display[
+                [
+                    "Population",
+                    "Rows",
+                    "Share of Validation rows",
+                ]
+            ]
+        )
+
+
+        def _quantile_label(
+            value: float,
+        ) -> str:
+
+            return (
+                f"P{100 * float(value):g}"
+            )
+
+
+        training_distribution_rows = []
+
+        for label, frame in (
+            (
+                "Selected UV log distance",
+                training_uv_distance,
+            ),
+            (
+                "HS × year reference support",
+                training_reference_support,
+            ),
+            (
+                "HS × year UV log MAD",
+                training_uv_dispersion,
+            ),
+            (
+                "Selected UV distance / HS × year log MAD",
+                training_normalized_uv_distance,
+            ),
+        ):
+
+            for row in frame.itertuples(
+                index=False
+            ):
+                training_distribution_rows.append(
+                    {
+                        "Evidence": label,
+                        "Quantile": _quantile_label(
+                            row.quantile
+                        ),
+                        "Value": _format_number(
+                            row.value,
+                            digits=4,
+                        ),
+                    }
+                )
+
+        training_distribution_display = (
+            pd.DataFrame(
+                training_distribution_rows
+            )
+        )
+
         # ==============================================================
         # Quantity availability by reporting side
         # ==============================================================
@@ -2844,6 +3239,37 @@ def build_validation_report(
         # ==============================================================
 
         figure_paths = {
+
+            "training_uv_distance_distribution": (
+                figure_dir
+                / (
+                    f"target_{cfg.scope.target_hs.lower()}"
+                    "_validation_training_uv_distance_distribution.png"
+                )
+            ),
+            "training_reference_support_distribution": (
+                figure_dir
+                / (
+                    f"target_{cfg.scope.target_hs.lower()}"
+                    "_validation_training_reference_support_distribution.png"
+                )
+            ),
+
+            "training_uv_dispersion_distribution": (
+                figure_dir
+                / (
+                    f"target_{cfg.scope.target_hs.lower()}"
+                    "_validation_training_uv_dispersion_distribution.png"
+                )
+            ),
+
+            "training_normalized_uv_distance_distribution": (
+                figure_dir
+                / (
+                    f"target_{cfg.scope.target_hs.lower()}"
+                    "_validation_training_normalized_uv_distance_distribution.png"
+                )
+            ),
             "training_population_funnel": (
                 figure_dir
                 / (
@@ -2973,7 +3399,32 @@ def build_validation_report(
                 "training_evidence_distributions"
             ],
         )
+        _plot_training_uv_distance_distribution(
+            diagnostics=diagnostics,
+            output_path=figure_paths[
+                "training_uv_distance_distribution"
+            ],
+        )
+        _plot_training_reference_support_distribution(
+            diagnostics=diagnostics,
+            output_path=figure_paths[
+                "training_reference_support_distribution"
+            ],
+        )
 
+        _plot_training_uv_dispersion_distribution(
+            diagnostics=diagnostics,
+            output_path=figure_paths[
+                "training_uv_dispersion_distribution"
+            ],
+        )
+
+        _plot_training_normalized_uv_distance_distribution(
+            diagnostics=diagnostics,
+            output_path=figure_paths[
+                "training_normalized_uv_distance_distribution"
+            ],
+        )
         _plot_export_import_quantity_ratio_distribution(
             diagnostics=diagnostics,
             output_path=figure_paths[
@@ -4446,26 +4897,169 @@ def build_validation_report(
                 product_display
             ),
             "",
-            "## 6. Current methodological assessment",
+            "## 6. Training-sample diagnostics",
+            "",
+            (
+                "The training-sample step does not yet define a final "
+                "model-training population. It constructs the evidence "
+                "needed to make that decision."
+            ),
+            "",
+            (
+                "The HS × year reference is derived from directly observed "
+                "bilateral quantity rows where neither reporter quantity is "
+                "estimated. Each usable selected quantity is then evaluated "
+                "through its implied unit value relative to that reference."
+            ),
+            "",
+            "### 6.1. Training-sample population",
+            "",
+            _markdown_table(
+                training_sample_summary_display
+            ),
+            "",
+            "### 6.2. Selected-unit-value distance",
+            "",
+            (
+                "The following distribution shows the absolute log-distance "
+                "between the unit value implied by the selected quantity and "
+                "the robust HS × year reference. No cutoff is applied at this "
+                "stage."
+            ),
+            "",
+            _markdown_table(
+                training_distribution_display[
+                    training_distribution_display[
+                        "Evidence"
+                    ].eq(
+                        "Selected UV log distance"
+                    )
+                ]
+            ),
+            "",
+            markdown_image(
+                "Selected unit-value distance distribution",
+                figure_paths[
+                    "training_uv_distance_distribution"
+                ],
+                document_path=report_path,
+            ),
+            "",
+            "### 6.3. HS × year reference support",
+            "",
+            (
+                "Reference support is shown across distinct HS × year groups. "
+                "These diagnostics are intended to determine whether a minimum "
+                "support requirement is needed and, if so, where it should lie."
+            ),
+            "",
+            _markdown_table(
+                training_distribution_display[
+                    training_distribution_display[
+                        "Evidence"
+                    ].eq(
+                        "HS × year reference support"
+                    )
+                ]
+            ),
+            "",
+            markdown_image(
+                "HS × year unit-value reference support",
+                figure_paths[
+                    "training_reference_support_distribution"
+                ],
+                document_path=report_path,
+            ),
+            "",
+            "### 6.4. HS × year unit-value dispersion",
+            "",
+            (
+                "The log-MAD describes within-group dispersion around the "
+                "HS × year unit-value reference. This helps assess whether one "
+                "global absolute UV-distance cutoff is defensible or whether "
+                "dispersion-aware criteria should later be considered."
+            ),
+            "",
+            _markdown_table(
+                training_distribution_display[
+                    training_distribution_display[
+                        "Evidence"
+                    ].eq(
+                        "HS × year UV log MAD"
+                    )
+                ]
+            ),
+            "",
+            markdown_image(
+                "HS × year unit-value dispersion",
+                figure_paths[
+                    "training_uv_dispersion_distribution"
+                ],
+                document_path=report_path,
+            ),
+            "",
+            "### 6.5. Dispersion-normalized selected-unit-value distance",
+            "",
+            (
+                "Absolute UV distance does not have the same interpretation "
+                "for every HS × year group because unit-value dispersion differs "
+                "substantially across product-year groups. Validation therefore "
+                "also evaluates the selected-unit-value log distance relative to "
+                "the robust within-group log-UV MAD."
+            ),
+            "",
+            (
+                "The diagnostic is defined as "
+                "`selected UV log distance / HS × year log-UV MAD`. "
+                "A value of 1 means that the selected unit value lies one "
+                "within-group MAD away from the HS × year median reference. "
+                "No cutoff is applied at this stage."
+            ),
+            "",
+            _markdown_table(
+                training_distribution_display[
+                    training_distribution_display[
+                        "Evidence"
+                    ].eq(
+                        "Selected UV distance / HS × year log MAD"
+                    )
+                ]
+            ),
+            "",
+            markdown_image(
+                "Selected unit-value distance relative to HS × year dispersion",
+                figure_paths[
+                    "training_normalized_uv_distance_distribution"
+                ],
+                document_path=report_path,
+            ),
+            "",
+            "## 7. Current methodological assessment",
             "",
             training_status,
             "",
             (
-                "- Two methodological decisions remain before model fitting: "
-                "the final bilateral quantity definition and the defensible "
-                "training population. The fixed-candidate diagnostics above "
-                "are intended to support the quantity decision without "
-                "automatically declaring a preferred candidate."
+                "- The bilateral quantity methodology has now been selected "
+                "and independently audited. The remaining methodological "
+                "decision before model fitting is the definition of the "
+                "training population."
             ),
             "",
             (
-                "- Once that population is selected, model performance should "
-                "be tested using controlled missingness and corruption of "
-                "high-confidence observations rather than by assuming that "
-                "all synchronized quantities are true."
+                "- No minimum HS × year support threshold or maximum "
+                "unit-value-distance threshold is imposed yet. The raw and "
+                "dispersion-normalized distributions above are intended to "
+                "support that decision from the observed data."
             ),
             "",
-            "## 7. Output artifacts",
+            (
+                "- Once the training population is selected, model performance "
+                "should be tested using controlled missingness and corruption "
+                "of high-confidence observations rather than by assuming that "
+                "all available quantities are true."
+            ),
+            "",
+            "## 8. Output artifacts",
             "",
             (
                 f"- Prepared Validation input: "

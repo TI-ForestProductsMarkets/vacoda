@@ -44,6 +44,10 @@ validation:
       enable: true
       filename: "audits/target_{target_hs_lower}_quantity_selection_audit.parquet"
       
+    training_sample:
+      enable: true
+      filename: "training/comtrade_target_{target_hs_lower}_training_sample.parquet"
+    
     diagnostics:
       enable: true
       filename: "diagnostics/target_{target_hs_lower}_diagnostics.parquet"

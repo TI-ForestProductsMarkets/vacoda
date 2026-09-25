@@ -361,6 +361,16 @@ def build_diagnostics(
         "quantity_conditioned_log_uv_intercept",
         "quantity_conditioned_log_uv_slope",
         "quantity_conditioned_log_uv_r2",
+
+        # Training-sample evidence
+        "selected_unit_value",
+        "training_reference_eligible",
+        "hs_year_uv_reference",
+        "hs_year_uv_reference_log",
+        "hs_year_uv_reference_n",
+        "hs_year_uv_log_mad",
+        "selected_uv_log_distance",
+        "training_hard_eligible",
     }
 
     con = duckdb.connect()
@@ -998,7 +1008,17 @@ def build_diagnostics(
                 quantity_conditioned_model_n_rows,
                 quantity_conditioned_log_uv_intercept,
                 quantity_conditioned_log_uv_slope,
-                quantity_conditioned_log_uv_r2
+                quantity_conditioned_log_uv_r2,
+
+                selected_unit_value,
+                training_reference_eligible,
+                hs_year_uv_reference,
+                hs_year_uv_reference_log,
+                hs_year_uv_reference_n,
+                hs_year_uv_log_mad,
+                selected_uv_log_distance,
+                training_hard_eligible,
+
 
             FROM read_parquet({input_sql})
             """
@@ -1333,6 +1353,577 @@ def build_diagnostics(
             )
 
         # ==================================================================
+        # Training-sample preparation summary
+        # ==================================================================
+
+        training_sample_summary = con.execute(
+            """
+            SELECT
+                COUNT(*)
+                    AS n_all_rows,
+
+                COUNT(*) FILTER (
+                    WHERE selected_unit_value IS NOT NULL
+                )
+                    AS n_selected_unit_value,
+
+                COUNT(*) FILTER (
+                    WHERE training_reference_eligible
+                )
+                    AS n_reference_rows,
+
+                COUNT(*) FILTER (
+                    WHERE hs_year_uv_reference IS NOT NULL
+                )
+                    AS n_with_reference,
+
+                COUNT(*) FILTER (
+                    WHERE selected_uv_log_distance IS NOT NULL
+                )
+                    AS n_with_uv_distance,
+
+                COUNT(*) FILTER (
+                    WHERE training_hard_eligible
+                )
+                    AS n_hard_eligible
+
+            FROM validation_diagnostics_base
+            """
+        ).fetchone()
+
+        (
+            n_training_all,
+            n_training_selected_uv,
+            n_training_reference,
+            n_training_with_reference,
+            n_training_with_uv_distance,
+            n_training_hard_eligible,
+        ) = map(
+            int,
+            training_sample_summary,
+        )
+
+        training_summary_specs = (
+            (
+                "all_rows",
+                n_training_all,
+                n_training_all,
+            ),
+            (
+                "selected_unit_value_available",
+                n_training_selected_uv,
+                n_training_all,
+            ),
+            (
+                "reference_population",
+                n_training_reference,
+                n_training_all,
+            ),
+            (
+                "hs_year_reference_available",
+                n_training_with_reference,
+                n_training_all,
+            ),
+            (
+                "uv_distance_available",
+                n_training_with_uv_distance,
+                n_training_all,
+            ),
+            (
+                "hard_eligible",
+                n_training_hard_eligible,
+                n_training_all,
+            ),
+        )
+
+        for criterion, n_rows, parent_rows in training_summary_specs:
+
+            diagnostics_rows.append(
+                {
+                    "scope": "training_sample_summary",
+                    "criterion": criterion,
+
+                    "disagreement_threshold": None,
+                    "uv_support_threshold": None,
+                    "uv_distance_threshold": None,
+
+                    "year": None,
+                    "target_cmd": None,
+
+                    "variable": None,
+                    "quantile": None,
+
+                    "n_rows": n_rows,
+                    "share_of_all": _share(
+                        n_rows,
+                        n_training_all,
+                    ),
+                    "share_of_parent": _share(
+                        n_rows,
+                        parent_rows,
+                    ),
+
+                    "value": None,
+                }
+            )
+
+        # ==================================================================
+        # Selected-quantity UV-distance distribution
+        # ==================================================================
+
+        training_quantiles = (
+            0.01,
+            0.05,
+            0.10,
+            0.25,
+            0.50,
+            0.75,
+            0.90,
+            0.95,
+            0.975,
+            0.99,
+            0.995,
+        )
+
+        for quantile in training_quantiles:
+
+            value = con.execute(
+                f"""
+                SELECT
+                    QUANTILE_CONT(
+                        selected_uv_log_distance,
+                        {float(quantile):.17g}
+                    )
+                FROM validation_diagnostics_base
+
+                WHERE training_hard_eligible
+                AND selected_uv_log_distance IS NOT NULL
+                """
+            ).fetchone()[0]
+
+            diagnostics_rows.append(
+                {
+                    "scope": (
+                        "training_uv_distance_distribution"
+                    ),
+
+                    "criterion": (
+                        "training_hard_eligible"
+                    ),
+
+                    "disagreement_threshold": None,
+                    "uv_support_threshold": None,
+                    "uv_distance_threshold": None,
+
+                    "year": None,
+                    "target_cmd": None,
+
+                    "variable": (
+                        "selected_uv_log_distance"
+                    ),
+
+                    "quantile": float(
+                        quantile
+                    ),
+
+                    "n_rows": (
+                        n_training_hard_eligible
+                    ),
+
+                    "share_of_all": None,
+                    "share_of_parent": None,
+
+                    "value": (
+                        float(value)
+                        if value is not None
+                        else None
+                    ),
+                }
+            )
+
+
+        # ==================================================================
+        # HS × year reference-support distribution
+        # ==================================================================
+
+        for quantile in training_quantiles:
+
+            value = con.execute(
+                f"""
+                SELECT
+                    QUANTILE_CONT(
+                        hs_year_uv_reference_n,
+                        {float(quantile):.17g}
+                    )
+
+                FROM (
+                    SELECT DISTINCT
+                        year,
+                        target_cmd,
+                        hs_year_uv_reference_n
+
+                    FROM validation_diagnostics_base
+
+                    WHERE hs_year_uv_reference_n IS NOT NULL
+                )
+                """
+            ).fetchone()[0]
+
+            n_groups = int(
+                con.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM (
+                        SELECT DISTINCT
+                            year,
+                            target_cmd
+                        FROM validation_diagnostics_base
+                        WHERE hs_year_uv_reference_n IS NOT NULL
+                    )
+                    """
+                ).fetchone()[0]
+            )
+
+            diagnostics_rows.append(
+                {
+                    "scope": (
+                        "training_reference_support_distribution"
+                    ),
+
+                    "criterion": "hs_year_groups",
+
+                    "disagreement_threshold": None,
+                    "uv_support_threshold": None,
+                    "uv_distance_threshold": None,
+
+                    "year": None,
+                    "target_cmd": None,
+
+                    "variable": (
+                        "hs_year_uv_reference_n"
+                    ),
+
+                    "quantile": float(
+                        quantile
+                    ),
+
+                    "n_rows": n_groups,
+
+                    "share_of_all": None,
+                    "share_of_parent": None,
+
+                    "value": (
+                        float(value)
+                        if value is not None
+                        else None
+                    ),
+                }
+            )
+
+
+        # ==================================================================
+        # HS × year UV-dispersion distribution
+        # ==================================================================
+
+        for quantile in training_quantiles:
+
+            value = con.execute(
+                f"""
+                SELECT
+                    QUANTILE_CONT(
+                        hs_year_uv_log_mad,
+                        {float(quantile):.17g}
+                    )
+
+                FROM (
+                    SELECT DISTINCT
+                        year,
+                        target_cmd,
+                        hs_year_uv_log_mad
+
+                    FROM validation_diagnostics_base
+
+                    WHERE hs_year_uv_log_mad IS NOT NULL
+                )
+                """
+            ).fetchone()[0]
+
+            diagnostics_rows.append(
+                {
+                    "scope": (
+                        "training_uv_dispersion_distribution"
+                    ),
+
+                    "criterion": "hs_year_groups",
+
+                    "disagreement_threshold": None,
+                    "uv_support_threshold": None,
+                    "uv_distance_threshold": None,
+
+                    "year": None,
+                    "target_cmd": None,
+
+                    "variable": (
+                        "hs_year_uv_log_mad"
+                    ),
+
+                    "quantile": float(
+                        quantile
+                    ),
+
+                    "n_rows": n_groups,
+
+                    "share_of_all": None,
+                    "share_of_parent": None,
+
+                    "value": (
+                        float(value)
+                        if value is not None
+                        else None
+                    ),
+                }
+            )
+
+        # ==================================================================
+        # Dispersion-normalized selected UV-distance distribution
+        # ==================================================================
+        #
+        # This diagnostic scales each row's selected-unit-value log distance
+        # by the robust within-HS × year log-UV dispersion:
+        #
+        #     normalized distance
+        #         = selected UV log distance / HS × year log MAD
+        #
+        # No threshold is applied here.
+        #
+        # Groups with zero or missing MAD are excluded because the ratio is
+        # undefined.
+        # ==================================================================
+
+        n_normalized_uv_rows = int(
+            con.execute(
+                """
+                SELECT COUNT(*)
+
+                FROM validation_diagnostics_base
+
+                WHERE training_hard_eligible
+
+                AND selected_uv_log_distance IS NOT NULL
+                AND isfinite(selected_uv_log_distance)
+
+                AND hs_year_uv_log_mad IS NOT NULL
+                AND hs_year_uv_log_mad > 0
+                AND isfinite(hs_year_uv_log_mad)
+                """
+            ).fetchone()[0]
+        )
+
+
+        for quantile in training_quantiles:
+
+            value = con.execute(
+                f"""
+                SELECT
+                    QUANTILE_CONT(
+                        selected_uv_log_distance
+                        / hs_year_uv_log_mad,
+                        {float(quantile):.17g}
+                    )
+
+                FROM validation_diagnostics_base
+
+                WHERE training_hard_eligible
+
+                AND selected_uv_log_distance IS NOT NULL
+                AND isfinite(selected_uv_log_distance)
+
+                AND hs_year_uv_log_mad IS NOT NULL
+                AND hs_year_uv_log_mad > 0
+                AND isfinite(hs_year_uv_log_mad)
+                """
+            ).fetchone()[0]
+
+            diagnostics_rows.append(
+                {
+                    "scope": (
+                        "training_normalized_uv_distance_distribution"
+                    ),
+
+                    "criterion": (
+                        "training_hard_eligible_with_positive_mad"
+                    ),
+
+                    "disagreement_threshold": None,
+                    "uv_support_threshold": None,
+                    "uv_distance_threshold": None,
+
+                    "year": None,
+                    "target_cmd": None,
+
+                    "variable": (
+                        "selected_uv_log_distance_over_mad"
+                    ),
+
+                    "quantile": float(
+                        quantile
+                    ),
+
+                    "n_rows": n_normalized_uv_rows,
+
+                    "share_of_all": _share(
+                        n_normalized_uv_rows,
+                        n_training_all,
+                    ),
+
+                    "share_of_parent": _share(
+                        n_normalized_uv_rows,
+                        n_training_hard_eligible,
+                    ),
+
+                    "value": (
+                        float(value)
+                        if value is not None
+                        else None
+                    ),
+                }
+            )
+
+        training_by_year = con.execute(
+            """
+            SELECT
+                year,
+
+                COUNT(*)
+                    AS total_rows,
+
+                COUNT(*) FILTER (
+                    WHERE training_reference_eligible
+                )
+                    AS n_reference_rows,
+
+                COUNT(*) FILTER (
+                    WHERE training_hard_eligible
+                )
+                    AS n_hard_eligible_rows,
+
+                MEDIAN(selected_uv_log_distance)
+                    FILTER (
+                        WHERE training_hard_eligible
+                        AND selected_uv_log_distance IS NOT NULL
+                    )
+                    AS median_uv_distance,
+
+                MEDIAN(hs_year_uv_reference_n)
+                    FILTER (
+                        WHERE hs_year_uv_reference_n IS NOT NULL
+                    )
+                    AS median_reference_support
+
+            FROM validation_diagnostics_base
+
+            GROUP BY year
+            ORDER BY year
+            """
+        ).fetchdf()
+
+        for row in training_by_year.itertuples(
+            index=False
+        ):
+            diagnostics_rows.append(
+                {
+                    "scope": "training_sample_by_year",
+                    "criterion": "year",
+
+                    "disagreement_threshold": None,
+                    "uv_support_threshold": None,
+                    "uv_distance_threshold": None,
+
+                    "year": int(row.year),
+                    "target_cmd": None,
+
+                    "variable": (
+                        "hard_eligible_share"
+                    ),
+
+                    "quantile": None,
+
+                    "n_rows": int(
+                        row.n_hard_eligible_rows
+                    ),
+
+                    "total_rows": int(
+                        row.total_rows
+                    ),
+
+                    "share_of_all": _share(
+                        int(row.n_hard_eligible_rows),
+                        int(row.total_rows),
+                    ),
+
+                    "share_of_parent": None,
+
+                    "value": (
+                        float(row.median_uv_distance)
+                        if row.median_uv_distance
+                        is not None
+                        else None
+                    ),
+
+                    "median_uv_reference_observations": (
+                        float(
+                            row.median_reference_support
+                        )
+                        if row.median_reference_support
+                        is not None
+                        else None
+                    ),
+                }
+            )
+
+
+        training_by_product = con.execute(
+            """
+            SELECT
+                target_cmd,
+
+                COUNT(*)
+                    AS total_rows,
+
+                COUNT(*) FILTER (
+                    WHERE training_hard_eligible
+                )
+                    AS n_hard_eligible,
+
+                MEDIAN(selected_uv_log_distance)
+                    FILTER (
+                        WHERE training_hard_eligible
+                        AND selected_uv_log_distance IS NOT NULL
+                    )
+                    AS median_uv_distance,
+
+                QUANTILE_CONT(
+                    selected_uv_log_distance,
+                    0.95
+                )
+                    FILTER (
+                        WHERE training_hard_eligible
+                        AND selected_uv_log_distance IS NOT NULL
+                    )
+                    AS p95_uv_distance,
+
+                MEDIAN(hs_year_uv_log_mad)
+                    FILTER (
+                        WHERE hs_year_uv_log_mad IS NOT NULL
+                    )
+                    AS median_uv_log_mad
+
+            FROM validation_diagnostics_base
+
+            GROUP BY target_cmd
+            """
+        ).fetchdf()
+        # ==================================================================
         # 2. Individual threshold sensitivity
         # ==================================================================
 
@@ -1453,8 +2044,7 @@ def build_diagnostics(
             value,
         ) in zip(
             threshold_metadata,
-            sensitivity_row,
-        ):
+            sensitivity_row,):
             (
                 variable,
                 threshold,

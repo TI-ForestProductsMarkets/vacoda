@@ -266,6 +266,7 @@ class ValidationProductsConfig:
     structural_audit: ValidationProductConfig
     quantity_selection: ValidationProductConfig
     quantity_selection_audit: ValidationProductConfig
+    training_sample: ValidationProductConfig
     diagnostics: ValidationProductConfig
     validated_trade: ValidationProductConfig
     consistency_audit: ValidationProductConfig
@@ -294,6 +295,7 @@ class ValidationProductsConfig:
             structural_audit=product("structural_audit"),
             quantity_selection=product("quantity_selection"),
             quantity_selection_audit=product("quantity_selection_audit"),
+            training_sample=product("training_sample"),
             diagnostics=product("diagnostics"),
             validated_trade=product("validated_trade"),
             consistency_audit=product("consistency_audit"),
@@ -1071,6 +1073,7 @@ class ValidationConfig:
             "structural_audit": self.products.structural_audit,
             "quantity_selection": self.products.quantity_selection,
             "quantity_selection_audit": self.products.quantity_selection_audit,
+            "training_sample": self.products.training_sample,
             "diagnostics": self.products.diagnostics,
             "validated_trade": self.products.validated_trade,
             "consistency_audit": self.products.consistency_audit,
@@ -1095,6 +1098,7 @@ class ValidationConfig:
                 "structural_audit",
                 "quantity_selection",
                 "quantity_selection_audit",
+                "training_sample",
                 "diagnostics",
                 "validated_trade",
                 "consistency_audit",
@@ -1108,6 +1112,7 @@ class ValidationConfig:
             "structural_audit": self.products.structural_audit.enable,
             "quantity_selection": self.products.quantity_selection.enable,
             "quantity_selection_audit": self.products.quantity_selection_audit.enable,
+            "training_sample": self.products.training_sample.enable,
             "diagnostics": self.products.diagnostics.enable,
             "validated_trade": self.products.validated_trade.enable,
             "consistency_audit": self.products.consistency_audit.enable,

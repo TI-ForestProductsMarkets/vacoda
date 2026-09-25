@@ -1,0 +1,811 @@
+"""
+vacoda.steps.validation.training_sample
+---------------------------------------
+Build the candidate model-training sample and HS × year unit-value evidence.
+
+This step does not choose the final statistical training population.
+It prepares the selected quantity/value data, defines the strongest
+reference population, derives robust HS × year unit-value reference
+statistics, and writes row-level evidence for downstream diagnostics.
+
+Thresholds such as minimum HS × year support or acceptable unit-value
+distance are intentionally not applied here.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from time import perf_counter
+from typing import Any
+
+import duckdb
+
+from vacoda.config.steps.validation import ValidationConfig
+from vacoda.utils.display import get_symbols
+from vacoda.utils.sql import sql_literal
+
+
+# ======================================================================
+# Helpers
+# ======================================================================
+
+
+def _require_columns(
+    *,
+    con: duckdb.DuckDBPyConnection,
+    input_path: Path,
+    required_columns: set[str],
+) -> None:
+    """Require the columns needed to build the training sample."""
+
+    input_sql = sql_literal(input_path)
+
+    available = {
+        str(row[0])
+        for row in con.execute(
+            f"""
+            DESCRIBE
+            SELECT *
+            FROM read_parquet({input_sql})
+            """
+        ).fetchall()
+    }
+
+    missing = sorted(
+        required_columns - available
+    )
+
+    if missing:
+        raise RuntimeError(
+            "Validation training-sample input is missing required "
+            "column(s): "
+            + ", ".join(missing)
+        )
+
+
+# ======================================================================
+# Public step
+# ======================================================================
+
+
+def build_training_sample(
+    *,
+    cfg: ValidationConfig,
+    input_path: Path,
+    quantity_selection_audit_path: Path,
+    run_id: str,
+    output_path: Path | None = None,
+    force: bool = False,
+    logger,
+) -> dict[str, Any]:
+    """
+    Build the candidate model-training sample.
+
+    The input is the audited quantity-selection dataset.
+
+    This step:
+
+    1. preserves all upstream columns;
+    2. derives the selected unit value V / Q_selected;
+    3. identifies a high-confidence reference population using directly
+       observed bilateral exporter/importer quantities;
+    4. derives robust HS × year unit-value reference statistics;
+    5. measures each selected quantity/value observation relative to that
+       reference;
+    6. writes the resulting evidence for Diagnostics.
+
+    No final training-population threshold is selected here.
+    """
+
+    start = perf_counter()
+
+    input_path = Path(
+        input_path
+    )
+
+    quantity_selection_audit_path = Path(
+        quantity_selection_audit_path
+    )
+
+    output_path = (
+        Path(output_path)
+        if output_path is not None
+        else cfg.product_path(
+            "training_sample"
+        )
+    )
+
+    # ------------------------------------------------------------------
+    # Input existence
+    # ------------------------------------------------------------------
+
+    if not input_path.is_file():
+        raise FileNotFoundError(
+            "Validation training-sample input not found: "
+            f"{input_path}"
+        )
+
+    if not quantity_selection_audit_path.is_file():
+        raise FileNotFoundError(
+            "Validation quantity-selection audit not found: "
+            f"{quantity_selection_audit_path}"
+        )
+
+    output_path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    # ------------------------------------------------------------------
+    # Reuse
+    # ------------------------------------------------------------------
+
+    if (
+        not force
+        and output_path.is_file()
+        and output_path.stat().st_size > 0
+    ):
+        logger.info(
+            "%s REUSE — Validation training sample: %s",
+            get_symbols("reuse"),
+            output_path,
+        )
+
+        return {
+            "status": "completed",
+            "run_id": run_id,
+            "output_path": output_path,
+            "training_sample_path": output_path,
+            "reused": True,
+        }
+
+    logger.info(
+        "%s REBUILD — Validation training sample",
+        get_symbols("rebuilt"),
+    )
+
+    logger.info(
+        "  Input: %s",
+        input_path,
+    )
+
+    logger.info(
+        "  Quantity-selection audit: %s",
+        quantity_selection_audit_path,
+    )
+
+    logger.info(
+        "  Output: %s",
+        output_path,
+    )
+
+    # ==================================================================
+    # Configuration
+    # ==================================================================
+
+    diagnostics_cfg = cfg.diagnostics
+    columns_cfg = diagnostics_cfg.columns
+
+    year_col = str(
+        columns_cfg.year
+    )
+
+    product_col = str(
+        columns_cfg.product
+    )
+
+    nominal_value_col = str(
+        columns_cfg.nominal_value
+    )
+
+    export_quantity_col = str(
+        columns_cfg.export_quantity
+    )
+
+    import_quantity_col = str(
+        columns_cfg.import_quantity
+    )
+
+    export_estimated_col = str(
+        columns_cfg.export_estimated
+    )
+
+    import_estimated_col = str(
+        columns_cfg.import_estimated
+    )
+
+    selected_quantity_col = (
+        "quantity_selected_kg"
+    )
+
+    selected_candidate_col = (
+        "quantity_selected_candidate"
+    )
+
+    selected_source_col = (
+        "quantity_selected_source"
+    )
+
+    required_columns = {
+        year_col,
+        product_col,
+        "exporter_iso",
+        "importer_iso",
+        nominal_value_col,
+        export_quantity_col,
+        import_quantity_col,
+        export_estimated_col,
+        import_estimated_col,
+        selected_quantity_col,
+        selected_candidate_col,
+        selected_source_col,
+    }
+
+    # ==================================================================
+    # Build
+    # ==================================================================
+
+    con = duckdb.connect()
+
+    try:
+        con.execute(
+            f"PRAGMA threads={int(cfg.engine.threads)}"
+        )
+
+        input_sql = sql_literal(
+            input_path
+        )
+
+        audit_sql = sql_literal(
+            quantity_selection_audit_path
+        )
+
+        # --------------------------------------------------------------
+        # Require passing quantity-selection audit
+        # --------------------------------------------------------------
+
+        audit_row = con.execute(
+            f"""
+            SELECT audit_passed
+            FROM read_parquet({audit_sql})
+            LIMIT 1
+            """
+        ).fetchone()
+
+        if (
+            audit_row is None
+            or not bool(audit_row[0])
+        ):
+            raise RuntimeError(
+                "Validation training-sample construction requires "
+                "a passing quantity-selection audit."
+            )
+
+        # --------------------------------------------------------------
+        # Input contract
+        # --------------------------------------------------------------
+
+        _require_columns(
+            con=con,
+            input_path=input_path,
+            required_columns=required_columns,
+        )
+
+        # --------------------------------------------------------------
+        # Base population
+        # --------------------------------------------------------------
+        #
+        # The selected unit value uses the already-audited final quantity
+        # selected by the previous Validation step.
+        #
+        # The reference population is deliberately stricter:
+        #
+        #   - exporter quantity usable
+        #   - importer quantity usable
+        #   - neither reporter quantity estimated
+        #   - selected quantity usable
+        #   - reconciled value usable
+        #
+        # This avoids defining the HS × year reference from weak unilateral
+        # quantity evidence.
+        # --------------------------------------------------------------
+
+        con.execute(
+            f"""
+            CREATE OR REPLACE TEMP VIEW
+                validation_training_base
+            AS
+
+            SELECT
+                *,
+
+                CASE
+                    WHEN
+                        {selected_quantity_col} IS NOT NULL
+                        AND {selected_quantity_col} > 0
+
+                        AND {nominal_value_col} IS NOT NULL
+                        AND {nominal_value_col} > 0
+
+                        AND isfinite(
+                            CAST(
+                                {selected_quantity_col}
+                                AS DOUBLE
+                            )
+                        )
+
+                        AND isfinite(
+                            CAST(
+                                {nominal_value_col}
+                                AS DOUBLE
+                            )
+                        )
+
+                    THEN
+                        CAST(
+                            {nominal_value_col}
+                            AS DOUBLE
+                        )
+                        /
+                        CAST(
+                            {selected_quantity_col}
+                            AS DOUBLE
+                        )
+
+                    ELSE NULL
+                END
+                    AS selected_unit_value,
+
+                (
+                    {export_quantity_col} IS NOT NULL
+                    AND {import_quantity_col} IS NOT NULL
+
+                    AND {export_quantity_col} > 0
+                    AND {import_quantity_col} > 0
+
+                    AND isfinite(
+                        CAST(
+                            {export_quantity_col}
+                            AS DOUBLE
+                        )
+                    )
+
+                    AND isfinite(
+                        CAST(
+                            {import_quantity_col}
+                            AS DOUBLE
+                        )
+                    )
+
+                    AND COALESCE(
+                        {export_estimated_col},
+                        FALSE
+                    ) = FALSE
+
+                    AND COALESCE(
+                        {import_estimated_col},
+                        FALSE
+                    ) = FALSE
+
+                    AND {selected_quantity_col} IS NOT NULL
+                    AND {selected_quantity_col} > 0
+
+                    AND isfinite(
+                        CAST(
+                            {selected_quantity_col}
+                            AS DOUBLE
+                        )
+                    )
+
+                    AND {nominal_value_col} IS NOT NULL
+                    AND {nominal_value_col} > 0
+
+                    AND isfinite(
+                        CAST(
+                            {nominal_value_col}
+                            AS DOUBLE
+                        )
+                    )
+                )
+                    AS training_reference_eligible
+
+            FROM read_parquet({input_sql})
+            """
+        )
+
+        # --------------------------------------------------------------
+        # HS × year reference population
+        # --------------------------------------------------------------
+        #
+        # Work in log(unit value):
+        #
+        #   log(UV) = log(V / Q)
+        #
+        # The robust centre is the median log unit value.
+        #
+        # We also retain the median absolute deviation around that centre,
+        # in log space. No threshold based on this dispersion is applied
+        # here.
+        # --------------------------------------------------------------
+
+        con.execute(
+            f"""
+            CREATE OR REPLACE TEMP VIEW
+                validation_training_uv_reference
+            AS
+
+            WITH reference_rows AS (
+
+                SELECT
+                    {year_col}
+                        AS year,
+
+                    {product_col}
+                        AS target_cmd,
+
+                    LN(
+                        selected_unit_value
+                    )
+                        AS log_unit_value
+
+                FROM validation_training_base
+
+                WHERE training_reference_eligible
+
+                  AND selected_unit_value IS NOT NULL
+                  AND selected_unit_value > 0
+
+                  AND isfinite(
+                      selected_unit_value
+                  )
+            ),
+
+            centres AS (
+
+                SELECT
+                    year,
+                    target_cmd,
+
+                    COUNT(*)
+                        AS hs_year_uv_reference_n,
+
+                    MEDIAN(
+                        log_unit_value
+                    )
+                        AS median_log_unit_value
+
+                FROM reference_rows
+
+                GROUP BY
+                    year,
+                    target_cmd
+            ),
+
+            deviations AS (
+
+                SELECT
+                    r.year,
+                    r.target_cmd,
+
+                    c.hs_year_uv_reference_n,
+                    c.median_log_unit_value,
+
+                    ABS(
+                        r.log_unit_value
+                        - c.median_log_unit_value
+                    )
+                        AS log_absolute_deviation
+
+                FROM reference_rows AS r
+
+                INNER JOIN centres AS c
+                    USING (
+                        year,
+                        target_cmd
+                    )
+            )
+
+            SELECT
+                year,
+                target_cmd,
+
+                MAX(
+                    hs_year_uv_reference_n
+                )
+                    AS hs_year_uv_reference_n,
+
+                EXP(
+                    MAX(
+                        median_log_unit_value
+                    )
+                )
+                    AS hs_year_uv_reference,
+
+                MAX(
+                    median_log_unit_value
+                )
+                    AS hs_year_uv_reference_log,
+
+                MEDIAN(
+                    log_absolute_deviation
+                )
+                    AS hs_year_uv_log_mad
+
+            FROM deviations
+
+            GROUP BY
+                year,
+                target_cmd
+            """
+        )
+
+        # --------------------------------------------------------------
+        # Attach reference evidence
+        # --------------------------------------------------------------
+        #
+        # No statistical cutoff is applied.
+        #
+        # training_hard_eligible only indicates that the row contains the
+        # mechanically necessary information for later training-population
+        # evaluation:
+        #
+        #   - selected quantity
+        #   - reconciled value
+        #   - selected unit value
+        #   - HS × year reference
+        #
+        # It does NOT mean that the row is approved for model training.
+        # --------------------------------------------------------------
+
+        temporary_path = output_path.with_suffix(
+            output_path.suffix + ".tmp"
+        )
+
+        if temporary_path.exists():
+            temporary_path.unlink()
+
+        temporary_sql = sql_literal(
+            temporary_path
+        )
+
+        con.execute(
+            f"""
+            COPY (
+                SELECT
+                    b.*,
+
+                    r.hs_year_uv_reference,
+                    r.hs_year_uv_reference_log,
+                    r.hs_year_uv_reference_n,
+                    r.hs_year_uv_log_mad,
+
+                    CASE
+                        WHEN
+                            b.selected_unit_value IS NOT NULL
+                            AND b.selected_unit_value > 0
+
+                            AND r.hs_year_uv_reference IS NOT NULL
+                            AND r.hs_year_uv_reference > 0
+
+                            AND isfinite(
+                                b.selected_unit_value
+                            )
+
+                            AND isfinite(
+                                r.hs_year_uv_reference
+                            )
+
+                        THEN
+                            ABS(
+                                LN(
+                                    b.selected_unit_value
+                                )
+                                -
+                                LN(
+                                    r.hs_year_uv_reference
+                                )
+                            )
+
+                        ELSE NULL
+                    END
+                        AS selected_uv_log_distance,
+
+                    (
+                        b.{selected_quantity_col} IS NOT NULL
+                        AND b.{selected_quantity_col} > 0
+
+                        AND isfinite(
+                            CAST(
+                                b.{selected_quantity_col}
+                                AS DOUBLE
+                            )
+                        )
+
+                        AND b.{nominal_value_col} IS NOT NULL
+                        AND b.{nominal_value_col} > 0
+
+                        AND isfinite(
+                            CAST(
+                                b.{nominal_value_col}
+                                AS DOUBLE
+                            )
+                        )
+
+                        AND b.selected_unit_value IS NOT NULL
+                        AND b.selected_unit_value > 0
+                        AND isfinite(
+                            b.selected_unit_value
+                        )
+
+                        AND r.hs_year_uv_reference IS NOT NULL
+                        AND r.hs_year_uv_reference > 0
+                        AND isfinite(
+                            r.hs_year_uv_reference
+                        )
+
+                        AND r.hs_year_uv_reference_n IS NOT NULL
+                    )
+                        AS training_hard_eligible
+
+                FROM validation_training_base AS b
+
+                LEFT JOIN validation_training_uv_reference AS r
+                  ON r.year = b.{year_col}
+                 AND r.target_cmd = b.{product_col}
+            )
+            TO {temporary_sql}
+            (
+                FORMAT PARQUET,
+                COMPRESSION ZSTD
+            )
+            """
+        )
+
+        temporary_path.replace(
+            output_path
+        )
+
+        output_sql = sql_literal(
+            output_path
+        )
+
+        # --------------------------------------------------------------
+        # Basic output accounting
+        # --------------------------------------------------------------
+
+        counts = con.execute(
+            f"""
+            SELECT
+                COUNT(*)
+                    AS n_rows,
+
+                COUNT(*) FILTER (
+                    WHERE training_reference_eligible
+                )
+                    AS n_reference_rows,
+
+                COUNT(*) FILTER (
+                    WHERE training_hard_eligible
+                )
+                    AS n_hard_eligible_rows,
+
+                COUNT(*) FILTER (
+                    WHERE selected_unit_value IS NOT NULL
+                )
+                    AS n_selected_unit_value_rows,
+
+                COUNT(*) FILTER (
+                    WHERE hs_year_uv_reference IS NOT NULL
+                )
+                    AS n_rows_with_reference,
+
+                COUNT(*) FILTER (
+                    WHERE selected_uv_log_distance IS NOT NULL
+                )
+                    AS n_rows_with_uv_distance
+
+            FROM read_parquet({output_sql})
+            """
+        ).fetchone()
+
+        (
+            n_rows,
+            n_reference_rows,
+            n_hard_eligible_rows,
+            n_selected_unit_value_rows,
+            n_rows_with_reference,
+            n_rows_with_uv_distance,
+        ) = map(
+            int,
+            counts,
+        )
+
+        n_reference_groups = int(
+            con.execute(
+                """
+                SELECT COUNT(*)
+                FROM validation_training_uv_reference
+                """
+            ).fetchone()[0]
+        )
+
+    finally:
+        con.close()
+
+    # ==================================================================
+    # Logging
+    # ==================================================================
+
+    elapsed = perf_counter() - start
+
+    logger.info(
+        "  Output rows: %s",
+        f"{n_rows:,}",
+    )
+
+    logger.info(
+        "  Reference-population rows: %s",
+        f"{n_reference_rows:,}",
+    )
+
+    logger.info(
+        "  HS × year reference groups: %s",
+        f"{n_reference_groups:,}",
+    )
+
+    logger.info(
+        "  Rows with selected unit value: %s",
+        f"{n_selected_unit_value_rows:,}",
+    )
+
+    logger.info(
+        "  Rows with HS × year UV reference: %s",
+        f"{n_rows_with_reference:,}",
+    )
+
+    logger.info(
+        "  Rows with UV-distance evidence: %s",
+        f"{n_rows_with_uv_distance:,}",
+    )
+
+    logger.info(
+        "  Hard-eligible rows: %s",
+        f"{n_hard_eligible_rows:,}",
+    )
+
+    logger.info(
+        "  Output: %s",
+        output_path,
+    )
+
+    logger.info(
+        "%s CHECK — Training sample built.",
+        get_symbols("check"),
+    )
+
+    return {
+        "status": "completed",
+        "run_id": run_id,
+
+        "output_path": output_path,
+        "training_sample_path": output_path,
+
+        "n_rows": n_rows,
+        "n_reference_rows": n_reference_rows,
+        "n_reference_groups": n_reference_groups,
+        "n_selected_unit_value_rows": (
+            n_selected_unit_value_rows
+        ),
+        "n_rows_with_reference": (
+            n_rows_with_reference
+        ),
+        "n_rows_with_uv_distance": (
+            n_rows_with_uv_distance
+        ),
+        "n_hard_eligible_rows": (
+            n_hard_eligible_rows
+        ),
+
+        "duration_seconds": elapsed,
+        "reused": False,
+    }
