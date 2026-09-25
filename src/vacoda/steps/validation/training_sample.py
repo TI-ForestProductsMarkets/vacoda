@@ -1,7 +1,7 @@
 """
 vacoda.steps.validation.training_sample
 
-Build the model-training sample and HS × year unit-value evidence.
+Build the model-training sample and HS x year unit-value evidence.
 
 This step prepares the selected quantity/value data, defines the robust
 HS × year unit-value reference, derives row-level plausibility evidence,

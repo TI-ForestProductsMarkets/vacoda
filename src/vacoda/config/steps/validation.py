@@ -302,9 +302,8 @@ class ValidationProductsConfig:
             release=product("release"),
         )
 
-
 # ---------------------------------------------------------------------
-# Model training
+# Model development
 # ---------------------------------------------------------------------
 
 
@@ -355,16 +354,445 @@ class ValidationTrainingSampleConfig:
 
 
 @dataclass(frozen=True)
+class ValidationModelTargetConfig:
+    column: str
+    transform: Literal["none", "log"]
+
+    @classmethod
+    def from_dict(
+        cls,
+        cfg: dict[str, Any],
+    ) -> "ValidationModelTargetConfig":
+        transform = require_str(
+            cfg.get("transform"),
+            key="validation.model.target.transform",
+        ).strip().lower()
+
+        allowed = {
+            "none",
+            "log",
+        }
+
+        if transform not in allowed:
+            raise ValueError(
+                "validation.model.target.transform must be one of "
+                f"{sorted(allowed)}, got {transform!r}."
+            )
+
+        return cls(
+            column=require_str(
+                cfg.get("column"),
+                key="validation.model.target.column",
+            ).strip(),
+            transform=transform,
+        )
+
+
+@dataclass(frozen=True)
+class ValidationNumericFeatureConfig:
+    transform: Literal["none", "log"]
+
+    @classmethod
+    def from_dict(
+        cls,
+        cfg: dict[str, Any],
+        *,
+        key: str,
+    ) -> "ValidationNumericFeatureConfig":
+        transform = require_str(
+            cfg.get("transform"),
+            key=f"{key}.transform",
+        ).strip().lower()
+
+        allowed = {
+            "none",
+            "log",
+        }
+
+        if transform not in allowed:
+            raise ValueError(
+                f"{key}.transform must be one of "
+                f"{sorted(allowed)}, got {transform!r}."
+            )
+
+        return cls(
+            transform=transform,
+        )
+
+
+@dataclass(frozen=True)
+class ValidationModelFeaturesConfig:
+    numeric: dict[str, ValidationNumericFeatureConfig]
+    categorical: tuple[str, ...]
+    exclude: tuple[str, ...]
+
+    @classmethod
+    def from_dict(
+        cls,
+        cfg: dict[str, Any],
+    ) -> "ValidationModelFeaturesConfig":
+        numeric_cfg = require_dict(
+            cfg.get("numeric"),
+            key="validation.model.features.numeric",
+        )
+
+        numeric = {
+            require_str(
+                name,
+                key="validation.model.features.numeric feature name",
+            ).strip(): ValidationNumericFeatureConfig.from_dict(
+                require_dict(
+                    feature_cfg,
+                    key=(
+                        "validation.model.features.numeric."
+                        f"{name}"
+                    ),
+                ),
+                key=(
+                    "validation.model.features.numeric."
+                    f"{name}"
+                ),
+            )
+            for name, feature_cfg in numeric_cfg.items()
+        }
+
+        if any(not name for name in numeric):
+            raise ValueError(
+                "validation.model.features.numeric "
+                "must not contain empty feature names."
+            )
+
+        categorical = _require_str_list(
+            cfg.get("categorical"),
+            key="validation.model.features.categorical",
+        )
+
+        exclude = _require_str_list(
+            cfg.get("exclude"),
+            key="validation.model.features.exclude",
+        )
+
+        overlap = (
+            set(numeric)
+            & set(categorical)
+        )
+
+        if overlap:
+            raise ValueError(
+                "Validation model features cannot be both numeric "
+                "and categorical: "
+                + ", ".join(sorted(overlap))
+            )
+
+        return cls(
+            numeric=numeric,
+            categorical=categorical,
+            exclude=exclude,
+        )
+
+    @property
+    def numeric_columns(self) -> tuple[str, ...]:
+        return tuple(
+            self.numeric.keys()
+        )
+
+    @property
+    def feature_columns(self) -> tuple[str, ...]:
+        return (
+            self.numeric_columns
+            + self.categorical
+        )
+
+
+@dataclass(frozen=True)
+class ValidationModelValidationConfig:
+    strategy: Literal["leave_one_year_out"]
+    year_column: str
+    minimum_training_years: int
+
+    @classmethod
+    def from_dict(
+        cls,
+        cfg: dict[str, Any],
+    ) -> "ValidationModelValidationConfig":
+        strategy = require_str(
+            cfg.get("strategy"),
+            key="validation.model.validation.strategy",
+        ).strip().lower()
+
+        allowed = {
+            "leave_one_year_out",
+        }
+
+        if strategy not in allowed:
+            raise ValueError(
+                "validation.model.validation.strategy must be one of "
+                f"{sorted(allowed)}, got {strategy!r}."
+            )
+
+        return cls(
+            strategy=strategy,
+            year_column=require_str(
+                cfg.get("year_column"),
+                key="validation.model.validation.year_column",
+            ).strip(),
+            minimum_training_years=require_int(
+                cfg.get("minimum_training_years"),
+                key=(
+                    "validation.model.validation."
+                    "minimum_training_years"
+                ),
+                min_value=1,
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class ValidationCandidateModelConfig:
+    enable: bool
+    type: str
+    parameters: dict[str, Any]
+
+    @classmethod
+    def from_dict(
+        cls,
+        cfg: dict[str, Any],
+        *,
+        key: str,
+    ) -> "ValidationCandidateModelConfig":
+        model_type = require_str(
+            cfg.get("type"),
+            key=f"{key}.type",
+        ).strip().lower()
+
+        allowed_types = {
+            "ridge",
+            "hist_gradient_boosting",
+            "extra_trees",
+            "random_forest",
+        }
+
+        if model_type not in allowed_types:
+            raise ValueError(
+                f"{key}.type must be one of "
+                f"{sorted(allowed_types)}, got {model_type!r}."
+            )
+
+        parameters = require_dict(
+            cfg.get("parameters"),
+            key=f"{key}.parameters",
+        )
+
+        for parameter_name, value in parameters.items():
+            if not isinstance(
+                parameter_name,
+                str,
+            ):
+                raise TypeError(
+                    f"{key}.parameters keys must be strings."
+                )
+
+            if not isinstance(
+                value,
+                (
+                    str,
+                    int,
+                    float,
+                    bool,
+                    type(None),
+                ),
+            ):
+                raise TypeError(
+                    f"{key}.parameters.{parameter_name} "
+                    "must be a scalar value."
+                )
+
+        return cls(
+            enable=require_bool(
+                cfg.get("enable"),
+                key=f"{key}.enable",
+            ),
+            type=model_type,
+            parameters=dict(
+                parameters
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class ValidationModelsConfig:
+    models: dict[str, ValidationCandidateModelConfig]
+
+    @classmethod
+    def from_dict(
+        cls,
+        cfg: dict[str, Any],
+    ) -> "ValidationModelsConfig":
+        if not cfg:
+            raise ValueError(
+                "validation.model.models must contain "
+                "at least one candidate model."
+            )
+
+        models: dict[
+            str,
+            ValidationCandidateModelConfig,
+        ] = {}
+
+        for name, model_cfg in cfg.items():
+            model_name = require_str(
+                name,
+                key="validation.model.models model name",
+            ).strip()
+
+            if not model_name:
+                raise ValueError(
+                    "validation.model.models must not contain "
+                    "an empty model name."
+                )
+
+            models[model_name] = (
+                ValidationCandidateModelConfig.from_dict(
+                    require_dict(
+                        model_cfg,
+                        key=(
+                            "validation.model.models."
+                            f"{model_name}"
+                        ),
+                    ),
+                    key=(
+                        "validation.model.models."
+                        f"{model_name}"
+                    ),
+                )
+            )
+
+        if not any(
+            model.enable
+            for model in models.values()
+        ):
+            raise ValueError(
+                "At least one validation.model.models entry "
+                "must have enable=true."
+            )
+
+        return cls(
+            models=models,
+        )
+
+    def enabled(
+        self,
+    ) -> dict[str, ValidationCandidateModelConfig]:
+        return {
+            name: model
+            for name, model in self.models.items()
+            if model.enable
+        }
+
+    def __getitem__(
+        self,
+        name: str,
+    ) -> ValidationCandidateModelConfig:
+        return self.models[name]
+
+
+@dataclass(frozen=True)
+class ValidationModelEvaluationConfig:
+    metrics: tuple[str, ...]
+
+    @classmethod
+    def from_dict(
+        cls,
+        cfg: dict[str, Any],
+    ) -> "ValidationModelEvaluationConfig":
+        metrics = _require_str_list(
+            cfg.get("metrics"),
+            key="validation.model.evaluation.metrics",
+        )
+
+        allowed_metrics = {
+            "mae_log",
+            "rmse_log",
+            "median_absolute_log_error",
+        }
+
+        unknown = (
+            set(metrics)
+            - allowed_metrics
+        )
+
+        if unknown:
+            raise ValueError(
+                "Unknown validation.model.evaluation metric(s): "
+                + ", ".join(sorted(unknown))
+            )
+
+        if not metrics:
+            raise ValueError(
+                "validation.model.evaluation.metrics "
+                "must not be empty."
+            )
+
+        return cls(
+            metrics=metrics,
+        )
+
+
+@dataclass(frozen=True)
+class ValidationModelSelectionConfig:
+    enabled: bool
+    primary_metric: str
+
+    @classmethod
+    def from_dict(
+        cls,
+        cfg: dict[str, Any],
+        *,
+        evaluation_metrics: tuple[str, ...],
+    ) -> "ValidationModelSelectionConfig":
+        primary_metric = require_str(
+            cfg.get("primary_metric"),
+            key=(
+                "validation.model.selection."
+                "primary_metric"
+            ),
+        ).strip()
+
+        if primary_metric not in evaluation_metrics:
+            raise ValueError(
+                "validation.model.selection.primary_metric "
+                "must also appear in "
+                "validation.model.evaluation.metrics. "
+                f"Got {primary_metric!r}."
+            )
+
+        return cls(
+            enabled=require_bool(
+                cfg.get("enabled"),
+                key="validation.model.selection.enabled",
+            ),
+            primary_metric=primary_metric,
+        )
+
+
+@dataclass(frozen=True)
 class ValidationModelConfig:
     training_sample: ValidationTrainingSampleConfig
+    target: ValidationModelTargetConfig
+    features: ValidationModelFeaturesConfig
+    validation: ValidationModelValidationConfig
+    models: ValidationModelsConfig
+    evaluation: ValidationModelEvaluationConfig
+    selection: ValidationModelSelectionConfig
+    random_seed: int
 
     @classmethod
     def from_dict(
         cls,
         cfg: dict[str, Any],
     ) -> "ValidationModelConfig":
-        return cls(
-            training_sample=ValidationTrainingSampleConfig.from_dict(
+        training_sample = (
+            ValidationTrainingSampleConfig.from_dict(
                 require_dict(
                     cfg.get("training_sample"),
                     key="validation.model.training_sample",
@@ -372,6 +800,86 @@ class ValidationModelConfig:
             )
         )
 
+        target = ValidationModelTargetConfig.from_dict(
+            require_dict(
+                cfg.get("target"),
+                key="validation.model.target",
+            )
+        )
+
+        features = ValidationModelFeaturesConfig.from_dict(
+            require_dict(
+                cfg.get("features"),
+                key="validation.model.features",
+            )
+        )
+
+        validation = ValidationModelValidationConfig.from_dict(
+            require_dict(
+                cfg.get("validation"),
+                key="validation.model.validation",
+            )
+        )
+
+        models = ValidationModelsConfig.from_dict(
+            require_dict(
+                cfg.get("models"),
+                key="validation.model.models",
+            )
+        )
+
+        evaluation = ValidationModelEvaluationConfig.from_dict(
+            require_dict(
+                cfg.get("evaluation"),
+                key="validation.model.evaluation",
+            )
+        )
+
+        selection = ValidationModelSelectionConfig.from_dict(
+            require_dict(
+                cfg.get("selection"),
+                key="validation.model.selection",
+            ),
+            evaluation_metrics=evaluation.metrics,
+        )
+
+        # ----------------------------------------------------------
+        # Cross-section consistency
+        # ----------------------------------------------------------
+
+        if target.column in features.feature_columns:
+            raise ValueError(
+                "validation.model.target.column must not also be "
+                "configured as a model feature."
+            )
+
+        if target.column not in features.exclude:
+            raise ValueError(
+                "validation.model.target.column should be explicitly "
+                "listed in validation.model.features.exclude to "
+                "document target-leakage protection."
+            )
+
+        if validation.year_column not in features.categorical:
+            raise ValueError(
+                "validation.model.validation.year_column must appear "
+                "in validation.model.features.categorical."
+            )
+
+        return cls(
+            training_sample=training_sample,
+            target=target,
+            features=features,
+            validation=validation,
+            models=models,
+            evaluation=evaluation,
+            selection=selection,
+            random_seed=require_int(
+                cfg.get("random_seed"),
+                key="validation.model.random_seed",
+                min_value=0,
+            ),
+        )
 
 # ---------------------------------------------------------------------
 # Structural validation
@@ -679,21 +1187,21 @@ class ValidationDiagnosticsTrainingPopulationConfig:
             require_bilateral_quantities=require_bool(
                 cfg.get("require_bilateral_quantities"),
                 key=(
-                    "validation.diagnostics.training_population."
+                    "validation.diagnostics.training_population_sensitivity."
                     "require_bilateral_quantities"
                 ),
             ),
             require_non_estimated_quantities=require_bool(
                 cfg.get("require_non_estimated_quantities"),
                 key=(
-                    "validation.diagnostics.training_population."
+                    "validation.diagnostics.training_population_sensitivity."
                     "require_non_estimated_quantities"
                 ),
             ),
             disagreement_thresholds=_require_float_list(
                 cfg.get("disagreement_thresholds"),
                 key=(
-                    "validation.diagnostics.training_population."
+                    "validation.diagnostics.training_population_sensitivity."
                     "disagreement_thresholds"
                 ),
                 min_value=0.0,
@@ -701,7 +1209,7 @@ class ValidationDiagnosticsTrainingPopulationConfig:
             unit_value_reference_min_observations=_require_int_list(
                 cfg.get("unit_value_reference_min_observations"),
                 key=(
-                    "validation.diagnostics.training_population."
+                    "validation.diagnostics.training_population_sensitivity."
                     "unit_value_reference_min_observations"
                 ),
                 min_value=1,
@@ -709,7 +1217,7 @@ class ValidationDiagnosticsTrainingPopulationConfig:
             unit_value_log_distance_thresholds=_require_float_list(
                 cfg.get("unit_value_log_distance_thresholds"),
                 key=(
-                    "validation.diagnostics.training_population."
+                    "validation.diagnostics.training_population_sensitivity."
                     "unit_value_log_distance_thresholds"
                 ),
                 min_value=0.0,
@@ -761,7 +1269,7 @@ class ValidationDiagnosticsSelectionConfig:
 @dataclass(frozen=True)
 class ValidationDiagnosticsConfig:
     columns: ValidationDiagnosticsColumnsConfig
-    training_population: ValidationDiagnosticsTrainingPopulationConfig
+    training_population_sensitivity: ValidationDiagnosticsTrainingPopulationConfig
     target: ValidationDiagnosticsTargetConfig
     selection: ValidationDiagnosticsSelectionConfig
 
@@ -777,10 +1285,10 @@ class ValidationDiagnosticsConfig:
                     key="validation.diagnostics.columns",
                 )
             ),
-            training_population=ValidationDiagnosticsTrainingPopulationConfig.from_dict(
+            training_population_sensitivity=ValidationDiagnosticsTrainingPopulationConfig.from_dict(
                 require_dict(
-                    cfg.get("training_population"),
-                    key="validation.diagnostics.training_population",
+                    cfg.get("training_population_sensitivity"),
+                    key="validation.diagnostics.training_population_sensitivity",
                 )
             ),
             target=ValidationDiagnosticsTargetConfig.from_dict(

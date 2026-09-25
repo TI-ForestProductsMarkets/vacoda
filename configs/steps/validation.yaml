@@ -6,7 +6,6 @@ validation:
   # --------------------------------------------------------------------
   # Input
   # --------------------------------------------------------------------
-
   input:
     stage: "interim"
     subdir: "value/target_{target_hs_lower}"
@@ -16,7 +15,6 @@ validation:
   # --------------------------------------------------------------------
   # Output
   # --------------------------------------------------------------------
-
   output:
     stage: "processed"
     subdir: "validation/target_{target_hs_lower}"
@@ -25,7 +23,6 @@ validation:
   # --------------------------------------------------------------------
   # Products
   # --------------------------------------------------------------------
-
   products:
 
     prepared_input:
@@ -65,27 +62,114 @@ validation:
       filename: "vacoda_target_{target_hs_lower}_trade.parquet"
 
   # --------------------------------------------------------------
-  # Model training
+  # Model development
   # --------------------------------------------------------------
 
   model:
-
+    # ------------------------------------------------------------
+    # Training population
+    # ------------------------------------------------------------
     training_sample:
-      # Training rows must:
-      #   - belong to the direct bilateral, non-estimated reference population;
-      #   - have sufficient HS × year reference support;
-      #   - lie within the selected dispersion-normalized unit-value distance.
       require_reference_eligible: true
       min_hs_year_reference_observations: 30
       max_normalized_uv_distance_mad: 2.5
       require_positive_uv_mad: true
 
+    # ------------------------------------------------------------
+    # Prediction target
+    # ------------------------------------------------------------
+    target:
+      column: "quantity_selected_kg"
+      transform: "log"
+
+    # ------------------------------------------------------------
+    # Features
+    # ------------------------------------------------------------
+    features:
+      numeric:
+        - trade_value_reconciled_constant_usd
+            transform: "log"
+
+      categorical:
+        - year
+        - exporter_iso
+        - importer_iso
+        - target_cmd
+
+      exclude:
+        - quantity_selected_kg
+        - quantity_simple_mean_kg
+        - quantity_value_weighted_kg
+        - quantity_reliability_weighted_kg
+        - export_synchronized_quantity_kg
+        - import_synchronized_quantity_kg
+        - selected_unit_value
+        - selected_uv_log_distance
+        - training_normalized_uv_distance
+
+    # ------------------------------------------------------------
+    # Validation
+    # ------------------------------------------------------------
+    validation:
+      strategy: "leave_one_year_out"
+      year_column: "year"
+      minimum_training_years: 5
+
+    # ------------------------------------------------------------
+    # Candidate models
+    # ------------------------------------------------------------
+    models:
+      ridge:
+        enable: true
+        type: "ridge"
+        parameters:
+          alpha: 1.0
+
+      histogram_gradient_boosting:
+        enable: true
+        type: "hist_gradient_boosting"
+        parameters:
+          learning_rate: 0.05
+          max_iter: 300
+          max_leaf_nodes: 31
+          min_samples_leaf: 50
+
+      extra_trees:
+        enable: true
+        type: "extra_trees"
+        parameters:
+          n_estimators: 300
+          min_samples_leaf: 5
+          max_features: 0.8
+      
+      random_forest:
+        enable: true
+        type: "random_forest"
+        parameters:
+          n_estimators: 300
+          min_samples_leaf: 5
+          max_features: 0.8
+
+    # ------------------------------------------------------------
+    # Evaluation
+    # ------------------------------------------------------------
+    evaluation:
+      metrics:
+        - mae_log
+        - rmse_log
+        - median_absolute_log_error
+
+    selection:
+      enabled: false
+      primary_metric: "mae_log"
+
+
+    random_seed: 42
+
   # --------------------------------------------------------------------
   # Method
   # --------------------------------------------------------------------
-
   method:
-
     structural:
       required_fields:
         - year
@@ -132,7 +216,6 @@ validation:
   # --------------------------------------------------------------
   # Diagnostics 
   # --------------------------------------------------------------
-
   diagnostics:
 
     columns:
@@ -158,7 +241,7 @@ validation:
     # Candidate pseudo-truth population
     # --------------------------------------------------------------
 
-    training_population:
+    training_population_sensitivity:
 
       require_bilateral_quantities: true
       require_non_estimated_quantities: true
@@ -194,7 +277,6 @@ validation:
   # --------------------------------------------------------------------
   # Release
   # --------------------------------------------------------------------
-
   release:
 
     columns:
