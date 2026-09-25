@@ -1,15 +1,14 @@
 """
 vacoda.steps.validation.training_sample
----------------------------------------
-Build the candidate model-training sample and HS × year unit-value evidence.
 
-This step does not choose the final statistical training population.
-It prepares the selected quantity/value data, defines the strongest
-reference population, derives robust HS × year unit-value reference
-statistics, and writes row-level evidence for downstream diagnostics.
+Build the model-training sample and HS × year unit-value evidence.
 
-Thresholds such as minimum HS × year support or acceptable unit-value
-distance are intentionally not applied here.
+This step prepares the selected quantity/value data, defines the robust
+HS × year unit-value reference, derives row-level plausibility evidence,
+and applies the configured model-training population rule.
+
+All Validation rows are retained in the output. The final model-training
+population is identified by the boolean ``training_selected`` column.
 """
 
 from __future__ import annotations
@@ -186,6 +185,17 @@ def build_training_sample(
     diagnostics_cfg = cfg.diagnostics
     columns_cfg = diagnostics_cfg.columns
 
+    model_training_cfg = (
+        cfg.model.training_sample
+    )
+
+    min_reference_observations = int(
+        model_training_cfg.min_hs_year_reference_observations
+    )
+
+    max_normalized_uv_distance_mad = float(
+        model_training_cfg.max_normalized_uv_distance_mad
+    )
     year_col = str(
         columns_cfg.year
     )
@@ -571,87 +581,147 @@ def build_training_sample(
         con.execute(
             f"""
             COPY (
-                SELECT
-                    b.*,
 
-                    r.hs_year_uv_reference,
-                    r.hs_year_uv_reference_log,
-                    r.hs_year_uv_reference_n,
-                    r.hs_year_uv_log_mad,
+                SELECT
+                    evidence.*,
 
                     CASE
                         WHEN
-                            b.selected_unit_value IS NOT NULL
-                            AND b.selected_unit_value > 0
+                            evidence.selected_uv_log_distance IS NOT NULL
 
-                            AND r.hs_year_uv_reference IS NOT NULL
-                            AND r.hs_year_uv_reference > 0
+                            AND evidence.hs_year_uv_log_mad IS NOT NULL
+                            AND evidence.hs_year_uv_log_mad > 0
+
+                            AND isfinite(
+                                evidence.selected_uv_log_distance
+                            )
+
+                            AND isfinite(
+                                evidence.hs_year_uv_log_mad
+                            )
+
+                        THEN
+                            evidence.selected_uv_log_distance
+                            /
+                            evidence.hs_year_uv_log_mad
+
+                        ELSE NULL
+                    END
+                        AS training_normalized_uv_distance,
+
+                    (
+                        evidence.training_reference_eligible
+
+                        AND evidence.hs_year_uv_reference_n IS NOT NULL
+                        AND evidence.hs_year_uv_reference_n
+                            >= {min_reference_observations}
+
+                        AND evidence.hs_year_uv_log_mad IS NOT NULL
+                        AND evidence.hs_year_uv_log_mad > 0
+                        AND isfinite(
+                            evidence.hs_year_uv_log_mad
+                        )
+
+                        AND evidence.selected_uv_log_distance IS NOT NULL
+                        AND isfinite(
+                            evidence.selected_uv_log_distance
+                        )
+
+                        AND (
+                            evidence.selected_uv_log_distance
+                            /
+                            evidence.hs_year_uv_log_mad
+                        ) <= {max_normalized_uv_distance_mad}
+                    )
+                        AS training_selected
+
+                FROM (
+
+                    SELECT
+                        b.*,
+
+                        r.hs_year_uv_reference,
+                        r.hs_year_uv_reference_log,
+                        r.hs_year_uv_reference_n,
+                        r.hs_year_uv_log_mad,
+
+                        CASE
+                            WHEN
+                                b.selected_unit_value IS NOT NULL
+                                AND b.selected_unit_value > 0
+
+                                AND r.hs_year_uv_reference IS NOT NULL
+                                AND r.hs_year_uv_reference > 0
+
+                                AND isfinite(
+                                    b.selected_unit_value
+                                )
+
+                                AND isfinite(
+                                    r.hs_year_uv_reference
+                                )
+
+                            THEN
+                                ABS(
+                                    LN(
+                                        b.selected_unit_value
+                                    )
+                                    -
+                                    LN(
+                                        r.hs_year_uv_reference
+                                    )
+                                )
+
+                            ELSE NULL
+                        END
+                            AS selected_uv_log_distance,
+
+                        (
+                            b.{selected_quantity_col} IS NOT NULL
+                            AND b.{selected_quantity_col} > 0
+
+                            AND isfinite(
+                                CAST(
+                                    b.{selected_quantity_col}
+                                    AS DOUBLE
+                                )
+                            )
+
+                            AND b.{nominal_value_col} IS NOT NULL
+                            AND b.{nominal_value_col} > 0
+
+                            AND isfinite(
+                                CAST(
+                                    b.{nominal_value_col}
+                                    AS DOUBLE
+                                )
+                            )
+
+                            AND b.selected_unit_value IS NOT NULL
+                            AND b.selected_unit_value > 0
 
                             AND isfinite(
                                 b.selected_unit_value
                             )
 
+                            AND r.hs_year_uv_reference IS NOT NULL
+                            AND r.hs_year_uv_reference > 0
+
                             AND isfinite(
                                 r.hs_year_uv_reference
                             )
 
-                        THEN
-                            ABS(
-                                LN(
-                                    b.selected_unit_value
-                                )
-                                -
-                                LN(
-                                    r.hs_year_uv_reference
-                                )
-                            )
-
-                        ELSE NULL
-                    END
-                        AS selected_uv_log_distance,
-
-                    (
-                        b.{selected_quantity_col} IS NOT NULL
-                        AND b.{selected_quantity_col} > 0
-
-                        AND isfinite(
-                            CAST(
-                                b.{selected_quantity_col}
-                                AS DOUBLE
-                            )
+                            AND r.hs_year_uv_reference_n IS NOT NULL
                         )
+                            AS training_hard_eligible
 
-                        AND b.{nominal_value_col} IS NOT NULL
-                        AND b.{nominal_value_col} > 0
+                    FROM validation_training_base AS b
 
-                        AND isfinite(
-                            CAST(
-                                b.{nominal_value_col}
-                                AS DOUBLE
-                            )
-                        )
+                    LEFT JOIN validation_training_uv_reference AS r
+                    ON r.year = b.{year_col}
+                    AND r.target_cmd = b.{product_col}
 
-                        AND b.selected_unit_value IS NOT NULL
-                        AND b.selected_unit_value > 0
-                        AND isfinite(
-                            b.selected_unit_value
-                        )
-
-                        AND r.hs_year_uv_reference IS NOT NULL
-                        AND r.hs_year_uv_reference > 0
-                        AND isfinite(
-                            r.hs_year_uv_reference
-                        )
-
-                        AND r.hs_year_uv_reference_n IS NOT NULL
-                    )
-                        AS training_hard_eligible
-
-                FROM validation_training_base AS b
-
-                LEFT JOIN validation_training_uv_reference AS r
-                  ON r.year = b.{year_col}
-                 AND r.target_cmd = b.{product_col}
+                ) AS evidence
             )
             TO {temporary_sql}
             (
@@ -660,7 +730,6 @@ def build_training_sample(
             )
             """
         )
-
         temporary_path.replace(
             output_path
         )
@@ -702,7 +771,12 @@ def build_training_sample(
                 COUNT(*) FILTER (
                     WHERE selected_uv_log_distance IS NOT NULL
                 )
-                    AS n_rows_with_uv_distance
+                    AS n_rows_with_uv_distance,
+
+                COUNT(*) FILTER (
+                    WHERE training_selected
+                )
+                    AS n_training_selected_rows
 
             FROM read_parquet({output_sql})
             """
@@ -715,6 +789,7 @@ def build_training_sample(
             n_selected_unit_value_rows,
             n_rows_with_reference,
             n_rows_with_uv_distance,
+            n_training_selected_rows,
         ) = map(
             int,
             counts,
@@ -774,6 +849,10 @@ def build_training_sample(
     )
 
     logger.info(
+        "  Selected training rows: %s",
+        f"{n_training_selected_rows:,}",
+    )
+    logger.info(
         "  Output: %s",
         output_path,
     )
@@ -806,6 +885,9 @@ def build_training_sample(
             n_hard_eligible_rows
         ),
 
+        "n_training_selected_rows": (
+            n_training_selected_rows
+        ),
         "duration_seconds": elapsed,
         "reused": False,
     }

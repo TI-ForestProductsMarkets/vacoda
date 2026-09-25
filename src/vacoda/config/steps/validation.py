@@ -304,6 +304,76 @@ class ValidationProductsConfig:
 
 
 # ---------------------------------------------------------------------
+# Model training
+# ---------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ValidationTrainingSampleConfig:
+    require_reference_eligible: bool
+    min_hs_year_reference_observations: int
+    max_normalized_uv_distance_mad: float
+    require_positive_uv_mad: bool
+
+    @classmethod
+    def from_dict(
+        cls,
+        cfg: dict[str, Any],
+    ) -> "ValidationTrainingSampleConfig":
+        return cls(
+            require_reference_eligible=require_bool(
+                cfg.get("require_reference_eligible"),
+                key=(
+                    "validation.model.training_sample."
+                    "require_reference_eligible"
+                ),
+            ),
+            min_hs_year_reference_observations=require_int(
+                cfg.get("min_hs_year_reference_observations"),
+                key=(
+                    "validation.model.training_sample."
+                    "min_hs_year_reference_observations"
+                ),
+                min_value=1,
+            ),
+            max_normalized_uv_distance_mad=require_float(
+                cfg.get("max_normalized_uv_distance_mad"),
+                key=(
+                    "validation.model.training_sample."
+                    "max_normalized_uv_distance_mad"
+                ),
+                min_value=0.0,
+            ),
+            require_positive_uv_mad=require_bool(
+                cfg.get("require_positive_uv_mad"),
+                key=(
+                    "validation.model.training_sample."
+                    "require_positive_uv_mad"
+                ),
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class ValidationModelConfig:
+    training_sample: ValidationTrainingSampleConfig
+
+    @classmethod
+    def from_dict(
+        cls,
+        cfg: dict[str, Any],
+    ) -> "ValidationModelConfig":
+        return cls(
+            training_sample=ValidationTrainingSampleConfig.from_dict(
+                require_dict(
+                    cfg.get("training_sample"),
+                    key="validation.model.training_sample",
+                )
+            )
+        )
+
+
+# ---------------------------------------------------------------------
 # Structural validation
 # ---------------------------------------------------------------------
 
@@ -948,6 +1018,7 @@ class ValidationConfig:
     input: ValidationInputConfig
     output: ValidationOutputConfig
     products: ValidationProductsConfig
+    model: ValidationModelConfig
     method: ValidationMethodConfig
     diagnostics: ValidationDiagnosticsConfig
     release: ValidationReleaseConfig
@@ -1019,6 +1090,12 @@ class ValidationConfig:
                 require_dict(
                     rendered.get("products"),
                     key="validation.products",
+                )
+            ),
+            model=ValidationModelConfig.from_dict(
+                require_dict(
+                    rendered.get("model"),
+                    key="validation.model",
                 )
             ),
             method=ValidationMethodConfig.from_dict(
