@@ -1856,6 +1856,11 @@ def build_validation_report(
         # Training Sample Diagnostics
         # ============================================================
 
+        training_candidate_final_rule = _scope_frame(
+            diagnostics,
+            "training_candidate_final_rule",
+        )
+
         training_sample_summary = _scope_frame(
             diagnostics,
             "training_sample_summary",
@@ -1879,6 +1884,10 @@ def build_validation_report(
         training_normalized_uv_distance = _scope_frame(
             diagnostics,
             "training_normalized_uv_distance_distribution",
+        )
+        training_normalized_uv_cutoffs = _scope_frame(
+            diagnostics,
+            "training_normalized_uv_cutoff_sensitivity",
         )
         training_by_year = _scope_frame(
             diagnostics,
@@ -2000,6 +2009,148 @@ def build_validation_report(
             )
         )
 
+
+        candidate_training_rule_display = pd.DataFrame(
+            [
+                {
+                    "Criterion": (
+                        "Direct bilateral + support ≥ 30 + normalized UV distance ≤ 2.5 MAD"
+                    ),
+                    "Rows": _format_integer(
+                        training_candidate_final_rule.iloc[0]["n_rows"]
+                    ),
+                    "Share of evaluable reference rows": _format_percent(
+                        training_candidate_final_rule.iloc[0]["share_of_parent"]
+                    ),
+                    "Share of all Validation rows": _format_percent(
+                        training_candidate_final_rule.iloc[0]["share_of_all"]
+                    ),
+                }
+            ]
+        )
+        # ============================================================
+        # Normalized UV cutoff sensitivity
+        # ============================================================
+
+        reference_cutoffs = (
+            training_normalized_uv_cutoffs[
+                training_normalized_uv_cutoffs[
+                    "criterion"
+                ].eq(
+                    "reference_population"
+                )
+            ]
+            .copy()
+            .sort_values(
+                "uv_distance_threshold"
+            )
+        )
+
+        hard_cutoffs = (
+            training_normalized_uv_cutoffs[
+                training_normalized_uv_cutoffs[
+                    "criterion"
+                ].eq(
+                    "hard_eligible_population"
+                )
+            ]
+            .copy()
+            .sort_values(
+                "uv_distance_threshold"
+            )
+        )
+
+
+        normalized_cutoff_display = (
+            reference_cutoffs[
+                [
+                    "uv_distance_threshold",
+                    "n_rows",
+                    "share_of_parent",
+                ]
+            ]
+            .rename(
+                columns={
+                    "n_rows": (
+                        "reference_rows"
+                    ),
+                    "share_of_parent": (
+                        "reference_share"
+                    ),
+                }
+            )
+            .merge(
+                hard_cutoffs[
+                    [
+                        "uv_distance_threshold",
+                        "n_rows",
+                        "share_of_parent",
+                    ]
+                ].rename(
+                    columns={
+                        "n_rows": (
+                            "hard_rows"
+                        ),
+                        "share_of_parent": (
+                            "hard_share"
+                        ),
+                    }
+                ),
+                on="uv_distance_threshold",
+                how="outer",
+                validate="one_to_one",
+            )
+            .sort_values(
+                "uv_distance_threshold"
+            )
+        )
+
+
+        normalized_cutoff_display = pd.DataFrame(
+            {
+                "Maximum normalized UV distance": (
+                    normalized_cutoff_display[
+                        "uv_distance_threshold"
+                    ].map(
+                        lambda value: (
+                            f"≤ {float(value):g} MAD"
+                        )
+                    )
+                ),
+
+                "Direct bilateral reference rows": (
+                    normalized_cutoff_display[
+                        "reference_rows"
+                    ].map(
+                        _format_integer
+                    )
+                ),
+
+                "Share of evaluable reference rows": (
+                    normalized_cutoff_display[
+                        "reference_share"
+                    ].map(
+                        _format_percent
+                    )
+                ),
+
+                "All hard-eligible rows": (
+                    normalized_cutoff_display[
+                        "hard_rows"
+                    ].map(
+                        _format_integer
+                    )
+                ),
+
+                "Share of evaluable hard-eligible rows": (
+                    normalized_cutoff_display[
+                        "hard_share"
+                    ].map(
+                        _format_percent
+                    )
+                ),
+            }
+        )
         # ==============================================================
         # Quantity availability by reporting side
         # ==============================================================
@@ -5032,6 +5183,41 @@ def build_validation_report(
                     "training_normalized_uv_distance_distribution"
                 ],
                 document_path=report_path,
+            ),
+            "",
+            markdown_styled_heading(text="6.5.1. Candidate normalized-distance cutoffs"),
+            "",
+            (
+                "To support the eventual training-population decision, "
+                "Validation evaluates several candidate cutoffs for the "
+                "dispersion-normalized unit-value distance. These are "
+                "diagnostic comparison points only; none is yet applied as "
+                "the production training rule."
+            ),
+            "",
+            (
+                "The direct bilateral reference population contains rows with "
+                "independent, non-estimated quantity evidence from both reporting "
+                "sides. The hard-eligible population additionally includes rows "
+                "whose selected quantity and value can be evaluated against the "
+                "HS × year reference."
+            ),
+            "",
+            _markdown_table(
+                normalized_cutoff_display
+            ),
+            "",
+            markdown_styled_heading(text="6.5.2. Candidate joint training rule"),
+            "",
+            (
+                "The currently preferred candidate rule combines the direct "
+                "bilateral reference population with a minimum HS × year "
+                "reference support of 30 and a maximum normalized UV distance "
+                "of 2.5 MAD."
+            ),
+            "",
+            _markdown_table(
+                candidate_training_rule_display
             ),
             "",
             "## 7. Current methodological assessment",

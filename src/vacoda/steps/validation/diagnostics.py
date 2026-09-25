@@ -1882,6 +1882,305 @@ def build_diagnostics(
             )
 
 
+        # ==================================================================
+        # Normalized UV-distance cutoff sensitivity
+        # ==================================================================
+        #
+        # These thresholds are exploratory diagnostics only.
+        # They do not define the final training population.
+        #
+        # Two possible training bases are compared:
+        #
+        #   1. direct bilateral reference population
+        #   2. all mechanically hard-eligible rows
+        #
+        # Shares are calculated relative to rows in the respective population
+        # for which the normalized UV-distance is actually defined.
+        # ==================================================================
+
+        normalized_uv_cutoffs = (
+            1.0,
+            1.5,
+            2.0,
+            2.5,
+            3.0,
+            4.0,
+        )
+
+
+        # ------------------------------------------------------------------
+        # Evaluable populations
+        # ------------------------------------------------------------------
+
+        n_reference_normalized_evaluable = int(
+            con.execute(
+                """
+                SELECT COUNT(*)
+
+                FROM validation_diagnostics_base
+
+                WHERE training_reference_eligible
+
+                AND selected_uv_log_distance IS NOT NULL
+                AND isfinite(selected_uv_log_distance)
+
+                AND hs_year_uv_log_mad IS NOT NULL
+                AND hs_year_uv_log_mad > 0
+                AND isfinite(hs_year_uv_log_mad)
+                """
+            ).fetchone()[0]
+        )
+
+
+        n_hard_normalized_evaluable = int(
+            con.execute(
+                """
+                SELECT COUNT(*)
+
+                FROM validation_diagnostics_base
+
+                WHERE training_hard_eligible
+
+                AND selected_uv_log_distance IS NOT NULL
+                AND isfinite(selected_uv_log_distance)
+
+                AND hs_year_uv_log_mad IS NOT NULL
+                AND hs_year_uv_log_mad > 0
+                AND isfinite(hs_year_uv_log_mad)
+                """
+            ).fetchone()[0]
+        )
+
+
+        for cutoff in normalized_uv_cutoffs:
+
+            # ==============================================================
+            # Reference population
+            # ==============================================================
+
+            n_reference_selected = int(
+                con.execute(
+                    f"""
+                    SELECT COUNT(*)
+                    FROM validation_diagnostics_base
+
+                    WHERE training_reference_eligible
+
+                    AND selected_uv_log_distance IS NOT NULL
+                    AND isfinite(selected_uv_log_distance)
+
+                    AND hs_year_uv_log_mad IS NOT NULL
+                    AND hs_year_uv_log_mad > 0
+                    AND isfinite(hs_year_uv_log_mad)
+
+                    AND (
+                            selected_uv_log_distance
+                            / hs_year_uv_log_mad
+                        ) <= {float(cutoff):.17g}
+                    """
+                ).fetchone()[0]
+            )
+
+            diagnostics_rows.append(
+                {
+                    "scope": (
+                        "training_normalized_uv_cutoff_sensitivity"
+                    ),
+                    "criterion": "reference_population",
+                    "candidate": None,
+
+                    "disagreement_threshold": None,
+                    "uv_support_threshold": None,
+                    "uv_distance_threshold": float(cutoff),
+
+                    "year": None,
+                    "target_cmd": None,
+
+                    "variable": (
+                        "selected_uv_log_distance_over_mad"
+                    ),
+                    "quantile": None,
+
+                    "n_rows": n_reference_selected,
+                    "total_rows": (
+                        n_reference_normalized_evaluable
+                    ),
+
+                    "share_of_all": _share(
+                        n_reference_selected,
+                        n_training_all,
+                    ),
+
+                    "share_of_parent": _share(
+                        n_reference_selected,
+                        n_reference_normalized_evaluable,
+                    ),
+
+                    "value": float(cutoff),
+                }
+            )
+
+            # ==============================================================
+            # Hard-eligible population
+            # ==============================================================
+
+            n_hard_selected = int(
+                con.execute(
+                    f"""
+                    SELECT COUNT(*)
+                    FROM validation_diagnostics_base
+
+                    WHERE training_hard_eligible
+
+                    AND selected_uv_log_distance IS NOT NULL
+                    AND isfinite(selected_uv_log_distance)
+
+                    AND hs_year_uv_log_mad IS NOT NULL
+                    AND hs_year_uv_log_mad > 0
+                    AND isfinite(hs_year_uv_log_mad)
+
+                    AND (
+                            selected_uv_log_distance
+                            / hs_year_uv_log_mad
+                        ) <= {float(cutoff):.17g}
+                    """
+                ).fetchone()[0]
+            )
+
+            diagnostics_rows.append(
+                {
+                    "scope": (
+                        "training_normalized_uv_cutoff_sensitivity"
+                    ),
+
+                    "criterion": (
+                        "hard_eligible_population"
+                    ),
+
+                    "candidate": None,
+
+                    "disagreement_threshold": None,
+                    "uv_support_threshold": None,
+                    "uv_distance_threshold": float(
+                        cutoff
+                    ),
+
+                    "year": None,
+                    "target_cmd": None,
+
+                    "variable": (
+                        "selected_uv_log_distance_over_mad"
+                    ),
+
+                    "quantile": None,
+
+                    "n_rows": n_hard_selected,
+
+                    "total_rows": (
+                        n_hard_normalized_evaluable
+                    ),
+
+                    "share_of_all": _share(
+                        n_hard_selected,
+                        n_training_all,
+                    ),
+
+                    "share_of_parent": _share(
+                        n_hard_selected,
+                        n_hard_normalized_evaluable,
+                    ),
+
+                    "value": float(
+                        cutoff
+                    ),
+                }
+            )
+        
+
+        # ==================================================================
+        # Candidate final training population
+        # ==================================================================
+        #
+        # This is still diagnostic evidence only.
+        # It applies the currently preferred joint rule:
+        #
+        #   direct bilateral reference population
+        #   + minimum HS × year support of 30
+        #   + normalized UV distance <= 2.5 MAD
+        #
+        # ==================================================================
+
+        n_candidate_training_selected = int(
+            con.execute(
+                """
+                SELECT COUNT(*)
+
+                FROM validation_diagnostics_base
+
+                WHERE training_reference_eligible
+
+                AND hs_year_uv_reference_n IS NOT NULL
+                AND hs_year_uv_reference_n >= 30
+
+                AND selected_uv_log_distance IS NOT NULL
+                AND isfinite(selected_uv_log_distance)
+
+                AND hs_year_uv_log_mad IS NOT NULL
+                AND hs_year_uv_log_mad > 0
+                AND isfinite(hs_year_uv_log_mad)
+
+                AND (
+                        selected_uv_log_distance
+                        / hs_year_uv_log_mad
+                    ) <= 2.5
+                """
+            ).fetchone()[0]
+        )
+
+
+        diagnostics_rows.append(
+            {
+                "scope": "training_candidate_final_rule",
+
+                "criterion": (
+                    "reference_population_support_30_normalized_uv_2_5"
+                ),
+
+                "candidate": None,
+
+                "disagreement_threshold": None,
+                "uv_support_threshold": 30.0,
+                "uv_distance_threshold": 2.5,
+
+                "year": None,
+                "target_cmd": None,
+
+                "variable": (
+                    "selected_uv_log_distance_over_mad"
+                ),
+
+                "quantile": None,
+
+                "n_rows": n_candidate_training_selected,
+
+                "total_rows": (
+                    n_reference_normalized_evaluable
+                ),
+
+                "share_of_all": _share(
+                    n_candidate_training_selected,
+                    n_training_all,
+                ),
+
+                "share_of_parent": _share(
+                    n_candidate_training_selected,
+                    n_reference_normalized_evaluable,
+                ),
+
+                "value": 2.5,
+            }
+        )
+        
         training_by_product = con.execute(
             """
             SELECT
@@ -1923,6 +2222,7 @@ def build_diagnostics(
             GROUP BY target_cmd
             """
         ).fetchdf()
+
         # ==================================================================
         # 2. Individual threshold sensitivity
         # ==================================================================
