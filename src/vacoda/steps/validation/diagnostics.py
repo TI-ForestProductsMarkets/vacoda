@@ -212,7 +212,7 @@ def build_diagnostics(
 
     diagnostics_cfg = cfg.diagnostics
     columns_cfg = diagnostics_cfg.columns
-    training_cfg = diagnostics_cfg.training_population
+    training_cfg = diagnostics_cfg.training_population_sensitivity
 
     year_col = str(
         columns_cfg.year

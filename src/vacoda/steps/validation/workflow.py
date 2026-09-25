@@ -21,6 +21,7 @@ from vacoda.steps.validation.structural import  audit_structural_integrity
 from vacoda.steps.validation.quantity import  select_quantity_candidate
 from vacoda.steps.validation.quantity_audit import audit_quantity_selection
 from vacoda.steps.validation.training_sample import build_training_sample
+from vacoda.steps.validation.model_training import train_validation_models
 from vacoda.steps.validation.diagnostics import  build_diagnostics
 # from vacoda.steps.validation.consistency import  audit_cross_variable_consistency
 # from vacoda.steps.validation.finalize import build_validated_trade
@@ -58,6 +59,7 @@ WORKFLOW_STEPS = [
     "Select Quantity candidate",
     "Audit Quantity candidate",
     "Build Training sample",
+    "Train Validation Models",
     # "Build validated trade",
     # "Audit cross-variable consistency",
     # "Build VACODA release dataset",
@@ -306,15 +308,42 @@ def run_validation_workflow(
             producer_product="training sample",
         )
 
+
         # ==================================================================
-        # Step 6 — Build diagnostics
+        # STEP 6 — Cross-validate candidate models
         # ==================================================================
 
-        diagnostic_result = run_step(
+        training_sample_path = require_artifact(
+            result=training_sample_result,
+            path_key="training_sample_path",
+            consumer_step="Model-training step",
+            producer_product="training-sample Parquet",
+        )
+
+        model_predictions_result = run_step(
             logger=logger,
             step_number=6,
             total_steps=TOTAL_WORKFLOW_STEPS,
             title=WORKFLOW_STEPS[5],
+            runner=lambda: train_validation_models(
+                cfg=cfg,
+                input_path=training_sample_path,
+                run_id=run_id,
+                force=force,
+                logger=logger,
+            ),
+        )
+
+        
+        # ==================================================================
+        # Step 7 — Build diagnostics
+        # ==================================================================
+
+        diagnostic_result = run_step(
+            logger=logger,
+            step_number=7,
+            total_steps=TOTAL_WORKFLOW_STEPS,
+            title=WORKFLOW_STEPS[6],
             runner=lambda: build_diagnostics(
                 cfg=cfg,
                 input_path=training_sample_path,
@@ -329,7 +358,7 @@ def run_validation_workflow(
         diagnostics_path = require_artifact(
             result=diagnostic_result,
             path_key="diagnostics_path",
-            consumer_step=WORKFLOW_STEPS[6],
+            consumer_step=WORKFLOW_STEPS[7],
             producer_product="quantity-model diagnostics",
         )
 
@@ -401,14 +430,14 @@ def run_validation_workflow(
     #     )
 
         # ==================================================================
-        # Step 7 — Build Validation report
+        # Step 8 — Build Validation report
         # ==================================================================
 
         report_result = run_step(
             logger=logger,
-            step_number=7,
+            step_number=8,
             total_steps=TOTAL_WORKFLOW_STEPS,
-            title=WORKFLOW_STEPS[6],
+            title=WORKFLOW_STEPS[7],
             runner=lambda: build_validation_report(
                 cfg=cfg,
                 prepared_input_path=prepared_path,

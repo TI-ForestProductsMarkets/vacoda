@@ -45,6 +45,10 @@ validation:
       enable: true
       filename: "training/comtrade_target_{target_hs_lower}_training_sample.parquet"
     
+    model_predictions:
+      enable: true
+      filename: "model/target_{target_hs_lower}_model_predictions.parquet"
+    
     diagnostics:
       enable: true
       filename: "diagnostics/target_{target_hs_lower}_diagnostics.parquet"
@@ -89,6 +93,8 @@ validation:
       numeric:
         - trade_value_reconciled_constant_usd
             transform: "log"
+        - year:
+            transform: "none"
 
       categorical:
         - year
