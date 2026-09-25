@@ -44,9 +44,9 @@ validation:
       enable: true
       filename: "audits/target_{target_hs_lower}_quantity_selection_audit.parquet"
       
-    model_diagnostics:
+    diagnostics:
       enable: true
-      filename: "diagnostics/target_{target_hs_lower}_model_diagnostics.parquet"
+      filename: "diagnostics/target_{target_hs_lower}_diagnostics.parquet"
 
     validated_trade:
       enable: true

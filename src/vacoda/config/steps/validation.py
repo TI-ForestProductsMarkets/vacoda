@@ -281,13 +281,6 @@ class ValidationProductsConfig:
 
             value = cfg.get(name)
 
-            if name == "diagnostics" and value is None:
-                value = cfg.get("model_diagnostics")
-                key = (
-                    "validation.products.diagnostics "
-                    "(or validation.products.model_diagnostics)"
-                )
-
             return ValidationProductConfig.from_dict(
                 require_dict(
                     value,
@@ -1078,7 +1071,6 @@ class ValidationConfig:
             "structural_audit": self.products.structural_audit,
             "quantity_selection": self.products.quantity_selection,
             "quantity_selection_audit": self.products.quantity_selection_audit,
-            "model_diagnostics": self.products.diagnostics,
             "diagnostics": self.products.diagnostics,
             "validated_trade": self.products.validated_trade,
             "consistency_audit": self.products.consistency_audit,
@@ -1103,7 +1095,6 @@ class ValidationConfig:
                 "structural_audit",
                 "quantity_selection",
                 "quantity_selection_audit",
-                "model_diagnostics",
                 "diagnostics",
                 "validated_trade",
                 "consistency_audit",
@@ -1117,7 +1108,6 @@ class ValidationConfig:
             "structural_audit": self.products.structural_audit.enable,
             "quantity_selection": self.products.quantity_selection.enable,
             "quantity_selection_audit": self.products.quantity_selection_audit.enable,
-            "model_diagnostics": self.products.diagnostics.enable,
             "diagnostics": self.products.diagnostics.enable,
             "validated_trade": self.products.validated_trade.enable,
             "consistency_audit": self.products.consistency_audit.enable,

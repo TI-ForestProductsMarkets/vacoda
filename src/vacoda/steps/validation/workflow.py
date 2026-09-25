@@ -19,6 +19,7 @@ from vacoda.config.steps.validation import ValidationConfig
 from vacoda.steps.validation.prepare_input import prepare_validation_input
 from vacoda.steps.validation.structural import  audit_structural_integrity
 from vacoda.steps.validation.quantity import  select_quantity_candidate
+from vacoda.steps.validation.quantity_audit import audit_quantity_selection
 from vacoda.steps.validation.diagnostics import  build_diagnostics
 # from vacoda.steps.validation.consistency import  audit_cross_variable_consistency
 # from vacoda.steps.validation.finalize import build_validated_trade
@@ -42,7 +43,7 @@ REQUIRED_PRODUCTS = (
     "structural_audit",
     "quantity_selection",
     "quantity_selection_audit",
-    "model_diagnostics",
+    "diagnostics",
     "consistency_audit",
     "validated_trade",
     "release",
@@ -51,12 +52,13 @@ REQUIRED_PRODUCTS = (
 
 WORKFLOW_STEPS = [
     "Prepare Validation input",
-    "Audit tructural integrity",
-    "Select quantity candidate",
+    "Audit Structural integrity",
+    "Select Quantity candidate",
+    "Audit Quantity candidate",
     # "Build validated trade",
     # "Audit cross-variable consistency",
     # "Build VACODA release dataset",
-    "Build diagnostics",
+    "Build Diagnostics",
     "Write Validation decision report",
 ]
 
@@ -168,12 +170,11 @@ def run_validation_workflow(
         # ==================================================================
         # Step 1 — Prepare Validation input
         # ==================================================================
-        n=0
         prepared_result = run_step(
             logger=logger,
-            step_number=n+1,
+            step_number=1,
             total_steps=TOTAL_WORKFLOW_STEPS,
-            title=WORKFLOW_STEPS[n],
+            title=WORKFLOW_STEPS[0],
             runner=lambda: prepare_validation_input(
                 cfg=cfg,
                 input_path=resolved_input_path,
@@ -186,19 +187,19 @@ def run_validation_workflow(
         prepared_path = require_artifact(
             result=prepared_result,
             path_key="prepared_input_path",
-            consumer_step=WORKFLOW_STEPS[n+1],
+            consumer_step=WORKFLOW_STEPS[1],
             producer_product="prepared Validation input",
         )
-        n+=1
+
         # ==================================================================
         # Step 2 — Structural integrity audit
         # ==================================================================
 
         structural_result = run_step(
             logger=logger,
-            step_number=n+1,
+            step_number=2,
             total_steps=TOTAL_WORKFLOW_STEPS,
-            title=WORKFLOW_STEPS[n],
+            title=WORKFLOW_STEPS[1],
             runner=lambda: audit_structural_integrity(
                 cfg=cfg,
                 input_path=prepared_path,
@@ -211,20 +212,19 @@ def run_validation_workflow(
         structural_audit_path = require_artifact(
             result=structural_result,
             path_key="structural_audit_path",
-            consumer_step=WORKFLOW_STEPS[n+1],
+            consumer_step=WORKFLOW_STEPS[2],
             producer_product="Validation structural audit",
         )
 
-        n+=1
         # ==================================================================
         # Step 3 — Select quantity candidate
         # ==================================================================
 
         quantity_selection_result = run_step(
             logger=logger,
-            step_number=n+1,
+            step_number=3,
             total_steps=TOTAL_WORKFLOW_STEPS,
-            title=WORKFLOW_STEPS[n],
+            title=WORKFLOW_STEPS[2],
             runner=lambda: select_quantity_candidate(
                 cfg=cfg,
                 input_path=prepared_path,
@@ -238,31 +238,59 @@ def run_validation_workflow(
         quantity_selected_path = require_artifact(
             result=quantity_selection_result,
             path_key="quantity_selected_path",
-            consumer_step=WORKFLOW_STEPS[n+1],
-            producer_product="selected Validation quantity",
+            consumer_step=WORKFLOW_STEPS[3],
+            producer_product="selected quantity",
+        )
+
+        selection_evidence_path = require_artifact(
+            result=quantity_selection_result,
+            path_key="selection_evidence_path",
+            consumer_step="Audit quantity selection",
+            producer_product="quantity-selection evidence",
+        )
+
+        # ==================================================================
+        # Step 4 — Audit quantity candidate
+        # ==================================================================
+
+        quantity_audit_result = run_step(
+            logger=logger,
+            step_number=4,
+            total_steps=TOTAL_WORKFLOW_STEPS,
+            title="Audit quantity selection",
+            runner=lambda: audit_quantity_selection(
+                cfg=cfg,
+                input_path=prepared_path,
+                structural_audit_path=structural_audit_path,
+                quantity_selection_path=quantity_selected_path,
+                selection_evidence_path=selection_evidence_path,
+                run_id=run_id,
+                force=force,
+                logger=logger,
+            ),
         )
 
         quantity_selection_audit_path = require_artifact(
-            result=quantity_selection_result,
-            path_key="selection_audit_path",
-            consumer_step=WORKFLOW_STEPS[n + 1],
+            result=quantity_audit_result,
+            path_key="quantity_selection_audit_path",
+            consumer_step="Build diagnostics",
             producer_product="quantity-selection audit",
         )
 
-        n+=1
         # ==================================================================
-        # Step 3 — Quantity-model diagnostics
+        # Step 5 — Quantity-model diagnostics
         # ==================================================================
 
-        model_diagnostic_result = run_step(
+        diagnostic_result = run_step(
             logger=logger,
-            step_number=n+1,
+            step_number=5,
             total_steps=TOTAL_WORKFLOW_STEPS,
-            title=WORKFLOW_STEPS[n],
+            title=WORKFLOW_STEPS[4],
             runner=lambda: build_diagnostics(
                 cfg=cfg,
                 input_path=quantity_selected_path,
                 structural_audit_path=structural_audit_path,
+                quantity_selection_audit_path=quantity_selection_audit_path,
                 run_id=run_id,
                 force=force,
                 logger=logger,
@@ -270,15 +298,15 @@ def run_validation_workflow(
         )
 
         diagnostics_path = require_artifact(
-            result=model_diagnostic_result,
+            result=diagnostic_result,
             path_key="diagnostics_path",
-            consumer_step=WORKFLOW_STEPS[n+1],
+            consumer_step=WORKFLOW_STEPS[5],
             producer_product="quantity-model diagnostics",
         )
-        n+=1
-    #     # ==================================================================
-    #     # Step 6 — Cross-variable consistency
-    #     # ==================================================================
+
+        # ==================================================================
+        # Step 5 — Cross-variable consistency
+        # ==================================================================
 
     #     consistency_result = run_step(
     #         logger=logger,
@@ -344,14 +372,14 @@ def run_validation_workflow(
     #     )
 
         # ==================================================================
-        # Step 4 — Build Validation report
+        # Step 6 — Build Validation report
         # ==================================================================
 
         report_result = run_step(
             logger=logger,
-            step_number=n+1,
+            step_number=6,
             total_steps=TOTAL_WORKFLOW_STEPS,
-            title=WORKFLOW_STEPS[n],
+            title=WORKFLOW_STEPS[5],
             runner=lambda: build_validation_report(
                 cfg=cfg,
                 prepared_input_path=prepared_path,

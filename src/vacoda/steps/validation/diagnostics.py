@@ -95,6 +95,7 @@ def build_diagnostics(
     cfg: ValidationConfig,
     input_path: Path,
     structural_audit_path: Path,
+    quantity_selection_audit_path: Path,
     run_id: str,
     force: bool = False,
     logger,
@@ -110,6 +111,9 @@ def build_diagnostics(
     structural_audit_path = Path(
         structural_audit_path
     )
+    quantity_selection_audit_path = Path(
+        quantity_selection_audit_path
+    )
 
     if not input_path.is_file():
         raise FileNotFoundError(
@@ -120,6 +124,31 @@ def build_diagnostics(
         raise FileNotFoundError(
             "Validation diagnostics structural-audit artifact not found: "
             f"{structural_audit_path}"
+        )
+
+    if not quantity_selection_audit_path.is_file():
+        raise FileNotFoundError(
+            "Validation diagnostics quantity-selection audit artifact not found: "
+            f"{quantity_selection_audit_path}"
+        )
+
+    audit_con = duckdb.connect()
+
+    try:
+        audit_passed_row = audit_con.execute(
+            f"""
+            SELECT audit_passed
+            FROM read_parquet({sql_literal(quantity_selection_audit_path)})
+            LIMIT 1
+            """
+        ).fetchone()
+    finally:
+        audit_con.close()
+
+    if audit_passed_row is None or not bool(audit_passed_row[0]):
+        raise RuntimeError(
+            "Validation diagnostics require quantity_selection_audit.audit_passed == True. "
+            f"Audit file: {quantity_selection_audit_path}"
         )
 
     output_path = cfg.product_path(

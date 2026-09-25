@@ -70,23 +70,6 @@ def _require_columns(
         )
 
 
-def _resolve_output_paths(
-    *,
-    cfg: ValidationConfig,
-    output_path: Path | None,
-    audit_path: Path | None,
-) -> tuple[Path, Path]:
-    """Resolve selector outputs while allowing explicit workflow paths."""
-
-    if output_path is None:
-        output_path = cfg.product_path("quantity_selection")
-
-    if audit_path is None:
-        audit_path = cfg.product_path("quantity_selection_audit")
-
-    return Path(output_path), Path(audit_path)
-
-
 # ======================================================================
 # Public step
 # ======================================================================
@@ -99,7 +82,6 @@ def select_quantity_candidate(
     structural_audit_path: Path,
     run_id: str,
     output_path: Path | None = None,
-    audit_path: Path | None = None,
     force: bool = False,
     logger,
 ) -> dict[str, Any]:
@@ -132,11 +114,17 @@ def select_quantity_candidate(
     start = perf_counter()
 
     input_path = Path(input_path)
-    structural_audit_path = Path(structural_audit_path)
-    output_path, audit_path = _resolve_output_paths(
-        cfg=cfg,
-        output_path=output_path,
-        audit_path=audit_path,
+    structural_audit_path = Path(
+        structural_audit_path
+    )
+
+    output_path = (Path(output_path) if output_path is not None else cfg.product_path("quantity_selection"))
+
+    selection_evidence_path = (output_path.parent / f"{output_path.stem}_evidence.parquet")
+
+    output_path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
     )
 
     if not input_path.is_file():
@@ -150,20 +138,26 @@ def select_quantity_candidate(
             f"{structural_audit_path}"
         )
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    audit_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
     if (
         not force
         and output_path.is_file()
         and output_path.stat().st_size > 0
-        and audit_path.is_file()
-        and audit_path.stat().st_size > 0
+        and selection_evidence_path.is_file()
+        and selection_evidence_path.stat().st_size > 0
     ):
         logger.info(
             "%s REUSE — Validation quantity selection: %s",
             get_symbols("reuse"),
             output_path,
+        )
+        logger.info(
+            "  Selection evidence: %s",
+            selection_evidence_path,
         )
 
         return {
@@ -171,7 +165,7 @@ def select_quantity_candidate(
             "run_id": run_id,
             "output_path": output_path,
             "quantity_selected_path": output_path,
-            "selection_audit_path": audit_path,
+            "selection_evidence_path": selection_evidence_path,
             "reused": True,
         }
 
@@ -182,7 +176,7 @@ def select_quantity_candidate(
     logger.info("  Input: %s", input_path)
     logger.info("  Structural audit: %s", structural_audit_path)
     logger.info("  Output: %s", output_path)
-    logger.info("  Selection audit: %s", audit_path)
+    logger.info("  Selection evidence: %s", selection_evidence_path)
 
     diagnostics_cfg = cfg.diagnostics
     columns_cfg = diagnostics_cfg.columns
@@ -492,7 +486,7 @@ def select_quantity_candidate(
         # Candidate-level decision audit
         # --------------------------------------------------------------
 
-        candidate_audit = con.execute(
+        selection_summary = con.execute(
             f"""
             WITH long AS (
                 SELECT
@@ -553,19 +547,19 @@ def select_quantity_candidate(
             "quantity_reliability_weighted",
         }
 
-        if set(candidate_audit["candidate"]) != expected_candidates:
+        if set(selection_summary["candidate"]) != expected_candidates:
             raise RuntimeError(
                 "Quantity selection did not produce evidence for all three candidates."
             )
 
-        if candidate_audit[
+        if selection_summary[
             "median_conditioned_uv_abs_residual"
         ].isna().any():
             raise RuntimeError(
                 "Quantity selection requires conditioned UV evidence for all candidates."
             )
 
-        ranked = candidate_audit.sort_values(
+        ranked = selection_summary.sort_values(
             [
                 "median_conditioned_uv_abs_residual",
                 "p95_conditioned_uv_abs_residual",
@@ -594,16 +588,16 @@ def select_quantity_candidate(
 
         selected_candidate = str(ranked.iloc[0]["candidate"])
 
-        candidate_audit = candidate_audit.copy()
-        candidate_audit["run_id"] = run_id
-        candidate_audit["selected"] = (
-            candidate_audit["candidate"] == selected_candidate
+        selection_summary = selection_summary.copy()
+        selection_summary["run_id"] = run_id
+        selection_summary["selected"] = (
+            selection_summary["candidate"] == selected_candidate
         )
-        candidate_audit["selection_rule"] = (
+        selection_summary["selection_rule"] = (
             "minimum median quantity-conditioned UV absolute residual; "
             "tie-break P95 then P90"
         )
-        candidate_audit["decision_rank"] = candidate_audit["candidate"].map(
+        selection_summary["decision_rank"] = selection_summary["candidate"].map(
             {
                 str(row.candidate): rank
                 for rank, row in enumerate(
@@ -669,30 +663,45 @@ def select_quantity_candidate(
         temporary_output_path.replace(output_path)
 
         # --------------------------------------------------------------
-        # Write compact selection audit
+        # Write candidate-selection evidence
         # --------------------------------------------------------------
 
-        temporary_audit_path = audit_path.with_suffix(audit_path.suffix + ".tmp")
-        if temporary_audit_path.exists():
-            temporary_audit_path.unlink()
+        temporary_evidence_path = (
+            selection_evidence_path.with_suffix(
+                selection_evidence_path.suffix + ".tmp"
+            )
+        )
 
-        temporary_audit_sql = sql_literal(temporary_audit_path)
-        con.register("_quantity_selection_audit", candidate_audit)
+        if temporary_evidence_path.exists():
+            temporary_evidence_path.unlink()
+
+        temporary_evidence_sql = sql_literal(
+            temporary_evidence_path
+        )
+
+        con.register(
+            "_quantity_selection_evidence_summary",
+            selection_summary,
+        )
+
         con.execute(
             f"""
             COPY (
                 SELECT *
-                FROM _quantity_selection_audit
+                FROM _quantity_selection_evidence_summary
                 ORDER BY decision_rank
             )
-            TO {temporary_audit_sql}
+            TO {temporary_evidence_sql}
             (
                 FORMAT PARQUET,
                 COMPRESSION ZSTD
             )
             """
         )
-        temporary_audit_path.replace(audit_path)
+
+        temporary_evidence_path.replace(
+            selection_evidence_path
+        )
 
         n_rows = int(
             con.execute(
@@ -708,7 +717,7 @@ def select_quantity_candidate(
     logger.info("  Selected candidate: %s", selected_candidate)
     logger.info("  Output rows: %s", f"{n_rows:,}")
     logger.info("  Output: %s", output_path)
-    logger.info("  Selection audit: %s", audit_path)
+    logger.info("  Selection evidence: %s", selection_evidence_path)
     logger.info(
         "%s CHECK — Quantity candidate selected.",
         get_symbols("check"),
@@ -719,7 +728,7 @@ def select_quantity_candidate(
         "run_id": run_id,
         "output_path": output_path,
         "quantity_selected_path": output_path,
-        "selection_audit_path": audit_path,
+        "selection_evidence_path": selection_evidence_path,
         "selected_candidate": selected_candidate,
         "n_rows": n_rows,
         "duration_seconds": elapsed,
