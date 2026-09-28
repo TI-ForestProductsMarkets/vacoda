@@ -213,33 +213,6 @@ def markdown_styled_heading(
         f'</h{level}>'
     )
 
-def markdown_styled_heading_deprecated(
-    text: str,
-    *,
-    level: int = 4,
-    font_size: str = "1.20em",
-    margin_top: str = "1.2em",
-) -> str:
-    """Return a styled HTML heading for Markdown reports."""
-
-    if not 1 <= level <= 6:
-        raise ValueError(
-            f"Markdown heading level must be between 1 and 6: {level}"
-        )
-
-    anchor = markdown_anchor(
-        text
-    )
-
-    return (
-        f'<h{level} '
-        f'id="{anchor}" '
-        f'style="font-size:{font_size}; '
-        f'margin-top:{margin_top};">'
-        f'{text}'
-        f'</h{level}>'
-    )
-
 
 def insert_markdown_toc(
     lines: list[str],
@@ -296,29 +269,3 @@ def insert_markdown_toc(
 
     lines[toc_index:toc_index + 1] = toc
 
-def insert_markdown_toc_deprecated(
-    lines: list[str],
-    *,
-    placeholder: str = "__TOC__",
-    min_level: int = 2,
-    max_level: int = 4,
-    title: str = "Table of contents",
-    flat_sublevels: bool = False,
-) -> None:
-    """Replace a TOC placeholder with a generated Markdown TOC."""
-    try:
-        toc_index = lines.index(placeholder)
-    except ValueError:
-        raise ValueError(
-            f"Markdown TOC placeholder not found: {placeholder!r}"
-        ) from None
-
-    toc = build_markdown_toc(
-        lines,
-        min_level=min_level,
-        max_level=max_level,
-        title=title,
-        flat_sublevels=flat_sublevels,
-    )
-
-    lines[toc_index:toc_index + 1] = toc

@@ -23,7 +23,7 @@ from __future__ import annotations
 from pathlib import Path
 import shutil
 from typing import Any
-
+import math
 import duckdb
 import matplotlib
 
@@ -40,6 +40,7 @@ from vacoda.utils.markdown import (
     markdown_image,
     markdown_styled_heading
 )
+from vacoda.visualization.relationships import plot_figure_pair
 from vacoda.utils.sql import sql_literal
 
 
@@ -924,36 +925,27 @@ def _candidate_label(value: str) -> str:
     return labels.get(str(value), str(value))
 
 
-def _disagreement_band_order(value: str) -> tuple[float, str]:
-    """Return a stable numeric sort key for mirror-disagreement bands."""
+def _disagreement_band_order(
+    value: str,
+) -> tuple[int, str]:
+    """Return the intended order of mirror-quantity disagreement bands."""
 
     label = str(value).strip()
 
-    if label.startswith('>'):
-        try:
-            return (float(label.replace('>', '').replace('%', '').strip()), label)
-        except ValueError:
-            return (float('inf'), label)
+    order = {
+        "5% or less": 0,
+        "5–10%": 1,
+        "10–20%": 2,
+        "20–30%": 3,
+        "30–50%": 4,
+        "50–90%": 5,
+        "> 90%": 6,
+    }
 
-    if '–' in label:
-        left = label.split('–', 1)[0].replace('%', '').strip()
-        try:
-            return (float(left), label)
-        except ValueError:
-            return (float('inf'), label)
-
-    if '-' in label:
-        left = label.split('-', 1)[0].replace('%', '').strip()
-        try:
-            return (float(left), label)
-        except ValueError:
-            return (float('inf'), label)
-
-    try:
-        return (float(label.replace('%', '')), label)
-    except ValueError:
-        return (float('inf'), label)
-
+    return (
+        order.get(label, 999),
+        label,
+    )
 
 def _plot_quantity_candidate_uv_summary(
     *,
@@ -1043,6 +1035,136 @@ def _plot_quantity_candidate_uv_summary(
 
 
 def _plot_quantity_candidate_by_disagreement(
+    *,
+    diagnostics: pd.DataFrame,
+    output_path: Path,
+    scale: str = "log",
+) -> None:
+    """
+    Plot candidate median UV distance across mirror-disagreement bands.
+
+    scale:
+        "log"    -> absolute log-distance from the product-year UV reference
+        "factor" -> multiplicative factor from the product-year UV reference
+    """
+
+    if scale not in {"log", "factor"}:
+        raise ValueError(
+            "scale must be 'log' or 'factor'."
+        )
+
+    frame = _scope_frame(
+        diagnostics,
+        "quantity_candidate_by_disagreement",
+    )
+
+    frame = frame[
+        frame["variable"].eq("median_uv_log_distance")
+    ].copy()
+
+    if frame.empty:
+        raise RuntimeError(
+            "No quantity-candidate disagreement diagnostics are available."
+        )
+
+    bands = sorted(
+        frame["disagreement_band"]
+        .dropna()
+        .astype(str)
+        .unique(),
+        key=_disagreement_band_order,
+    )
+
+    figure, axis = plt.subplots(
+        figsize=(11, 6)
+    )
+
+    for candidate in (
+        "simple_mean",
+        "value_weighted",
+        "quantity_reliability_weighted",
+    ):
+        subset = frame[
+            frame["candidate"].eq(candidate)
+        ].copy()
+
+        if subset.empty:
+            continue
+
+        lookup = {
+            str(row.disagreement_band): row.value
+            for row in subset.itertuples(index=False)
+        }
+
+        values = [
+            float(lookup[band])
+            if band in lookup
+            and pd.notna(lookup[band])
+            else float("nan")
+            for band in bands
+        ]
+
+        if scale == "factor":
+            values = [
+                math.exp(value)
+                if pd.notna(value)
+                else float("nan")
+                for value in values
+            ]
+
+        axis.plot(
+            bands,
+            values,
+            marker="o",
+            label=_candidate_label(candidate),
+        )
+
+    axis.set_xlabel(
+        "Mirror quantity disagreement"
+    )
+
+    if scale == "log":
+        axis.set_title(
+            "Candidate UV plausibility by mirror-quantity disagreement"
+        )
+        axis.set_ylabel(
+            "Median UV log distance"
+        )
+
+    else:
+        axis.set_title(
+            "Candidate UV factor-distance by mirror-quantity disagreement"
+        )
+        axis.set_ylabel(
+            "Median factor from product-year UV reference"
+        )
+
+        axis.axhline(
+            1.0,
+            linestyle="--",
+            linewidth=1.2,
+            label="Exact reference (1×)",
+        )
+
+    axis.grid(
+        axis="y",
+        linestyle="--",
+        alpha=0.5,
+    )
+    axis.set_axisbelow(True)
+    axis.legend()
+
+    figure.tight_layout()
+
+    figure.savefig(
+        output_path,
+        dpi=180,
+        bbox_inches="tight",
+    )
+
+    plt.close(figure)
+
+def _plot_quantity_candidate_by_disagreement_deprecated(
     *,
     diagnostics: pd.DataFrame,
     output_path: Path,
@@ -3057,6 +3179,12 @@ def build_validation_report(
         # Quantity-conditioned candidate comparison
         # ==============================================================
 
+        candidate_order = [
+            "simple_mean",
+            "value_weighted",
+            "quantity_reliability_weighted",
+        ]
+
         candidate_labels = {
             "simple_mean": "Simple mean",
             "value_weighted": "Value-weighted",
@@ -3107,6 +3235,38 @@ def build_validation_report(
                 }
             )
         )
+
+        conditioned_disagreement_display["_band_order"] = (
+            conditioned_disagreement_display["Mirror disagreement"]
+            .map(lambda value: _disagreement_band_order(value)[0])
+        )
+
+        conditioned_disagreement_display["_candidate_order"] = (
+            conditioned_disagreement_display["Candidate"].map(
+                {
+                    value: index
+                    for index, value in enumerate(candidate_order)
+                }
+            )
+        )
+
+        conditioned_disagreement_display = (
+            conditioned_disagreement_display
+            .sort_values(
+                [
+                    "_band_order",
+                    "_candidate_order",
+                ]
+            )
+            .drop(
+                columns=[
+                    "_band_order",
+                    "_candidate_order",
+                ]
+            )
+        )
+
+
         conditioned_disagreement_display["Candidate"] = (
             conditioned_disagreement_display["Candidate"]
             .map(candidate_labels)
@@ -3131,13 +3291,6 @@ def build_validation_report(
                 "value": "Share",
             }
         )
-
-        candidate_order = [
-            "simple_mean",
-            "value_weighted",
-            "quantity_reliability_weighted",
-        ]
-
         candidate_summary_wide = (
             candidate_summary
             .pivot_table(
@@ -3350,6 +3503,13 @@ def build_validation_report(
                 }
             )
         )
+        candidate_year_display["Year"] = (
+            pd.to_numeric(
+                candidate_year_display["Year"],
+                errors="coerce",
+            )
+            .astype("Int64")
+        )
         for column in (
             "Simple mean",
             "Value-weighted",
@@ -3477,6 +3637,13 @@ def build_validation_report(
                 / (
                     f"target_{cfg.scope.target_hs.lower()}"
                     "_validation_quantity_candidate_by_disagreement.png"
+                )
+            ),
+            "quantity_candidate_by_disagreement_factor": (
+                figure_dir
+                / (
+                    f"target_{cfg.scope.target_hs.lower()}"
+                    "_validation_quantity_candidate_by_disagreement_factor.png"
                 )
             ),
             "quantity_candidate_closest_reference": (
@@ -3609,6 +3776,15 @@ def build_validation_report(
             output_path=figure_paths[
                 "quantity_candidate_by_disagreement"
             ],
+            scale="log",
+        )
+
+        _plot_quantity_candidate_by_disagreement(
+            diagnostics=diagnostics,
+            output_path=figure_paths[
+                "quantity_candidate_by_disagreement_factor"
+            ],
+            scale="factor",
         )
 
         _plot_quantity_candidate_closest_reference(
@@ -4815,11 +4991,25 @@ def build_validation_report(
             "",
             _markdown_table(disagreement_display),
             "",
-            markdown_image(
-                "Candidate UV plausibility by mirror disagreement",
-                figure_paths["quantity_candidate_by_disagreement"],
-                document_path=report_path,
-                width=850,
+            plot_figure_pair(
+                markdown_image(
+                    "Candidate UV plausibility by mirror disagreement — log scale",
+                    figure_paths[
+                        "quantity_candidate_by_disagreement"
+                    ],
+                    document_path=report_path,
+                    width=650,
+                    height=450,
+                ),
+                markdown_image(
+                    "Candidate UV plausibility by mirror disagreement — factor scale",
+                    figure_paths[
+                        "quantity_candidate_by_disagreement_factor"
+                    ],
+                    document_path=report_path,
+                    width=650,
+                    height=450,
+                ),
             ),
             "",
             (
@@ -4841,20 +5031,12 @@ def build_validation_report(
                 width=850,
             ),
             "",
-            (
-                "Closest-reference frequency is retained as one diagnostic, "
-                "not as an automatic selection rule. The product-year UV "
-                "reference is itself derived from the observed trade data, so "
-                "this evidence must be interpreted together with disagreement, "
-                "temporal stability, product stability, and candidate spread."
-            ),
-            "",
             "### 4.4. Candidate spread",
             "",
             (
                 "- Candidate spread measures how far apart the three fixed quantity "
                 "candidates are on the same bilateral row. The spread is therefore the distance between the largest and "
-                "smallest candidate quantity, expressed relative to the simple bilateral mean."
+                "smallest candidate quantity, expressed relative to the max candidate quantity."
             ),
             "",
             "$$",
@@ -4937,7 +5119,7 @@ def build_validation_report(
             (
                 "The unconditional Product-year UV reference does not account "
                 "for the systematic relationship between trade quantity and "
-                "unit value documented in Section 3.2.7. Validation therefore "
+                "unit value documented in Section 3.3.7. Validation therefore "
                 "also evaluates each fixed candidate against the UV expected "
                 "at that candidate's own quantity level."
             ),
