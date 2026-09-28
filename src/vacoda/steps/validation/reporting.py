@@ -34,7 +34,7 @@ import pandas as pd
 
 from vacoda.config.paths import get_figure_dir
 from vacoda.config.steps.validation import ValidationConfig
-from vacoda.utils.display import get_symbols
+from vacoda.utils.display import get_symbols, get_table_figure_layout
 from vacoda.utils.markdown import (
     insert_markdown_toc,
     markdown_image,
@@ -313,7 +313,9 @@ def _plot_training_uv_distance_distribution(
     *,
     diagnostics: pd.DataFrame,
     output_path: Path,
+    use_factor: bool = False,
 ) -> None:
+    """Plot selected UV-distance distribution on log or factor scale."""
 
     frame = _scope_frame(
         diagnostics,
@@ -322,13 +324,24 @@ def _plot_training_uv_distance_distribution(
 
     if frame.empty:
         raise RuntimeError(
-            "Training UV-distance diagnostics "
-            "are unavailable."
+            "Training UV-distance diagnostics are unavailable."
         )
 
     frame = frame.sort_values(
         "quantile"
     )
+
+    values = pd.to_numeric(
+        frame["value"],
+        errors="coerce",
+    )
+
+    if use_factor:
+        plot_values = values.map(math.exp)
+        y_label = "Factor from HS × year UV reference"
+    else:
+        plot_values = values
+        y_label = "Absolute log-distance from HS × year reference"
 
     figure, axis = plt.subplots(
         figsize=(10, 6)
@@ -336,7 +349,7 @@ def _plot_training_uv_distance_distribution(
 
     axis.plot(
         100.0 * frame["quantile"],
-        frame["value"],
+        plot_values,
         marker="o",
     )
 
@@ -349,8 +362,17 @@ def _plot_training_uv_distance_distribution(
     )
 
     axis.set_ylabel(
-        "Absolute log-distance from HS × year reference"
+        y_label
     )
+
+    if use_factor:
+        axis.axhline(
+            1.0,
+            linestyle="--",
+            linewidth=1.2,
+            label="Exact reference (1×)",
+        )
+        axis.legend()
 
     axis.grid(
         axis="y",
@@ -2131,6 +2153,142 @@ def build_validation_report(
             )
         )
 
+        training_normalized_uv_distance_display = (
+            training_normalized_uv_distance[
+                [
+                    "quantile",
+                    "value",
+                ]
+            ].copy()
+        )
+
+        training_normalized_uv_distance_display["Quantile"] = (
+            training_normalized_uv_distance_display["quantile"]
+            .map(_quantile_label)
+        )
+
+        training_normalized_uv_distance_display["Distance (MAD)"] = (
+            training_normalized_uv_distance_display["value"]
+            .map(
+                lambda value: _format_number(
+                    value,
+                    digits=4,
+                )
+            )
+        )
+
+        training_normalized_uv_distance_display = (
+            training_normalized_uv_distance_display[
+                [
+                    "Quantile",
+                    "Distance (MAD)",
+                ]
+            ]
+        )
+        training_uv_dispersion_display = training_uv_dispersion[
+            [
+                "quantile",
+                "value",
+            ]
+        ].copy()
+
+        training_uv_dispersion_display["Quantile"] = (
+            training_uv_dispersion_display["quantile"]
+            .map(_quantile_label)
+        )
+
+        training_uv_dispersion_display["Log-UV MAD"] = (
+            training_uv_dispersion_display["value"]
+            .map(
+                lambda value: _format_number(
+                    value,
+                    digits=4,
+                )
+            )
+        )
+
+        training_uv_dispersion_display[
+            "Multiplicative dispersion"
+        ] = (
+            training_uv_dispersion_display["value"]
+            .map(
+                lambda value: (
+                    f"{math.exp(float(value)):.2f}×"
+                )
+            )
+        )
+        training_uv_dispersion_display = (
+            training_uv_dispersion_display[
+                [
+                    "Quantile",
+                    "Log-UV MAD",
+                    "Multiplicative dispersion",
+                ]
+            ]
+        )
+        training_reference_support_display = training_reference_support[
+            [
+                "quantile",
+                "value",
+            ]
+        ].copy()
+
+        training_reference_support_display["Quantile"] = (
+            training_reference_support_display["quantile"]
+            .map(_quantile_label)
+        )
+
+        training_reference_support_display["Reference observations"] = (
+            training_reference_support_display["value"]
+            .map(_format_integer)
+        )
+
+        training_reference_support_display = (
+            training_reference_support_display[
+                [
+                    "Quantile",
+                    "Reference observations",
+                ]
+            ]
+        )
+        training_uv_distance_display = training_uv_distance[
+            [
+                "quantile",
+                "value",
+            ]
+        ].copy()
+
+        training_uv_distance_display["Quantile"] = (
+            training_uv_distance_display["quantile"]
+            .map(_quantile_label)
+        )
+
+        training_uv_distance_display["Log distance"] = (
+            training_uv_distance_display["value"]
+            .map(
+                lambda value: _format_number(
+                    value,
+                    digits=4,
+                )
+            )
+        )
+
+        training_uv_distance_display["Factor from reference"] = (
+            training_uv_distance_display["value"]
+            .map(
+                lambda value: f"{math.exp(float(value)):.2f}×"
+            )
+        )
+
+        training_uv_distance_display = (
+            training_uv_distance_display[
+                [
+                    "Quantile",
+                    "Log distance",
+                    "Factor from reference",
+                ]
+            ]
+        )
 
         candidate_training_rule_display = pd.DataFrame(
             [
@@ -5254,54 +5412,48 @@ def build_validation_report(
             "### 6.2. Selected-unit-value distance",
             "",
             (
-                "The following distribution shows the absolute log-distance "
-                "between the unit value implied by the selected quantity and "
-                "the robust HS × year reference. No cutoff is applied at this "
-                "stage."
+                "The following distribution shows how far the unit value implied by "
+                "the selected quantity lies from the robust HS × year reference. "
+                "Validation computes this distance on the absolute log scale, while "
+                "the factor scale expresses the same distance more intuitively. "
+                "A factor of `1×` means exact agreement with the reference."
             ),
             "",
-            _markdown_table(
-                training_distribution_display[
-                    training_distribution_display[
-                        "Evidence"
-                    ].eq(
-                        "Selected UV log distance"
-                    )
-                ]
-            ),
-            "",
-            markdown_image(
-                "Selected unit-value distance distribution",
-                figure_paths[
-                    "training_uv_distance_distribution"
-                ],
-                document_path=report_path,
+            get_table_figure_layout(
+                training_uv_distance_display,
+                markdown_image(
+                    "Selected unit-value distance distribution",
+                    figure_paths[
+                        "training_uv_distance_distribution"
+                    ],
+                    document_path=report_path,
+                    width=700,
+                    height=None,
+                ),
+                table_width=38,
             ),
             "",
             "### 6.3. HS × year reference support",
             "",
             (
                 "Reference support is shown across distinct HS × year groups. "
-                "These diagnostics are intended to determine whether a minimum "
-                "support requirement is needed and, if so, where it should lie."
+                "The number of supporting observations indicates how much evidence "
+                "underlies each product-year UV reference and helps assess whether "
+                "a minimum support requirement is needed."
             ),
             "",
-            _markdown_table(
-                training_distribution_display[
-                    training_distribution_display[
-                        "Evidence"
-                    ].eq(
-                        "HS × year reference support"
-                    )
-                ]
-            ),
-            "",
-            markdown_image(
-                "HS × year unit-value reference support",
-                figure_paths[
-                    "training_reference_support_distribution"
-                ],
-                document_path=report_path,
+            get_table_figure_layout(
+                training_reference_support_display,
+                markdown_image(
+                    "HS × year unit-value reference support",
+                    figure_paths[
+                        "training_reference_support_distribution"
+                    ],
+                    document_path=report_path,
+                    width=700,
+                    height=None,
+                ),
+                table_width=34,
             ),
             "",
             "### 6.4. HS × year unit-value dispersion",
@@ -5313,22 +5465,18 @@ def build_validation_report(
                 "dispersion-aware criteria should later be considered."
             ),
             "",
-            _markdown_table(
-                training_distribution_display[
-                    training_distribution_display[
-                        "Evidence"
-                    ].eq(
-                        "HS × year UV log MAD"
-                    )
-                ]
-            ),
-            "",
-            markdown_image(
-                "HS × year unit-value dispersion",
-                figure_paths[
-                    "training_uv_dispersion_distribution"
-                ],
-                document_path=report_path,
+            get_table_figure_layout(
+                training_uv_dispersion_display,
+                markdown_image(
+                    "HS × year unit-value dispersion",
+                    figure_paths[
+                        "training_uv_dispersion_distribution"
+                    ],
+                    document_path=report_path,
+                    width=700,
+                    height=None,
+                ),
+                table_width=34,
             ),
             "",
             "### 6.5. Dispersion-normalized selected-unit-value distance",
@@ -5349,22 +5497,18 @@ def build_validation_report(
                 "No cutoff is applied at this stage."
             ),
             "",
-            _markdown_table(
-                training_distribution_display[
-                    training_distribution_display[
-                        "Evidence"
-                    ].eq(
-                        "Selected UV distance / HS × year log MAD"
-                    )
-                ]
-            ),
-            "",
-            markdown_image(
-                "Selected unit-value distance relative to HS × year dispersion",
-                figure_paths[
-                    "training_normalized_uv_distance_distribution"
-                ],
-                document_path=report_path,
+            get_table_figure_layout(
+                training_normalized_uv_distance_display,
+                markdown_image(
+                    "Selected unit-value distance relative to HS × year dispersion",
+                    figure_paths[
+                        "training_normalized_uv_distance_distribution"
+                    ],
+                    document_path=report_path,
+                    width=700,
+                    height=None,
+                ),
+                table_width=34,
             ),
             "",
             markdown_styled_heading(text="6.5.1. Candidate normalized-distance cutoffs"),
