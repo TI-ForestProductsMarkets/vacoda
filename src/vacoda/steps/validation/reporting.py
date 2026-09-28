@@ -4247,6 +4247,29 @@ def build_validation_report(
             ]
         )
 
+
+        # ==============================================================
+        # Quantity Candidate
+        # ==============================================================
+
+        quantity_selection = _scope_frame(
+            diagnostics,
+            "quantity_selection",
+        )
+
+        if len(quantity_selection) != 1:
+            raise RuntimeError(
+                "Validation diagnostics must contain exactly one "
+                "selected quantity methodology."
+            )
+
+        selected_candidate = str(
+            quantity_selection.iloc[0]["candidate"]
+        )
+
+        selected_candidate_label = _candidate_label(
+            selected_candidate
+        )
         # ==============================================================
         # Quantity–UV relationship
         # ==============================================================
@@ -4412,7 +4435,8 @@ def build_validation_report(
             "",
             "__TOC__",
             "",           
-            "## 1. Validation objective",
+            "## 1. Validation scope and terminology",
+            "### 1.1 Validation Scope",
             "",
             (
                 "The final VACODA Validation workflow assesses whether "
@@ -4422,43 +4446,8 @@ def build_validation_report(
                 "quantities can be reconstructed with sufficient evidence."
             ),
             "",
-            "",
-            "## 2. Structural integrity audit",
-            "",
-            (
-                f"- The prepared Validation dataset contains "
-                f"`{_format_integer(n_rows)}` observations across "
-                f"`{cfg.scope.min_year}–{cfg.scope.max_year}`."
-            ),
-            "",
-            (
-                "The structural audit verifies the retained reporter quantities "
-                "and all three fixed bilateral quantity candidates before "
-                "scientific candidate evaluation."
-            ),
-            "",
-            _markdown_table(
-                structural_summary
-            ),
-            "",
-            (
-                "The structural audit is deliberately limited to technical "
-                "integrity: canonical grain, required fields, year and HS "
-                "scope and numeric validity of the retained quantity evidence. "
-                "Economic plausibility is not decided here."
-            ),
-            "",
-            "## 3. Quantity diagnostics",
-            "",
-            (
-                "Quantity diagnostics examine the available quantity "
-                "information before model development. They provide evidence "
-                "on agreement between reporting partners, consistency with "
-                "product-year unit values, and the amount of usable evidence "
-                "available for candidate training selection."
-            ),
-            "",
-            (
+            "### 1.2. Terminology",
+                        (
                 "The following terminology is used throughout this section:"
             ),
             "",
@@ -4482,6 +4471,7 @@ def build_validation_report(
             r" = "
             r"\frac{V_{i,p,t}}{Q_{i,p,t}}",
             "$$",
+            "",
             "",
             (
                 "- **Product-year UV reference** — for each HS product `p` and year "
@@ -4568,6 +4558,62 @@ def build_validation_report(
             r"\right)",
             "$$",
             "",
+            (
+                "- **Log-UV MAD** — robust within-group dispersion of log unit values "
+                "around the HS × year median log unit value:"
+            ),
+            "",
+            "$$",
+            r"MAD^{UV}_{p,t}"
+            r" = "
+            r"\operatorname{median}_{i}"
+            r"\left("
+            r"\left|"
+            r"\log(UV_{i,p,t})"
+            r" - "
+            r"\operatorname{median}_{j}"
+            r"\left[\log(UV_{j,p,t})\right]"
+            r"\right|"
+            r"\right)",
+            "$$",
+            "",
+            (
+                "- **Dispersion-normalized UV distance** — the absolute UV log distance "
+                "expressed relative to the natural within-group log-UV dispersion (A value of `1` means",
+                 "that the observation lies one within-group MAD from the HS × year UV reference):"
+            ),
+            "",
+            "$$",
+            r"D^{UV,\mathrm{norm}}_{i,p,t}"
+            r" = "
+            r"\frac{D^{UV}_{i,p,t}}{MAD^{UV}_{p,t}}",
+            "$$",
+            "",
+            "## 2. Structural integrity audit",
+            "",
+            (
+                f"- The prepared Validation dataset contains "
+                f"`{_format_integer(n_rows)}` observations across "
+                f"`{cfg.scope.min_year}–{cfg.scope.max_year}`."
+            ),
+            "",
+            (
+                "The structural audit verifies the retained reporter quantities "
+                "and all three fixed bilateral quantity candidates before "
+                "scientific candidate evaluation."
+            ),
+            "",
+            _markdown_table(
+                structural_summary
+            ),
+            "",
+            (
+                "The structural audit is deliberately limited to technical "
+                "integrity: canonical grain, required fields, year and HS "
+                "scope and numeric validity of the retained quantity evidence. "
+                "Economic plausibility is not decided here."
+            ),
+            "",
             "## 3. Quantity diagnostics",
             "",
             (
@@ -4576,71 +4622,6 @@ def build_validation_report(
                 "on agreement between reporting partners, consistency with "
                 "product-year unit values, and the amount of usable evidence "
                 "available for candidate training selection."
-            ),
-            "",
-            (
-                "The following terminology is used throughout this section:"
-            ),
-            "",
-            (
-                "- **Mirror quantity disagreement** —  `|exporter quantity - importer quantity| / max(exporter quantity, importer quantity)`<br>"
-                "&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;&emsp; symmetric relative difference between exporter- and importer-reported quantities:<br>"
-            ),
-            (
-                "&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;&emsp; A value of `0%` means exact agreement. Larger values indicate "
-                "greater disagreement. Neither reporter is treated as the "
-                "reference."
-            ),
-            "",
-            (
-                "- **Unit value (UV)** — `trade value / quantity`, trade value per kilogram:<br>"
-            ),
-            "",
-            (
-                "- **Product-year UV reference** — for each HS product `p` and year "
-                "`t`, the reference is the exponential of the median log unit value "
-                "across all valid exporter- and importer-implied unit values:"
-            ),
-            "",
-            "$$",
-            r"UV^{\mathrm{ref}}_{p,t}"
-            r" = "
-            r"\exp\left("
-            r"\operatorname{median}_{i}"
-            r"\left[\log\left(UV_{i,p,t}\right)\right]"
-            r"\right)",
-            "$$",
-            "",
-            "",
-            (
-                "- **Product-year UV support** — the number of observations "
-                "supporting the product-year UV reference."
-            ),
-            "",
-            (
-                "- **UV distance** — `|log(implied UV) − log(product-year UV reference)|`<br>"
-                "&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;&emsp; the distance between an observation's implied unit value and the product-year UV reference:<br>"
-                "&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;&emsp; A value close to `0` means that the implied unit value is "
-                "close to the reference. Larger values indicate greater separation."
-            ),
-            "",
-            (
-                "- **Worst-side reporter UV distance** — the larger of the "
-                "exporter and importer UV distances. A low value therefore "
-                "requires both reporter quantities to imply plausible unit values."
-            ),
-            "",
-            (
-                "- **Exporter UV distance** and **Importer UV distance** — "
-                "the corresponding UV distances calculated separately using "
-                "the exporter- and importer-reported quantities."
-            ),
-            "",
-            (
-                "- **Worst-side reporter UV distance** — the larger of the exporter "
-                "and importer UV distances. A small value therefore requires "
-                "both reporting sides to be close to the product-year UV "
-                "reference."
             ),
             "",
             "### 3.1. Quantity availability by reporting side",
@@ -5391,17 +5372,18 @@ def build_validation_report(
             "## 6. Training-sample diagnostics",
             "",
             (
-                "The training-sample step does not yet define a final "
-                "model-training population. It constructs the evidence "
-                "needed to make that decision."
+                "- The training-sample step evaluates the quantity candidate "
+                "selected by the preceding quantity-selection stage and constructs "
+                "the evidence needed to define the final model-training population."
             ),
             "",
             (
-                "The HS × year reference is derived from directly observed "
-                "bilateral quantity rows where neither reporter quantity is "
-                "estimated. Each usable selected quantity is then evaluated "
-                "through its implied unit value relative to that reference."
+                f"- The selected bilateral quantity methodology is "
+                f"`{selected_candidate_label}`. All selected-quantity and "
+                "selected-unit-value diagnostics in this section therefore refer "
+                "to this selected methodology."
             ),
+            "",
             "",
             "### 6.1. Training-sample population",
             "",
