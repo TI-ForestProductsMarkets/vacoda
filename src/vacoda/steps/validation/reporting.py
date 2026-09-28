@@ -5463,21 +5463,25 @@ def build_validation_report(
                 table_width=34,
             ),
             "",
-            "### 6.5. Dispersion-normalized selected-unit-value distance",
+            "### 6.5. Selected-unit-value distance normalized by log-UV MAD",
             "",
             (
-                "Absolute UV distance does not have the same interpretation "
-                "for every HS × year group because unit-value dispersion differs "
-                "substantially across product-year groups. Validation therefore "
-                "also evaluates the selected-unit-value log distance relative to "
-                "the robust within-group log-UV MAD."
+                "- Different HS × year groups have different natural levels of "
+                "unit-value variation. A given UV log distance can therefore be "
+                "large for a tightly clustered group but relatively normal for a "
+                "more dispersed group."
             ),
             "",
             (
-                "The diagnostic is defined as "
-                "`selected UV log distance / HS × year log-UV MAD`. "
-                "A value of 1 means that the selected unit value lies one "
-                "within-group MAD away from the HS × year median reference."
+                "- To make the distances comparable across groups, Validation divides "
+                "each selected-unit-value log distance by the corresponding HS × year "
+                "log-UV MAD."
+            ),
+            "",
+            (
+                "- The resulting value is expressed in MAD units. A value of 1 means "
+                "that the selected unit value lies one within-group MAD from the "
+                "HS × year UV reference."
             ),
             "",
             get_table_figure_layout(
@@ -5497,19 +5501,16 @@ def build_validation_report(
             markdown_styled_heading(text="6.5.1. Candidate normalized-distance cutoffs"),
             "",
             (
-                "To support the eventual training-population decision, "
-                "Validation evaluates several candidate cutoffs for the "
-                "dispersion-normalized unit-value distance. These are "
-                "diagnostic comparison points only; none is yet applied as "
-                "the production training rule."
+                "To support the eventual training-population decision, Validation evaluates several "
+                "candidate cutoffs for the MAD-normalized unit-value distance."
             ),
             "",
             (
-                "The direct bilateral reference population contains rows with "
-                "independent, non-estimated quantity evidence from both reporting "
-                "sides. The hard-eligible population additionally includes rows "
-                "whose selected quantity and value can be evaluated against the "
-                "HS × year reference."
+                "- The `Direct bilateral reference rows` contains rows with usable, non-estimated quantity observations from both reporting sides."
+            ),
+            (
+                "- The broader `All hard-eligible rows` contains all rows with sufficient information to evaluate the selected quantity against "
+                "the HS × year UV reference, regardless of whether both reporter quantities are directly observed."
             ),
             "",
             _markdown_table(
@@ -5557,7 +5558,7 @@ def build_validation_report(
             "## 8. Output artifacts",
             "",
             (
-                f"- Prepared Validation input: "
+                f"- Prepared input: "
                 f"`{prepared_input_path}`"
             ),
             (
