@@ -4448,7 +4448,7 @@ def build_validation_report(
             "",
             "### 1.2. Terminology",
                         (
-                "The following terminology is used throughout this section \(unless stated otherwise, "
+                r"The following terminology is used throughout this section \(unless stated otherwise, "
                 r"\(p\) denotes the HS product, \(t\) the year, "
                 r"and \(i\) an individual trade observation within the corresponding "
                             r"HS × year group\):"
