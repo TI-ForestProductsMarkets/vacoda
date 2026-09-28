@@ -4448,11 +4448,14 @@ def build_validation_report(
             "",
             "### 1.2. Terminology",
                         (
-                "The following terminology is used throughout this section:"
+                "The following terminology is used throughout this section \(unless stated otherwise, "
+                r"\(p\) denotes the HS product, \(t\) the year, "
+                r"and \(i\) an individual trade observation within the corresponding "
+                            r"HS × year group\):"
             ),
             "",
             (
-                "- **Mirror quantity disagreement** —  for each HS product `p` and year `t`, the symmetric relative difference "
+                "- **Mirror quantity disagreement** — the symmetric relative difference "
                 "between exporter- and importer-reported quantities. A value of `0%` means exact agreement. Larger values indicate greater disagreement."
             ),
             "",
@@ -4463,7 +4466,7 @@ def build_validation_report(
             r"{\max\left(Q^{E}_{p,t}, Q^{I}_{p,t}\right)}",
             "$$",
             (
-                "- **Unit value (UV)** — for each HS product `p` and year `t`, trade value per kilogram:"
+                "- **Unit value (UV)** —  trade value per kilogram:"
             ),
             "",
             "$$",
@@ -4474,8 +4477,7 @@ def build_validation_report(
             "",
             "",
             (
-                "- **Product-year UV reference** — for each HS product `p` and year "
-                "`t`, the reference is the exponential of the median log unit value "
+                "- **Product-year UV reference** — the reference is the exponential of the median log unit value "
                 "across all valid exporter- and importer-implied unit values:"
             ),
             "",
@@ -4489,10 +4491,10 @@ def build_validation_report(
             "$$",
             "",
             (
-                "- **Product-year UV support** — for each HS product `p` and year `t`,the number of observations "
+                "- **Product-year UV support** — the number of observations "
                 "supporting the product-year UV reference, where "
                 r"$\mathcal{I}_{p,t}$ "
-                "is the set of valid observations used to construct the product-year UV reference."
+                "is the set of valid observations used to construct the `Product-year UV reference`."
             ),
             "",
             "$$",
@@ -4502,9 +4504,9 @@ def build_validation_report(
             "$$",
             "",
             (
-                "- **UV distance** — for each HS product `p` and year `t`, the absolute log-distance between an observation's "
-                "implied unit value and the product-year UV reference. A value close to `0` means that the implied unit value is close "
-                "to the reference. Larger values indicate greater separation."
+                "- **UV distance** —  the absolute log-distance between an observation's "
+                "implied unit value and the `Product-year UV reference`. A value close to `0` means that the implied unit value is close "
+                "to the reference, whereas larger values indicate greater separation."
             ),
             "",
             "$$",
@@ -4518,7 +4520,7 @@ def build_validation_report(
             "$$",
             "",
             (
-                "- **Exporter UV distance** and **Importer UV distance** — for each HS product `p` and year `t`, the "
+                "- **Exporter UV distance** and **Importer UV distance** — the "
                 "corresponding UV distances calculated separately using the exporter- "
                 "and importer-reported quantities:"
             ),
@@ -4544,7 +4546,7 @@ def build_validation_report(
             "$$",
             "",
             (
-                "- **Worst-side reporter UV distance** — for each HS product `p` and year `t`, the larger of the exporter "
+                "- **Worst-side reporter UV distance** — the larger of the exporter "
                 "and importer UV distances. A small value therefore requires both "
                 "reporting sides to be close to the product-year UV reference:"
             ),
@@ -4559,8 +4561,8 @@ def build_validation_report(
             "$$",
             "",
             (
-                "- **Log-UV MAD** — robust within-group dispersion of log unit values "
-                "around the HS × year median log unit value:"
+                "- **Log-UV MAD (Median Absolute Deviation)** — robust within-group dispersion of log unit values "
+                "around the HS × year median log unit value, signifies the typical spread of unit values within one HS × year group:"
             ),
             "",
             "$$",
@@ -4579,8 +4581,8 @@ def build_validation_report(
             "",
             (
                 "- **Dispersion-normalized UV distance** — the absolute UV log distance "
-                "expressed relative to the natural within-group log-UV dispersion (A value of `1` means",
-                 "that the observation lies one within-group MAD from the HS × year UV reference):"
+                "expressed relative to the natural within-group log-UV dispersion (A value of `1` means "
+                "that the observation lies one within-group MAD from the HS × year UV reference):"
             ),
             "",
             "$$",
@@ -5475,8 +5477,7 @@ def build_validation_report(
                 "The diagnostic is defined as "
                 "`selected UV log distance / HS × year log-UV MAD`. "
                 "A value of 1 means that the selected unit value lies one "
-                "within-group MAD away from the HS × year median reference. "
-                "No cutoff is applied at this stage."
+                "within-group MAD away from the HS × year median reference."
             ),
             "",
             get_table_figure_layout(
