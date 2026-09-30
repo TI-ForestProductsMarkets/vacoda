@@ -1635,13 +1635,20 @@ def build_diagnostics(
             AS
             """
             + "\nUNION ALL\n".join(
-                reference_window_queries
+                f"""
+                SELECT *
+                FROM (
+                    {query}
+                )
+                """
+                for query in reference_window_queries
             )
         )
 
         max_reference_before = max(
             before
-            for _, before in reference_windows
+            for _, before, _
+            in reference_windows
         )
 
         common_reference_start_year = (
@@ -1654,7 +1661,7 @@ def build_diagnostics(
         # Reference-support distribution by candidate window
         # --------------------------------------------------------------
 
-        for window_name, _ in reference_windows:
+        for window_name, _, _ in reference_windows:
 
             for quantile in training_quantiles:
 
@@ -1738,7 +1745,7 @@ def build_diagnostics(
             ("30_plus", 30, None),
         )
 
-        for window_name, _ in reference_windows:
+        for window_name, _, _ in reference_windows:
 
             total_groups = int(
                 con.execute(
@@ -1836,7 +1843,7 @@ def build_diagnostics(
         # Worst-supported HS × year groups
         # --------------------------------------------------------------
 
-        for window_name, _ in reference_windows:
+        for window_name, _, _ in reference_windows:
 
             worst_groups = con.execute(
                 """
@@ -1906,7 +1913,7 @@ def build_diagnostics(
         # Reference availability
         # --------------------------------------------------------------
 
-        for window_name, _ in reference_windows:
+        for window_name, _, _ in reference_windows:
 
             (
                 n_total_groups,

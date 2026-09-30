@@ -4655,7 +4655,7 @@ def build_validation_report(
             )
         )
 
-                pre_training_availability_display = (
+        pre_training_availability_display = (
             pre_training_reference_availability[
                 [
                     "criterion",
