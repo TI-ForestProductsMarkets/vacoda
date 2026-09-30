@@ -82,6 +82,20 @@ def _ordered_unique(
     )
 
 
+def _format_checkpoint_value(
+    value: float | int,
+) -> str:
+    """Return a filesystem-safe compact parameter value."""
+
+    if isinstance(value, int):
+        return str(value)
+
+    return (
+        f"{float(value):g}"
+        .replace(".", "p")
+        .replace("-", "m")
+    )
+
 def _require_columns(
     *,
     con: duckdb.DuckDBPyConnection,
@@ -253,6 +267,39 @@ def _model_data_fingerprint(
 # ======================================================================
 # Model checkpoint helpers
 # ======================================================================
+def _model_checkpoint_group(
+    *,
+    cfg: ValidationConfig,
+) -> str:
+    """Return a human-readable training-population checkpoint group."""
+
+    training_cfg = (
+        cfg.model.training_sample
+    )
+
+    before = int(
+        training_cfg.reference_year_window.before
+    )
+
+    after = int(
+        training_cfg.reference_year_window.after
+    )
+
+    min_reference_n = int(
+        training_cfg.min_hs_year_reference_observations
+    )
+
+    max_uv_distance = (
+        _format_checkpoint_value(
+            training_cfg.max_normalized_uv_distance_mad
+        )
+    )
+
+    return (
+        f"refwin_{before}_{after}"
+        f"__n{min_reference_n}"
+        f"__uv{max_uv_distance}"
+    )
 
 
 def _model_checkpoint_dir(
@@ -260,11 +307,17 @@ def _model_checkpoint_dir(
     cfg: ValidationConfig,
     model_name: str,
 ) -> Path:
-    """Return the checkpoint directory for one candidate model."""
+
+    checkpoint_group = (
+        _model_checkpoint_group(
+            cfg=cfg
+        )
+    )
 
     return (
         cfg.output_dir()
         / "model"
+        / checkpoint_group
         / "checkpoints"
         / "models"
         / model_name
@@ -1050,14 +1103,20 @@ def train_validation_models(
         input_path
     )
 
+    base_output_path = cfg.product_path(
+        "model_predictions"
+    )
+
+    checkpoint_group = (
+        _model_checkpoint_group(
+            cfg=cfg
+        )
+    )
+
     output_path = (
-        Path(
-            output_path
-        )
-        if output_path is not None
-        else cfg.product_path(
-            "model_predictions"
-        )
+        base_output_path.parent
+        / checkpoint_group
+        / base_output_path.name
     )
 
     # ------------------------------------------------------------------
@@ -1211,7 +1270,7 @@ def train_validation_models(
         )
 
         # --------------------------------------------------------------
-        # Resolve leave-one-year-out folds
+        # Resolve expanding-window validation folds
         # --------------------------------------------------------------
 
         years = sorted(
@@ -1230,23 +1289,29 @@ def train_validation_models(
                 "selected model-training population."
             )
 
-        if (
-            len(years) - 1
-            < cfg.model.validation.minimum_training_years
-        ):
+        minimum_training_years = int(
+            cfg.model.validation.minimum_training_years
+        )
+
+        if len(years) <= minimum_training_years:
             raise RuntimeError(
-                "Leave-one-year-out validation does not provide "
-                "enough training years. "
+                "Expanding-window validation does not provide "
+                "enough years. "
                 f"Available years: {len(years)}; "
-                "minimum training years required per fold: "
-                f"{cfg.model.validation.minimum_training_years}."
+                "minimum training years required before the "
+                "first validation year: "
+                f"{minimum_training_years}."
             )
 
+        validation_years = years[
+            minimum_training_years:
+        ]
+
         logger.info(
-            "  Leave-one-year-out folds: %s",
+            "  Expanding-window validation folds: %s",
             ", ".join(
                 str(year)
-                for year in years
+                for year in validation_years
             ),
         )
 
@@ -1326,7 +1391,7 @@ def train_validation_models(
                     training_data_sha256=(
                         training_data_sha256
                     ),
-                    validation_years=years,
+                    validation_years=validation_years,
                 )
             )
 
@@ -1394,26 +1459,21 @@ def train_validation_models(
                 pd.DataFrame
             ] = []
 
-            for held_out_year in years:
+            for held_out_year in validation_years:
 
-                fold_start = (
-                    perf_counter()
-                )
-
-                validation_mask = (
+                fold_years = (
                     frame[
                         validation_year_col
                     ]
                     .astype(int)
-                    .eq(
-                        held_out_year
-                    )
                     .to_numpy()
                 )
 
-                train_mask = (
-                    ~validation_mask
+                validation_mask = (
+                    fold_years == held_out_year
                 )
+
+                train_mask = fold_years < held_out_year
 
                 n_train = int(
                     train_mask.sum()
@@ -1423,22 +1483,36 @@ def train_validation_models(
                     validation_mask.sum()
                 )
 
+                training_years = sorted(
+                    set(
+                        fold_years[
+                            train_mask
+                        ].tolist()
+                    )
+                )
+
                 if (
-                    n_train == 0
+                    len(training_years)
+                    < minimum_training_years
+                    or n_train == 0
                     or n_validation == 0
                 ):
                     raise RuntimeError(
-                        "Invalid leave-one-year-out fold for "
+                        "Invalid expanding-window fold for "
                         f"{held_out_year}: "
+                        f"training_years={training_years}, "
                         f"train={n_train:,}, "
                         f"validation={n_validation:,}."
                     )
 
                 logger.info(
-                    "  %s — holdout=%s, "
+                    "  %s — validate=%s, "
+                    "train_years=%s–%s, "
                     "train=%s, validation=%s",
                     model_name,
                     held_out_year,
+                    training_years[0],
+                    training_years[-1],
                     f"{n_train:,}",
                     f"{n_validation:,}",
                 )

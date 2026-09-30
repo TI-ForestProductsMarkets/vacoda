@@ -27,6 +27,54 @@ from vacoda.utils.sql import sql_literal
 # ======================================================================
 # Helpers
 # ======================================================================
+def _format_training_parameter(
+    value: float | int,
+) -> str:
+    """Return a compact filesystem-safe parameter value."""
+
+    if isinstance(value, int):
+        return str(value)
+
+    return (
+        f"{float(value):g}"
+        .replace(".", "p")
+        .replace("-", "m")
+    )
+
+
+def _training_definition_name(
+    *,
+    cfg: ValidationConfig,
+) -> str:
+    """Return the human-readable training-definition directory name."""
+
+    training_cfg = (
+        cfg.model.training_sample
+    )
+
+    before = int(
+        training_cfg.reference_year_window.before
+    )
+
+    after = int(
+        training_cfg.reference_year_window.after
+    )
+
+    min_reference_n = int(
+        training_cfg.min_hs_year_reference_observations
+    )
+
+    max_uv_distance = (
+        _format_training_parameter(
+            training_cfg.max_normalized_uv_distance_mad
+        )
+    )
+
+    return (
+        f"refwin_{before}_{after}"
+        f"__n{min_reference_n}"
+        f"__uv{max_uv_distance}"
+    )
 
 
 def _require_columns(
@@ -106,13 +154,31 @@ def build_training_sample(
         quantity_selection_audit_path
     )
 
-    output_path = (
-        Path(output_path)
-        if output_path is not None
-        else cfg.product_path(
-            "training_sample"
+    if output_path is not None:
+
+        output_path = Path(
+            output_path
         )
-    )
+
+    else:
+
+        base_output_path = (
+            cfg.product_path(
+                "training_sample"
+            )
+        )
+
+        training_definition = (
+            _training_definition_name(
+                cfg=cfg
+            )
+        )
+
+        output_path = (
+            base_output_path.parent
+            / training_definition
+            / base_output_path.name
+        )
 
     # ------------------------------------------------------------------
     # Input existence
@@ -193,8 +259,55 @@ def build_training_sample(
         model_training_cfg.min_hs_year_reference_observations
     )
 
+    reference_year_before = int(
+        model_training_cfg.reference_year_window.before
+    )
+
+    reference_year_after = int(
+        model_training_cfg.reference_year_window.after
+    )
+
+    require_reference_eligible = bool(
+        model_training_cfg.require_reference_eligible
+    )
+
+    require_positive_uv_mad = bool(
+        model_training_cfg.require_positive_uv_mad
+    )
+
     max_normalized_uv_distance_mad = float(
         model_training_cfg.max_normalized_uv_distance_mad
+    )
+
+    ### Logging Training-Sample Configuration
+    logger.info(
+        "  Training-sample configuration:"
+    )
+
+    logger.info(
+        "    Require reference eligible: %s",
+        require_reference_eligible,
+    )
+
+    logger.info(
+        "    Reference-year window: -%s / +%s year(s)",
+        reference_year_before,
+        reference_year_after,
+    )
+
+    logger.info(
+        "    Minimum HS × year reference observations: %s",
+        min_reference_observations,
+    )
+
+    logger.info(
+        "    Maximum normalized UV distance (MAD): %s",
+        f"{max_normalized_uv_distance_mad:g}",
+    )
+
+    logger.info(
+        "    Require positive UV MAD: %s",
+        require_positive_uv_mad,
     )
     year_col = str(
         columns_cfg.year
@@ -424,18 +537,34 @@ def build_training_sample(
         )
 
         # --------------------------------------------------------------
-        # HS × year reference population
+        # HS × focal-year reference population
         # --------------------------------------------------------------
+        #
+        # For every focal HS × year, construct the robust unit-value
+        # reference using eligible observations from the configured
+        # surrounding-year window:
+        #
+        #   [year - reference_year_before,
+        #    year + reference_year_after]
+        #
+        # The HS product remains exact. Only the year dimension is pooled.
+        #
+        # Examples:
+        #
+        #   before=0, after=0
+        #       -> exact HS × year reference
+        #
+        #   before=1, after=1
+        #       -> HS × (year-1, year, year+1) reference
+        #
+        # At dataset boundaries only available years contribute.
         #
         # Work in log(unit value):
         #
         #   log(UV) = log(V / Q)
         #
         # The robust centre is the median log unit value.
-        #
-        # We also retain the median absolute deviation around that centre,
-        # in log space. No threshold based on this dispersion is applied
-        # here.
+        # Dispersion is the median absolute deviation around that centre.
         # --------------------------------------------------------------
 
         con.execute(
@@ -444,11 +573,11 @@ def build_training_sample(
                 validation_training_uv_reference
             AS
 
-            WITH reference_rows AS (
+            WITH eligible_reference_rows AS (
 
                 SELECT
                     {year_col}
-                        AS year,
+                        AS source_year,
 
                     {product_col}
                         AS target_cmd,
@@ -462,18 +591,51 @@ def build_training_sample(
 
                 WHERE training_reference_eligible
 
-                  AND selected_unit_value IS NOT NULL
-                  AND selected_unit_value > 0
+                AND selected_unit_value IS NOT NULL
+                AND selected_unit_value > 0
 
-                  AND isfinite(
-                      selected_unit_value
-                  )
+                AND isfinite(
+                    selected_unit_value
+                )
+            ),
+
+            focal_groups AS (
+
+                SELECT DISTINCT
+                    {year_col}
+                        AS focal_year,
+
+                    {product_col}
+                        AS target_cmd
+
+                FROM validation_training_base
+            ),
+
+            window_reference_rows AS (
+
+                SELECT
+                    f.focal_year,
+                    f.target_cmd,
+
+                    r.source_year,
+                    r.log_unit_value
+
+                FROM focal_groups AS f
+
+                INNER JOIN eligible_reference_rows AS r
+                    ON r.target_cmd = f.target_cmd
+
+                AND r.source_year
+                    BETWEEN
+                        f.focal_year - {reference_year_before}
+                    AND
+                        f.focal_year + {reference_year_after}
             ),
 
             centres AS (
 
                 SELECT
-                    year,
+                    focal_year,
                     target_cmd,
 
                     COUNT(*)
@@ -484,17 +646,17 @@ def build_training_sample(
                     )
                         AS median_log_unit_value
 
-                FROM reference_rows
+                FROM window_reference_rows
 
                 GROUP BY
-                    year,
+                    focal_year,
                     target_cmd
             ),
 
             deviations AS (
 
                 SELECT
-                    r.year,
+                    r.focal_year,
                     r.target_cmd,
 
                     c.hs_year_uv_reference_n,
@@ -506,17 +668,19 @@ def build_training_sample(
                     )
                         AS log_absolute_deviation
 
-                FROM reference_rows AS r
+                FROM window_reference_rows AS r
 
                 INNER JOIN centres AS c
                     USING (
-                        year,
+                        focal_year,
                         target_cmd
                     )
             )
 
             SELECT
-                year,
+                focal_year
+                    AS year,
+
                 target_cmd,
 
                 MAX(
@@ -544,7 +708,7 @@ def build_training_sample(
             FROM deviations
 
             GROUP BY
-                year,
+                focal_year,
                 target_cmd
             """
         )
@@ -826,6 +990,12 @@ def build_training_sample(
     logger.info(
         "  HS × year reference groups: %s",
         f"{n_reference_groups:,}",
+    )
+
+    logger.info(
+        "  Reference-year window: -%s / +%s year(s)",
+        reference_year_before,
+        reference_year_after,
     )
 
     logger.info(

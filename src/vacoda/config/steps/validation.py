@@ -308,10 +308,41 @@ class ValidationProductsConfig:
 # Model development
 # ---------------------------------------------------------------------
 
+@dataclass(frozen=True)
+class ValidationReferenceYearWindowConfig:
+    before: int
+    after: int
+
+    @classmethod
+    def from_dict(
+        cls,
+        cfg: dict[str, Any],
+    ) -> "ValidationReferenceYearWindowConfig":
+        return cls(
+            before=require_int(
+                cfg.get("before"),
+                key=(
+                    "validation.model.training_sample."
+                    "reference_year_window.before"
+                ),
+                min_value=0,
+            ),
+            after=require_int(
+                cfg.get("after"),
+                key=(
+                    "validation.model.training_sample."
+                    "reference_year_window.after"
+                ),
+                min_value=0,
+            ),
+        )
+
+    
 
 @dataclass(frozen=True)
 class ValidationTrainingSampleConfig:
     require_reference_eligible: bool
+    reference_year_window: ValidationReferenceYearWindowConfig
     min_hs_year_reference_observations: int
     max_normalized_uv_distance_mad: float
     require_positive_uv_mad: bool
@@ -328,6 +359,17 @@ class ValidationTrainingSampleConfig:
                     "validation.model.training_sample."
                     "require_reference_eligible"
                 ),
+            ),
+            reference_year_window=(
+                ValidationReferenceYearWindowConfig.from_dict(
+                    require_dict(
+                        cfg.get("reference_year_window"),
+                        key=(
+                            "validation.model.training_sample."
+                            "reference_year_window"
+                        ),
+                    )
+                )
             ),
             min_hs_year_reference_observations=require_int(
                 cfg.get("min_hs_year_reference_observations"),
@@ -508,7 +550,7 @@ class ValidationModelFeaturesConfig:
 
 @dataclass(frozen=True)
 class ValidationModelValidationConfig:
-    strategy: Literal["leave_one_year_out"]
+    strategy: Literal["expanding_window"]
     year_column: str
     minimum_training_years: int
 
@@ -523,7 +565,7 @@ class ValidationModelValidationConfig:
         ).strip().lower()
 
         allowed = {
-            "leave_one_year_out",
+            "expanding_window",
         }
 
         if strategy not in allowed:

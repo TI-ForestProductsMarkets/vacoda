@@ -180,25 +180,6 @@ def audit_quantity_selection(
         exist_ok=True,
     )
 
-    if (
-        not force
-        and output_path.is_file()
-        and output_path.stat().st_size > 0
-    ):
-        logger.info(
-            "%s REUSE — Validation quantity-selection audit: %s",
-            get_symbols("reuse"),
-            output_path,
-        )
-
-        return {
-            "status": "completed",
-            "run_id": run_id,
-            "output_path": output_path,
-            "quantity_selection_audit_path": output_path,
-            "reused": True,
-        }
-
     logger.info(
         "%s REBUILD — Validation quantity-selection audit",
         get_symbols("rebuilt"),

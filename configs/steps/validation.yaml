@@ -81,8 +81,8 @@ validation:
     training_sample:
       require_reference_eligible: true
       reference_year_window:
-        before: 0
-        after: 0
+        before: 2
+        after: 2
       min_hs_year_reference_observations: 30
       max_normalized_uv_distance_mad: 2.5
       require_positive_uv_mad: true
@@ -124,7 +124,7 @@ validation:
     # Validation
     # ------------------------------------------------------------
     validation:
-      strategy: "leave_one_year_out"
+      strategy: "expanding_window"
       year_column: "year"
       minimum_training_years: 5
 
