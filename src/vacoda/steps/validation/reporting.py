@@ -42,7 +42,10 @@ from vacoda.utils.markdown import (
 )
 from vacoda.visualization.relationships import plot_figure_pair
 from vacoda.utils.sql import sql_literal
-
+from vacoda.steps.validation.diagnostics import (
+    PRE_TRAINING_REFERENCE_WINDOWS,
+    get_common_reference_start_year,
+)
 
 # ======================================================================
 # Helpers
@@ -1708,6 +1711,88 @@ def _plot_quantity_candidate_closest_conditioned(
     figure.savefig(output_path, dpi=180, bbox_inches="tight")
     plt.close(figure)
 
+def _plot_pre_training_reference_support_comparison(
+    *,
+    diagnostics: pd.DataFrame,
+    output_path: Path,
+) -> None:
+    """Compare HS × year reference support across candidate windows."""
+
+    frame = _scope_frame(
+        diagnostics,
+        "pre_training_reference_support_distribution",
+    ).copy()
+
+    if frame.empty:
+        raise RuntimeError(
+            "Pre-training reference-window support diagnostics "
+            "are unavailable."
+        )
+
+    figure, axis = plt.subplots(
+        figsize=(10, 6)
+    )
+
+    window_labels = {
+        window_name: label
+        for (
+            window_name,
+            _,
+            label,
+        ) in PRE_TRAINING_REFERENCE_WINDOWS
+    }
+
+    for window_name, group in frame.groupby(
+        "criterion",
+        sort=False,
+    ):
+
+        group = group.sort_values(
+            "quantile"
+        )
+
+        axis.plot(
+            100.0 * group["quantile"],
+            group["value"],
+            marker="o",
+            label=window_labels.get(
+                str(window_name),
+                str(window_name),
+            ),
+        )
+
+    axis.set_title(
+        "HS × year reference support by temporal window"
+    )
+
+    axis.set_xlabel(
+        "Quantile (%)"
+    )
+
+    axis.set_ylabel(
+        "Reference observations"
+    )
+
+    axis.grid(
+        axis="y",
+        linestyle="--",
+        alpha=0.5,
+    )
+
+    axis.set_axisbelow(True)
+    axis.legend()
+
+    figure.tight_layout()
+
+    figure.savefig(
+        output_path,
+        dpi=180,
+        bbox_inches="tight",
+    )
+
+    plt.close(
+        figure
+    )
 
 def _build_validation_figure_paths(
     *,
@@ -1719,6 +1804,14 @@ def _build_validation_figure_paths(
     target_hs = str(target_hs).lower()
 
     return {
+
+        "pre_training_reference_support_comparison": (
+            figure_dir
+            / (
+                f"target_{target_hs}"
+                "_validation_pre_training_reference_support_comparison.png"
+            )
+        ),
         "training_uv_distance_distribution": (
             figure_dir
             / (
@@ -2316,6 +2409,36 @@ def build_validation_report(
         training_uv_distance = _scope_frame(
             diagnostics,
             "training_uv_distance_distribution",
+        )
+
+        pre_training_reference_support = _scope_frame(
+            diagnostics,
+            "pre_training_reference_support_distribution",
+        )
+
+        pre_training_reference_support_bands = _scope_frame(
+            diagnostics,
+            "pre_training_reference_support_bands",
+        )
+
+        pre_training_reference_worst = _scope_frame(
+            diagnostics,
+            "pre_training_reference_worst_groups",
+        )
+
+        pre_training_reference_availability = _scope_frame(
+            diagnostics,
+            "pre_training_reference_availability",
+        )
+
+        pre_training_reference_median_shift = _scope_frame(
+            diagnostics,
+            "pre_training_reference_median_shift",
+        )
+
+        pre_training_reference_mad_shift = _scope_frame(
+            diagnostics,
+            "pre_training_reference_mad_shift",
         )
 
         training_reference_support = _scope_frame(
@@ -4022,6 +4145,12 @@ def build_validation_report(
             ],
         )
 
+        _plot_pre_training_reference_support_comparison(
+            diagnostics=diagnostics,
+            output_path=figure_paths[
+                "pre_training_reference_support_comparison"
+            ],
+        )
         _plot_training_evidence_by_year(
             diagnostics=diagnostics,
             output_path=figure_paths[
@@ -4413,7 +4542,222 @@ def build_validation_report(
             ]
         )
 
+        # ==============================================================
+        # Diagnostics
+        # ============================================================
 
+        common_reference_start_year = (
+            get_common_reference_start_year(
+                cfg.scope.min_year
+            )
+        )
+
+        support_band_labels = {
+            "no_support": "No support",
+            "1_4": "1–4",
+            "5_9": "5–9",
+            "10_29": "10–29",
+            "30_plus": "≥30",
+        }
+
+        pre_training_support_bands_display = (
+            pre_training_reference_support_bands[
+                [
+                    "criterion",
+                    "candidate",
+                    "n_rows",
+                    "share_of_parent",
+                ]
+            ]
+            .copy()
+        )
+
+        pre_training_support_bands_display[
+            "Support band"
+        ] = (
+            pre_training_support_bands_display[
+                "candidate"
+            ].map(
+                support_band_labels
+            )
+        )
+
+        pre_training_support_bands_display[
+            "Window"
+        ] = (
+            pre_training_support_bands_display[
+                "criterion"
+            ]
+        )
+
+        pre_training_support_bands_display[
+            "HS × year groups"
+        ] = (
+            pre_training_support_bands_display[
+                "n_rows"
+            ].map(
+                _format_integer
+            )
+        )
+
+        pre_training_support_bands_display[
+            "Share"
+        ] = (
+            pre_training_support_bands_display[
+                "share_of_parent"
+            ].map(
+                _format_percent
+            )
+        )
+
+        pre_training_support_bands_display = (
+            pre_training_support_bands_display[
+                [
+                    "Window",
+                    "Support band",
+                    "HS × year groups",
+                    "Share",
+                ]
+            ]
+        )
+
+
+        pre_training_worst_display = (
+            pre_training_reference_worst[
+                [
+                    "criterion",
+                    "year",
+                    "target_cmd",
+                    "value",
+                ]
+            ]
+            .copy()
+        )
+
+        pre_training_worst_display = (
+            pre_training_worst_display.rename(
+                columns={
+                    "criterion": "Window",
+                    "year": "Year",
+                    "target_cmd": "HS product",
+                    "value": "Reference observations",
+                }
+            )
+        )
+
+        pre_training_worst_display[
+            "Reference observations"
+        ] = (
+            pre_training_worst_display[
+                "Reference observations"
+            ].map(
+                _format_integer
+            )
+        )
+
+                pre_training_availability_display = (
+            pre_training_reference_availability[
+                [
+                    "criterion",
+                    "candidate",
+                    "n_rows",
+                    "share_of_parent",
+                ]
+            ]
+            .copy()
+        )
+
+        pre_training_availability_display[
+            "Window"
+        ] = (
+            pre_training_availability_display[
+                "criterion"
+            ]
+        )
+
+        pre_training_availability_display[
+            "Status"
+        ] = (
+            pre_training_availability_display[
+                "candidate"
+            ].map(
+                {
+                    "all_groups": "All groups",
+                    "reference_available": "Reference available",
+                    "reference_missing": "No reference",
+                }
+            )
+        )
+
+        pre_training_availability_display[
+            "HS × year groups"
+        ] = (
+            pre_training_availability_display[
+                "n_rows"
+            ].map(
+                _format_integer
+            )
+        )
+
+        pre_training_availability_display[
+            "Share"
+        ] = (
+            pre_training_availability_display[
+                "share_of_parent"
+            ].map(
+                _format_percent
+            )
+        )
+
+        pre_training_availability_display = (
+            pre_training_availability_display[
+                [
+                    "Window",
+                    "Status",
+                    "HS × year groups",
+                    "Share",
+                ]
+            ]
+        )
+
+        stability_rows = []
+
+        for label, frame in (
+            (
+                "Reference median",
+                pre_training_reference_median_shift,
+            ),
+            (
+                "Reference MAD",
+                pre_training_reference_mad_shift,
+            ),
+        ):
+
+            for row in frame.itertuples(
+                index=False
+            ):
+
+                stability_rows.append(
+                    {
+                        "Measure": label,
+                        "Comparison": row.criterion,
+                        "Quantile": (
+                            f"P{100 * float(row.quantile):g}"
+                        ),
+                        "Absolute log shift": (
+                            _format_number(
+                                row.value,
+                                digits=4,
+                            )
+                        ),
+                    }
+                )
+
+        pre_training_stability_display = (
+            pd.DataFrame(
+                stability_rows
+            )
+        )
         # ==============================================================
         # Quantity Candidate
         # ==============================================================
@@ -5569,7 +5913,7 @@ def build_validation_report(
                 "median UV can be least informative."
             ),
             "",
-            "## 6. Diagnostic Coverage",
+            "## 6. Diagnostic",
             "",
             (
                 "The following diagnostics describe the temporal and "
@@ -5577,7 +5921,7 @@ def build_validation_report(
                 "They are intended to support the selection of a "
                 "defensible training population that is large enough, "
                 "sufficiently clean, and adequately represented across "
-                "years and products."
+                "years and products."   
             ),
             "",
             "### 6.1. Temporal coverage",
@@ -5625,6 +5969,76 @@ def build_validation_report(
             "",
             _markdown_table(
                 product_display
+            ),
+            "",
+            "",
+            "### 6.3. Pre-training-sample diagnostics",
+            "",
+            (
+                "Before fixing the final training-sample definition, "
+                "Validation compares three causal HS × year unit-value "
+                "reference windows: the focal year alone (`0_0`), the "
+                "focal year plus one preceding year (`1_0`), and the "
+                "focal year plus two preceding years (`2_0`). "
+                "Comparative support statistics use the common mature "
+                f"period `{common_reference_start_year}–"
+                f"{cfg.scope.max_year}` so that every candidate window "
+                "has its full intended history."
+            ),
+            "",
+            "#### 6.3.1. Reference support by temporal window",
+            "",
+            markdown_image(
+                "HS × year reference support by temporal window",
+                figure_paths[
+                    "pre_training_reference_support_comparison"
+                ],
+                document_path=report_path,
+                width=850,
+            ),
+            "",
+            (
+                "The comparison shows whether adding preceding years "
+                "materially improves the sparse lower tail of HS × year "
+                "reference support."
+            ),
+            "",
+            "#### 6.3.2. Reference-support coverage",
+            "",
+            _markdown_table(
+                pre_training_support_bands_display
+            ),
+            "",
+            (
+                "The `≥30` band is particularly relevant because the "
+                "current candidate training rule requires at least 30 "
+                "reference observations."
+            ),
+            "",
+            "#### 6.3.3. Lowest-support HS × year groups",
+            "",
+            _markdown_table(
+                pre_training_worst_display
+            ),
+            "",
+            "#### 6.3.4. Missing HS × year references",
+            "",
+            _markdown_table(
+                pre_training_availability_display
+            ),
+            "",
+            "#### 6.3.5. Reference stability",
+            "",
+            (
+                "Support should not be increased at the cost of materially "
+                "changing the unit-value reference. The following table "
+                "therefore compares changes in the robust median and MAD "
+                "under `1_0` and `2_0` against the same-year `0_0` "
+                "reference."
+            ),
+            "",
+            _markdown_table(
+                pre_training_stability_display
             ),
             "",
             "## 7. Training-sample diagnostics",

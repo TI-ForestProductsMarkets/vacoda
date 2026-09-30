@@ -19,6 +19,23 @@ from vacoda.config.steps.validation import ValidationConfig
 from vacoda.utils.display import get_symbols
 from vacoda.utils.sql import sql_literal
 
+PRE_TRAINING_REFERENCE_WINDOWS = (
+    ("0_0", 0, "Same year"),
+    ("1_0", 1, "Current + 1 previous year"),
+    ("2_0", 2, "Current + 2 previous years"),
+)
+
+
+def get_common_reference_start_year(
+    min_year: int,
+) -> int:
+    """Return first year with full history for all reference windows."""
+
+    return int(min_year) + max(
+        before
+        for _, before, _
+        in PRE_TRAINING_REFERENCE_WINDOWS
+    )
 
 # ======================================================================
 # Helpers
@@ -1416,7 +1433,753 @@ def build_diagnostics(
                     "value": None,
                 }
             )
+    
 
+        training_quantiles = (
+            0.01,
+            0.05,
+            0.10,
+            0.25,
+            0.50,
+            0.75,
+            0.90,
+            0.95,
+            0.975,
+            0.99,
+            0.995,
+        )
+        # ==================================================================
+        # Pre-training-sample diagnostics:
+        # HS × year reference-window sensitivity
+        # ==================================================================
+
+        reference_windows = (
+            PRE_TRAINING_REFERENCE_WINDOWS
+        )
+
+        common_reference_start_year = (
+            get_common_reference_start_year(
+                cfg.scope.min_year
+            )
+        )
+
+        # All window comparisons use the same underlying reference
+        # population as the actual training-sample reference.
+        #
+        # For window k_0, a focal HS × year (p, t) uses:
+        #
+        #     t-k, ..., t
+        #
+        # No future observations are used.
+
+        reference_window_queries = []
+
+        for window_name, before, label in reference_windows:
+
+            reference_window_queries.append(
+                f"""
+                WITH
+
+                focal_groups AS (
+
+                    SELECT DISTINCT
+                        year AS focal_year,
+                        target_cmd
+
+                    FROM validation_diagnostics_base
+                ),
+
+                eligible_reference_rows AS (
+
+                    SELECT
+                        year AS source_year,
+                        target_cmd,
+
+                        LN(
+                            selected_unit_value
+                        ) AS log_unit_value
+
+                    FROM validation_diagnostics_base
+
+                    WHERE training_reference_eligible
+
+                    AND selected_unit_value IS NOT NULL
+                    AND selected_unit_value > 0
+                    AND isfinite(selected_unit_value)
+                ),
+
+                window_reference_rows AS (
+
+                    SELECT
+                        f.focal_year,
+                        f.target_cmd,
+                        r.log_unit_value
+
+                    FROM focal_groups AS f
+
+                    INNER JOIN eligible_reference_rows AS r
+                        ON r.target_cmd = f.target_cmd
+
+                    AND r.source_year
+                        BETWEEN
+                            f.focal_year - {before}
+                        AND
+                            f.focal_year
+                ),
+
+                centres AS (
+
+                    SELECT
+                        focal_year,
+                        target_cmd,
+
+                        COUNT(*)
+                            AS reference_n,
+
+                        MEDIAN(
+                            log_unit_value
+                        )
+                            AS median_log_unit_value
+
+                    FROM window_reference_rows
+
+                    GROUP BY
+                        focal_year,
+                        target_cmd
+                ),
+
+                deviations AS (
+
+                    SELECT
+                        r.focal_year,
+                        r.target_cmd,
+
+                        ABS(
+                            r.log_unit_value
+                            - c.median_log_unit_value
+                        )
+                            AS log_absolute_deviation
+
+                    FROM window_reference_rows AS r
+
+                    INNER JOIN centres AS c
+                        USING (
+                            focal_year,
+                            target_cmd
+                        )
+                ),
+
+                dispersions AS (
+
+                    SELECT
+                        focal_year,
+                        target_cmd,
+
+                        MEDIAN(
+                            log_absolute_deviation
+                        )
+                            AS log_mad
+
+                    FROM deviations
+
+                    GROUP BY
+                        focal_year,
+                        target_cmd
+                )
+
+                SELECT
+                    '{window_name}'
+                        AS reference_window,
+
+                    {before}
+                        AS reference_before,
+
+                    f.focal_year
+                        AS year,
+
+                    f.target_cmd,
+
+                    COALESCE(
+                        c.reference_n,
+                        0
+                    )
+                        AS reference_n,
+
+                    c.median_log_unit_value,
+
+                    d.log_mad,
+
+                    (
+                        f.focal_year - {before}
+                        >= {int(cfg.scope.min_year)}
+                    )
+                        AS full_window_available
+
+                FROM focal_groups AS f
+
+                LEFT JOIN centres AS c
+                    ON c.focal_year = f.focal_year
+                    AND c.target_cmd = f.target_cmd
+
+                LEFT JOIN dispersions AS d
+                    ON d.focal_year = f.focal_year
+                    AND d.target_cmd = f.target_cmd
+                """
+            )
+
+
+        con.execute(
+            """
+            CREATE OR REPLACE TEMP TABLE
+                pre_training_reference_windows
+            AS
+            """
+            + "\nUNION ALL\n".join(
+                reference_window_queries
+            )
+        )
+
+        max_reference_before = max(
+            before
+            for _, before in reference_windows
+        )
+
+        common_reference_start_year = (
+            int(cfg.scope.min_year)
+            + max_reference_before
+        )
+
+
+        # --------------------------------------------------------------
+        # Reference-support distribution by candidate window
+        # --------------------------------------------------------------
+
+        for window_name, _ in reference_windows:
+
+            for quantile in training_quantiles:
+
+                value = con.execute(
+                    f"""
+                    SELECT
+                        QUANTILE_CONT(
+                            reference_n,
+                            {float(quantile):.17g}
+                        )
+
+                    FROM pre_training_reference_windows
+
+                    WHERE reference_window = ?
+                    AND year >= ?
+                    """,
+                    [
+                        window_name,
+                        common_reference_start_year,
+                    ],
+                ).fetchone()[0]
+
+                n_groups = int(
+                    con.execute(
+                        """
+                        SELECT COUNT(*)
+
+                        FROM pre_training_reference_windows
+
+                        WHERE reference_window = ?
+                        AND year >= ?
+                        """,
+                        [
+                            window_name,
+                            common_reference_start_year,
+                        ],
+                    ).fetchone()[0]
+                )
+
+                diagnostics_rows.append(
+                    {
+                        "scope": (
+                            "pre_training_reference_support_distribution"
+                        ),
+
+                        "criterion": window_name,
+                        "candidate": None,
+
+                        "disagreement_threshold": None,
+                        "uv_support_threshold": None,
+                        "uv_distance_threshold": None,
+
+                        "year": None,
+                        "target_cmd": None,
+
+                        "variable": "reference_n",
+                        "quantile": float(quantile),
+
+                        "n_rows": n_groups,
+
+                        "share_of_all": None,
+                        "share_of_parent": None,
+
+                        "value": (
+                            float(value)
+                            if value is not None
+                            else None
+                        ),
+                    }
+                )
+
+        # --------------------------------------------------------------
+        # Reference-support bands
+        # --------------------------------------------------------------
+
+        support_bands = (
+            ("no_support", 0, 0),
+            ("1_4", 1, 4),
+            ("5_9", 5, 9),
+            ("10_29", 10, 29),
+            ("30_plus", 30, None),
+        )
+
+        for window_name, _ in reference_windows:
+
+            total_groups = int(
+                con.execute(
+                    """
+                    SELECT COUNT(*)
+
+                    FROM pre_training_reference_windows
+
+                    WHERE reference_window = ?
+                    AND year >= ?
+                    """,
+                    [
+                        window_name,
+                        common_reference_start_year,
+                    ],
+                ).fetchone()[0]
+            )
+
+            for (
+                band_name,
+                lower,
+                upper,
+            ) in support_bands:
+
+                if upper is None:
+
+                    condition = (
+                        f"reference_n >= {int(lower)}"
+                    )
+
+                elif lower == upper:
+
+                    condition = (
+                        f"reference_n = {int(lower)}"
+                    )
+
+                else:
+
+                    condition = (
+                        f"reference_n BETWEEN "
+                        f"{int(lower)} AND {int(upper)}"
+                    )
+
+                n_groups = int(
+                    con.execute(
+                        f"""
+                        SELECT COUNT(*)
+
+                        FROM pre_training_reference_windows
+
+                        WHERE reference_window = ?
+                        AND year >= ?
+                        AND {condition}
+                        """,
+                        [
+                            window_name,
+                            common_reference_start_year,
+                        ],
+                    ).fetchone()[0]
+                )
+
+                diagnostics_rows.append(
+                    {
+                        "scope": (
+                            "pre_training_reference_support_bands"
+                        ),
+
+                        "criterion": window_name,
+                        "candidate": band_name,
+
+                        "disagreement_threshold": None,
+                        "uv_support_threshold": None,
+                        "uv_distance_threshold": None,
+
+                        "year": None,
+                        "target_cmd": None,
+
+                        "variable": "reference_n",
+                        "quantile": None,
+
+                        "n_rows": n_groups,
+
+                        "share_of_all": None,
+
+                        "share_of_parent": _share(
+                            n_groups,
+                            total_groups,
+                        ),
+
+                        "value": None,
+                    }
+                )
+
+        # --------------------------------------------------------------
+        # Worst-supported HS × year groups
+        # --------------------------------------------------------------
+
+        for window_name, _ in reference_windows:
+
+            worst_groups = con.execute(
+                """
+                SELECT
+                    year,
+                    target_cmd,
+                    reference_n
+
+                FROM pre_training_reference_windows
+
+                WHERE reference_window = ?
+                AND year >= ?
+
+                ORDER BY
+                    reference_n ASC,
+                    year ASC,
+                    target_cmd ASC
+
+                LIMIT 20
+                """,
+                [
+                    window_name,
+                    common_reference_start_year,
+                ],
+            ).fetchdf()
+
+            for row in worst_groups.itertuples(
+                index=False
+            ):
+
+                diagnostics_rows.append(
+                    {
+                        "scope": (
+                            "pre_training_reference_worst_groups"
+                        ),
+
+                        "criterion": window_name,
+                        "candidate": None,
+
+                        "disagreement_threshold": None,
+                        "uv_support_threshold": None,
+                        "uv_distance_threshold": None,
+
+                        "year": int(row.year),
+                        "target_cmd": str(
+                            row.target_cmd
+                        ),
+
+                        "variable": "reference_n",
+                        "quantile": None,
+
+                        "n_rows": int(
+                            row.reference_n
+                        ),
+
+                        "share_of_all": None,
+                        "share_of_parent": None,
+
+                        "value": float(
+                            row.reference_n
+                        ),
+                    }
+                )
+
+
+        # --------------------------------------------------------------
+        # Reference availability
+        # --------------------------------------------------------------
+
+        for window_name, _ in reference_windows:
+
+            (
+                n_total_groups,
+                n_supported_groups,
+                n_unsupported_groups,
+            ) = map(
+                int,
+                con.execute(
+                    """
+                    SELECT
+                        COUNT(*),
+
+                        COUNT(*) FILTER (
+                            WHERE reference_n > 0
+                        ),
+
+                        COUNT(*) FILTER (
+                            WHERE reference_n = 0
+                        )
+
+                    FROM pre_training_reference_windows
+
+                    WHERE reference_window = ?
+                    AND year >= ?
+                    """,
+                    [
+                        window_name,
+                        common_reference_start_year,
+                    ],
+                ).fetchone(),
+            )
+
+            for criterion, n_groups in (
+                (
+                    "all_groups",
+                    n_total_groups,
+                ),
+                (
+                    "reference_available",
+                    n_supported_groups,
+                ),
+                (
+                    "reference_missing",
+                    n_unsupported_groups,
+                ),
+            ):
+
+                diagnostics_rows.append(
+                    {
+                        "scope": (
+                            "pre_training_reference_availability"
+                        ),
+
+                        "criterion": window_name,
+                        "candidate": criterion,
+
+                        "disagreement_threshold": None,
+                        "uv_support_threshold": None,
+                        "uv_distance_threshold": None,
+
+                        "year": None,
+                        "target_cmd": None,
+
+                        "variable": "reference_available",
+                        "quantile": None,
+
+                        "n_rows": n_groups,
+
+                        "share_of_all": None,
+
+                        "share_of_parent": _share(
+                            n_groups,
+                            n_total_groups,
+                        ),
+
+                        "value": None,
+                    }
+                )
+
+        # --------------------------------------------------------------
+        # Reference-median stability relative to same-year reference
+        # --------------------------------------------------------------
+
+        median_shift_quantiles = (
+            0.50,
+            0.75,
+            0.90,
+            0.95,
+            0.99,
+        )
+
+        for window_name in (
+            "1_0",
+            "2_0",
+        ):
+
+            for quantile in median_shift_quantiles:
+
+                value = con.execute(
+                    f"""
+                    SELECT
+                        QUANTILE_CONT(
+                            ABS(
+                                candidate.median_log_unit_value
+                                - baseline.median_log_unit_value
+                            ),
+                            {float(quantile):.17g}
+                        )
+
+                    FROM pre_training_reference_windows
+                        AS candidate
+
+                    INNER JOIN
+                        pre_training_reference_windows
+                        AS baseline
+
+                        ON baseline.year
+                            = candidate.year
+
+                        AND baseline.target_cmd
+                            = candidate.target_cmd
+
+                        AND baseline.reference_window
+                            = '0_0'
+
+                    WHERE candidate.reference_window = ?
+
+                    AND candidate.year >= ?
+
+                    AND candidate.median_log_unit_value
+                        IS NOT NULL
+
+                    AND baseline.median_log_unit_value
+                        IS NOT NULL
+                    """,
+                    [
+                        window_name,
+                        common_reference_start_year,
+                    ],
+                ).fetchone()[0]
+
+                diagnostics_rows.append(
+                    {
+                        "scope": (
+                            "pre_training_reference_median_shift"
+                        ),
+
+                        "criterion": (
+                            f"{window_name}_vs_0_0"
+                        ),
+                        "candidate": None,
+
+                        "disagreement_threshold": None,
+                        "uv_support_threshold": None,
+                        "uv_distance_threshold": None,
+
+                        "year": None,
+                        "target_cmd": None,
+
+                        "variable": (
+                            "absolute_log_median_shift"
+                        ),
+
+                        "quantile": float(
+                            quantile
+                        ),
+
+                        "n_rows": None,
+
+                        "share_of_all": None,
+                        "share_of_parent": None,
+
+                        "value": (
+                            float(value)
+                            if value is not None
+                            else None
+                        ),
+                    }
+                )
+
+
+        # --------------------------------------------------------------
+        # Reference-MAD stability relative to same-year reference
+        # --------------------------------------------------------------
+
+        for window_name in (
+            "1_0",
+            "2_0",
+        ):
+
+            for quantile in median_shift_quantiles:
+
+                value = con.execute(
+                    f"""
+                    SELECT
+                        QUANTILE_CONT(
+                            ABS(
+                                candidate.log_mad
+                                - baseline.log_mad
+                            ),
+                            {float(quantile):.17g}
+                        )
+
+                    FROM pre_training_reference_windows
+                        AS candidate
+
+                    INNER JOIN
+                        pre_training_reference_windows
+                        AS baseline
+
+                        ON baseline.year
+                            = candidate.year
+
+                        AND baseline.target_cmd
+                            = candidate.target_cmd
+
+                        AND baseline.reference_window
+                            = '0_0'
+
+                    WHERE candidate.reference_window = ?
+
+                    AND candidate.year >= ?
+
+                    AND candidate.log_mad
+                        IS NOT NULL
+
+                    AND baseline.log_mad
+                        IS NOT NULL
+                    """,
+                    [
+                        window_name,
+                        common_reference_start_year,
+                    ],
+                ).fetchone()[0]
+
+                diagnostics_rows.append(
+                    {
+                        "scope": (
+                            "pre_training_reference_mad_shift"
+                        ),
+
+                        "criterion": (
+                            f"{window_name}_vs_0_0"
+                        ),
+                        "candidate": None,
+
+                        "disagreement_threshold": None,
+                        "uv_support_threshold": None,
+                        "uv_distance_threshold": None,
+
+                        "year": None,
+                        "target_cmd": None,
+
+                        "variable": (
+                            "absolute_log_mad_shift"
+                        ),
+
+                        "quantile": float(
+                            quantile
+                        ),
+
+                        "n_rows": None,
+
+                        "share_of_all": None,
+                        "share_of_parent": None,
+
+                        "value": (
+                            float(value)
+                            if value is not None
+                            else None
+                        ),
+                    }
+                )
         # ==================================================================
         # Training-sample preparation summary
         # ==================================================================
@@ -1535,20 +2298,6 @@ def build_diagnostics(
         # ==================================================================
         # Selected-quantity UV-distance distribution
         # ==================================================================
-
-        training_quantiles = (
-            0.01,
-            0.05,
-            0.10,
-            0.25,
-            0.50,
-            0.75,
-            0.90,
-            0.95,
-            0.975,
-            0.99,
-            0.995,
-        )
 
         for quantile in training_quantiles:
 
@@ -5026,7 +5775,7 @@ def build_diagnostics(
             "n_candidate_uv_rows",
             "n_both_quantities",
 
-            "model_name"
+            "model_name",
 
             "median_quantity_relative_difference",
             "median_worst_side_uv_log_distance",
