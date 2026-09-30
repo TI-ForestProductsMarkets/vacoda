@@ -96,6 +96,7 @@ def build_diagnostics(
     input_path: Path,
     structural_audit_path: Path,
     quantity_selection_audit_path: Path,
+    model_predictions_path: Path,
     run_id: str,
     force: bool = False,
     logger,
@@ -115,6 +116,16 @@ def build_diagnostics(
         quantity_selection_audit_path
     )
 
+    model_predictions_path = Path(
+        model_predictions_path
+    )
+
+    if not model_predictions_path.is_file():
+        raise FileNotFoundError(
+            "Validation model-prediction artifact not found: "
+            f"{model_predictions_path}"
+        )
+    
     if not input_path.is_file():
         raise FileNotFoundError(
             f"Validation diagnostics input not found: {input_path}"
@@ -197,6 +208,12 @@ def build_diagnostics(
         "  Input: %s",
         input_path,
     )
+
+    logger.info(
+        "  Model predictions: %s",
+        model_predictions_path,
+    )
+
     logger.info(
         "  Structural audit: %s",
         structural_audit_path,
@@ -390,6 +407,54 @@ def build_diagnostics(
             input_path
         )
 
+        model_predictions_sql = sql_literal(
+            model_predictions_path
+        )
+
+        con.execute(
+            f"""
+            CREATE OR REPLACE TEMP VIEW
+                validation_model_predictions
+            AS
+
+            SELECT
+                model_name,
+                model_type,
+                held_out_year,
+
+                target_transformed,
+                prediction_transformed,
+
+                target_quantity_kg,
+                prediction_quantity_kg,
+
+                prediction_transformed
+                - target_transformed
+                    AS log_error,
+
+                ABS(
+                    prediction_transformed
+                    - target_transformed
+                )
+                    AS absolute_log_error,
+
+                POWER(
+                    prediction_transformed
+                    - target_transformed,
+                    2
+                )
+                    AS squared_log_error
+
+            FROM read_parquet(
+                {model_predictions_sql}
+            )
+
+            WHERE target_transformed IS NOT NULL
+            AND prediction_transformed IS NOT NULL
+            AND isfinite(target_transformed)
+            AND isfinite(prediction_transformed)
+            """
+        )
         # --------------------------------------------------------------
         # Safe SQL identifiers
         # --------------------------------------------------------------
@@ -4637,6 +4702,307 @@ def build_diagnostics(
                     }
                 )
 
+
+        # ==================================================================
+        # Model evaluation — absolute log-error distribution
+        # ==================================================================
+
+        model_error_distribution = con.execute(
+            """
+            SELECT
+                model_name,
+
+                COUNT(*)
+                    AS n_rows,
+
+                QUANTILE_CONT(
+                    absolute_log_error,
+                    0.50
+                )
+                    AS p50,
+
+                QUANTILE_CONT(
+                    absolute_log_error,
+                    0.75
+                )
+                    AS p75,
+
+                QUANTILE_CONT(
+                    absolute_log_error,
+                    0.90
+                )
+                    AS p90,
+
+                QUANTILE_CONT(
+                    absolute_log_error,
+                    0.95
+                )
+                    AS p95,
+
+                QUANTILE_CONT(
+                    absolute_log_error,
+                    0.99
+                )
+                    AS p99
+
+            FROM validation_model_predictions
+
+            GROUP BY model_name
+
+            ORDER BY model_name
+            """
+        ).fetchdf()
+
+        quantile_columns = {
+            0.50: "p50",
+            0.75: "p75",
+            0.90: "p90",
+            0.95: "p95",
+            0.99: "p99",
+        }
+
+        for row in model_error_distribution.itertuples(
+            index=False
+        ):
+
+            for quantile, column in (
+                quantile_columns.items()
+            ):
+
+                diagnostics_rows.append(
+                    {
+                        "scope": (
+                            "model_absolute_log_error_distribution"
+                        ),
+                        "criterion": (
+                            "leave_one_year_out"
+                        ),
+                        "model_name": str(
+                            row.model_name
+                        ),
+                        "candidate": None,
+
+                        "disagreement_threshold": None,
+                        "uv_support_threshold": None,
+                        "uv_distance_threshold": None,
+
+                        "disagreement_band": None,
+                        "uv_distance_band": None,
+
+                        "year": None,
+                        "target_cmd": None,
+
+                        "variable": (
+                            "absolute_log_error"
+                        ),
+                        "quantile": float(
+                            quantile
+                        ),
+
+                        "n_rows": int(
+                            row.n_rows
+                        ),
+
+                        "share_of_all": None,
+                        "share_of_parent": None,
+
+                        "value": float(
+                            getattr(
+                                row,
+                                column,
+                            )
+                        ),
+                    }
+                )
+        # ==================================================================
+        # Model evaluation — performance by held-out year
+        # ==================================================================
+
+        model_performance_by_year = con.execute(
+            """
+            SELECT
+                model_name,
+                held_out_year,
+
+                COUNT(*)
+                    AS n_rows,
+
+                AVG(
+                    absolute_log_error
+                )
+                    AS mae_log,
+
+                SQRT(
+                    AVG(
+                        squared_log_error
+                    )
+                )
+                    AS rmse_log,
+
+                MEDIAN(
+                    absolute_log_error
+                )
+                    AS median_absolute_log_error
+
+            FROM validation_model_predictions
+
+            GROUP BY
+                model_name,
+                held_out_year
+
+            ORDER BY
+                model_name,
+                held_out_year
+            """
+        ).fetchdf()
+
+        for row in model_performance_by_year.itertuples(
+            index=False
+        ):
+
+            metrics = {
+                "mae_log": row.mae_log,
+                "rmse_log": row.rmse_log,
+                "median_absolute_log_error": (
+                    row.median_absolute_log_error
+                ),
+            }
+
+            for variable, value in metrics.items():
+
+                diagnostics_rows.append(
+                    {
+                        "scope": (
+                            "model_performance_by_year"
+                        ),
+                        "criterion": (
+                            "leave_one_year_out"
+                        ),
+                        "model_name": str(
+                            row.model_name
+                        ),
+                        "candidate": None,
+
+                        "disagreement_threshold": None,
+                        "uv_support_threshold": None,
+                        "uv_distance_threshold": None,
+
+                        "disagreement_band": None,
+                        "uv_distance_band": None,
+
+                        "year": int(
+                            row.held_out_year
+                        ),
+                        "target_cmd": None,
+
+                        "variable": variable,
+                        "quantile": None,
+
+                        "n_rows": int(
+                            row.n_rows
+                        ),
+
+                        "share_of_all": None,
+                        "share_of_parent": None,
+
+                        "value": float(
+                            value
+                        ),
+                    }
+                )
+        # ==================================================================
+        # Model evaluation — overall cross-validated performance
+        # ==================================================================
+
+        model_performance = con.execute(
+            """
+            SELECT
+                model_name,
+                model_type,
+
+                COUNT(*)
+                    AS n_rows,
+
+                AVG(
+                    absolute_log_error
+                )
+                    AS mae_log,
+
+                SQRT(
+                    AVG(
+                        squared_log_error
+                    )
+                )
+                    AS rmse_log,
+
+                MEDIAN(
+                    absolute_log_error
+                )
+                    AS median_absolute_log_error
+
+            FROM validation_model_predictions
+
+            GROUP BY
+                model_name,
+                model_type
+
+            ORDER BY
+                model_name
+            """
+        ).fetchdf()
+
+        for row in model_performance.itertuples(
+            index=False
+        ):
+
+            metrics = {
+                "mae_log": row.mae_log,
+                "rmse_log": row.rmse_log,
+                "median_absolute_log_error": (
+                    row.median_absolute_log_error
+                ),
+            }
+
+            for variable, value in metrics.items():
+
+                diagnostics_rows.append(
+                    {
+                        "scope": (
+                            "model_performance_overall"
+                        ),
+                        "criterion": (
+                            "leave_one_year_out"
+                        ),
+                        "model_name": str(
+                            row.model_name
+                        ),
+                        "candidate": None,
+
+                        "disagreement_threshold": None,
+                        "uv_support_threshold": None,
+                        "uv_distance_threshold": None,
+
+                        "disagreement_band": None,
+                        "uv_distance_band": None,
+
+                        "year": None,
+                        "target_cmd": None,
+
+                        "variable": variable,
+                        "quantile": None,
+
+                        "n_rows": int(
+                            row.n_rows
+                        ),
+
+                        "share_of_all": None,
+                        "share_of_parent": None,
+
+                        "value": float(
+                            value
+                        ),
+                    }
+                )
         # ==================================================================
         # Diagnostics artifact
         # ==================================================================
@@ -4660,6 +5026,8 @@ def build_diagnostics(
             "n_candidate_uv_rows",
             "n_both_quantities",
 
+            "model_name"
+
             "median_quantity_relative_difference",
             "median_worst_side_uv_log_distance",
             "median_uv_reference_observations",
@@ -4679,6 +5047,7 @@ def build_diagnostics(
                 "scope",
                 "criterion",
                 "candidate",
+                "model_name",
 
                 "disagreement_threshold",
                 "uv_support_threshold",

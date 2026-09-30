@@ -1485,6 +1485,97 @@ def _plot_quantity_candidate_spread(
     figure.savefig(output_path, dpi=180, bbox_inches="tight")
     plt.close(figure)
 
+def _plot_model_performance_by_year(
+    *,
+    diagnostics: pd.DataFrame,
+    output_path: Path,
+) -> None:
+    """Plot LOYO MAE by candidate model and held-out year."""
+
+    frame = _scope_frame(
+        diagnostics,
+        "model_performance_by_year",
+    )
+
+    frame = frame[
+        frame["variable"].eq(
+            "mae_log"
+        )
+    ].copy()
+
+    if frame.empty:
+        raise RuntimeError(
+            "Model performance-by-year diagnostics "
+            "are unavailable."
+        )
+
+    figure, axis = plt.subplots(
+        figsize=(11, 6)
+    )
+
+    for model_name, group in frame.groupby(
+        "model_name",
+        sort=False,
+    ):
+
+        group = group.sort_values(
+            "year"
+        )
+
+        axis.plot(
+            group["year"],
+            group["value"],
+            marker="o",
+            label=str(
+                model_name
+            ),
+        )
+
+    axis.set_title(
+        "Leave-one-year-out model performance"
+    )
+
+    axis.set_xlabel(
+        "Held-out year"
+    )
+
+    axis.set_ylabel(
+        "MAE on log quantity"
+    )
+
+    axis.set_xticks(
+        sorted(
+            frame["year"]
+            .dropna()
+            .astype(int)
+            .unique()
+        )
+    )
+
+    axis.grid(
+        axis="y",
+        linestyle="--",
+        alpha=0.5,
+    )
+
+    axis.set_axisbelow(
+        True
+    )
+
+    axis.legend()
+
+    figure.tight_layout()
+
+    figure.savefig(
+        output_path,
+        dpi=180,
+        bbox_inches="tight",
+    )
+
+    plt.close(
+        figure
+    )
+
 
 def _plot_quantity_candidate_conditioned_summary(
     *,
@@ -1995,7 +2086,59 @@ def build_validation_report(
             ]
         )
 
+        # ==========================================================
+        # Model Diagnostics
+        # ==========================================================
+        model_performance_overall = _scope_frame(
+            diagnostics,
+            "model_performance_overall",
+        )
 
+        model_performance_by_year = _scope_frame(
+            diagnostics,
+            "model_performance_by_year",
+        )
+
+        model_error_distribution = _scope_frame(
+            diagnostics,
+            "model_absolute_log_error_distribution",
+        )
+
+        model_performance_display = (
+            model_performance_overall
+            .pivot_table(
+                index="model_name",
+                columns="variable",
+                values="value",
+                aggfunc="first",
+            )
+            .reset_index()
+            .rename(
+                columns={
+                    "model_name": "Model",
+                    "mae_log": "MAE log",
+                    "rmse_log": "RMSE log",
+                    "median_absolute_log_error": (
+                        "Median absolute log error"
+                    ),
+                }
+            )
+        )
+
+        for column in (
+            "MAE log",
+            "RMSE log",
+            "Median absolute log error",
+        ):
+            model_performance_display[column] = (
+                model_performance_display[column]
+                .map(
+                    lambda value: _format_number(
+                        value,
+                        digits=4,
+                    )
+                )
+            )
         # ============================================================
         # Training Sample Diagnostics
         # ============================================================
@@ -5528,6 +5671,31 @@ def build_validation_report(
             "",
             _markdown_table(
                 candidate_training_rule_display
+            ),
+            "",
+            "## 7. Model cross-validation",
+            "",
+            (
+                "Candidate models were evaluated using leave-one-year-out "
+                "cross-validation. Each year's observations were predicted "
+                "by models trained on all remaining years."
+            ),
+            "",
+            "### 7.1. Overall out-of-fold performance",
+            "",
+            _markdown_table(
+                model_performance_display
+            ),
+            "",
+            "### 7.2. Performance by held-out year",
+            "",
+            markdown_image(
+                "Leave-one-year-out model performance",
+                figure_paths[
+                    "model_performance_by_year"
+                ],
+                document_path=report_path,
+                width=850,
             ),
             "",
             "## 7. Current methodological assessment",

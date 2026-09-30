@@ -334,6 +334,14 @@ def run_validation_workflow(
             ),
         )
 
+        model_predictions_path = require_artifact(
+            result=model_predictions_result,
+            path_key="model_predictions_path",
+            consumer_step="Build Diagnostics",
+            producer_product=(
+                "Validation model predictions"
+            ),
+        )
         
         # ==================================================================
         # Step 7 — Build diagnostics
@@ -349,6 +357,7 @@ def run_validation_workflow(
                 input_path=training_sample_path,
                 structural_audit_path=structural_audit_path,
                 quantity_selection_audit_path=quantity_selection_audit_path,
+                model_predictions_path=model_predictions_path,
                 run_id=run_id,
                 force=force,
                 logger=logger,
