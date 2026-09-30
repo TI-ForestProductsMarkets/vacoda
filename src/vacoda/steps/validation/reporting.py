@@ -4564,45 +4564,119 @@ def build_validation_report(
                 },
             ]
         )
+
+        ### LOG
+        training_cfg = cfg.model.training_sample
+        validation_cfg = cfg.model.validation
+
+        reference_before = int(
+            training_cfg.reference_year_window.before
+        )
+
+        reference_after = int(
+            training_cfg.reference_year_window.after
+        )
+
+        min_reference_n = int(
+            training_cfg.min_hs_year_reference_observations
+        )
+
+        max_uv_distance = float(
+            training_cfg.max_normalized_uv_distance_mad
+        )
+
+        require_reference_eligible = bool(
+            training_cfg.require_reference_eligible
+        )
+
+        require_positive_uv_mad = bool(
+            training_cfg.require_positive_uv_mad
+        )
+
+        validation_strategy = str(
+            validation_cfg.strategy
+        )
+
+        minimum_training_years = int(
+            validation_cfg.minimum_training_years
+        )
+
+        enabled_model_names = list(
+            cfg.model.models.enabled().keys()
+        )
+
+        configured_years = list(
+            range(
+                int(cfg.scope.min_year),
+                int(cfg.scope.max_year) + 1,
+            )
+        )
+
+        training_definition = (
+            f"refwin_{reference_before}_{reference_after}"
+            f"_n{min_reference_n}"
+            f"_uv{max_uv_distance:g}".replace(".", "p")
+        )
+
+        if validation_strategy == "expanding_window":
+            configured_validation_years = (
+                configured_years[
+                    minimum_training_years:
+                ]
+            )
+        else:
+            configured_validation_years = []
         # ==============================================================
         # Report
         # ==============================================================
-
         lines = [
             (
                 "# VACODA Validation Decision Report — "
                 f"{cfg.scope.target_hs.upper()}"
             ),
             "",
-            f"**Run ID:** `{run_id}`  ",
-            (
-                "**Pipeline scope:** "
-                f"`{cfg.scope.min_year}–{cfg.scope.max_year}`  "
-            ),
-            (
-                "**Structural audit:** "
-                f"`{'PASS' if audit_passed else 'FAIL'}`  "
-            ),
-            (
-                "**Model fitted:** `False`  "
-            ),
-            (
-                "**Training population selected:** "
-                f"`{training_selection_enabled}`"
-            ),
-            "",
-            (
-                "This report documents the current Validation state and "
-                "the evidence used to develop the quantity-validation "
-                "model. At this stage no machine-learning model has been "
-                "fitted and no quantity observations have been corrected "
-                "or imputed."
-            ),
-            "",
             "__TOC__",
-            "",           
-            "## 1. Validation scope and terminology",
-            "### 1.1 Validation Scope",
+            "",
+            "",
+            "## 1. Run overview",
+            "",
+            f"- **Run ID:** `{run_id}`",
+            f"- **Target HS:** `{cfg.scope.target_hs.upper()}`",
+            (
+                f"- **Configured year range:** "
+                f"{cfg.scope.min_year}–{cfg.scope.max_year}"
+            ),
+            (
+                f"- **Training Sample Criteria:** "
+                f" - Training definition:`{training_definition}`"
+                f" - Reference-year window:`before={reference_before}, after={reference_after}`"
+                f" - Minimum HS × year reference observations:`{min_reference_n}`"
+                f" - Maximum normalized UV distance:`{max_uv_distance:g} MAD`"
+                f" - Require positive UV MAD:`{require_positive_uv_mad}`"
+                f" - Require reference eligible:`{require_reference_eligible}`"
+            ),
+            (
+                f"- **Validation Criteria:** "
+                f" - Strategy: `{validation_strategy}`"
+                f" - Minimum training years: `{minimum_training_years}`"
+                f" - Validation years: `{', '.join(str(year) for year in configured_validation_years)}`"
+            ),
+            "- **Enabled candidate models:**",
+            *[
+                f"  - `{name}`"
+                for name in enabled_model_names
+            ],
+            "- **Artifacts:**",
+            (
+                f"- **Prepared input:** `{prepared_input_path}`",
+                f"- **Structural audit:** `{structural_audit_path}`",
+                f"- **Diagnostics:** `{diagnostics_path}`",
+                f"- **Figure directory:** `{figure_dir}`",
+                f"- **Report:** `{report_path}`"
+            ),
+            "",
+            "## 2. Validation scope and terminology",
+            "### 2.1 Validation Scope",
             "",
             (
                 "The final VACODA Validation workflow assesses whether "
@@ -4612,7 +4686,7 @@ def build_validation_report(
                 "quantities can be reconstructed with sufficient evidence."
             ),
             "",
-            "### 1.2. Terminology",
+            "### 2.2. Terminology",
                         (
                 r"The following terminology is used throughout this section \(unless stated otherwise, "
                 r"\(p\) denotes the HS product, \(t\) the year, "
@@ -4757,7 +4831,7 @@ def build_validation_report(
             r"\frac{D^{UV}_{i,p,t}}{MAD^{UV}_{p,t}}",
             "$$",
             "",
-            "## 2. Structural integrity audit",
+            "## 3. Structural integrity audit",
             "",
             (
                 f"- The prepared Validation dataset contains "
@@ -4782,7 +4856,7 @@ def build_validation_report(
                 "Economic plausibility is not decided here."
             ),
             "",
-            "## 3. Quantity diagnostics",
+            "## 4. Quantity diagnostics",
             "",
             (
                 "Quantity diagnostics examine the available quantity "
@@ -4792,7 +4866,7 @@ def build_validation_report(
                 "available for candidate training selection."
             ),
             "",
-            "### 3.1. Quantity availability by reporting side",
+            "### 4.1. Quantity availability by reporting side",
             "",
             (
                 "Validation first establishes which reporter-side quantity "
@@ -4828,7 +4902,7 @@ def build_validation_report(
             ),
             "",
             "",
-            "### 3.2. Quantity-evidence population",
+            "### 4.2. Quantity-evidence population",
             "",
             (
                 "This diagnostic identifies the subset of Validation "
@@ -4904,7 +4978,7 @@ def build_validation_report(
                 "disagreement and UV distance available."
             ),
             "",
-            "### 3.3. Diagnostics for directly observed bilateral quantities",
+            "### 4.3. Diagnostics for directly observed bilateral quantities",
             "",
             (
                 "- Unless stated otherwise, all diagnostics in this section are "
@@ -4913,7 +4987,7 @@ def build_validation_report(
                 "rather than estimated."
             ),
             "",
-            markdown_styled_heading("3.3.1. Exporter quantity relative to importer"),
+            markdown_styled_heading("4.3.1. Exporter quantity relative to importer"),
             "",
             (
                 "For bilateral rows where both exporter and importer "
@@ -5009,7 +5083,7 @@ def build_validation_report(
                 "extreme asymmetric observations."
             ),
             "",
-            markdown_styled_heading("3.3.2. Threshold sensitivity"),
+            markdown_styled_heading("4.3.2. Threshold sensitivity"),
             "",
             (
                 "- This diagnostic evaluates three evidence measures within the directly observed bilateral population, "
@@ -5040,7 +5114,7 @@ def build_validation_report(
                 "quantity population."
             ),
             "",
-            markdown_styled_heading("3.3.3. Joint threshold combinations"),
+            markdown_styled_heading("4.3.3. Joint threshold combinations"),
             "",
             (
                 "The following grid applies the three candidate-selection "
@@ -5066,7 +5140,7 @@ def build_validation_report(
                 "a large or small population."
             ),
             "",
-            markdown_styled_heading("3.3.4. Mirror quantity disagreement and bilateral UV plausibility"),
+            markdown_styled_heading("4.3.4. Mirror quantity disagreement and bilateral UV plausibility"),
             "",
             (
                 "- Mirror quantity disagreement and bilateral UV distance "
@@ -5097,7 +5171,7 @@ def build_validation_report(
                 "can agree on a quantity that is economically unusual."
             ),
             "",
-            markdown_styled_heading("3.3.5. Side-specific unit-value plausibility"),
+            markdown_styled_heading("4.3.5. Side-specific unit-value plausibility"),
             "",
             (
                 "The following table evaluates Exporter UV distance and "
@@ -5110,7 +5184,7 @@ def build_validation_report(
                 side_plausibility_display
             ),
             "",
-            markdown_styled_heading("3.3.6. Distributional evidence"),
+            markdown_styled_heading("4.3.6. Distributional evidence"),
             "",
             (
                 "The following diagnostics describe the distribution of "
@@ -5158,7 +5232,7 @@ def build_validation_report(
             ),
             "",
             "",
-            markdown_styled_heading("3.3.7. Quantity–UV relationship"),
+            markdown_styled_heading("4.3.7. Quantity–UV relationship"),
             "",
             (
                 "The previous UV diagnostics compare implied unit values "
@@ -5257,7 +5331,7 @@ def build_validation_report(
                 "Product-year UV reference."
             ),
             "",
-            "## 4. Quantity Candidate Evaluation",
+            "## 5. Quantity Candidate Evaluation",
             "",
             (
                 "Validation retains exporter and importer quantities as the "
@@ -5276,7 +5350,7 @@ def build_validation_report(
                 "The comparison is therefore like-for-like across candidates."
             ),
             "",
-            "### 4.1. Overall candidate comparison",
+            "### 5.1. Overall candidate comparison",
             "",
             _markdown_table(candidate_summary_display),
             "",
@@ -5294,7 +5368,7 @@ def build_validation_report(
                 "typically moves from the two underlying reporter quantities."
             ),
             "",
-            "### 4.2. Candidate behavior as mirror disagreement increases",
+            "### 5.2. Candidate behavior as mirror disagreement increases",
             "",
             _markdown_table(disagreement_display),
             "",
@@ -5327,7 +5401,7 @@ def build_validation_report(
                 "disagreement is large."
             ),
             "",
-            "### 4.3. Closest candidate to the product-year UV reference",
+            "### 5.3. Closest candidate to the product-year UV reference",
             "",
             _markdown_table(closest_display),
             "",
@@ -5338,7 +5412,7 @@ def build_validation_report(
                 width=850,
             ),
             "",
-            "### 4.4. Candidate spread",
+            "### 5.4. Candidate spread",
             "",
             (
                 "- Candidate spread measures how far apart the three fixed quantity "
@@ -5387,7 +5461,7 @@ def build_validation_report(
                 width=850,
             ),
             "",
-            "### 4.5. Temporal stability",
+            "### 5.5. Temporal stability",
             "",
             _markdown_table(candidate_year_display),
             "",
@@ -5404,7 +5478,7 @@ def build_validation_report(
                 "a small number of years."
             ),
             "",
-            "### 4.6. Product stability",
+            "### 5.6. Product stability",
             "",
             markdown_image(
                 "Product-level distribution of candidate median UV distance",
@@ -5421,7 +5495,7 @@ def build_validation_report(
                 "report table."
             ),
             "",
-            "### 4.7. Quantity-conditioned UV plausibility",
+            "### 5.7. Quantity-conditioned UV plausibility",
             "",
             (
                 "The unconditional Product-year UV reference does not account "
@@ -5450,7 +5524,7 @@ def build_validation_report(
                 width=850,
             ),
             "",
-            "#### 4.7.1. Quantity-conditioned plausibility by mirror disagreement",
+            "#### 5.7.1. Quantity-conditioned plausibility by mirror disagreement",
             "",
             _markdown_table(conditioned_disagreement_display),
             "",
@@ -5461,7 +5535,7 @@ def build_validation_report(
                 width=850,
             ),
             "",
-            "#### 4.7.2. Candidate closest to quantity-conditioned expected UV",
+            "#### 5.7.2. Candidate closest to quantity-conditioned expected UV",
             "",
             _markdown_table(conditioned_closest_display),
             "",
@@ -5479,7 +5553,7 @@ def build_validation_report(
                 "median UV can be least informative."
             ),
             "",
-            "## 5. Diagnostic Coverage",
+            "## 6. Diagnostic Coverage",
             "",
             (
                 "The following diagnostics describe the temporal and "
@@ -5490,7 +5564,7 @@ def build_validation_report(
                 "years and products."
             ),
             "",
-            "### 5.1. Temporal coverage",
+            "### 6.1. Temporal coverage",
             "",
             (
                 "A candidate training population must provide "
@@ -5510,7 +5584,7 @@ def build_validation_report(
                 document_path=report_path,
             ),
             "",
-            "### 5.2. Product coverage",
+            "### 6.2. Product coverage",
             "",
             (
                 f"- The current diagnostics contain `{_format_integer(n_products)}` "
@@ -5537,7 +5611,7 @@ def build_validation_report(
                 product_display
             ),
             "",
-            "## 6. Training-sample diagnostics",
+            "## 7. Training-sample diagnostics",
             "",
             (
                 "- The training-sample step evaluates the quantity candidate "
@@ -5553,13 +5627,13 @@ def build_validation_report(
             ),
             "",
             "",
-            "### 6.1. Training-sample population",
+            "### 7.1. Training-sample population",
             "",
             _markdown_table(
                 training_sample_summary_display
             ),
             "",
-            "### 6.2. Selected-unit-value distance",
+            "### 7.2. Selected-unit-value distance",
             "",
             (
                 "The following distribution shows how far the unit value implied by "
@@ -5583,7 +5657,7 @@ def build_validation_report(
                 table_width=38,
             ),
             "",
-            "### 6.3. HS × year reference support",
+            "### 7.3. HS × year reference support",
             "",
             (
                 "Reference support is shown across distinct HS × year groups. "
@@ -5606,7 +5680,7 @@ def build_validation_report(
                 table_width=34,
             ),
             "",
-            "### 6.4. HS × year unit-value dispersion",
+            "### 7.4. HS × year unit-value dispersion",
             "",
             (
                 "The log-MAD describes within-group dispersion around the "
@@ -5629,7 +5703,7 @@ def build_validation_report(
                 table_width=34,
             ),
             "",
-            "### 6.5. Selected-unit-value distance normalized by log-UV MAD",
+            "### 7.5. Selected-unit-value distance normalized by log-UV MAD",
             "",
             (
                 "- Different HS × year groups have different natural levels of "
@@ -5664,7 +5738,7 @@ def build_validation_report(
                 table_width=34,
             ),
             "",
-            markdown_styled_heading(text="6.5.1. Candidate normalized-distance cutoffs"),
+            markdown_styled_heading(text="7.5.1. Candidate normalized-distance cutoffs"),
             "",
             (
                 "To support the eventual training-population decision, Validation evaluates several "
@@ -5683,7 +5757,7 @@ def build_validation_report(
                 normalized_cutoff_display
             ),
             "",
-            markdown_styled_heading(text="6.5.2. Candidate joint training rule"),
+            markdown_styled_heading(text="7.5.2. Candidate joint training rule"),
             "",
             (
                 "The currently preferred candidate rule combines the direct "
@@ -5696,7 +5770,7 @@ def build_validation_report(
                 candidate_training_rule_display
             ),
             "",
-            "## 7. Model cross-validation",
+            "## 8. Model cross-validation",
             "",
             (
                 "Candidate models were evaluated using leave-one-year-out "
@@ -5704,13 +5778,13 @@ def build_validation_report(
                 "by models trained on all remaining years."
             ),
             "",
-            "### 7.1. Overall out-of-fold performance",
+            "### 8.1. Overall out-of-fold performance",
             "",
             _markdown_table(
                 model_performance_display
             ),
             "",
-            "### 7.2. Performance by held-out year",
+            "### 8.2. Performance by held-out year",
             "",
             markdown_image(
                 "Leave-one-year-out model performance",
@@ -5721,7 +5795,7 @@ def build_validation_report(
                 width=850,
             ),
             "",
-            "## 7. Current methodological assessment",
+            "## 9. Current methodological assessment",
             "",
             training_status,
             "",
@@ -5746,7 +5820,7 @@ def build_validation_report(
                 "all available quantities are true."
             ),
             "",
-            "## 8. Output artifacts",
+            "## 10. Output artifacts",
             "",
             (
                 f"- Prepared input: "

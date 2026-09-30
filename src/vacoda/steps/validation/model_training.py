@@ -57,7 +57,7 @@ from vacoda.utils.display import get_symbols
 from vacoda.utils.sql import sql_literal
 
 
-MODEL_CACHE_VERSION = 1
+MODEL_CACHE_VERSION = 2
 
 MODEL_ROW_KEY = [
     "year",
@@ -1699,6 +1699,8 @@ def train_validation_models(
                     fold_predictions
                 )
 
+                fold_start = perf_counter()
+
                 logger.info(
                     "  Fold %s complete in %.1f s",
                     held_out_year,
@@ -1730,8 +1732,11 @@ def train_validation_models(
                 )
             )
 
-            expected_rows = len(
-                frame
+            expected_rows = int(
+                np.isin(
+                    fold_years,
+                    validation_years,
+                ).sum()
             )
 
             if (
@@ -1876,8 +1881,19 @@ def train_validation_models(
         # one OOF prediction per selected row per enabled model
         # --------------------------------------------------------------
 
+        n_validation_rows_total = int(
+            frame[
+                validation_year_col
+            ]
+            .astype(int)
+            .isin(
+                validation_years
+            )
+            .sum()
+        )
+
         expected_prediction_rows = (
-            len(frame)
+            n_validation_rows_total
             * len(enabled_models)
         )
 
@@ -1891,8 +1907,7 @@ def train_validation_models(
         ):
             raise RuntimeError(
                 "Combined Validation model-prediction row count "
-                "does not match the expected leave-one-year-out "
-                "coverage. "
+                "does not match the expected expanding-window validation coverage."
                 f"Expected {expected_prediction_rows:,}; "
                 f"found {actual_prediction_rows:,}."
             )
