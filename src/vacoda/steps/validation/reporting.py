@@ -1709,6 +1709,166 @@ def _plot_quantity_candidate_closest_conditioned(
     plt.close(figure)
 
 
+def _build_validation_figure_paths(
+    *,
+    figure_dir: Path,
+    target_hs: str,
+) -> dict[str, Path]:
+    """Return the standard figure paths for the Validation report."""
+
+    target_hs = str(target_hs).lower()
+
+    return {
+        "training_uv_distance_distribution": (
+            figure_dir
+            / (
+                f"target_{target_hs}"
+                "_validation_training_uv_distance_distribution.png"
+            )
+        ),
+        "training_reference_support_distribution": (
+            figure_dir
+            / (
+                f"target_{target_hs}"
+                "_validation_training_reference_support_distribution.png"
+            )
+        ),
+        "training_uv_dispersion_distribution": (
+            figure_dir
+            / (
+                f"target_{target_hs}"
+                "_validation_training_uv_dispersion_distribution.png"
+            )
+        ),
+        "training_normalized_uv_distance_distribution": (
+            figure_dir
+            / (
+                f"target_{target_hs}"
+                "_validation_training_normalized_uv_distance_distribution.png"
+            )
+        ),
+        "training_population_funnel": (
+            figure_dir
+            / (
+                f"target_{target_hs}"
+                "_validation_training_population_funnel.png"
+            )
+        ),
+        "training_evidence_by_year": (
+            figure_dir
+            / (
+                f"target_{target_hs}"
+                "_validation_training_evidence_by_year.png"
+            )
+        ),
+        "training_evidence_distributions": (
+            figure_dir
+            / (
+                f"target_{target_hs}"
+                "_validation_training_evidence_distributions.png"
+            )
+        ),
+        "export_import_quantity_ratio_distribution": (
+            figure_dir
+            / (
+                f"target_{target_hs}"
+                "_validation_export_import_quantity_ratio_distribution.png"
+            )
+        ),
+        "quantity_uv_slope_distribution": (
+            figure_dir
+            / (
+                f"target_{target_hs}"
+                "_validation_quantity_uv_slope_distribution.png"
+            )
+        ),
+        "quantity_uv_r_squared_distribution": (
+            figure_dir
+            / (
+                f"target_{target_hs}"
+                "_validation_quantity_uv_r_squared_distribution.png"
+            )
+        ),
+        "quantity_candidate_uv_summary": (
+            figure_dir
+            / (
+                f"target_{target_hs}"
+                "_validation_quantity_candidate_uv_summary.png"
+            )
+        ),
+        "quantity_candidate_by_disagreement": (
+            figure_dir
+            / (
+                f"target_{target_hs}"
+                "_validation_quantity_candidate_by_disagreement.png"
+            )
+        ),
+        "quantity_candidate_by_disagreement_factor": (
+            figure_dir
+            / (
+                f"target_{target_hs}"
+                "_validation_quantity_candidate_by_disagreement_factor.png"
+            )
+        ),
+        "quantity_candidate_closest_reference": (
+            figure_dir
+            / (
+                f"target_{target_hs}"
+                "_validation_quantity_candidate_closest_reference.png"
+            )
+        ),
+        "quantity_candidate_by_year": (
+            figure_dir
+            / (
+                f"target_{target_hs}"
+                "_validation_quantity_candidate_by_year.png"
+            )
+        ),
+        "quantity_candidate_product_distribution": (
+            figure_dir
+            / (
+                f"target_{target_hs}"
+                "_validation_quantity_candidate_product_distribution.png"
+            )
+        ),
+        "quantity_candidate_spread": (
+            figure_dir
+            / (
+                f"target_{target_hs}"
+                "_validation_quantity_candidate_spread.png"
+            )
+        ),
+        "quantity_candidate_conditioned_summary": (
+            figure_dir
+            / (
+                f"target_{target_hs}"
+                "_validation_quantity_candidate_conditioned_summary.png"
+            )
+        ),
+        "quantity_candidate_conditioned_by_disagreement": (
+            figure_dir
+            / (
+                f"target_{target_hs}"
+                "_validation_quantity_candidate_conditioned_by_disagreement.png"
+            )
+        ),
+        "quantity_candidate_closest_conditioned": (
+            figure_dir
+            / (
+                f"target_{target_hs}"
+                "_validation_quantity_candidate_closest_conditioned.png"
+            )
+        ),
+        "model_performance_by_year": (
+            figure_dir
+            / (
+                f"target_{target_hs}"
+                "_validation_model_performance_by_year.png"
+            )
+        ),
+    }
+
+
 # ======================================================================
 # Main reporting function
 # ======================================================================
@@ -3850,153 +4010,10 @@ def build_validation_report(
         # Figures
         # ==============================================================
 
-        figure_paths = {
-
-            "training_uv_distance_distribution": (
-                figure_dir
-                / (
-                    f"target_{cfg.scope.target_hs.lower()}"
-                    "_validation_training_uv_distance_distribution.png"
-                )
-            ),
-            "training_reference_support_distribution": (
-                figure_dir
-                / (
-                    f"target_{cfg.scope.target_hs.lower()}"
-                    "_validation_training_reference_support_distribution.png"
-                )
-            ),
-
-            "training_uv_dispersion_distribution": (
-                figure_dir
-                / (
-                    f"target_{cfg.scope.target_hs.lower()}"
-                    "_validation_training_uv_dispersion_distribution.png"
-                )
-            ),
-
-            "training_normalized_uv_distance_distribution": (
-                figure_dir
-                / (
-                    f"target_{cfg.scope.target_hs.lower()}"
-                    "_validation_training_normalized_uv_distance_distribution.png"
-                )
-            ),
-            "training_population_funnel": (
-                figure_dir
-                / (
-                    f"target_{cfg.scope.target_hs.lower()}"
-                    "_validation_training_population_funnel.png"
-                )
-            ),
-            "training_evidence_by_year": (
-                figure_dir
-                / (
-                    f"target_{cfg.scope.target_hs.lower()}"
-                    "_validation_training_evidence_by_year.png"
-                )
-            ),
-            "training_evidence_distributions": (
-                figure_dir
-                / (
-                    f"target_{cfg.scope.target_hs.lower()}"
-                    "_validation_training_evidence_distributions.png"
-                )
-            ),
-            "export_import_quantity_ratio_distribution": (
-                figure_dir
-                / (
-                    f"target_{cfg.scope.target_hs.lower()}"
-                    "_validation_export_import_quantity_ratio_distribution.png"
-                )
-            ),
-
-            "quantity_uv_slope_distribution": (
-                figure_dir
-                / (
-                    f"target_{cfg.scope.target_hs.lower()}"
-                    "_validation_quantity_uv_slope_distribution.png"
-                )
-            ),
-
-            "quantity_uv_r_squared_distribution": (
-                figure_dir
-                / (
-                    f"target_{cfg.scope.target_hs.lower()}"
-                    "_validation_quantity_uv_r_squared_distribution.png"
-                )
-            ),
-            "quantity_candidate_uv_summary": (
-                figure_dir
-                / (
-                    f"target_{cfg.scope.target_hs.lower()}"
-                    "_validation_quantity_candidate_uv_summary.png"
-                )
-            ),
-            "quantity_candidate_by_disagreement": (
-                figure_dir
-                / (
-                    f"target_{cfg.scope.target_hs.lower()}"
-                    "_validation_quantity_candidate_by_disagreement.png"
-                )
-            ),
-            "quantity_candidate_by_disagreement_factor": (
-                figure_dir
-                / (
-                    f"target_{cfg.scope.target_hs.lower()}"
-                    "_validation_quantity_candidate_by_disagreement_factor.png"
-                )
-            ),
-            "quantity_candidate_closest_reference": (
-                figure_dir
-                / (
-                    f"target_{cfg.scope.target_hs.lower()}"
-                    "_validation_quantity_candidate_closest_reference.png"
-                )
-            ),
-            "quantity_candidate_by_year": (
-                figure_dir
-                / (
-                    f"target_{cfg.scope.target_hs.lower()}"
-                    "_validation_quantity_candidate_by_year.png"
-                )
-            ),
-            "quantity_candidate_product_distribution": (
-                figure_dir
-                / (
-                    f"target_{cfg.scope.target_hs.lower()}"
-                    "_validation_quantity_candidate_product_distribution.png"
-                )
-            ),
-            "quantity_candidate_spread": (
-                figure_dir
-                / (
-                    f"target_{cfg.scope.target_hs.lower()}"
-                    "_validation_quantity_candidate_spread.png"
-                )
-            ),
-            "quantity_candidate_conditioned_summary": (
-                figure_dir
-                / (
-                    f"target_{cfg.scope.target_hs.lower()}"
-                    "_validation_quantity_candidate_conditioned_summary.png"
-                )
-            ),
-            "quantity_candidate_conditioned_by_disagreement": (
-                figure_dir
-                / (
-                    f"target_{cfg.scope.target_hs.lower()}"
-                    "_validation_quantity_candidate_conditioned_by_disagreement.png"
-                )
-            ),
-            "quantity_candidate_closest_conditioned": (
-                figure_dir
-                / (
-                    f"target_{cfg.scope.target_hs.lower()}"
-                    "_validation_quantity_candidate_closest_conditioned.png"
-                )
-            ),
-        }
+        figure_paths = _build_validation_figure_paths(
+            figure_dir=figure_dir,
+            target_hs=cfg.scope.target_hs,
+        )
 
         _plot_training_population_funnel(
             diagnostics=diagnostics,
@@ -4136,7 +4153,13 @@ def build_validation_report(
                 "quantity_candidate_closest_conditioned"
             ],
         )
-    
+
+        _plot_model_performance_by_year(
+            diagnostics=diagnostics,
+            output_path=figure_paths[
+                "model_performance_by_year"
+            ],
+        )
 
         # ==============================================================
         # Current methodological status
