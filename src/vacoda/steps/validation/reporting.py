@@ -4646,20 +4646,38 @@ def build_validation_report(
                 f"- **Configured year range:** "
                 f"{cfg.scope.min_year}–{cfg.scope.max_year}"
             ),
+                "- **Training Sample Criteria:**",
+                f"  - Training definition: `{training_definition}`",
+                (
+                    f"  - Reference-year window: `before={reference_before}, "
+                    f"after={reference_after}`"
+                ),
+                (
+                    f"  - Minimum HS × year reference observations: "
+                    f"`{min_reference_n}`"
+                ),
+                (
+                    f"  - Maximum normalized UV distance: "
+                    f"`{max_uv_distance:g} MAD`"
+                ),
+                (
+                    f"  - Require positive UV MAD: "
+                    f"`{require_positive_uv_mad}`"
+                ),
+                (
+                    f"  - Require reference eligible: "
+                    f"`{require_reference_eligible}`"
+                ),
+            "- **Validation Criteria:**",
             (
-                f"- **Training Sample Criteria:** "
-                f" - Training definition:`{training_definition}`"
-                f" - Reference-year window:`before={reference_before}, after={reference_after}`"
-                f" - Minimum HS × year reference observations:`{min_reference_n}`"
-                f" - Maximum normalized UV distance:`{max_uv_distance:g} MAD`"
-                f" - Require positive UV MAD:`{require_positive_uv_mad}`"
-                f" - Require reference eligible:`{require_reference_eligible}`"
+                    f"  - Validation Strategy: `{validation_strategy}`"
             ),
             (
-                f"- **Validation Criteria:** "
-                f" - Strategy: `{validation_strategy}`"
-                f" - Minimum training years: `{minimum_training_years}`"
-                f" - Validation years: `{', '.join(str(year) for year in configured_validation_years)}`"
+                    f"  - Minimum training years: `{minimum_training_years}`"
+            ),
+            (
+                "  - Validation years: "
+                f"`{', '.join(str(year) for year in configured_validation_years)}`"
             ),
             "- **Enabled candidate models:**",
             *[
@@ -4667,13 +4685,11 @@ def build_validation_report(
                 for name in enabled_model_names
             ],
             "- **Artifacts:**",
-            (
-                f"- **Prepared input:** `{prepared_input_path}`",
-                f"- **Structural audit:** `{structural_audit_path}`",
-                f"- **Diagnostics:** `{diagnostics_path}`",
-                f"- **Figure directory:** `{figure_dir}`",
-                f"- **Report:** `{report_path}`"
-            ),
+                f"  - Prepared input: `{prepared_input_path}`",
+                f"  - Structural audit: `{structural_audit_path}`",
+                f"  - Diagnostics: `{diagnostics_path}`",
+                f"  - Figure directory: `{figure_dir}`",
+                f"  - Report: `{report_path}`",
             "",
             "## 2. Validation scope and terminology",
             "### 2.1 Validation Scope",
