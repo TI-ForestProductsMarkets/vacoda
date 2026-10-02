@@ -1474,98 +1474,6 @@ def build_diagnostics(
 
         reference_window_queries = []
 
-        # --------------------------------------------------------------
-        # Product-level reference coverage across the full dataset
-        # --------------------------------------------------------------
-
-        for window_name, _, _ in reference_windows:
-
-            product_coverage = con.execute(
-                """
-                SELECT
-                    target_cmd,
-
-                    COUNT(*)
-                        AS n_years_present,
-
-                    COUNT(*) FILTER (
-                        WHERE reference_n > 0
-                    )
-                        AS n_years_with_reference,
-
-                    SUM(reference_n)
-                        AS total_reference_support,
-
-                    MIN(reference_n)
-                        AS min_reference_support,
-
-                    MEDIAN(reference_n)
-                        AS median_reference_support
-
-                FROM pre_training_reference_windows
-
-                WHERE reference_window = ?
-
-                GROUP BY target_cmd
-
-                ORDER BY
-                    total_reference_support ASC,
-                    target_cmd ASC
-                """,
-                [window_name],
-            ).fetchdf()
-
-            for row in product_coverage.itertuples(
-                index=False
-            ):
-
-                diagnostics_rows.append(
-                    {
-                        "scope": (
-                            "pre_training_reference_product_coverage"
-                        ),
-
-                        "criterion": window_name,
-                        "candidate": None,
-
-                        "disagreement_threshold": None,
-                        "uv_support_threshold": None,
-                        "uv_distance_threshold": None,
-
-                        "year": None,
-                        "target_cmd": str(
-                            row.target_cmd
-                        ),
-
-                        "variable": (
-                            "total_reference_support"
-                        ),
-
-                        "quantile": None,
-
-                        "n_rows": int(
-                            row.n_years_present
-                        ),
-
-                        "total_rows": int(
-                            row.n_years_with_reference
-                        ),
-
-                        "share_of_all": None,
-                        "share_of_parent": None,
-
-                        "value": float(
-                            row.total_reference_support
-                        ),
-
-                        "median_uv_reference_observations": (
-                            float(
-                                row.median_reference_support
-                            )
-                        ),
-                    }
-                )
-
         for window_name, before, label in reference_windows:
 
             reference_window_queries.append(
@@ -1719,7 +1627,6 @@ def build_diagnostics(
                 """
             )
 
-
         con.execute(
             """
             CREATE OR REPLACE TEMP TABLE
@@ -1736,6 +1643,98 @@ def build_diagnostics(
                 for query in reference_window_queries
             )
         )
+
+        # --------------------------------------------------------------
+        # Product-level reference coverage across the full dataset
+        # --------------------------------------------------------------
+
+        for window_name, _, _ in reference_windows:
+
+            product_coverage = con.execute(
+                """
+                SELECT
+                    target_cmd,
+
+                    COUNT(*)
+                        AS n_years_present,
+
+                    COUNT(*) FILTER (
+                        WHERE reference_n > 0
+                    )
+                        AS n_years_with_reference,
+
+                    SUM(reference_n)
+                        AS total_reference_support,
+
+                    MIN(reference_n)
+                        AS min_reference_support,
+
+                    MEDIAN(reference_n)
+                        AS median_reference_support
+
+                FROM pre_training_reference_windows
+
+                WHERE reference_window = ?
+
+                GROUP BY target_cmd
+
+                ORDER BY
+                    total_reference_support ASC,
+                    target_cmd ASC
+                """,
+                [window_name],
+            ).fetchdf()
+
+            for row in product_coverage.itertuples(
+                index=False
+            ):
+
+                diagnostics_rows.append(
+                    {
+                        "scope": (
+                            "pre_training_reference_product_coverage"
+                        ),
+
+                        "criterion": window_name,
+                        "candidate": None,
+
+                        "disagreement_threshold": None,
+                        "uv_support_threshold": None,
+                        "uv_distance_threshold": None,
+
+                        "year": None,
+                        "target_cmd": str(
+                            row.target_cmd
+                        ),
+
+                        "variable": (
+                            "total_reference_support"
+                        ),
+
+                        "quantile": None,
+
+                        "n_rows": int(
+                            row.n_years_present
+                        ),
+
+                        "total_rows": int(
+                            row.n_years_with_reference
+                        ),
+
+                        "share_of_all": None,
+                        "share_of_parent": None,
+
+                        "value": float(
+                            row.total_reference_support
+                        ),
+
+                        "median_uv_reference_observations": (
+                            float(
+                                row.median_reference_support
+                            )
+                        ),
+                    }
+                )
 
         max_reference_before = max(
             before

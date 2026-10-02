@@ -6108,12 +6108,6 @@ def build_validation_report(
                 pre_training_worst_display
             ),
             "",
-            "#### 6.3.4. Missing HS × year references",
-            "",
-            _markdown_table(
-                pre_training_availability_display
-            ),
-            "",
             "#### 6.3.4. Missing reference coverage",
             "",
             (
