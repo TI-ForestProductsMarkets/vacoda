@@ -2396,6 +2396,11 @@ def build_validation_report(
         # Training Sample Diagnostics
         # ============================================================
 
+        pre_training_reference_product_coverage = _scope_frame(
+            diagnostics,
+            "pre_training_reference_product_coverage",
+        )
+
         training_candidate_final_rule = _scope_frame(
             diagnostics,
             "training_candidate_final_rule",
@@ -2526,6 +2531,14 @@ def build_validation_report(
             ]
         )
 
+        zero_support_products = (
+            pre_training_reference_product_coverage[
+                pre_training_reference_product_coverage[
+                    "value"
+                ].eq(0)
+            ]
+            .copy()
+        )
 
         def _quantile_label(
             value: float,
@@ -4645,16 +4658,90 @@ def build_validation_report(
             )
         )
 
-        pre_training_worst_display[
-            "Reference observations"
+        pre_training_worst_display["Year"] = (pre_training_worst_display["Year"].map(_format_integer))
+
+        pre_training_worst_display["Reference observations"] = (pre_training_worst_display["Reference observations"].map(_format_integer))
+
+
+        # --------------------------------------------------------------
+        # HS products with zero reference support across all years
+        # --------------------------------------------------------------
+
+        pre_training_zero_support_products = (
+            pre_training_reference_product_coverage[
+                pre_training_reference_product_coverage[
+                    "value"
+                ].eq(0)
+            ]
+            .copy()
+        )
+
+        pre_training_zero_support_products_display = (
+            pre_training_zero_support_products[
+                [
+                    "criterion",
+                    "target_cmd",
+                    "n_rows",
+                    "total_rows",
+                    "value",
+                ]
+            ]
+            .copy()
+        )
+
+        pre_training_zero_support_products_display = (
+            pre_training_zero_support_products_display.rename(
+                columns={
+                    "criterion": "Window",
+                    "target_cmd": "HS product",
+                    "n_rows": "Years present",
+                    "total_rows": "Years with reference",
+                    "value": "Total reference support",
+                }
+            )
+        )
+
+        pre_training_zero_support_products_display[
+            "Years present"
         ] = (
-            pre_training_worst_display[
-                "Reference observations"
+            pre_training_zero_support_products_display[
+                "Years present"
             ].map(
                 _format_integer
             )
         )
 
+        pre_training_zero_support_products_display[
+            "Years with reference"
+        ] = (
+            pre_training_zero_support_products_display[
+                "Years with reference"
+            ].map(
+                _format_integer
+            )
+        )
+
+        pre_training_zero_support_products_display[
+            "Total reference support"
+        ] = (
+            pre_training_zero_support_products_display[
+                "Total reference support"
+            ].map(
+                _format_integer
+            )
+        )
+
+        pre_training_zero_support_products_display = (
+            pre_training_zero_support_products_display.sort_values(
+                [
+                    "Window",
+                    "HS product",
+                ]
+            )
+            .reset_index(
+                drop=True
+            )
+        )
         pre_training_availability_display = (
             pre_training_reference_availability[
                 [
@@ -6027,6 +6114,37 @@ def build_validation_report(
                 pre_training_availability_display
             ),
             "",
+            "#### 6.3.4. Missing reference coverage",
+            "",
+            (
+                "Reference coverage is evaluated across all HS × year "
+                "groups present in the Validation dataset, while reference "
+                "observations themselves are restricted to the directly "
+                "observed bilateral reference population."
+            ),
+            "",
+            (
+                "The following table first shows how many HS × year groups "
+                "have no usable reference under each temporal window."
+            ),
+            "",
+            _markdown_table(
+                pre_training_availability_display
+            ),
+            "",
+            (
+                "A missing HS × year reference does not necessarily mean "
+                "that the HS product has no reference evidence at all; the "
+                "same product may be supported in other years. The next "
+                "table therefore identifies HS products whose total "
+                "reference support is zero across the full configured "
+                "period."
+            ),
+            "",
+            _markdown_table(
+                pre_training_zero_support_products_display
+            ),
+            "",
             "#### 6.3.5. Reference stability",
             "",
             (
@@ -6087,53 +6205,7 @@ def build_validation_report(
                 table_width=38,
             ),
             "",
-            "### 7.3. HS × year reference support",
-            "",
-            (
-                "Reference support is shown across distinct HS × year groups. "
-                "The number of supporting observations indicates how much evidence "
-                "underlies each product-year UV reference and helps assess whether "
-                "a minimum support requirement is needed."
-            ),
-            "",
-            get_table_figure_layout(
-                training_reference_support_display,
-                markdown_image(
-                    "HS × year unit-value reference support",
-                    figure_paths[
-                        "training_reference_support_distribution"
-                    ],
-                    document_path=report_path,
-                    width=700,
-                    height=None,
-                ),
-                table_width=34,
-            ),
-            "",
-            "### 7.4. HS × year unit-value dispersion",
-            "",
-            (
-                "The log-MAD describes within-group dispersion around the "
-                "HS × year unit-value reference. This helps assess whether one "
-                "global absolute UV-distance cutoff is defensible or whether "
-                "dispersion-aware criteria should later be considered."
-            ),
-            "",
-            get_table_figure_layout(
-                training_uv_dispersion_display,
-                markdown_image(
-                    "HS × year unit-value dispersion",
-                    figure_paths[
-                        "training_uv_dispersion_distribution"
-                    ],
-                    document_path=report_path,
-                    width=700,
-                    height=None,
-                ),
-                table_width=34,
-            ),
-            "",
-            "### 7.5. Selected-unit-value distance normalized by log-UV MAD",
+            "### 7.3. Selected-unit-value distance normalized by log-UV MAD",
             "",
             (
                 "- Different HS × year groups have different natural levels of "
@@ -6168,7 +6240,7 @@ def build_validation_report(
                 table_width=34,
             ),
             "",
-            markdown_styled_heading(text="7.5.1. Candidate normalized-distance cutoffs"),
+            markdown_styled_heading(text="7.3.1. Candidate normalized-distance cutoffs"),
             "",
             (
                 "To support the eventual training-population decision, Validation evaluates several "
@@ -6187,7 +6259,7 @@ def build_validation_report(
                 normalized_cutoff_display
             ),
             "",
-            markdown_styled_heading(text="7.5.2. Candidate joint training rule"),
+            markdown_styled_heading(text="7.3.2. Candidate joint training rule"),
             "",
             (
                 "The currently preferred candidate rule combines the direct "
