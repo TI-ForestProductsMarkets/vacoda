@@ -44,6 +44,7 @@ from sklearn.preprocessing import (
     TargetEncoder,
 )
 
+from vacoda.steps.validation.training_sample import training_definition_name
 from vacoda.config.steps.validation import ValidationConfig
 
 from vacoda.pipeline.artifact_manifest import (
@@ -267,7 +268,7 @@ def _model_data_fingerprint(
 # ======================================================================
 # Model checkpoint helpers
 # ======================================================================
-def _model_checkpoint_group(
+def _model_checkpoint_group_deprecated( 
     *,
     cfg: ValidationConfig,
 ) -> str:
@@ -309,7 +310,7 @@ def _model_checkpoint_dir(
 ) -> Path:
 
     checkpoint_group = (
-        _model_checkpoint_group(
+        training_definition_name(
             cfg=cfg
         )
     )
@@ -1108,7 +1109,7 @@ def train_validation_models(
     )
 
     checkpoint_group = (
-        _model_checkpoint_group(
+        training_definition_name(
             cfg=cfg
         )
     )

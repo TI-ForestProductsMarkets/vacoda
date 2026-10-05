@@ -2733,8 +2733,13 @@ def build_validation_report(
             [
                 {
                     "Criterion": (
-                        "Direct bilateral + support ≥ 30 + normalized UV distance ≤ 2.5 MAD"
-                    ),
+                        "Reference eligible"
+                        f" + mirror disagreement ≤ "
+                        f"{100.0 * max_mirror_quantity_disagreement:g}%"
+                        f" + support ≥ {min_reference_n}"
+                        f" + normalized UV distance ≤ "
+                        f"{max_uv_distance:g} MAD"                    
+                        ),
                     "Rows": _format_integer(
                         training_candidate_final_rule.iloc[0]["n_rows"]
                     ),
@@ -5016,6 +5021,10 @@ def build_validation_report(
             training_cfg.max_normalized_uv_distance_mad
         )
 
+        max_mirror_quantity_disagreement = float(
+            training_cfg.max_mirror_quantity_disagreement
+        )
+
         require_reference_eligible = bool(
             training_cfg.require_reference_eligible
         )
@@ -5046,8 +5055,9 @@ def build_validation_report(
         training_definition = (
             f"refwin_{reference_before}_{reference_after}"
             f"_n{min_reference_n}"
-            f"_uv{max_uv_distance:g}".replace(".", "p")
-        )
+            f"_uv{max_uv_distance:g}"
+            f"_qd{max_mirror_quantity_disagreement:g}"
+        ).replace(".", "p")
 
         if validation_strategy == "expanding_window":
             configured_validation_years = (
@@ -5094,6 +5104,10 @@ def build_validation_report(
                 (
                     f"  - Require positive UV MAD: "
                     f"`{require_positive_uv_mad}`"
+                ),
+                (
+                    f"  - Maximum mirror quantity disagreement: "
+                    f"`{100.0 * max_mirror_quantity_disagreement:g}%`"
                 ),
                 (
                     f"  - Require reference eligible: "

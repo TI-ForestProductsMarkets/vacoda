@@ -345,6 +345,7 @@ class ValidationTrainingSampleConfig:
     reference_year_window: ValidationReferenceYearWindowConfig
     min_hs_year_reference_observations: int
     max_normalized_uv_distance_mad: float
+    max_mirror_quantity_disagreement: float
     require_positive_uv_mad: bool
 
     @classmethod
@@ -384,6 +385,14 @@ class ValidationTrainingSampleConfig:
                 key=(
                     "validation.model.training_sample."
                     "max_normalized_uv_distance_mad"
+                ),
+                min_value=0.0,
+            ),
+            max_mirror_quantity_disagreement=require_float(
+                cfg.get("max_mirror_quantity_disagreement"),
+                key=(
+                    "validation.model.training_sample."
+                    "max_mirror_quantity_disagreement"
                 ),
                 min_value=0.0,
             ),

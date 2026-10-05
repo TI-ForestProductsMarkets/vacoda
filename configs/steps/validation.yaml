@@ -81,10 +81,11 @@ validation:
     training_sample:
       require_reference_eligible: true
       reference_year_window:
-        before: 0
+        before: 2
         after: 0
       min_hs_year_reference_observations: 30
       max_normalized_uv_distance_mad: 2.5
+      max_mirror_quantity_disagreement: 0.30
       require_positive_uv_mad: true
 
     # ------------------------------------------------------------
@@ -148,7 +149,7 @@ validation:
           min_samples_leaf: 50
 
       extra_trees:
-        enable: true
+        enable: false
         type: "extra_trees"
         parameters:
           n_estimators: 300
@@ -156,7 +157,7 @@ validation:
           max_features: 0.8
       
       random_forest:
-        enable: true
+        enable: false
         type: "random_forest"
         parameters:
           n_estimators: 300

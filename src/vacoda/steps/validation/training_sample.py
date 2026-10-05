@@ -42,7 +42,7 @@ def _format_training_parameter(
     )
 
 
-def _training_definition_name(
+def training_definition_name(
     *,
     cfg: ValidationConfig,
 ) -> str:
@@ -70,10 +70,17 @@ def _training_definition_name(
         )
     )
 
+    max_mirror_quantity_disagreement = (
+        _format_training_parameter(
+            training_cfg.max_mirror_quantity_disagreement
+        )
+    )
+
     return (
         f"refwin_{before}_{after}"
         f"__n{min_reference_n}"
         f"__uv{max_uv_distance}"
+        f"__qd{max_mirror_quantity_disagreement}"
     )
 
 
@@ -169,7 +176,7 @@ def build_training_sample(
         )
 
         training_definition = (
-            _training_definition_name(
+            training_definition_name(
                 cfg=cfg
             )
         )
@@ -279,6 +286,10 @@ def build_training_sample(
         model_training_cfg.max_normalized_uv_distance_mad
     )
 
+    max_mirror_quantity_disagreement = float(
+        model_training_cfg.max_mirror_quantity_disagreement
+    )
+
     ### Logging Training-Sample Configuration
     logger.info(
         "  Training-sample configuration:"
@@ -309,6 +320,12 @@ def build_training_sample(
         "    Require positive UV MAD: %s",
         require_positive_uv_mad,
     )
+
+    logger.info(
+        "    Maximum mirror quantity disagreement: %s",
+        f"{100.0 * max_mirror_quantity_disagreement:.1f}%",
+    )
+
     year_col = str(
         columns_cfg.year
     )
@@ -775,6 +792,13 @@ def build_training_sample(
 
                     (
                         evidence.training_reference_eligible
+
+                        AND evidence.quantity_relative_difference IS NOT NULL
+                        AND isfinite(
+                            evidence.quantity_relative_difference
+                        )
+                        AND evidence.quantity_relative_difference
+                            <= {max_mirror_quantity_disagreement}
 
                         AND evidence.hs_year_uv_reference_n IS NOT NULL
                         AND evidence.hs_year_uv_reference_n
