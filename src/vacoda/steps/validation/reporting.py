@@ -5059,6 +5059,13 @@ def build_validation_report(
                 "Training Evidence Audit product diagnostics are unavailable."
             )
 
+        if "reference_eligible_rows" not in (
+            training_evidence_by_product_audit.columns
+        ):
+            training_evidence_by_product_audit[
+                "reference_eligible_rows"
+            ] = 0
+
         n_audit_validation_rows = int(
             training_evidence_by_product_audit[
                 "total_rows"
@@ -5178,29 +5185,6 @@ def build_validation_report(
                 training_unseen_products_display[column]
                 .map(_format_integer)
             )
-
-
-        training_unseen_products_display = (
-            training_evidence_by_product_audit[
-                training_evidence_by_product_audit[
-                    "criterion"
-                ].eq("unseen")
-            ]
-            .sort_values(
-                ["total_rows", "target_cmd"],
-                ascending=[False, True],
-            )
-            [
-                [
-                    "target_cmd",
-                    "total_rows",
-                    "reference_eligible_rows",
-                    "validation_years",
-                    "training_years",
-                ]
-            ]
-            .copy()
-        )
 
         training_evidence_year_display = (
             training_evidence_by_year_audit[

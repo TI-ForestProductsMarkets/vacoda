@@ -280,7 +280,6 @@ def build_diagnostics(
     max_normalized_uv_distance_mad = float(
         model_training_cfg.max_normalized_uv_distance_mad
     )
-    training_cfg = diagnostics_cfg.training_population_sensitivity
 
     year_col = str(
         columns_cfg.year
@@ -340,23 +339,23 @@ def build_diagnostics(
     )
 
     disagreement_thresholds = tuple(
-        training_cfg.disagreement_thresholds
+        sensitivity_cfg.disagreement_thresholds
     )
 
     uv_support_thresholds = tuple(
-        training_cfg.unit_value_reference_min_observations
+        sensitivity_cfg.unit_value_reference_min_observations
     )
 
     uv_distance_thresholds = tuple(
-        training_cfg.unit_value_log_distance_thresholds
+        sensitivity_cfg.unit_value_log_distance_thresholds
     )
 
     require_bilateral = bool(
-        training_cfg.require_bilateral_quantities
+        sensitivity_cfg.require_bilateral_quantities
     )
 
     require_non_estimated = bool(
-        training_cfg.require_non_estimated_quantities
+        sensitivity_cfg.require_non_estimated_quantities
     )
 
 
@@ -1495,16 +1494,16 @@ def build_diagnostics(
                         row.total_rows
                     ),
 
+                    "reference_eligible_rows": int(
+                        row.reference_eligible_rows
+                    ),
+
                     "share_of_all": _share(
                         int(row.training_selected_rows),
                         int(row.total_rows),
                     ),
 
                     "share_of_parent": None,
-
-                    "reference_eligible_rows": int(
-                        row.reference_eligible_rows
-                    ),
 
                     "validation_years": int(
                         row.validation_years
@@ -1569,6 +1568,54 @@ def build_diagnostics(
             """
         ).fetchdf()
 
+        for row in training_evidence_by_year.itertuples(
+            index=False
+        ):
+            diagnostics_rows.append(
+                {
+                    "scope": "training_evidence_by_year",
+                    "criterion": "final_training_sample",
+                    "candidate": None,
+
+                    "disagreement_threshold": None,
+                    "uv_support_threshold": None,
+                    "uv_distance_threshold": None,
+
+                    "year": int(row.year),
+                    "target_cmd": None,
+
+                    "variable": "training_selected_rows",
+                    "quantile": None,
+
+                    "n_rows": int(
+                        row.training_selected_rows
+                    ),
+
+                    "total_rows": int(
+                        row.total_rows
+                    ),
+
+                    "reference_eligible_rows": int(
+                        row.reference_eligible_rows
+                    ),
+
+                    "training_products": int(
+                        row.training_products
+                    ),
+
+                    "share_of_all": _share(
+                        int(row.training_selected_rows),
+                        int(row.total_rows),
+                    ),
+
+                    "share_of_parent": _share(
+                        int(row.training_selected_rows),
+                        int(row.reference_eligible_rows),
+                    ),
+
+                    "value": None,
+                }
+            )
         # ==================================================================
         # 1. Population funnel
         # ==================================================================
@@ -6101,6 +6148,16 @@ def build_diagnostics(
             "median_quantity_difference_vs_import",
             "median_absolute_quantity_difference_vs_import",
             "exporter_higher_share",
+
+            # Training Evidence Audit
+            "reference_eligible_rows",
+            "validation_years",
+            "training_years",
+            "first_training_year",
+            "last_training_year",
+            "seen_in_training",
+            "training_year_coverage",
+            "training_products",
         )
 
         for column in optional_columns:
@@ -6145,6 +6202,16 @@ def build_diagnostics(
                 "median_quantity_difference_vs_import",
                 "median_absolute_quantity_difference_vs_import",
                 "exporter_higher_share",
+
+                # Training Evidence Audit
+                "reference_eligible_rows",
+                "validation_years",
+                "training_years",
+                "first_training_year",
+                "last_training_year",
+                "seen_in_training",
+                "training_year_coverage",
+                "training_products",
             ]
         ]
 
