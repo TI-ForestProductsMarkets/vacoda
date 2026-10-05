@@ -406,68 +406,293 @@ def _cif_fob_transition(
     quantity_path: Path,
     cif_fob_path: Path,
 ) -> pd.DataFrame:
-    placeholders = ", ".join(["?"] * len(codes))
+    """
+    Explain Quantity -> CIF/FOB reduction using the actual CIF/FOB
+    mirror-pair construction.
+
+    Stages:
+
+      Quantity source rows
+      -> retained reporter-side rows
+      -> canonical reporter-side rows
+      -> oriented bilateral mirror pairs
+      -> self-trade exclusion
+      -> actual CIF/FOB rows
+    """
+
+    required = {
+        "target_cmd",
+        "year",
+        "reporter_iso",
+        "partner_iso",
+        "flow_code",
+        "is_reported",
+        "is_aggregate",
+    }
+
+    _require_columns(
+        con,
+        quantity_path,
+        required,
+        label="Quantity input to CIF/FOB",
+    )
+
+    cif_required = {
+        "target_cmd",
+        "year",
+        "exporter_iso",
+        "importer_iso",
+    }
+
+    _require_columns(
+        con,
+        cif_fob_path,
+        cif_required,
+        label="CIF/FOB output",
+    )
+
+    placeholders = ", ".join(
+        ["?"] * len(codes)
+    )
+
+    params = (
+        tuple(codes)
+        + tuple(codes)
+    )
 
     return con.execute(
         f"""
-        WITH source_summary AS (
+        WITH classified AS (
+
             SELECT
                 target_cmd,
                 year,
-                COUNT(*) AS quantity_source_rows,
-                COUNT(*) FILTER (
-                    WHERE flow_code IN ('M', 'X')
-                      AND COALESCE(is_reported, FALSE) = TRUE
-                      AND COALESCE(is_aggregate, FALSE) = FALSE
-                ) AS retained_source_rows
-            FROM read_parquet({_sql_literal(quantity_path)})
-            WHERE target_cmd IN ({placeholders})
-            GROUP BY target_cmd, year
+                reporter_iso,
+                partner_iso,
+                flow_code,
+
+                CASE
+                    WHEN flow_code NOT IN ('M', 'X')
+                        THEN 'excluded_noncanonical_flow'
+
+                    WHEN COALESCE(
+                        is_reported,
+                        FALSE
+                    ) = FALSE
+                        THEN 'excluded_not_reported'
+
+                    WHEN COALESCE(
+                        is_aggregate,
+                        FALSE
+                    ) = TRUE
+                        THEN 'excluded_aggregate'
+
+                    ELSE 'retained'
+                END
+                    AS diagnostic_fate
+
+            FROM read_parquet(
+                {_sql_literal(quantity_path)}
+            )
+
+            WHERE target_cmd IN (
+                {placeholders}
+            )
         ),
 
-        canonical_summary AS (
-            SELECT target_cmd, year, COUNT(*) AS expected_canonical_rows
-            FROM (
-                SELECT DISTINCT
-                    target_cmd,
-                    year,
-                    reporter_iso,
-                    partner_iso,
-                    flow_code
-                FROM read_parquet({_sql_literal(quantity_path)})
-                WHERE target_cmd IN ({placeholders})
-                  AND flow_code IN ('M', 'X')
-                  AND COALESCE(is_reported, FALSE) = TRUE
-                  AND COALESCE(is_aggregate, FALSE) = FALSE
-            )
-            GROUP BY target_cmd, year
+        source_summary AS (
+
+            SELECT
+                target_cmd,
+                year,
+
+                COUNT(*)
+                    AS quantity_source_rows,
+
+                COUNT(*) FILTER (
+                    WHERE diagnostic_fate = 'retained'
+                )
+                    AS retained_source_rows,
+
+                COUNT(
+                    DISTINCT (
+                        reporter_iso,
+                        partner_iso,
+                        flow_code
+                    )
+                ) FILTER (
+                    WHERE diagnostic_fate = 'retained'
+                )
+                    AS canonical_reporter_rows
+
+            FROM classified
+
+            GROUP BY
+                target_cmd,
+                year
+        ),
+
+        retained AS (
+
+            SELECT DISTINCT
+                target_cmd,
+                year,
+                reporter_iso,
+                partner_iso,
+                flow_code
+
+            FROM classified
+
+            WHERE diagnostic_fate = 'retained'
+        ),
+
+        oriented AS (
+
+            SELECT
+                target_cmd,
+                year,
+
+                reporter_iso
+                    AS exporter_iso,
+
+                partner_iso
+                    AS importer_iso,
+
+                'X'
+                    AS source_side
+
+            FROM retained
+
+            WHERE flow_code = 'X'
+
+            UNION ALL
+
+            SELECT
+                target_cmd,
+                year,
+
+                partner_iso
+                    AS exporter_iso,
+
+                reporter_iso
+                    AS importer_iso,
+
+                'M'
+                    AS source_side
+
+            FROM retained
+
+            WHERE flow_code = 'M'
+        ),
+
+        pair_summary AS (
+
+            SELECT
+                target_cmd,
+                year,
+
+                COUNT(
+                    DISTINCT (
+                        exporter_iso,
+                        importer_iso
+                    )
+                )
+                    AS oriented_mirror_pairs,
+
+                COUNT(
+                    DISTINCT (
+                        exporter_iso,
+                        importer_iso
+                    )
+                ) FILTER (
+                    WHERE exporter_iso = importer_iso
+                )
+                    AS self_trade_pairs,
+
+                COUNT(
+                    DISTINCT (
+                        exporter_iso,
+                        importer_iso
+                    )
+                ) FILTER (
+                    WHERE exporter_iso <> importer_iso
+                )
+                    AS expected_mirror_pairs
+
+            FROM oriented
+
+            GROUP BY
+                target_cmd,
+                year
         ),
 
         actual AS (
-            SELECT target_cmd, year, COUNT(*) AS actual_cif_fob_rows
-            FROM read_parquet({_sql_literal(cif_fob_path)})
-            WHERE target_cmd IN ({placeholders})
-            GROUP BY target_cmd, year
+
+            SELECT
+                target_cmd,
+                year,
+                COUNT(*)
+                    AS actual_cif_fob_rows
+
+            FROM read_parquet(
+                {_sql_literal(cif_fob_path)}
+            )
+
+            WHERE target_cmd IN (
+                {placeholders}
+            )
+
+            GROUP BY
+                target_cmd,
+                year
         )
 
         SELECT
             s.target_cmd,
             s.year,
+
             s.quantity_source_rows,
             s.retained_source_rows,
-            COALESCE(c.expected_canonical_rows, 0) AS expected_canonical_rows,
-            COALESCE(a.actual_cif_fob_rows, 0) AS actual_cif_fob_rows,
-            COALESCE(a.actual_cif_fob_rows, 0)
-                - COALESCE(c.expected_canonical_rows, 0)
-                AS unexplained_difference
-        FROM source_summary AS s
-        LEFT JOIN canonical_summary AS c USING (target_cmd, year)
-        LEFT JOIN actual AS a USING (target_cmd, year)
-        ORDER BY s.target_cmd, s.year
-        """,
-        tuple(codes) + tuple(codes) + tuple(codes),
-    ).fetchdf()
+            s.canonical_reporter_rows,
 
+            p.oriented_mirror_pairs,
+            p.self_trade_pairs,
+            p.expected_mirror_pairs,
+
+            COALESCE(
+                a.actual_cif_fob_rows,
+                0
+            )
+                AS actual_cif_fob_rows,
+
+            COALESCE(
+                a.actual_cif_fob_rows,
+                0
+            )
+            -
+            p.expected_mirror_pairs
+                AS unexplained_difference
+
+        FROM source_summary AS s
+
+        LEFT JOIN pair_summary AS p
+            USING (
+                target_cmd,
+                year
+            )
+
+        LEFT JOIN actual AS a
+            USING (
+                target_cmd,
+                year
+            )
+
+        ORDER BY
+            s.target_cmd,
+            s.year
+        """,
+        params,
+    ).fetchdf()
 
 def _cif_fob_exclusion_patterns(
     con: duckdb.DuckDBPyConnection,
@@ -1039,7 +1264,35 @@ def _code_story(
     if not transition.empty:
         source_rows = int(transition["quantity_source_rows"].sum())
         retained_rows = int(transition["retained_source_rows"].sum())
-        expected_rows = int(transition["expected_canonical_rows"].sum())
+        canonical_reporter_rows = int(
+            transition[
+                "canonical_reporter_rows"
+            ].sum()
+        )
+
+        oriented_mirror_pairs = int(
+            transition[
+                "oriented_mirror_pairs"
+            ].sum()
+        )
+
+        self_trade_pairs = int(
+            transition[
+                "self_trade_pairs"
+            ].sum()
+        )
+
+        expected_rows = int(
+            transition[
+                "expected_mirror_pairs"
+            ].sum()
+        )
+
+        actual_rows = int(
+            transition[
+                "actual_cif_fob_rows"
+            ].sum()
+        )        
         actual_rows = int(transition["actual_cif_fob_rows"].sum())
         cif_unexplained_difference = int(
                 transition[
@@ -1081,8 +1334,22 @@ def _code_story(
             (
                 f"After all CIF/FOB input rules are applied, "
                 f"**{retained_rows:,}** source/component row(s) remain. "
-                f"They are aggregated to **{expected_rows:,}** canonical trade "
-                "row(s) using `year × reporter × partner × flow × target_cmd`."
+                f"They aggregate to **{canonical_reporter_rows:,}** canonical "
+                "reporter-side row(s) using "
+                "`year × reporter × partner × flow × target_cmd`."
+            ),
+            "",
+            (
+                f"Those reporter-side rows are then oriented to bilateral "
+                f"`year × exporter × importer × target_cmd` keys. "
+                f"This produces **{oriented_mirror_pairs:,}** candidate mirror "
+                f"pair(s), of which **{self_trade_pairs:,}** are self-trade "
+                f"pairs and are excluded."
+            ),
+            "",
+            (
+                f"The expected CIF/FOB population is therefore "
+                f"**{expected_rows:,}** bilateral mirror-pair row(s)."
             ),
             "",
         ]
@@ -1352,10 +1619,15 @@ def render_hs6_diagnostic_markdown(
         "### 5.2. Row-count accounting",
         "",
         (
-            "`retained_source_rows` counts rows that pass all CIF/FOB input "
-            "rules. `expected_canonical_rows` is the number of distinct canonical "
-            "trade keys after aggregation. `unexplained_difference = 0` means the "
-            "actual CIF/FOB row count is exactly what the rules predict."
+            "`retained_source_rows` counts Quantity rows that pass the "
+            "CIF/FOB input rules. `canonical_reporter_rows` is the number "
+            "of distinct reporter-side trade rows after canonical "
+            "aggregation. These rows are then oriented into exporter/importer "
+            "mirror pairs. `self_trade_pairs` are excluded because exporter "
+            "and importer are identical. `expected_mirror_pairs` is therefore "
+            "the expected final CIF/FOB row count. "
+            "`unexplained_difference = 0` means the actual CIF/FOB output "
+            "is exactly accounted for."
         ),
         "",
         _markdown_table(diagnostics["cif_fob_transition"]),
@@ -1369,11 +1641,12 @@ def render_hs6_diagnostic_markdown(
         "",
         _markdown_table(diagnostics["cif_fob_exclusion_patterns"]),
         "",
-        "### 5.4. Canonical aggregation",
+        "### 5.4. Reporter-side canonical aggregation",
         "",
         (
             "`source_components` shows how many retained Quantity rows were "
-            "combined into one canonical CIF/FOB trade row."
+            "combined into one canonical reporter-side trade row before "
+            "export/import orientation and mirror pairing."
         ),
         "",
         _markdown_table(diagnostics["cif_fob_aggregation_multiplicity"]),

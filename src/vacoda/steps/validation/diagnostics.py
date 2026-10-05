@@ -1473,7 +1473,7 @@ def build_diagnostics(
         if unseen_products:
 
             unseen_products_sql = ", ".join(
-                f"'{value.replace(\"'\", \"''\")}'"
+                "'" + value.replace("'", "''") + "'"
                 for value in unseen_products
             )
 
