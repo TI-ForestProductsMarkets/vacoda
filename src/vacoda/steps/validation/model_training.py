@@ -268,40 +268,6 @@ def _model_data_fingerprint(
 # ======================================================================
 # Model checkpoint helpers
 # ======================================================================
-def _model_checkpoint_group_deprecated( 
-    *,
-    cfg: ValidationConfig,
-) -> str:
-    """Return a human-readable training-population checkpoint group."""
-
-    training_cfg = (
-        cfg.model.training_sample
-    )
-
-    before = int(
-        training_cfg.reference_year_window.before
-    )
-
-    after = int(
-        training_cfg.reference_year_window.after
-    )
-
-    min_reference_n = int(
-        training_cfg.min_hs_year_reference_observations
-    )
-
-    max_uv_distance = (
-        _format_checkpoint_value(
-            training_cfg.max_normalized_uv_distance_mad
-        )
-    )
-
-    return (
-        f"refwin_{before}_{after}"
-        f"__n{min_reference_n}"
-        f"__uv{max_uv_distance}"
-    )
-
 
 def _model_checkpoint_dir(
     *,

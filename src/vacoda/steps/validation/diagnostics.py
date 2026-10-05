@@ -3026,25 +3026,8 @@ def build_diagnostics(
             con.execute(
                 """
                 SELECT COUNT(*)
-
                 FROM validation_diagnostics_base
-
-                WHERE training_reference_eligible
-
-                AND hs_year_uv_reference_n IS NOT NULL
-                AND hs_year_uv_reference_n >= 30
-
-                AND selected_uv_log_distance IS NOT NULL
-                AND isfinite(selected_uv_log_distance)
-
-                AND hs_year_uv_log_mad IS NOT NULL
-                AND hs_year_uv_log_mad > 0
-                AND isfinite(hs_year_uv_log_mad)
-
-                AND (
-                        selected_uv_log_distance
-                        / hs_year_uv_log_mad
-                    ) <= 2.5
+                WHERE training_selected
                 """
             ).fetchone()[0]
         )
@@ -3054,22 +3037,22 @@ def build_diagnostics(
             {
                 "scope": "training_candidate_final_rule",
 
-                "criterion": (
-                    "reference_population_support_30_normalized_uv_2_5"
-                ),
+                "criterion": "configured_training_rule",
 
                 "candidate": None,
 
-                "disagreement_threshold": None,
-                "uv_support_threshold": 30.0,
-                "uv_distance_threshold": 2.5,
+                "disagreement_threshold": max_mirror_quantity_disagreement,
+                "uv_support_threshold": float(
+                    min_reference_observations
+                ),
+                "uv_distance_threshold": float(
+                    max_normalized_uv_distance_mad
+                ),
 
                 "year": None,
                 "target_cmd": None,
 
-                "variable": (
-                    "selected_uv_log_distance_over_mad"
-                ),
+                "variable": "training_selected",
 
                 "quantile": None,
 
@@ -3089,7 +3072,7 @@ def build_diagnostics(
                     n_reference_normalized_evaluable,
                 ),
 
-                "value": 2.5,
+                "value": None,
             }
         )
         
