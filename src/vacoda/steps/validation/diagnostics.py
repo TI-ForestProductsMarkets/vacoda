@@ -18,6 +18,7 @@ import pandas as pd
 from vacoda.config.steps.validation import ValidationConfig
 from vacoda.utils.display import get_symbols
 from vacoda.utils.sql import sql_literal
+from vacoda.steps.validation.training_sample import training_definition_name
 
 PRE_TRAINING_REFERENCE_WINDOWS = (
     ("0_0", 0, "Same year"),
@@ -246,6 +247,30 @@ def build_diagnostics(
 
     diagnostics_cfg = cfg.diagnostics
     columns_cfg = diagnostics_cfg.columns
+
+    sensitivity_cfg = (
+        diagnostics_cfg.training_population_sensitivity
+    )
+
+    model_training_cfg = (
+        cfg.model.training_sample
+    )
+
+    training_definition = training_definition_name(
+        cfg=cfg
+    )
+
+    max_mirror_quantity_disagreement = float(
+        model_training_cfg.max_mirror_quantity_disagreement
+    )
+
+    min_reference_observations = int(
+        model_training_cfg.min_hs_year_reference_observations
+    )
+
+    max_normalized_uv_distance_mad = float(
+        model_training_cfg.max_normalized_uv_distance_mad
+    )
     training_cfg = diagnostics_cfg.training_population_sensitivity
 
     year_col = str(
@@ -405,6 +430,7 @@ def build_diagnostics(
         "hs_year_uv_log_mad",
         "selected_uv_log_distance",
         "training_hard_eligible",
+        "training_selected",
     }
 
     con = duckdb.connect()
@@ -1100,6 +1126,7 @@ def build_diagnostics(
                 hs_year_uv_log_mad,
                 selected_uv_log_distance,
                 training_hard_eligible,
+                training_selected,
 
 
             FROM read_parquet({input_sql})
@@ -3036,12 +3063,12 @@ def build_diagnostics(
         diagnostics_rows.append(
             {
                 "scope": "training_candidate_final_rule",
-
-                "criterion": "configured_training_rule",
-
+                "criterion": training_definition,
                 "candidate": None,
 
-                "disagreement_threshold": max_mirror_quantity_disagreement,
+                "disagreement_threshold": (
+                    max_mirror_quantity_disagreement
+                ),
                 "uv_support_threshold": float(
                     min_reference_observations
                 ),
@@ -3053,7 +3080,6 @@ def build_diagnostics(
                 "target_cmd": None,
 
                 "variable": "training_selected",
-
                 "quantile": None,
 
                 "n_rows": n_candidate_training_selected,
