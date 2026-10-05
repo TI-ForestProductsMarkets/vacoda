@@ -2267,6 +2267,72 @@ def build_validation_report(
             ]
         )
 
+
+        training_rejection_by_product = _scope_frame(
+            diagnostics,
+            "training_evidence_rejection_by_product",
+        )
+
+        training_rejection_display = (
+            training_rejection_by_product
+            .pivot_table(
+                index="target_cmd",
+                columns="criterion",
+                values="n_rows",
+                aggfunc="first",
+            )
+            .reset_index()
+        )
+
+        training_rejection_display = (
+            training_rejection_display.rename(
+                columns={
+                    "target_cmd": "HS product",
+                    "reference_eligible": (
+                        "Reference eligible"
+                    ),
+                    "mirror_disagreement": (
+                        "After mirror ≤ cutoff"
+                    ),
+                    "reference_support": (
+                        "After support ≥ minimum"
+                    ),
+                    "positive_uv_mad": (
+                        "After positive MAD"
+                    ),
+                    "uv_distance_available": (
+                        "After UV distance available"
+                    ),
+                    "normalized_uv_distance": (
+                        "After normalized UV cutoff"
+                    ),
+                    "training_selected": (
+                        "Training selected"
+                    ),
+                }
+            )
+        )
+
+        training_rejection_display = (
+            training_rejection_display[
+                [
+                    "HS product",
+                    "Reference eligible",
+                    "After mirror ≤ cutoff",
+                    "After support ≥ minimum",
+                    "After positive MAD",
+                    "After UV distance available",
+                    "After normalized UV cutoff",
+                    "Training selected",
+                ]
+            ]
+        )
+
+        for column in training_rejection_display.columns[1:]:
+            training_rejection_display[column] = (
+                training_rejection_display[column]
+                .map(_format_integer)
+            )
         # ==========================================================
         # Model Diagnostics
         # ==========================================================
@@ -6511,6 +6577,19 @@ def build_validation_report(
             "",
             _markdown_table(
                 training_unseen_products_display
+            ),
+            "",
+            "#### 7.4.3. Cumulative rejection path for unseen products",
+            "",
+            (
+                "The following table shows where HS products with no final "
+                "training observations are removed by the configured training "
+                "rule. Each column is cumulative: rows shown at a later stage "
+                "also satisfy every preceding requirement."
+            ),
+            "",
+            _markdown_table(
+                training_rejection_display
             ),
             "",
             "",

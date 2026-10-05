@@ -1459,6 +1459,286 @@ def build_diagnostics(
             """
         ).fetchdf()
 
+
+        unseen_products = (
+            training_evidence_by_product[
+                training_evidence_by_product[
+                    "training_selected_rows"
+                ].eq(0)
+            ]["target_cmd"]
+            .astype(str)
+            .tolist()
+        )
+
+        if unseen_products:
+
+            unseen_products_sql = ", ".join(
+                f"'{value.replace(\"'\", \"''\")}'"
+                for value in unseen_products
+            )
+
+            training_rejection_by_product = con.execute(
+                f"""
+                SELECT
+                    target_cmd,
+
+                    COUNT(*) FILTER (
+                        WHERE training_reference_eligible
+                    )
+                        AS reference_eligible_rows,
+
+                    COUNT(*) FILTER (
+                        WHERE training_reference_eligible
+
+                        AND quantity_relative_difference IS NOT NULL
+                        AND isfinite(
+                            quantity_relative_difference
+                        )
+                        AND quantity_relative_difference
+                            <= {max_mirror_quantity_disagreement:.17g}
+                    )
+                        AS after_mirror_disagreement_rows,
+
+                    COUNT(*) FILTER (
+                        WHERE training_reference_eligible
+
+                        AND quantity_relative_difference IS NOT NULL
+                        AND isfinite(
+                            quantity_relative_difference
+                        )
+                        AND quantity_relative_difference
+                            <= {max_mirror_quantity_disagreement:.17g}
+
+                        AND hs_year_uv_reference_n IS NOT NULL
+                        AND hs_year_uv_reference_n
+                            >= {min_reference_observations}
+                    )
+                        AS after_reference_support_rows,
+
+                    COUNT(*) FILTER (
+                        WHERE training_reference_eligible
+
+                        AND quantity_relative_difference IS NOT NULL
+                        AND isfinite(
+                            quantity_relative_difference
+                        )
+                        AND quantity_relative_difference
+                            <= {max_mirror_quantity_disagreement:.17g}
+
+                        AND hs_year_uv_reference_n IS NOT NULL
+                        AND hs_year_uv_reference_n
+                            >= {min_reference_observations}
+
+                        AND hs_year_uv_log_mad IS NOT NULL
+                        AND hs_year_uv_log_mad > 0
+                        AND isfinite(
+                            hs_year_uv_log_mad
+                        )
+                    )
+                        AS after_positive_mad_rows,
+
+                    COUNT(*) FILTER (
+                        WHERE training_reference_eligible
+
+                        AND quantity_relative_difference IS NOT NULL
+                        AND isfinite(
+                            quantity_relative_difference
+                        )
+                        AND quantity_relative_difference
+                            <= {max_mirror_quantity_disagreement:.17g}
+
+                        AND hs_year_uv_reference_n IS NOT NULL
+                        AND hs_year_uv_reference_n
+                            >= {min_reference_observations}
+
+                        AND hs_year_uv_log_mad IS NOT NULL
+                        AND hs_year_uv_log_mad > 0
+                        AND isfinite(
+                            hs_year_uv_log_mad
+                        )
+
+                        AND selected_uv_log_distance IS NOT NULL
+                        AND isfinite(
+                            selected_uv_log_distance
+                        )
+                    )
+                        AS after_uv_distance_available_rows,
+
+                    COUNT(*) FILTER (
+                        WHERE training_reference_eligible
+
+                        AND quantity_relative_difference IS NOT NULL
+                        AND isfinite(
+                            quantity_relative_difference
+                        )
+                        AND quantity_relative_difference
+                            <= {max_mirror_quantity_disagreement:.17g}
+
+                        AND hs_year_uv_reference_n IS NOT NULL
+                        AND hs_year_uv_reference_n
+                            >= {min_reference_observations}
+
+                        AND hs_year_uv_log_mad IS NOT NULL
+                        AND hs_year_uv_log_mad > 0
+                        AND isfinite(
+                            hs_year_uv_log_mad
+                        )
+
+                        AND selected_uv_log_distance IS NOT NULL
+                        AND isfinite(
+                            selected_uv_log_distance
+                        )
+
+                        AND (
+                            selected_uv_log_distance
+                            / hs_year_uv_log_mad
+                        ) <= {max_normalized_uv_distance_mad:.17g}
+                    )
+                        AS after_normalized_uv_rows,
+
+                    COUNT(*) FILTER (
+                        WHERE training_selected
+                    )
+                        AS training_selected_rows
+
+                FROM validation_diagnostics_base
+
+                WHERE target_cmd IN (
+                    {unseen_products_sql}
+                )
+
+                GROUP BY target_cmd
+
+                ORDER BY target_cmd
+                """
+            ).fetchdf()
+
+
+        rejection_stage_specs = (
+            (
+                "reference_eligible",
+                "reference_eligible_rows",
+            ),
+            (
+                "mirror_disagreement",
+                "after_mirror_disagreement_rows",
+            ),
+            (
+                "reference_support",
+                "after_reference_support_rows",
+            ),
+            (
+                "positive_uv_mad",
+                "after_positive_mad_rows",
+            ),
+            (
+                "uv_distance_available",
+                "after_uv_distance_available_rows",
+            ),
+            (
+                "normalized_uv_distance",
+                "after_normalized_uv_rows",
+            ),
+            (
+                "training_selected",
+                "training_selected_rows",
+            ),
+        )
+
+        for row in training_rejection_by_product.itertuples(index=False):
+
+            previous_rows = None
+
+            for stage, column in rejection_stage_specs:
+
+                n_rows = int(
+                    getattr(
+                        row,
+                        column,
+                    )
+                )
+
+                diagnostics_rows.append(
+                    {
+                        "scope": (
+                            "training_evidence_rejection_by_product"
+                        ),
+
+                        "criterion": stage,
+                        "candidate": None,
+
+                        "disagreement_threshold": (
+                            max_mirror_quantity_disagreement
+                            if stage in {
+                                "mirror_disagreement",
+                                "reference_support",
+                                "positive_uv_mad",
+                                "uv_distance_available",
+                                "normalized_uv_distance",
+                                "training_selected",
+                            }
+                            else None
+                        ),
+
+                        "uv_support_threshold": (
+                            float(
+                                min_reference_observations
+                            )
+                            if stage in {
+                                "reference_support",
+                                "positive_uv_mad",
+                                "uv_distance_available",
+                                "normalized_uv_distance",
+                                "training_selected",
+                            }
+                            else None
+                        ),
+
+                        "uv_distance_threshold": (
+                            float(
+                                max_normalized_uv_distance_mad
+                            )
+                            if stage in {
+                                "normalized_uv_distance",
+                                "training_selected",
+                            }
+                            else None
+                        ),
+
+                        "year": None,
+                        "target_cmd": str(
+                            row.target_cmd
+                        ),
+
+                        "variable": (
+                            "cumulative_training_rows"
+                        ),
+                        "quantile": None,
+
+                        "n_rows": n_rows,
+
+                        "total_rows": (
+                            previous_rows
+                            if previous_rows is not None
+                            else n_rows
+                        ),
+
+                        "share_of_all": None,
+
+                        "share_of_parent": (
+                            _share(
+                                n_rows,
+                                previous_rows,
+                            )
+                            if previous_rows is not None
+                            else 1.0
+                        ),
+
+                        "value": None,
+                    }
+                )
+
+        previous_rows = n_rows
         for row in training_evidence_by_product.itertuples(
             index=False
         ):
