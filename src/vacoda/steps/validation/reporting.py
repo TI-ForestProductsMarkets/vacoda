@@ -2402,6 +2402,16 @@ def build_validation_report(
             "training_sample_by_product",
         )
 
+        training_evidence_by_year_audit = _scope_frame(
+            diagnostics,
+            "training_evidence_by_year",
+        )
+
+        training_evidence_by_product_audit = _scope_frame(
+            diagnostics,
+            "training_evidence_by_product",
+        )
+
         training_summary_labels = {
             "all_rows": "All Validation rows",
             "selected_unit_value_available": (
@@ -5009,6 +5019,264 @@ def build_validation_report(
             )
         else:
             configured_validation_years = []
+
+        ## Training Evidence Audit
+        training_rule_parts = []
+
+        if require_reference_eligible:
+            training_rule_parts.append(
+                "reference-eligible bilateral observations"
+            )
+
+        training_rule_parts.append(
+            (
+                "mirror quantity disagreement "
+                f"≤ {100.0 * max_mirror_quantity_disagreement:g}%"
+            )
+        )
+
+        training_rule_parts.append(
+            (
+                "minimum HS × year reference support observations "
+                f"{min_reference_n}"
+            )
+        )
+
+        if require_positive_uv_mad:
+            training_rule_parts.append(
+                "positive HS × year log-UV MAD"
+            )
+
+        training_rule_parts.append(
+            (
+                "normalized selected-unit-value distance "
+                f"≤ {max_uv_distance:g} MAD"
+            )
+        )
+
+        if training_evidence_by_product_audit.empty:
+            raise RuntimeError(
+                "Training Evidence Audit product diagnostics are unavailable."
+            )
+
+        n_audit_validation_rows = int(
+            training_evidence_by_product_audit[
+                "total_rows"
+            ].sum()
+        )
+
+        n_audit_reference_eligible_rows = int(
+            training_evidence_by_product_audit[
+                "reference_eligible_rows"
+            ].sum()
+        )
+
+        n_audit_training_rows = int(
+            training_evidence_by_product_audit[
+                "n_rows"
+            ].sum()
+        )
+
+        n_audit_products = int(
+            training_evidence_by_product_audit[
+                "target_cmd"
+            ].nunique()
+        )
+
+        n_audit_seen_products = int(
+            training_evidence_by_product_audit[
+                "criterion"
+            ].eq("seen").sum()
+        )
+
+        n_audit_unseen_products = int(
+            training_evidence_by_product_audit[
+                "criterion"
+            ].eq("unseen").sum()
+        )
+        
+        training_evidence_summary_display = pd.DataFrame(
+            [
+                {
+                    "Measure": "Validation rows",
+                    "Result": _format_integer(
+                        n_audit_validation_rows
+                    ),
+                },
+                {
+                    "Measure": "Reference-eligible rows",
+                    "Result": _format_integer(
+                        n_audit_reference_eligible_rows
+                    ),
+                },
+                {
+                    "Measure": "Training-selected rows",
+                    "Result": _format_integer(
+                        n_audit_training_rows
+                    ),
+                },
+                {
+                    "Measure": "HS products in Validation",
+                    "Result": _format_integer(
+                        n_audit_products
+                    ),
+                },
+                {
+                    "Measure": "HS products seen in training",
+                    "Result": _format_integer(
+                        n_audit_seen_products
+                    ),
+                },
+                {
+                    "Measure": "HS products unseen in training",
+                    "Result": _format_integer(
+                        n_audit_unseen_products
+                    ),
+                },
+            ]
+        )
+
+        training_unseen_products_display = (
+            training_evidence_by_product_audit[
+                training_evidence_by_product_audit[
+                    "criterion"
+                ].eq("unseen")
+            ]
+            [
+                [
+                    "target_cmd",
+                    "total_rows",
+                    "reference_eligible_rows",
+                    "validation_years",
+                    "training_years",
+                ]
+            ]
+            .copy()
+        )
+
+        training_unseen_products_display = (
+            training_unseen_products_display.rename(
+                columns={
+                    "target_cmd": "HS product",
+                    "total_rows": "Validation rows",
+                    "reference_eligible_rows": (
+                        "Reference-eligible rows"
+                    ),
+                    "validation_years": "Validation years",
+                    "training_years": "Training years",
+                }
+            )
+        )
+
+        for column in (
+            "Validation rows",
+            "Reference-eligible rows",
+            "Validation years",
+            "Training years",
+        ):
+            training_unseen_products_display[column] = (
+                training_unseen_products_display[column]
+                .map(_format_integer)
+            )
+
+
+        training_unseen_products_display = (
+            training_evidence_by_product_audit[
+                training_evidence_by_product_audit[
+                    "criterion"
+                ].eq("unseen")
+            ]
+            .sort_values(
+                ["total_rows", "target_cmd"],
+                ascending=[False, True],
+            )
+            [
+                [
+                    "target_cmd",
+                    "total_rows",
+                    "reference_eligible_rows",
+                    "validation_years",
+                    "training_years",
+                ]
+            ]
+            .copy()
+        )
+
+        training_evidence_year_display = (
+            training_evidence_by_year_audit[
+                [
+                    "year",
+                    "total_rows",
+                    "reference_eligible_rows",
+                    "n_rows",
+                    "training_products",
+                ]
+            ]
+            .copy()
+            .rename(
+                columns={
+                    "year": "Year",
+                    "total_rows": "Validation rows",
+                    "reference_eligible_rows": (
+                        "Reference-eligible rows"
+                    ),
+                    "n_rows": "Training rows",
+                    "training_products": (
+                        "HS products in training"
+                    ),
+                }
+            )
+        )
+
+
+        training_evidence_year_display[
+            "Training share of Validation"
+        ] = (
+            training_evidence_by_year_audit[
+                "n_rows"
+            ]
+            / training_evidence_by_year_audit[
+                "total_rows"
+            ]
+        )
+
+        training_evidence_year_display[
+            "Training share of reference eligible"
+        ] = (
+            training_evidence_by_year_audit[
+                "n_rows"
+            ]
+            / training_evidence_by_year_audit[
+                "reference_eligible_rows"
+            ]
+        )
+
+        training_evidence_year_display["Year"] = (
+            pd.to_numeric(
+                training_evidence_year_display["Year"],
+                errors="coerce",
+            ).astype("Int64")
+        )
+
+        for column in (
+            "Validation rows",
+            "Reference-eligible rows",
+            "Training rows",
+            "HS products in training",
+        ):
+            training_evidence_year_display[column] = (
+                training_evidence_year_display[column]
+                .map(_format_integer)
+            )
+
+        for column in (
+            "Training share of Validation",
+            "Training share of reference eligible",
+        ):
+            training_evidence_year_display[column] = (
+                training_evidence_year_display[column]
+                .map(_format_percent)
+            )
         # ==============================================================
         # Report
         # ==============================================================
@@ -6211,16 +6479,56 @@ def build_validation_report(
             "",
             markdown_styled_heading(text="7.3.2. Candidate joint training rule"),
             "",
-            (
-                "The currently preferred candidate rule combines the direct "
-                "bilateral reference population with a minimum HS × year "
-                "reference support of 30 and a maximum normalized UV distance "
-                "of 2.5 MAD."
-            ),
+            "The configured training-sample rule requires:",
+            *[
+                f"- {part}"
+                for part in training_rule_parts
+            ],
             "",
             _markdown_table(
                 candidate_training_rule_display
             ),
+            "",
+            "### 7.4. Training Evidence Audit",
+            "",
+            (
+                "The Training Evidence Audit describes the population actually "
+                "available to model development after applying the configured "
+                "training-sample rule. It distinguishes coverage in the full "
+                "Validation population from evidence that is represented in the "
+                "final training sample."
+            ),
+            "",
+            _markdown_table(
+                training_evidence_summary_display
+            ),
+            "",
+            "#### 7.4.1. Training evidence by year",
+            "",
+            (
+                "The following table shows how the final training population is "
+                "distributed across Validation years. Training shares are shown "
+                "relative both to all Validation rows and to the reference-eligible "
+                "population."
+            ),
+            "",
+            _markdown_table(
+                training_evidence_year_display
+            ),
+            "",
+            "#### 7.4.2. Products unseen in training",
+            "",
+            (
+                f"`{_format_integer(n_audit_unseen_products)}` of "
+                f"`{_format_integer(n_audit_products)}` HS products present in "
+                "Validation have no training-selected observations under the "
+                "configured training-sample rule."
+            ),
+            "",
+            _markdown_table(
+                training_unseen_products_display
+            ),
+            "",
             "",
             "## 8. Model cross-validation",
             "",

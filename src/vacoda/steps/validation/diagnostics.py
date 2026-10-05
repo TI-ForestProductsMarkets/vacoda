@@ -70,6 +70,15 @@ def _share(
 
     return float(numerator) / float(denominator)
 
+def _training_support_status(
+    training_rows: int,
+) -> str:
+
+    if training_rows == 0:
+        return "unseen"
+
+    return "seen"
+
 
 def _require_columns(
     *,
@@ -1357,6 +1366,208 @@ def build_diagnostics(
                     "value": None,
                 }
             )
+
+        # =================================================================
+        # Training Evidence Audit
+        # =================================================================
+        training_evidence_summary = con.execute(
+            """
+            SELECT
+                COUNT(*) AS n_all_rows,
+
+                COUNT(*) FILTER (
+                    WHERE training_reference_eligible
+                ) AS n_reference_rows,
+
+                COUNT(*) FILTER (
+                    WHERE training_selected
+                ) AS n_training_rows,
+
+                COUNT(DISTINCT target_cmd)
+                    AS n_validation_products,
+
+                COUNT(DISTINCT target_cmd) FILTER (
+                    WHERE training_selected
+                ) AS n_training_products
+
+            FROM validation_diagnostics_base
+            """
+        ).fetchone()
+
+        (
+            n_validation_rows,
+            n_reference_rows,
+            n_training_rows,
+            n_validation_products,
+            n_training_products,
+        ) = map(
+            int,
+            training_evidence_summary,
+        )
+
+        n_unseen_products = (
+            n_validation_products
+            - n_training_products
+        )
+
+
+        training_evidence_by_product = con.execute(
+            """
+            SELECT
+                target_cmd,
+
+                COUNT(*)
+                    AS total_rows,
+
+                COUNT(DISTINCT year)
+                    AS validation_years,
+
+                COUNT(*) FILTER (
+                    WHERE training_reference_eligible
+                )
+                    AS reference_eligible_rows,
+
+                COUNT(*) FILTER (
+                    WHERE training_selected
+                )
+                    AS training_selected_rows,
+
+                COUNT(DISTINCT year) FILTER (
+                    WHERE training_selected
+                )
+                    AS training_years,
+
+                MIN(year) FILTER (
+                    WHERE training_selected
+                )
+                    AS first_training_year,
+
+                MAX(year) FILTER (
+                    WHERE training_selected
+                )
+                    AS last_training_year,
+
+                BOOL_OR(training_selected)
+                    AS seen_in_training
+
+            FROM validation_diagnostics_base
+
+            GROUP BY target_cmd
+
+            ORDER BY
+                training_selected_rows ASC,
+                target_cmd ASC
+            """
+        ).fetchdf()
+
+        for row in training_evidence_by_product.itertuples(
+            index=False
+        ):
+            diagnostics_rows.append(
+                {
+                    "scope": "training_evidence_by_product",
+
+                    "criterion": (
+                        "seen"
+                        if bool(row.seen_in_training)
+                        else "unseen"
+                    ),
+
+                    "candidate": None,
+
+                    "disagreement_threshold": None,
+                    "uv_support_threshold": None,
+                    "uv_distance_threshold": None,
+
+                    "year": None,
+                    "target_cmd": str(
+                        row.target_cmd
+                    ),
+
+                    "variable": "training_selected_rows",
+                    "quantile": None,
+
+                    "n_rows": int(
+                        row.training_selected_rows
+                    ),
+
+                    "total_rows": int(
+                        row.total_rows
+                    ),
+
+                    "share_of_all": _share(
+                        int(row.training_selected_rows),
+                        int(row.total_rows),
+                    ),
+
+                    "share_of_parent": None,
+
+                    "reference_eligible_rows": int(
+                        row.reference_eligible_rows
+                    ),
+
+                    "validation_years": int(
+                        row.validation_years
+                    ),
+
+                    "training_years": int(
+                        row.training_years
+                    ),
+
+                    "first_training_year": (
+                        int(row.first_training_year)
+                        if pd.notna(row.first_training_year)
+                        else None
+                    ),
+
+                    "last_training_year": (
+                        int(row.last_training_year)
+                        if pd.notna(row.last_training_year)
+                        else None
+                    ),
+
+                    "seen_in_training": bool(
+                        row.seen_in_training
+                    ),
+
+                    "training_year_coverage": _share(
+                        int(row.training_years),
+                        int(row.validation_years),
+                    ),
+                }
+            )
+
+
+        training_evidence_by_year = con.execute(
+            """
+            SELECT
+                year,
+
+                COUNT(*)
+                    AS total_rows,
+
+                COUNT(*) FILTER (
+                    WHERE training_reference_eligible
+                )
+                    AS reference_eligible_rows,
+
+                COUNT(*) FILTER (
+                    WHERE training_selected
+                )
+                    AS training_selected_rows,
+
+                COUNT(DISTINCT target_cmd) FILTER (
+                    WHERE training_selected
+                )
+                    AS training_products
+
+            FROM validation_diagnostics_base
+
+            GROUP BY year
+
+            ORDER BY year
+            """
+        ).fetchdf()
 
         # ==================================================================
         # 1. Population funnel
