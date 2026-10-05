@@ -2729,6 +2729,20 @@ def build_validation_report(
             ]
         )
 
+        training_cfg = cfg.model.training_sample
+
+        min_reference_n = int(
+            training_cfg.min_hs_year_reference_observations
+        )
+
+        max_uv_distance = float(
+            training_cfg.max_normalized_uv_distance_mad
+        )
+
+        max_mirror_quantity_disagreement = float(
+            training_cfg.max_mirror_quantity_disagreement
+        )
+
         candidate_training_rule_display = pd.DataFrame(
             [
                 {
