@@ -6043,15 +6043,6 @@ def build_validation_report(
                 "The R² distribution shows how much of the within-group variation "
                 "in bilateral unit value is explained by bilateral quantity."
             ),
-            "",
-            (
-                "This diagnostic is exploratory and does not currently alter "
-                "the candidate training population. Its purpose is to test "
-                "whether UV plausibility should eventually be conditioned on "
-                "trade quantity rather than evaluated only against a single "
-                "Product-year UV reference."
-            ),
-            "",
             "## 5. Quantity Candidate Evaluation",
             "",
             (
@@ -6642,22 +6633,6 @@ def build_validation_report(
                 "of high-confidence observations rather than by assuming that "
                 "all available quantities are true."
             ),
-            "",
-            "## 10. Output artifacts",
-            "",
-            (
-                f"- Prepared input: "
-                f"`{prepared_input_path}`"
-            ),
-            (
-                f"- Structural audit: "
-                f"`{structural_audit_path}`"
-            ),
-            (
-                f"- Diagnostics: "
-                f"`{diagnostics_path}`"
-            ),
-            f"- Report: `{report_path}`",
             "",
         ]
 

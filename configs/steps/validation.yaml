@@ -149,7 +149,7 @@ validation:
           min_samples_leaf: 50
 
       extra_trees:
-        enable: false
+        enable: true
         type: "extra_trees"
         parameters:
           n_estimators: 300
@@ -157,7 +157,7 @@ validation:
           max_features: 0.8
       
       random_forest:
-        enable: false
+        enable: true
         type: "random_forest"
         parameters:
           n_estimators: 300
