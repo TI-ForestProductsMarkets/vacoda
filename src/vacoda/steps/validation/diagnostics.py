@@ -5734,6 +5734,154 @@ def build_diagnostics(
                     }
                 )
 
+
+        # ==============================================================
+        # Mirror-disagreement retention by cumulative cutoff
+        # ==============================================================
+        mirror_disagreement_thresholds = (
+            0.05,
+            0.10,
+            0.20,
+            0.30,
+            0.40,
+            0.50,
+            0.90,
+        )
+
+        thresholds_sql = ", ".join(
+            f"({threshold:.6f})"
+            for threshold in mirror_disagreement_thresholds
+        )
+
+        mirror_retention = con.execute(
+            f"""
+            WITH thresholds(disagreement_threshold) AS (
+                VALUES
+                    {thresholds_sql}
+            ),
+
+            base AS (
+                SELECT
+                    export_synchronized_quantity_kg
+                        AS export_quantity_kg,
+
+                    import_synchronized_quantity_kg
+                        AS import_quantity_kg,
+
+                    CASE
+                        WHEN quantity_relative_difference IS NOT NULL
+                            THEN quantity_relative_difference
+                        ELSE
+                            ABS(
+                                export_synchronized_quantity_kg
+                                - import_synchronized_quantity_kg
+                            )
+                            / GREATEST(
+                                export_synchronized_quantity_kg,
+                                import_synchronized_quantity_kg
+                            )
+                    END
+                        AS mirror_disagreement,
+
+                    CASE
+                        WHEN export_synchronized_quantity_kg
+                             = import_synchronized_quantity_kg
+                            THEN 'Exact agreement'
+
+                        WHEN export_synchronized_quantity_kg
+                             > import_synchronized_quantity_kg
+                            THEN 'Exporter > importer'
+
+                        ELSE 'Importer > exporter'
+                    END
+                        AS disagreement_direction
+
+                FROM validation_diagnostics_base
+
+                WHERE both_quantities_observed
+            ),
+
+            totals AS (
+                SELECT
+                    COUNT(*)
+                        AS total_direct_bilateral_rows
+                FROM base
+            )
+
+            SELECT
+                thresholds.disagreement_threshold,
+
+                base.disagreement_direction,
+
+                COUNT(*)
+                    AS n_rows,
+
+                (
+                    SELECT
+                        total_direct_bilateral_rows
+                    FROM totals
+                )
+                    AS total_rows
+
+            FROM thresholds
+
+            JOIN base
+              ON base.mirror_disagreement
+                 <= thresholds.disagreement_threshold
+
+            GROUP BY
+                thresholds.disagreement_threshold,
+                base.disagreement_direction
+
+            ORDER BY
+                thresholds.disagreement_threshold,
+                base.disagreement_direction
+            """
+        ).fetchdf()
+
+        for row in mirror_retention.itertuples(
+            index=False
+        ):
+            n_rows = int(row.n_rows)
+            total_rows = int(row.total_rows)
+
+            diagnostics_rows.append(
+                {
+                    "scope": "mirror_disagreement_retention",
+                    "criterion": str(
+                        row.disagreement_direction
+                    ),
+                    "candidate": None,
+
+                    "disagreement_threshold": float(
+                        row.disagreement_threshold
+                    ),
+                    "uv_support_threshold": None,
+                    "uv_distance_threshold": None,
+
+                    "year": None,
+                    "target_cmd": None,
+
+                    "variable": "retained_population",
+                    "quantile": None,
+
+                    "n_rows": n_rows,
+                    "total_rows": total_rows,
+
+                    "share_of_all": _share(
+                        n_rows,
+                        total_rows,
+                    ),
+                    "share_of_parent": None,
+
+                    "value": float(n_rows),
+
+                    "validation_years": None,
+                    "training_years": None,
+                    "first_training_year": None,
+                    "last_training_year": None,
+                }
+            )
         # ------------------------------------------------------------------
         # Candidate product stability
         # ------------------------------------------------------------------

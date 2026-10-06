@@ -866,6 +866,409 @@ def _plot_training_evidence_distributions(
     )
 
 
+def _plot_export_import_quantity_ratio_distribution_deprecated(
+    *,
+    diagnostics: pd.DataFrame,
+    output_path: Path,
+    configured_disagreement_cutoff: float | None = None,
+    disagreement_guides: tuple[float, ...] = (
+        0.10,
+        0.20,
+        0.30,
+        0.40,
+        0.50,
+    ),
+) -> None:
+    """
+    Plot exporter/importer log quantity ratios with mirror-disagreement guides.
+
+    Mirror disagreement is defined as:
+
+        d = |Q_export - Q_import| / max(Q_export, Q_import)
+
+    A disagreement threshold d corresponds to:
+
+        log(1 - d)
+            <= log(Q_export / Q_import)
+            <= -log(1 - d)
+
+    The bottom x-axis shows the log quantity ratio.
+    The top x-axis shows the equivalent mirror-disagreement thresholds.
+    """
+
+    frame = _scope_frame(
+        diagnostics,
+        "quantity_ratio_distribution",
+    )
+
+    if frame.empty:
+        raise RuntimeError(
+            "No quantity-ratio distribution diagnostics are available."
+        )
+
+    frame = frame.sort_values(
+        "value"
+    ).copy()
+
+    figure, axis = plt.subplots(
+        figsize=(10, 6)
+    )
+
+    axis.bar(
+        frame["value"],
+        frame["n_rows"],
+        width=0.08,
+        alpha=0.85,
+    )
+
+    # Exact exporter/importer agreement.
+    axis.axvline(
+        0.0,
+        linestyle="--",
+        linewidth=1.8,
+        color="red",
+        label="Exporter = importer",
+    )
+
+    # --------------------------------------------------------------
+    # Mirror-disagreement guide lines
+    # --------------------------------------------------------------
+
+    for threshold in disagreement_guides:
+
+        if not 0.0 < threshold < 1.0:
+            raise ValueError(
+                "Mirror-disagreement guide thresholds "
+                "must lie strictly between 0 and 1."
+            )
+
+        boundary = -math.log(
+            1.0 - threshold
+        )
+
+        is_configured = (
+            configured_disagreement_cutoff is not None
+            and math.isclose(
+                threshold,
+                configured_disagreement_cutoff,
+                rel_tol=0.0,
+                abs_tol=1e-12,
+            )
+        )
+
+        linewidth = (
+            2.0
+            if is_configured
+            else 1.0
+        )
+
+        linestyle = (
+            "--"
+            if is_configured
+            else ":"
+        )
+
+        alpha = (
+            0.9
+            if is_configured
+            else 0.45
+        )
+
+        for position in (
+            -boundary,
+            boundary,
+        ):
+            axis.axvline(
+                position,
+                linestyle=linestyle,
+                linewidth=linewidth,
+                alpha=alpha,
+                color="grey",
+            )
+
+    # --------------------------------------------------------------
+    # Top axis: equivalent mirror disagreement
+    # --------------------------------------------------------------
+
+    top_axis = axis.twiny()
+
+    top_axis.set_xlim(
+        axis.get_xlim()
+    )
+
+    negative_ticks = []
+    negative_labels = []
+
+    positive_ticks = []
+    positive_labels = []
+
+    for threshold in reversed(
+        disagreement_guides
+    ):
+        boundary = -math.log(
+            1.0 - threshold
+        )
+
+        negative_ticks.append(
+            -boundary
+        )
+        negative_labels.append(
+            f"{100.0 * threshold:.0f}%"
+        )
+
+    for threshold in disagreement_guides:
+        boundary = -math.log(
+            1.0 - threshold
+        )
+
+        positive_ticks.append(
+            boundary
+        )
+        positive_labels.append(
+            f"{100.0 * threshold:.0f}%"
+        )
+
+    top_axis.set_xticks(
+        negative_ticks
+        + [0.0]
+        + positive_ticks
+    )
+
+    top_axis.set_xticklabels(
+        negative_labels
+        + ["0%"]
+        + positive_labels
+    )
+
+    top_axis.set_xlabel(
+        "Mirror quantity disagreement"
+    )
+
+    # --------------------------------------------------------------
+    # Main-axis formatting
+    # --------------------------------------------------------------
+
+    axis.set_title(
+        "Exporter/importer quantity ratio distribution"
+    )
+
+    axis.set_xlabel(
+        "log(exporter quantity / importer quantity)"
+    )
+
+    axis.set_ylabel(
+        "Number of observations"
+    )
+
+    axis.grid(
+        axis="y",
+        linestyle="--",
+        alpha=0.5,
+    )
+
+    axis.legend()
+
+    figure.tight_layout()
+
+    figure.savefig(
+        output_path,
+        dpi=180,
+        bbox_inches="tight",
+    )
+
+    plt.close(
+        figure
+    )
+
+def _plot_mirror_disagreement_retention(
+    *,
+    diagnostics: pd.DataFrame,
+    output_path: Path,
+    configured_cutoff: float | None = None,
+) -> None:
+    """Plot cumulative retained population by mirror-disagreement cutoff."""
+
+    frame = _scope_frame(
+        diagnostics,
+        "mirror_disagreement_retention",
+    )
+
+    if frame.empty:
+        raise RuntimeError(
+            "No mirror-disagreement retention diagnostics are available."
+        )
+
+    summary = (
+        frame.pivot_table(
+            index="disagreement_threshold",
+            columns="criterion",
+            values="n_rows",
+            aggfunc="sum",
+            fill_value=0,
+        )
+        .reset_index()
+        .sort_values(
+            "disagreement_threshold"
+        )
+    )
+
+    for column in (
+        "Exact agreement",
+        "Exporter > importer",
+        "Importer > exporter",
+    ):
+        if column not in summary.columns:
+            summary[column] = 0
+
+    total_direct_bilateral = int(
+        frame["total_rows"].dropna().iloc[0]
+    )
+
+    summary["Exact agreement (%)"] = (
+        100.0
+        * summary["Exact agreement"]
+        / total_direct_bilateral
+    )
+
+    summary["Exporter > importer (%)"] = (
+        100.0
+        * summary["Exporter > importer"]
+        / total_direct_bilateral
+    )
+
+    summary["Importer > exporter (%)"] = (
+        100.0
+        * summary["Importer > exporter"]
+        / total_direct_bilateral
+    )
+
+    summary["Total retained (%)"] = (
+        summary["Exact agreement (%)"]
+        + summary["Exporter > importer (%)"]
+        + summary["Importer > exporter (%)"]
+    )
+
+    x_labels = [
+        f"≤ {100.0 * threshold:.0f}%"
+        for threshold in summary[
+            "disagreement_threshold"
+        ]
+    ]
+
+    figure, axis = plt.subplots(
+        figsize=(10, 6)
+    )
+
+    bottom = [
+        0.0
+        for _ in range(
+            len(summary)
+        )
+    ]
+
+    bar_containers = []
+
+    for column in (
+        "Exact agreement (%)",
+        "Exporter > importer (%)",
+        "Importer > exporter (%)",
+    ):
+        bars = axis.bar(
+            x_labels,
+            summary[column].tolist(),
+            bottom=bottom,
+            label=column.replace(
+                " (%)",
+                "",
+            ),
+            alpha=0.90,
+        )
+
+        bar_containers.append(
+            bars
+        )
+
+        bottom = [
+            current_bottom + value
+            for current_bottom, value in zip(
+                bottom,
+                summary[column].tolist(),
+            )
+        ]
+
+    if configured_cutoff is not None:
+        configured_index = None
+
+        for idx, threshold in enumerate(
+            summary[
+                "disagreement_threshold"
+            ].tolist()
+        ):
+            if math.isclose(
+                threshold,
+                configured_cutoff,
+                rel_tol=0.0,
+                abs_tol=1e-12,
+            ):
+                configured_index = idx
+                break
+
+        if configured_index is not None:
+            for bars in bar_containers:
+                patch = bars[
+                    configured_index
+                ]
+                patch.set_edgecolor(
+                    "black"
+                )
+                patch.set_linewidth(
+                    1.8
+                )
+
+            axis.text(
+                configured_index,
+                bottom[
+                    configured_index
+                ] + 1.0,
+                (
+                    "Configured cutoff\n"
+                    f"≤ {100.0 * configured_cutoff:.0f}%"
+                ),
+                ha="center",
+                va="bottom",
+                fontsize=9,
+            )
+
+    axis.set_title(
+        "Cumulative retained population by mirror-disagreement cutoff"
+    )
+    axis.set_xlabel(
+        "Mirror-disagreement cutoff"
+    )
+    axis.set_ylabel(
+        "Share of direct bilateral observations (%)"
+    )
+    axis.grid(
+        axis="y",
+        linestyle="--",
+        alpha=0.5,
+    )
+    axis.legend(
+        title="Retained observations"
+    )
+
+    figure.tight_layout()
+
+    figure.savefig(
+        output_path,
+        dpi=180,
+        bbox_inches="tight",
+    )
+
+    plt.close(
+        figure
+    )
+
 def _plot_export_import_quantity_ratio_distribution(
     *,
     diagnostics: pd.DataFrame,
@@ -1880,6 +2283,12 @@ def _build_validation_figure_paths(
                 "_validation_quantity_candidate_closest_conditioned.png"
             )
         ),
+        "mirror_disagreement_retention":
+            figure_dir
+            / (
+                f"target_{target_hs}"
+                "_validation_mirror_disagreement_retention.png"
+            ),
         "model_performance_by_year": (
             figure_dir
             / (
@@ -2389,6 +2798,121 @@ def build_validation_report(
         # ============================================================
         # Training Sample Diagnostics
         # ============================================================
+
+        mirror_retention = _scope_frame(
+            diagnostics,
+            "mirror_disagreement_retention",
+        ).copy()
+
+        if mirror_retention.empty:
+            raise RuntimeError(
+                "Mirror-disagreement retention diagnostics are unavailable."
+            )
+
+        mirror_retention_display = (
+            mirror_retention.pivot_table(
+                index="disagreement_threshold",
+                columns="criterion",
+                values="n_rows",
+                aggfunc="sum",
+                fill_value=0,
+            )
+            .reset_index()
+            .sort_values(
+                "disagreement_threshold"
+            )
+        )
+
+        for column in (
+            "Exact agreement",
+            "Exporter > importer",
+            "Importer > exporter",
+        ):
+            if column not in mirror_retention_display.columns:
+                mirror_retention_display[column] = 0
+
+        total_direct_bilateral = int(
+            mirror_retention[
+                "total_rows"
+            ].dropna().iloc[0]
+        )
+
+        mirror_retention_display[
+            "Total retained"
+        ] = (
+            mirror_retention_display[
+                "Exact agreement"
+            ]
+            + mirror_retention_display[
+                "Exporter > importer"
+            ]
+            + mirror_retention_display[
+                "Importer > exporter"
+            ]
+        )
+
+        mirror_retention_display[
+            "Share of direct bilateral"
+        ] = (
+            mirror_retention_display[
+                "Total retained"
+            ]
+            / total_direct_bilateral
+        )
+
+        mirror_retention_display[
+            "Cutoff"
+        ] = mirror_retention_display[
+            "disagreement_threshold"
+        ].map(
+            lambda value: (
+                f"≤ {100.0 * value:.0f}%"
+            )
+        )
+
+        mirror_retention_display = (
+            mirror_retention_display[
+                [
+                    "Cutoff",
+                    "Exact agreement",
+                    "Exporter > importer",
+                    "Importer > exporter",
+                    "Total retained",
+                    "Share of direct bilateral",
+                ]
+            ]
+            .rename(
+                columns={
+                    "Exact agreement": "Exact agreement",
+                    "Exporter > importer": "Exporter > importer",
+                    "Importer > exporter": "Importer > exporter",
+                    "Total retained": "Total retained",
+                    "Share of direct bilateral": "Share of direct bilateral",
+                }
+            )
+        )
+
+        for column in (
+            "Exact agreement",
+            "Exporter > importer",
+            "Importer > exporter",
+            "Total retained",
+        ):
+            mirror_retention_display[
+                column
+            ] = mirror_retention_display[
+                column
+            ].map(
+                _format_integer
+            )
+
+        mirror_retention_display[
+            "Share of direct bilateral"
+        ] = mirror_retention_display[
+            "Share of direct bilateral"
+        ].map(
+            _format_percent
+        )
 
         pre_training_reference_product_coverage = _scope_frame(
             diagnostics,
@@ -5327,6 +5851,9 @@ def build_validation_report(
                 training_evidence_year_display[column]
                 .map(_format_percent)
             )
+
+        selected_quantity_column = (f"quantity_{selected_candidate}_kg")
+
         # ==============================================================
         # Report
         # ==============================================================
@@ -5338,6 +5865,10 @@ def build_validation_report(
             "",
             "__TOC__",
             "",
+
+            # ==========================================================
+            # 1. Validation Input
+            # ==========================================================
             "",
             "## 1. Run overview",
             "",
@@ -5347,39 +5878,35 @@ def build_validation_report(
                 f"- **Configured year range:** "
                 f"{cfg.scope.min_year}–{cfg.scope.max_year}"
             ),
-                "- **Training Sample Criteria:**",
-                f"  - Training definition: `{training_definition}`",
-                (
-                    f"  - Reference-year window: `before={reference_before}, "
-                    f"after={reference_after}`"
-                ),
-                (
-                    f"  - Minimum HS × year reference observations: "
-                    f"`{min_reference_n}`"
-                ),
-                (
-                    f"  - Maximum normalized UV distance: "
-                    f"`{max_uv_distance:g} MAD`"
-                ),
-                (
-                    f"  - Require positive UV MAD: "
-                    f"`{require_positive_uv_mad}`"
-                ),
-                (
-                    f"  - Maximum mirror quantity disagreement: "
-                    f"`{100.0 * max_mirror_quantity_disagreement:g}%`"
-                ),
-                (
-                    f"  - Require reference eligible: "
-                    f"`{require_reference_eligible}`"
-                ),
-            "- **Validation Criteria:**",
+            "- **Training sample criteria:**",
+            f"  - Training definition: `{training_definition}`",
             (
-                    f"  - Validation Strategy: `{validation_strategy}`"
+                f"  - Reference-year window: `before={reference_before}, "
+                f"after={reference_after}`"
             ),
             (
-                    f"  - Minimum training years: `{minimum_training_years}`"
+                f"  - Minimum HS × year reference observations: "
+                f"`{min_reference_n}`"
             ),
+            (
+                f"  - Maximum normalized UV distance: "
+                f"`{max_uv_distance:g} MAD`"
+            ),
+            (
+                f"  - Require positive UV MAD: "
+                f"`{require_positive_uv_mad}`"
+            ),
+            (
+                f"  - Maximum mirror quantity disagreement: "
+                f"`{100.0 * max_mirror_quantity_disagreement:g}%`"
+            ),
+            (
+                f"  - Require reference eligible: "
+                f"`{require_reference_eligible}`"
+            ),
+            "- **Validation criteria:**",
+            f"  - Validation strategy: `{validation_strategy}`",
+            f"  - Minimum training years: `{minimum_training_years}`",
             (
                 "  - Validation years: "
                 f"`{', '.join(str(year) for year in configured_validation_years)}`"
@@ -5390,11 +5917,11 @@ def build_validation_report(
                 for name in enabled_model_names
             ],
             "- **Artifacts:**",
-                f"  - Prepared input: `{prepared_input_path}`",
-                f"  - Structural audit: `{structural_audit_path}`",
-                f"  - Diagnostics: `{diagnostics_path}`",
-                f"  - Figure directory: `{figure_dir}`",
-                f"  - Report: `{report_path}`",
+            f"  - Prepared input: `{prepared_input_path}`",
+            f"  - Structural audit: `{structural_audit_path}`",
+            f"  - Diagnostics: `{diagnostics_path}`",
+            f"  - Figure directory: `{figure_dir}`",
+            f"  - Report: `{report_path}`",
             "",
             "## 2. Validation scope and terminology",
             "### 2.1 Validation Scope",
@@ -5552,18 +6079,13 @@ def build_validation_report(
             r"\frac{D^{UV}_{i,p,t}}{MAD^{UV}_{p,t}}",
             "$$",
             "",
-            "## 3. Structural integrity audit",
+
+            "## 3. Structural integrity",
             "",
             (
-                f"- The prepared Validation dataset contains "
+                f"The prepared Validation dataset contains "
                 f"`{_format_integer(n_rows)}` observations across "
                 f"`{cfg.scope.min_year}–{cfg.scope.max_year}`."
-            ),
-            "",
-            (
-                "The structural audit verifies the retained reporter quantities "
-                "and all three fixed bilateral quantity candidates before "
-                "scientific candidate evaluation."
             ),
             "",
             _markdown_table(
@@ -5571,31 +6093,17 @@ def build_validation_report(
             ),
             "",
             (
-                "The structural audit is deliberately limited to technical "
-                "integrity: canonical grain, required fields, year and HS "
-                "scope and numeric validity of the retained quantity evidence. "
-                "Economic plausibility is not decided here."
+                "This audit is deliberately technical: it checks canonical grain, "
+                "required fields, scope and numeric validity. Economic plausibility "
+                "is evaluated in the later methodological sections."
             ),
             "",
-            "## 4. Quantity diagnostics",
+
+            "### 3.1. Quantity availability",
             "",
             (
-                "Quantity diagnostics examine the available quantity "
-                "information before model development. They provide evidence "
-                "on agreement between reporting partners, consistency with "
-                "product-year unit values, and the amount of usable evidence "
-                "available for candidate training selection."
-            ),
-            "",
-            "### 4.1. Quantity availability by reporting side",
-            "",
-            (
-                "Validation first establishes which reporter-side quantity "
-                "information is actually available before applying any distinction "
-                "between directly reported and estimated quantities. The categories "
-                "below are mutually exclusive and depend only on whether a usable "
-                "positive finite quantity is available from the exporter, importer, "
-                "both, or neither."
+                "Validation first establishes which reporter-side quantities are "
+                "available before making any methodological choice."
             ),
             "",
             _markdown_table(
@@ -5609,57 +6117,18 @@ def build_validation_report(
             ),
             "",
             (
-                f"Both exporter and importer quantities are simultaneously available "
-                f"for `{_format_integer(n_quantity_both)}` observations "
-                f"(`{_format_percent(quantity_bilateral_share)}` of all Validation "
-                f"rows). These rows form the bilateral quantity population on which "
-                f"reporter agreement can subsequently be evaluated."
+                f"Both exporter and importer quantities are available for "
+                f"`{_format_integer(n_quantity_both)}` observations "
+                f"(`{_format_percent(quantity_bilateral_share)}` of all Validation rows)."
             ),
             "",
-            (
-                "The difference between overall quantity coverage and bilateral "
-                "quantity coverage therefore reflects rows for which quantity "
-                "information is supplied by only one reporting side."
-            ),
-            "",
-            "",
-            "### 4.2. Quantity-evidence population",
+
+            "### 3.2. Direct bilateral evidence",
             "",
             (
-                "This diagnostic identifies the subset of Validation "
-                "rows for which quantity information from both reporting "
-                "sides is available and the diagnostics needed for later "
-                "candidate selection can be calculated."
-            ),
-            "",
-            (
-                "The population is narrowed using the following terms and "
-                "data requirements:"
-            ),
-            "",
-            (
-                "- **Bilateral quantity observations** — both an exporter "
-                "quantity and an importer quantity are available for the "
-                "same bilateral trade observation. Either quantity may still "
-                "be marked as estimated."
-            ),
-            "",
-            (
-                "- **Direct bilateral quantity observations** — both the "
-                "exporter and importer quantities are directly reported "
-                "rather than marked as estimated."
-            ),
-            "",
-            (
-                "- **Candidate-selection diagnostics** — the Mirror quantity "
-                "disagreement and UV diagnostics required for later candidate "
-                "training selection."
-            ),
-            "",
-            "",
-            (
-                "The table below shows how the Validation population narrows "
-                "as these quantities and diagnostics become available."
+                "The quantity-selection methodology is learned from direct bilateral "
+                "observations: rows where both exporter and importer quantities are "
+                "available and neither quantity is estimated."
             ),
             "",
             _markdown_table(
@@ -5668,79 +6137,19 @@ def build_validation_report(
             "",
             markdown_image(
                 "Candidate quantity-training population",
-                figure_paths[
-                    "training_population_funnel"
-                ],
+                figure_paths["training_population_funnel"],
                 document_path=report_path,
             ),
             "",
             (
-                f"Of all Validation rows, "
-                f"`{_format_percent(n_both_quantities / n_rows)}` contain "
-                "both exporter and importer quantities. Among these bilateral "
-                f"quantity observations, "
-                f"`{_format_percent(n_both_observed / n_both_quantities)}` "
-                "have both quantities directly reported rather than estimated."
+                f"This leaves `{_format_integer(n_both_observed)}` direct bilateral "
+                f"quantity observations, representing "
+                f"`{_format_percent(n_both_observed / n_rows)}` of all Validation rows."
             ),
             "",
             (
-                f"This leaves `{_format_integer(n_both_observed)}` direct "
-                "bilateral quantity observations, representing "
-                f"`{_format_percent(n_both_observed / n_rows)}` of all "
-                "Validation rows."
-            ),
-            "",
-            (
-                "The final three rows of the table do not yet apply quality "
-                "thresholds. They only indicate whether the required "
-                "candidate-selection diagnostics can be calculated. In the "
-                f"current dataset, all `{_format_integer(n_both_observed)}` "
-                "direct bilateral quantity observations have Mirror quantity "
-                "disagreement and UV distance available."
-            ),
-            "",
-            "### 4.3. Diagnostics for directly observed bilateral quantities",
-            "",
-            (
-                "- Unless stated otherwise, all diagnostics in this section are "
-                f"evaluated on the `{_format_integer(n_both_observed)}` observations for which both exporter "
-                "and importer quantities are available and directly reported, "
-                "rather than estimated."
-            ),
-            "",
-            markdown_styled_heading("4.3.1. Exporter quantity relative to importer"),
-            "",
-            (
-                "For bilateral rows where both exporter and importer "
-                "quantities are directly observed, Validation also measures "
-                "the exporter-reported quantity relative to the importer-"
-                "reported quantity."
-            ),
-            "",
-            (
-                "- The importer quantity is used as the reference denominator:"
-            ),
-            "",
-            (
-                "&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;`(exporter quantity − importer quantity) / importer quantity`"
-            ),
-            "",
-            (
-                "- This measure retains direction. A positive value means "
-                "the exporter reports a larger quantity than the importer; "
-                "a negative value means the exporter reports a smaller "
-                "quantity. For example, if the importer reports `100 kg` "
-                "and the exporter reports `120 kg`, the result is `+20%`. "
-                "If the exporter reports `80 kg`, the result is `−20%`."
-            ),
-            "",
-            (
-                "- This importer-referenced measure complements the symmetric "
-                "exporter–importer quantity-difference measure used elsewhere "
-                "in the diagnostics. The symmetric measure describes the "
-                "magnitude of disagreement without choosing either reporter "
-                "as the reference. The importer-referenced measure additionally "
-                "shows the direction of that disagreement."
+                "For descriptive purposes, Validation also measures the direction "
+                "and magnitude of exporter/importer disagreement."
             ),
             "",
             _markdown_table(
@@ -5749,539 +6158,16 @@ def build_validation_report(
             "",
             markdown_image(
                 "Exporter/importer quantity ratio distribution",
-                figure_paths[
-                    "export_import_quantity_ratio_distribution"
-                ],
+                figure_paths["export_import_quantity_ratio_distribution"],
                 document_path=report_path,
             ),
             "",
-            (
-                f"- The mean exporter difference relative to the importer is "
-                f"`{_format_percent(mean_difference_vs_import)}`. This very "
-                "large value indicates an extremely right-skewed distribution "
-                "rather than a typical exporter quantity being this much "
-                "larger than the importer quantity."
-            ),
-            "",
-            (
-                "- Because the importer quantity is the denominator, rows with "
-                "a very small importer-reported quantity and a much larger "
-                "exporter-reported quantity can generate extremely large "
-                "positive ratios. A relatively small number of such observations "
-                "can therefore have a very large influence on the arithmetic mean."
-            ),
-            "",
-            (
-                f"- The median signed difference is "
-                f"`{_format_percent(median_difference_vs_import)}`. "
-                "This indicates that the typical bilateral observation shows "
-                "very little overall directional difference between exporter "
-                "and importer quantities."
-            ),
-            "",
-            (
-                f"- However, the median absolute difference is "
-                f"`{_format_percent(median_absolute_difference_vs_import)}`. "
-                "This shows that exporter and importer quantities frequently "
-                "differ substantially in magnitude even though the direction "
-                "of those differences is broadly balanced."
-            ),
-            "",
-            (
-                f"- Exporter quantities are larger than importer quantities in "
-                f"`{_format_percent(exporter_higher_share)}` of comparable "
-                "rows, while importer quantities are larger in "
-                f"`{_format_percent(importer_higher_share)}`. Exact agreement "
-                f"occurs in `{_format_percent(exact_agreement_share)}` of rows."
-            ),
-            "",
-            (
-                "- The importer is used here as the comparison base, not as an "
-                "assumption that every importer-reported quantity is correct. "
-                "The purpose of this diagnostic is to distinguish three "
-                "different properties of the bilateral quantity discrepancy: "
-                "its direction, its typical magnitude, and the presence of "
-                "extreme asymmetric observations."
-            ),
-            "",
-            markdown_styled_heading("4.3.2. Threshold sensitivity"),
-            "",
-            (
-                "- This diagnostic evaluates three evidence measures within the directly observed bilateral population, "
-                "where both exporter and importer quantities are available and neither quantity is estimated. For each measure, "
-                "the table shows how many observations satisfy increasingly permissive or restrictive thresholds. "
-            ),
-            "",
-            (
-                "- The thresholds "
-                "are cumulative rather than mutually exclusive; for example, the ≤10% Mirror-disagreement group includes all "
-                "observations in the ≤5% group."
-            ),
-            "",
-            (
-                "- Mirror quantity disagreement measures exporter–importer quantity inconsistency, Product-year UV support measures "
-                "the number of observations underlying the product-year unit-value reference, and Worst-side reporter UV distance "
-                "measures how far the less plausible reporter-implied unit value lies from that reference."
 
-            ),
-            "",
-            _markdown_table(
-                sensitivity_display
-            ),
+            "### 3.3. Evidence coverage",
             "",
             (
-                "These results show how restrictive each individual "
-                "criterion would be within the directly observed bilateral "
-                "quantity population."
-            ),
-            "",
-            markdown_styled_heading("4.3.3. Joint threshold combinations"),
-            "",
-            (
-                "The following grid applies the three candidate-selection "
-                "diagnostics jointly. Each row represents one possible "
-                "candidate training population:"
-            ),
-            "",
-            (
-                "`direct bilateral quantities` + "
-                "`maximum Mirror quantity disagreement` + "
-                "`minimum Product-year UV support` + "
-                "`maximum Worst-side reporter UV distance`."
-            ),
-            "",
-            _markdown_table(
-                threshold_grid_display
-            ),
-            "",
-            (
-                "The purpose of this grid is to expose the trade-off "
-                "between purity and sample size. No combination becomes "
-                "the production training definition merely because it has "
-                "a large or small population."
-            ),
-            "",
-            markdown_styled_heading("4.3.4. Mirror quantity disagreement and bilateral UV plausibility"),
-            "",
-            (
-                "- Mirror quantity disagreement and bilateral UV distance "
-                "provide complementary evidence about quantity credibility. "
-                "The following matrix groups direct bilateral observations "
-                "simultaneously by Mirror quantity disagreement and "
-                "Worst-side reporter UV distance."
-            ),
-            "",
-            (
-                "- Worst-side reporter UV distance is the larger of the exporter and "
-                "importer UV distances. A row therefore enters a low "
-                "Worst-side reporter UV-distance category only when both reporting "
-                "sides imply unit values close to the Product-year UV "
-                "reference."
-            ),
-            "",
-            _markdown_table(
-                matrix_display,
-                index=True,
-            ),
-            "",
-            (
-                "The low-disagreement, low-unit-value-distance cells are "
-                "the strongest current candidates for training population. "
-                "Rows with strong mirror agreement but weak unit-value "
-                "plausibility remain questionable because both reporters "
-                "can agree on a quantity that is economically unusual."
-            ),
-            "",
-            markdown_styled_heading("4.3.5. Side-specific unit-value plausibility"),
-            "",
-            (
-                "The following table evaluates Exporter UV distance and "
-                "Importer UV distance separately within each Mirror quantity "
-                "disagreement band. Worst-side reporter UV distance shows the less "
-                "plausible of the two reporting sides."
-            ),
-            "",
-            _markdown_table(
-                side_plausibility_display
-            ),
-            "",
-            markdown_styled_heading("4.3.6. Distributional evidence"),
-            "",
-            (
-                "The following diagnostics describe the distribution of "
-                "`Mirror quantity disagreement`, `Product-year UV support`, "
-                "and `Worst-side reporter UV distance` among directly observed "
-                "bilateral quantity rows."
-            ),
-            "",
-            _markdown_table(
-                distribution_display
-            ),
-            "",
-            markdown_image(
-                "Quantity-model training evidence distributions",
-                figure_paths[
-                    "training_evidence_distributions"
-                ],
-                document_path=report_path,
-            ),
-            "",
-            (
-                "Key take aways from these distributions:\n"
-                "- For Mirror quantity disagreement, the blue line rises quickly and is already around 0.59 at the median. "
-                "That means disagreement is not just an issue in a small number of extreme rows — it is widespread. By the 75th "
-                f"percentile it is about {mirror_disagreement_p75}, so three quarters "
-                f"of rows have disagreement up to {mirror_disagreement_p75}, and " 
-                f"the upper tail is essentially near the maximum possible disagreement."
-            ),
-            "",
-            (
-            "- For Worst-side reporter UV distance, the orange line is much lower through the middle of the distribution, then rises sharply" 
-                "in the upper tail. So most rows are relatively closer to their Product-year UV reference, while a smaller fraction " 
-                "becomes very far away."
-            ),
-            "",
-            (
-                "- Mirror disagreement is broadly high across the population, whereas very large UV-distance problems are concentrated " 
-                "more in the upper tail."
-            ),
-            "",
-            (
-                "Reporter-side unit-value distances are calculated using nominal reconciled "
-                "trade value because the product-year UV reference is defined on the same "
-                "nominal within-year basis."
-            ),
-            "",
-            "",
-            markdown_styled_heading("4.3.7. Quantity–UV relationship"),
-            "",
-            (
-                "The previous UV diagnostics compare implied unit values "
-                "with a Product-year UV reference. This assumes that a single "
-                "reference is informative across different trade quantities. "
-                "Before relying strongly on that assumption, Validation also "
-                "examines whether unit value systematically varies with "
-                "quantity."
-            ),
-            "",
-            (
-                "For this study, only direct bilateral quantity observations "
-                "are used. To avoid choosing either exporter or importer as "
-                "the true quantity, a symmetric bilateral quantity is defined "
-                "as:"
-            ),
-            "",
-            (
-                "`bilateral quantity = "
-                "sqrt(exporter quantity × importer quantity)`"
-            ),
-            "",
-            (
-                "The corresponding bilateral unit value is:"
-            ),
-            "",
-            (
-                "`bilateral UV = reconciled nominal trade value "
-                "/ bilateral quantity`"
-            ),
-            "",
-            (
-                "For each HS product and year, Validation estimates the "
-                "log-log relationship:"
-            ),
-            "",
-            (
-                "`log(bilateral UV) = α + β × "
-                "log(bilateral quantity)`"
-            ),
-            "",
-            (
-                "The coefficient `β` measures how unit value changes with "
-                "trade quantity. A negative value means that larger quantities "
-                "tend to have lower unit values; a value near zero indicates "
-                "little systematic relationship; and a positive value means "
-                "that unit value tends to increase with quantity."
-            ),
-            "",
-            (
-                "For example, a slope of `−0.20` means that a 1% increase "
-                "in quantity is associated with approximately a 0.20% "
-                "decrease in unit value."
-            ),
-            "",
-            (
-                "The summary below uses HS × year groups containing at least "
-                "30 direct bilateral observations. The minimum group size is "
-                "used only to summarize reasonably supported relationships; "
-                "the underlying diagnostics retain all available groups."
-            ),
-            "",
-            _markdown_table(quantity_uv_summary_display),
-            "",
-            markdown_image(
-                "Distribution of HS × year quantity–UV slopes",
-                figure_paths["quantity_uv_slope_distribution"],
-                document_path=report_path,
-                width=850,
-            ),
-            "",
-            (
-                "The slope distribution shows how strongly bilateral unit value "
-                "changes with bilateral quantity across supported HS × year groups. "
-                "A negative slope means that larger quantities tend to be associated "
-                "with lower unit values."
-            ),
-            "",
-            markdown_image(
-                "Distribution of HS × year quantity–UV R² values",
-                figure_paths["quantity_uv_r_squared_distribution"],
-                document_path=report_path,
-                width=850,
-            ),
-            "",
-            (
-                "The R² distribution shows how much of the within-group variation "
-                "in bilateral unit value is explained by bilateral quantity."
-            ),
-            "## 5. Quantity Candidate Evaluation",
-            "",
-            (
-                "Validation retains exporter and importer quantities as the "
-                "underlying reporter evidence and compares three fixed bilateral "
-                "quantity candidates:"
-            ),
-            "",
-            "- **Simple mean** — gives exporter and importer quantities equal weight.",
-            "- **Value-weighted** — applies the existing Trade Sync value-reliability weights to the two quantities.",
-            "- **Quantity-reliability-weighted** — combines the two quantities using reliability estimated directly from quantity mirror consistency.",
-            "",
-            "",
-            (
-                "All candidate unit-value diagnostics use the same reconciled "
-                "nominal trade value and the same product-year UV reference. "
-                "The comparison is therefore like-for-like across candidates."
-            ),
-            "",
-            "### 5.1. Overall candidate comparison",
-            "",
-            _markdown_table(candidate_summary_display),
-            "",
-            markdown_image(
-                "Fixed quantity candidates: unit-value plausibility",
-                figure_paths["quantity_candidate_uv_summary"],
-                document_path=report_path,
-                width=850,
-            ),
-            "",
-            (
-                "The median and upper-tail UV distances show how each fixed "
-                "candidate behaves against the common product-year UV reference. "
-                "The exporter/importer log-gap columns show how far each candidate "
-                "typically moves from the two underlying reporter quantities."
-            ),
-            "",
-            "### 5.2. Candidate behavior as mirror disagreement increases",
-            "",
-            _markdown_table(disagreement_display),
-            "",
-            plot_figure_pair(
-                markdown_image(
-                    "Candidate UV plausibility by mirror disagreement — log scale",
-                    figure_paths[
-                        "quantity_candidate_by_disagreement"
-                    ],
-                    document_path=report_path,
-                    width=650,
-                    height=450,
-                ),
-                markdown_image(
-                    "Candidate UV plausibility by mirror disagreement — factor scale",
-                    figure_paths[
-                        "quantity_candidate_by_disagreement_factor"
-                    ],
-                    document_path=report_path,
-                    width=650,
-                    height=450,
-                ),
-            ),
-            "",
-            (
-                "This comparison is especially important because candidate "
-                "construction matters most when exporter and importer quantities "
-                "diverge. Similar performance in low-disagreement rows does not "
-                "establish that the candidates behave similarly when mirror "
-                "disagreement is large."
-            ),
-            "",
-            "### 5.3. Closest candidate to the product-year UV reference",
-            "",
-            _markdown_table(closest_display),
-            "",
-            markdown_image(
-                "Candidate closest to the product-year UV reference",
-                figure_paths["quantity_candidate_closest_reference"],
-                document_path=report_path,
-                width=850,
-            ),
-            "",
-            "### 5.4. Candidate spread",
-            "",
-            (
-                "- Candidate spread measures how far apart the three fixed quantity "
-                "candidates are on the same bilateral row. The spread is therefore the distance between the largest and "
-                "smallest candidate quantity, expressed relative to the max candidate quantity."
-            ),
-            "",
-            "$$",
-            r"S_Q"
-            r" = "
-            r"\frac{"
-            r"\max\left("
-            r"Q_{\mathrm{mean}},"
-            r"Q_{\mathrm{value\text{-}weighted}},"
-            r"Q_{\mathrm{quantity\text{-}weighted}}"
-            r"\right)"
-            r" - "
-            r"\min\left("
-            r"Q_{\mathrm{mean}},"
-            r"Q_{\mathrm{value\text{-}weighted}},"
-            r"Q_{\mathrm{quantity\text{-}weighted}}"
-            r"\right)"
-            r"}{"
-            r"\max\left("
-            r"Q_{\mathrm{mean}},"
-            r"Q_{\mathrm{value\text{-}weighted}},"
-            r"Q_{\mathrm{quantity\text{-}weighted}}"
-            r"\right)"
-            r"}",
-            "$$",
-            "",
-            (
-                "   - A small spread means the final methodological choice has little "
-                "numerical effect for that disagreement regime."
-            ),
-            (
-                "   - A large spread means the choice is consequential."
-            ),
-            "",
-            _markdown_table(spread_display),
-            "",
-            markdown_image(
-                "Spread among the three fixed quantity candidates",
-                figure_paths["quantity_candidate_spread"],
-                document_path=report_path,
-                width=850,
-            ),
-            "",
-            "### 5.5. Temporal stability",
-            "",
-            _markdown_table(candidate_year_display),
-            "",
-            markdown_image(
-                "Candidate unit-value plausibility by year",
-                figure_paths["quantity_candidate_by_year"],
-                document_path=report_path,
-                width=850,
-            ),
-            "",
-            (
-                "The year comparison checks whether a candidate's apparent "
-                "plausibility is persistent through time rather than driven by "
-                "a small number of years."
-            ),
-            "",
-            "### 5.6. Product stability",
-            "",
-            markdown_image(
-                "Product-level distribution of candidate median UV distance",
-                figure_paths["quantity_candidate_product_distribution"],
-                document_path=report_path,
-                width=850,
-            ),
-            "",
-            (
-                "The product-level distribution shows whether candidate behavior "
-                "is broadly shared across HS products or concentrated in a subset "
-                "of products. The full per-product diagnostics remain in the "
-                "diagnostics artifact rather than being expanded into a very large "
-                "report table."
-            ),
-            "",
-            "### 5.7. Quantity-conditioned UV plausibility",
-            "",
-            (
-                "The unconditional Product-year UV reference does not account "
-                "for the systematic relationship between trade quantity and "
-                "unit value documented in Section 3.3.7. Validation therefore "
-                "also evaluates each fixed candidate against the UV expected "
-                "at that candidate's own quantity level."
-            ),
-            "",
-            (
-                "Within each HS × year group containing at least 30 direct "
-                "bilateral observations, Validation estimates "
-                "`log(UV) = α + β × log(quantity)`. For each candidate, the "
-                "absolute residual from this relationship is then calculated. "
-                "Smaller residuals indicate greater quantity-conditioned UV "
-                "plausibility. This is a diagnostic comparison, not an automatic "
-                "candidate-selection rule."
-            ),
-            "",
-            _markdown_table(conditioned_summary_display),
-            "",
-            markdown_image(
-                "Quantity-conditioned UV plausibility by candidate",
-                figure_paths["quantity_candidate_conditioned_summary"],
-                document_path=report_path,
-                width=850,
-            ),
-            "",
-            "#### 5.7.1. Quantity-conditioned plausibility by mirror disagreement",
-            "",
-            _markdown_table(conditioned_disagreement_display),
-            "",
-            markdown_image(
-                "Quantity-conditioned candidate plausibility by mirror disagreement",
-                figure_paths["quantity_candidate_conditioned_by_disagreement"],
-                document_path=report_path,
-                width=850,
-            ),
-            "",
-            "#### 5.7.2. Candidate closest to quantity-conditioned expected UV",
-            "",
-            _markdown_table(conditioned_closest_display),
-            "",
-            markdown_image(
-                "Candidate closest to quantity-conditioned expected UV",
-                figure_paths["quantity_candidate_closest_conditioned"],
-                document_path=report_path,
-                width=850,
-            ),
-            "",
-            (
-                "This quantity-conditioned comparison is particularly useful "
-                "for the high-disagreement bands, where the three candidate "
-                "quantities differ most and where an unconditional Product-year "
-                "median UV can be least informative."
-            ),
-            "",
-            "## 6. Diagnostic",
-            "",
-            (
-                "The following diagnostics describe the temporal and "
-                "product coverage of the available quantity evidence. "
-                "They are intended to support the selection of a "
-                "defensible training population that is large enough, "
-                "sufficiently clean, and adequately represented across "
-                "years and products."   
-            ),
-            "",
-            "### 6.1. Temporal coverage",
-            "",
-            (
-                "A candidate training population must provide "
-                "useful evidence across the full time horizon rather than "
-                "being concentrated in only a few years."
+                "The following diagnostics show whether direct bilateral evidence is "
+                "distributed across the time horizon and across HS products."
             ),
             "",
             _markdown_table(
@@ -6290,173 +6176,319 @@ def build_validation_report(
             "",
             markdown_image(
                 "Direct bilateral quantity evidence by year",
-                figure_paths[
-                    "training_evidence_by_year"
-                ],
+                figure_paths["training_evidence_by_year"],
                 document_path=report_path,
-            ),
-            "",
-            "### 6.2. Product coverage",
-            "",
-            (
-                f"- The current diagnostics contain `{_format_integer(n_products)}` "
-                "HS products. "
-                f"`{_format_integer(n_products_with_direct_evidence)}` "
-                "have at least one directly observed bilateral quantity "
-                "observation."
-            ),
-            "",
-            (
-                "- The median within-product share represented by directly "
-                "observed bilateral quantity evidence is "
-                f"`{_format_percent(median_product_direct_share)}`."
-            ),
-            "",
-            (
-                "- The following table shows the 20 products with the largest "
-                "numbers of directly observed bilateral quantity rows. "
-                "This is a coverage diagnostic, not a ranking of product "
-                "quality."
             ),
             "",
             _markdown_table(
                 product_display
             ),
             "",
-            "",
-            "### 6.3. Pre-training-sample diagnostics",
+
+            # ==========================================================
+            # 4. Quantity–UV Relationship
+            # ==========================================================
+            # "## 4. Quantity–UV Relationship",
+            # "",
+            # (
+            #     "Unit value may vary systematically with trade quantity. Validation "
+            #     "therefore estimates this relationship before comparing the fixed "
+            #     "bilateral quantity candidates."
+            # ),
+            # "",
+            # (
+            #     "Only direct bilateral observations are used. To avoid declaring "
+            #     "either reporter quantity to be the true quantity, the relationship "
+            #     "is fitted using the symmetric bilateral quantity:"
+            # ),
+            # "",
+            # "$$",
+            # r"Q^{bilateral}_i="
+            # r"\sqrt{Q^{E}_iQ^{I}_i}",
+            # "$$",
+            # "",
+            # (
+            #     "The corresponding bilateral unit value is:"
+            # ),
+            # "",
+            # "$$",
+            # r"UV^{bilateral}_i="
+            # r"\frac{V_i}{Q^{bilateral}_i}",
+            # "$$",
+            # "",
+            # (
+            #     "For each sufficiently supported HS × year group, Validation fits:"
+            # ),
+            # "",
+            # "$$",
+            # r"\log(UV^{bilateral})="
+            # r"\alpha_{p,t}+\beta_{p,t}\log(Q^{bilateral})",
+            # "$$",
+            # "",
+            # (
+            #     "The coefficient β describes the quantity–UV relationship. "
+            #     "A negative β means that larger quantities tend to be associated "
+            #     "with lower unit values; β near zero indicates little systematic "
+            #     "relationship."
+            # ),
+            # "",
+            # (
+            #     "The summary below uses HS × year groups containing at least "
+            #     "30 direct bilateral observations."
+            # ),
+            # "",
+            # _markdown_table(
+            #     quantity_uv_summary_display
+            # ),
+            # "",
+            # markdown_image(
+            #     "Distribution of HS × year quantity–UV slopes",
+            #     figure_paths["quantity_uv_slope_distribution"],
+            #     document_path=report_path,
+            #     width=850,
+            # ),
+            # "",
+            # markdown_image(
+            #     "Distribution of HS × year quantity–UV R² values",
+            #     figure_paths["quantity_uv_r_squared_distribution"],
+            #     document_path=report_path,
+            #     width=850,
+            # ),
+            # "",
+
+            # ==========================================================
+            # 4. Quantity Selection
+            # ==========================================================
+            # "## 4. Quantity Selection",
+            # "",
+            # (
+            #     "Validation compares three fixed bilateral quantity candidates:"
+            # ),
+            # "",
+            # "- **Simple mean** — equal weight for exporter and importer quantities.",
+            # (
+            #     "- **Value-weighted** — uses the existing Trade Sync "
+            #     "value-reliability weights."
+            # ),
+            # (
+            #     "- **Quantity-reliability-weighted** — uses reliability estimated "
+            #     "from quantity mirror consistency."
+            # ),
+            # "",
+            # "### 4.1. Selection criterion",
+            # "",
+            # (
+            #     "The candidates are evaluated against the quantity–UV relationship "
+            #     "from Section 2 at each candidate's own quantity value. For candidate "
+            #     "Q, Validation calculates:"
+            # ),
+            # "",
+            # "$$",
+            # r"R^{cond}_i(Q)="
+            # r"\left|"
+            # r"\log\left(\frac{V_i}{Q}\right)"
+            # r"-"
+            # r"\left[\alpha_{p,t}+\beta_{p,t}\log(Q)\right]"
+            # r"\right|",
+            # "$$",
+            # "",
+            # (
+            #     "The selected methodology is the candidate with the smallest median "
+            #     "quantity-conditioned residual across the common directly observed "
+            #     "bilateral evaluation population. P95 and then P90 residuals are "
+            #     "used as deterministic tie-breakers."
+            # ),
+            # "",
+            # (
+            #     f"The selected bilateral quantity methodology is "
+            #     f"**{selected_candidate_label}**."
+            # ),
+            # "",
+            # _markdown_table(
+            #     conditioned_summary_display
+            # ),
+            # "",
+            # markdown_image(
+            #     "Quantity-conditioned UV plausibility by candidate",
+            #     figure_paths["quantity_candidate_conditioned_summary"],
+            #     document_path=report_path,
+            #     width=850,
+            # ),
+            # "",
+
+            # "### 4.2. Behavior as mirror disagreement increases",
+            # "",
+            # (
+            #     "Candidate construction matters most where exporter and importer "
+            #     "quantities disagree. The following evidence therefore shows the "
+            #     "quantity-conditioned residual by mirror-disagreement band."
+            # ),
+            # "",
+            # _markdown_table(
+            #     conditioned_disagreement_display
+            # ),
+            # "",
+            # markdown_image(
+            #     "Quantity-conditioned candidate plausibility by mirror disagreement",
+            #     figure_paths["quantity_candidate_conditioned_by_disagreement"],
+            #     document_path=report_path,
+            #     width=850,
+            # ),
+            # "",
+            # _markdown_table(
+            #     conditioned_closest_display
+            # ),
+            # "",
+            # markdown_image(
+            #     "Candidate closest to quantity-conditioned expected UV",
+            #     figure_paths["quantity_candidate_closest_conditioned"],
+            #     document_path=report_path,
+            #     width=850,
+            # ),
+            # "",
+
+            # "### 4.3. Candidate spread and stability",
+            # "",
+            # (
+            #     "The following diagnostics show how far the three candidate "
+            #     "quantities separate from one another and whether their behavior "
+            #     "is stable across time and HS products."
+            # ),
+            # "",
+            # _markdown_table(
+            #     spread_display
+            # ),
+            # "",
+            # markdown_image(
+            #     "Spread among the three fixed quantity candidates",
+            #     figure_paths["quantity_candidate_spread"],
+            #     document_path=report_path,
+            #     width=850,
+            # ),
+            # "",
+            # markdown_image(
+            #     "Candidate unit-value plausibility by year",
+            #     figure_paths["quantity_candidate_by_year"],
+            #     document_path=report_path,
+            #     width=850,
+            # ),
+            # "",
+            # markdown_image(
+            #     "Product-level distribution of candidate median UV distance",
+            #     figure_paths["quantity_candidate_product_distribution"],
+            #     document_path=report_path,
+            #     width=850,
+            # ),
+            # "",
+
+            # ==========================================================
+            # 5. Product-Year UV Reference
+            # ==========================================================
+            "## 4. Product-Year UV Reference",
             "",
             (
-                "Before fixing the final training-sample definition, "
-                "Validation compares three causal HS × year unit-value "
-                "reference windows: the focal year alone (`0_0`), the "
-                "focal year plus one preceding year (`1_0`), and the "
-                "focal year plus two preceding years (`2_0`). "
-                "Comparative support statistics use the common mature "
-                f"period `{common_reference_start_year}–"
-                f"{cfg.scope.max_year}` so that every candidate window "
-                "has its full intended history."
+                f"The current Validation workflow uses: "
+            ),
+            (
+                f"{selected_candidate_label} bilateral quantity "
+                f"(`{selected_quantity_column}`) as the selected quantity. "
+                "The Product-Year UV Reference is therefore constructed from "
+                "unit values calculated using this selected quantity."
             ),
             "",
-            "#### 6.3.1. Reference support by temporal window",
+            "$$",
+            r"UV^{selected}_i"
+            r"="
+            r"\frac{V^{reconciled}_i}"
+            r"{Q^{selected}_i}",
+            "$$",
+            "",
+            (
+                f"Here, $Q^{{selected}}_i$ corresponds to "
+                f"`{selected_quantity_column}` for the current Validation run."
+            ),
+            "",
+            "",
+            "$$",
+            r"UV^{selected}_i="
+            r"\frac{V_i}{Q^{selected}_i}",
+            "$$",
+            "",
+            (
+                "For focal HS product p and year t, the product-year reference is "
+                "constructed from eligible selected unit values of the same product "
+                "within the configured causal year window:"
+            ),
+            "",
+            "$$",
+            r"UV^{ref}_{p,t}="
+            r"\exp\left("
+            r"\operatorname{median}_{i\in\mathcal{I}_{p,t}}"
+            r"\left[\log(UV^{selected}_i)\right]"
+            r"\right)",
+            "$$",
+            "",
+            # (
+            #     f"The configured window is `before={reference_before}, "
+            #     f"after={reference_after}`. With the current configuration, the "
+            #     "reference for year t therefore uses only the focal year and the "
+            #     "configured preceding years; it does not use future observations."
+            # ),
+
+            "### 4.1. Reference-window evidence",
+            "",
+            (
+                "Before fixing the final reference window, Validation compares the "
+                "causal windows `0_0`, `1_0`, and `2_0` on common mature years."
+            ),
             "",
             markdown_image(
                 "HS × year reference support by temporal window",
-                figure_paths[
-                    "pre_training_reference_support_comparison"
-                ],
+                figure_paths["pre_training_reference_support_comparison"],
                 document_path=report_path,
                 width=850,
             ),
-            "",
-            (
-                "The comparison shows whether adding preceding years "
-                "materially improves the sparse lower tail of HS × year "
-                "reference support."
-            ),
-            "",
-            "#### 6.3.2. Reference-support coverage",
             "",
             _markdown_table(
                 pre_training_support_bands_display
             ),
             "",
-            (
-                "The `≥30` band is particularly relevant because the "
-                "current candidate training rule requires at least 30 "
-                "reference observations."
-            ),
-            "",
-            "#### 6.3.3. Lowest-support HS × year groups",
-            "",
             _markdown_table(
                 pre_training_worst_display
-            ),
-            "",
-            "#### 6.3.4. Missing reference coverage",
-            "",
-            (
-                "Reference coverage is evaluated across all HS × year "
-                "groups present in the Validation dataset, while reference "
-                "observations themselves are restricted to the directly "
-                "observed bilateral reference population."
-            ),
-            "",
-            (
-                "The following table first shows how many HS × year groups "
-                "have no usable reference under each temporal window."
             ),
             "",
             _markdown_table(
                 pre_training_availability_display
             ),
             "",
-            (
-                "A missing HS × year reference does not necessarily mean "
-                "that the HS product has no reference evidence at all; the "
-                "same product may be supported in other years. The next "
-                "table therefore identifies HS products whose total "
-                "reference support is zero across the full configured "
-                "period."
-            ),
-            "",
             _markdown_table(
                 pre_training_zero_support_products_display
             ),
             "",
-            "#### 6.3.5. Reference stability",
-            "",
             (
-                "Support should not be increased at the cost of materially "
-                "changing the unit-value reference. The following table "
-                "therefore compares changes in the robust median and MAD "
-                "under `1_0` and `2_0` against the same-year `0_0` "
-                "reference."
+                "Support should not be increased at the cost of materially changing "
+                "the reference. The following table therefore compares robust-centre "
+                "and MAD stability across the candidate windows."
             ),
             "",
             _markdown_table(
                 pre_training_stability_display
             ),
             "",
-            "## 7. Training-sample diagnostics",
+
+            "### 4.2. Reference support",
             "",
             (
-                "- The training-sample step evaluates the quantity candidate "
-                "selected by the preceding quantity-selection stage and constructs "
-                "the evidence needed to define the final model-training population."
-            ),
-            "",
-            (
-                f"- The selected bilateral quantity methodology is "
-                f"`{selected_candidate_label}`. All selected-quantity and "
-                "selected-unit-value diagnostics in this section therefore refer "
-                "to this selected methodology."
-            ),
-            "",
-            "",
-            "### 7.1. Training-sample population",
-            "",
-            _markdown_table(
-                training_sample_summary_display
-            ),
-            "",
-            "### 7.2. Selected-unit-value distance",
-            "",
-            (
-                "The following distribution shows how far the unit value implied by "
-                "the selected quantity lies from the robust HS × year reference. "
-                "Validation computes this distance on the absolute log scale, while "
-                "the factor scale expresses the same distance more intuitively. "
-                "A factor of `1×` means exact agreement with the reference."
+                "Reference support is the number of eligible observations entering "
+                "the HS × year reference. This quantity is later used as one of the "
+                "training-sample evidence requirements."
             ),
             "",
             get_table_figure_layout(
-                training_uv_distance_display,
+                training_reference_support_display,
                 markdown_image(
-                    "Selected unit-value distance distribution",
-                    figure_paths[
-                        "training_uv_distance_distribution"
-                    ],
+                    "HS × year unit-value reference support",
+                    figure_paths["training_reference_support_distribution"],
                     document_path=report_path,
                     width=700,
                     height=None,
@@ -6464,34 +6496,136 @@ def build_validation_report(
                 table_width=38,
             ),
             "",
-            "### 7.3. Selected-unit-value distance normalized by log-UV MAD",
+
+            "### 4.3. Reference dispersion",
             "",
             (
-                "- Different HS × year groups have different natural levels of "
-                "unit-value variation. A given UV log distance can therefore be "
-                "large for a tightly clustered group but relatively normal for a "
-                "more dispersed group."
+                "Natural UV variation differs across HS × year groups. Validation "
+                "therefore measures robust within-reference dispersion using the "
+                "median absolute deviation of log unit values."
             ),
             "",
-            (
-                "- To make the distances comparable across groups, Validation divides "
-                "each selected-unit-value log distance by the corresponding HS × year "
-                "log-UV MAD."
+            "$$",
+            r"MAD^{UV}_{p,t}="
+            r"\operatorname{median}_{i\in\mathcal{I}_{p,t}}"
+            r"\left|"
+            r"\log(UV^{selected}_i)"
+            r"-"
+            r"\operatorname{median}_{j\in\mathcal{I}_{p,t}}"
+            r"\log(UV^{selected}_j)"
+            r"\right|",
+            "$$",
+            "",
+            get_table_figure_layout(
+                training_uv_dispersion_display,
+                markdown_image(
+                    "HS × year unit-value dispersion",
+                    figure_paths["training_uv_dispersion_distribution"],
+                    document_path=report_path,
+                    width=700,
+                    height=None,
+                ),
+                table_width=38,
             ),
             "",
+
+            # ==========================================================
+            # 6. Training Sample
+            # ==========================================================
+            "## 5. Training Sample",
+            "",
             (
-                "- The resulting value is expressed in MAD units. A value of 1 means "
-                "that the selected unit value lies one within-group MAD from the "
-                "HS × year UV reference."
+                "The training sample is intended to provide high-confidence "
+                "pseudo-ground truth rather than maximize row count. It starts from "
+                "direct bilateral, non-estimated quantity observations and then "
+                "requires sufficient mirror agreement and product-year UV evidence."
             ),
+            "",
+
+            "### 5.1. Evidence behind the training criteria",
+            "",
+            (
+                "Mirror quantity disagreement and UV plausibility provide "
+                "complementary evidence. Validation therefore studies their "
+                "distributions and joint behavior before applying the configured "
+                "training rule."
+            ),
+            "",
+            _markdown_table(
+                sensitivity_display
+            ),
+            "",
+            _markdown_table(
+                threshold_grid_display
+            ),
+            "",
+            _markdown_table(
+                matrix_display,
+                index=True,
+            ),
+            "",
+            _markdown_table(
+                side_plausibility_display
+            ),
+            "",
+            _markdown_table(
+                distribution_display
+            ),
+            "",
+            markdown_image(
+                "Quantity-model training evidence distributions",
+                figure_paths["training_evidence_distributions"],
+                document_path=report_path,
+            ),
+            "",
+
+            "### 6.2. Selected-unit-value distance",
+            "",
+            (
+                "For every row with a usable selected quantity and product-year "
+                "reference, Validation computes the absolute log distance:"
+            ),
+            "",
+            "$$",
+            r"D^{UV}_{i,p,t}="
+            r"\left|"
+            r"\log(UV^{selected}_{i})"
+            r"-"
+            r"\log(UV^{ref}_{p,t})"
+            r"\right|",
+            "$$",
+            "",
+            get_table_figure_layout(
+                training_uv_distance_display,
+                markdown_image(
+                    "Selected unit-value distance distribution",
+                    figure_paths["training_uv_distance_distribution"],
+                    document_path=report_path,
+                    width=700,
+                    height=None,
+                ),
+                table_width=38,
+            ),
+            "",
+
+            "### 6.3. Dispersion-normalized UV distance",
+            "",
+            (
+                "Because HS × year groups have different natural UV dispersion, "
+                "the absolute distance is normalized by the corresponding log-UV "
+                "MAD:"
+            ),
+            "",
+            "$$",
+            r"D^{UV,norm}_{i,p,t}="
+            r"\frac{D^{UV}_{i,p,t}}{MAD^{UV}_{p,t}}",
+            "$$",
             "",
             get_table_figure_layout(
                 training_normalized_uv_distance_display,
                 markdown_image(
                     "Selected unit-value distance relative to HS × year dispersion",
-                    figure_paths[
-                        "training_normalized_uv_distance_distribution"
-                    ],
+                    figure_paths["training_normalized_uv_distance_distribution"],
                     document_path=report_path,
                     width=700,
                     height=None,
@@ -6499,26 +6633,12 @@ def build_validation_report(
                 table_width=34,
             ),
             "",
-            markdown_styled_heading(text="7.3.1. Candidate normalized-distance cutoffs"),
-            "",
-            (
-                "To support the eventual training-population decision, Validation evaluates several "
-                "candidate cutoffs for the MAD-normalized unit-value distance."
-            ),
-            "",
-            (
-                "- The `Direct bilateral reference rows` contains rows with usable, non-estimated quantity observations from both reporting sides."
-            ),
-            (
-                "- The broader `All hard-eligible rows` contains all rows with sufficient information to evaluate the selected quantity against "
-                "the HS × year UV reference, regardless of whether both reporter quantities are directly observed."
-            ),
-            "",
             _markdown_table(
                 normalized_cutoff_display
             ),
             "",
-            markdown_styled_heading(text="7.3.2. Candidate joint training rule"),
+
+            "### 6.4. Final training rule",
             "",
             "The configured training-sample rule requires:",
             *[
@@ -6530,112 +6650,96 @@ def build_validation_report(
                 candidate_training_rule_display
             ),
             "",
-            "### 7.4. Training Evidence Audit",
+            _markdown_table(
+                training_sample_summary_display
+            ),
+            "",
+
+            "### 6.5. Training evidence audit",
             "",
             (
-                "The Training Evidence Audit describes the population actually "
-                "available to model development after applying the configured "
-                "training-sample rule. It distinguishes coverage in the full "
-                "Validation population from evidence that is represented in the "
-                "final training sample."
+                "The Training Evidence Audit verifies the population that actually "
+                "survives the configured rule and shows whether the resulting "
+                "pseudo-ground-truth sample remains represented across years and "
+                "products."
             ),
             "",
             _markdown_table(
                 training_evidence_summary_display
             ),
             "",
-            "#### 7.4.1. Training evidence by year",
-            "",
-            (
-                "The following table shows how the final training population is "
-                "distributed across Validation years. Training shares are shown "
-                "relative both to all Validation rows and to the reference-eligible "
-                "population."
-            ),
+            "#### 6.5.1. Training evidence by year",
             "",
             _markdown_table(
                 training_evidence_year_display
             ),
             "",
-            "#### 7.4.2. Products unseen in training",
+            "#### 6.5.2. Products unseen in training",
             "",
             (
                 f"`{_format_integer(n_audit_unseen_products)}` of "
                 f"`{_format_integer(n_audit_products)}` HS products present in "
-                "Validation have no training-selected observations under the "
-                "configured training-sample rule."
+                "Validation have no training-selected observations."
             ),
             "",
             _markdown_table(
                 training_unseen_products_display
             ),
             "",
-            "#### 7.4.3. Cumulative rejection path for unseen products",
+            "#### 6.5.3. Cumulative rejection path",
             "",
             (
-                "The following table shows where HS products with no final "
-                "training observations are removed by the configured training "
-                "rule. Each column is cumulative: rows shown at a later stage "
-                "also satisfy every preceding requirement."
+                "For products unseen in training, the following table shows the "
+                "cumulative stage at which their observations are removed."
             ),
             "",
             _markdown_table(
                 training_rejection_display
             ),
             "",
-            "",
-            "## 8. Model cross-validation",
+
+            # ==========================================================
+            # 7. Model Evaluation
+            # ==========================================================
+            "## 7. Model Evaluation",
             "",
             (
-                "Candidate models were evaluated using leave-one-year-out "
-                "cross-validation. Each year's observations were predicted "
-                "by models trained on all remaining years."
+                "Candidate reconstruction models are evaluated on held-out temporal "
+                "data using the configured Validation strategy. The training sample "
+                "defined in Section 5 is the pseudo-ground-truth population used for "
+                "model development."
             ),
             "",
-            "### 8.1. Overall out-of-fold performance",
+            "### 7.1. Overall out-of-fold performance",
             "",
             _markdown_table(
                 model_performance_display
             ),
             "",
-            "### 8.2. Performance by held-out year",
+            "### 7.2. Performance by held-out year",
             "",
             markdown_image(
                 "Leave-one-year-out model performance",
-                figure_paths[
-                    "model_performance_by_year"
-                ],
+                figure_paths["model_performance_by_year"],
                 document_path=report_path,
                 width=850,
             ),
             "",
-            "## 9. Current methodological assessment",
-            "",
-            training_status,
-            "",
-            (
-                "- The bilateral quantity methodology has now been selected "
-                "and independently audited. The remaining methodological "
-                "decision before model fitting is the definition of the "
-                "training population."
-            ),
+
+            # ==========================================================
+            # 8. Inference
+            # ==========================================================
+            "## 8. Inference",
             "",
             (
-                "- No minimum HS × year support threshold or maximum "
-                "unit-value-distance threshold is imposed yet. The raw and "
-                "dispersion-normalized distributions above are intended to "
-                "support that decision from the observed data."
-            ),
-            "",
-            (
-                "- Once the training population is selected, model performance "
-                "should be tested using controlled missingness and corruption "
-                "of high-confidence observations rather than by assuming that "
-                "all available quantities are true."
+                "Production inference is not yet reported by the current Validation "
+                "workflow. This section is reserved for the final selected model, "
+                "the population requiring reconstruction, prediction coverage, "
+                "post-inference plausibility checks, and the resulting completed "
+                "quantity output."
             ),
             "",
         ]
-
         insert_markdown_toc(
             lines,
             min_level=2,
