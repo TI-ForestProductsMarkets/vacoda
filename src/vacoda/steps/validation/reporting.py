@@ -1091,7 +1091,7 @@ def _plot_mirror_disagreement_retention(
     frame = _scope_frame(
         diagnostics,
         "mirror_disagreement_retention",
-    )
+    ).copy()
 
     if frame.empty:
         raise RuntimeError(
@@ -1102,54 +1102,40 @@ def _plot_mirror_disagreement_retention(
         frame.pivot_table(
             index="disagreement_threshold",
             columns="criterion",
-            values="n_rows",
+            values="share_of_parent",
             aggfunc="sum",
-            fill_value=0,
+            fill_value=0.0,
         )
         .reset_index()
         .sort_values(
             "disagreement_threshold"
         )
+        .reset_index(drop=True)
     )
 
-    for column in (
+    direction_columns = (
         "Exact agreement",
         "Exporter > importer",
         "Importer > exporter",
-    ):
+    )
+
+    for column in direction_columns:
         if column not in summary.columns:
-            summary[column] = 0
+            summary[column] = 0.0
 
-    total_direct_bilateral = int(
-        frame["total_rows"].dropna().iloc[0]
-    )
-
-    summary["Exact agreement (%)"] = (
-        100.0
-        * summary["Exact agreement"]
-        / total_direct_bilateral
-    )
-
-    summary["Exporter > importer (%)"] = (
-        100.0
-        * summary["Exporter > importer"]
-        / total_direct_bilateral
-    )
-
-    summary["Importer > exporter (%)"] = (
-        100.0
-        * summary["Importer > exporter"]
-        / total_direct_bilateral
-    )
+    for column in direction_columns:
+        summary[column] = (
+            100.0 * summary[column]
+        )
 
     summary["Total retained (%)"] = (
-        summary["Exact agreement (%)"]
-        + summary["Exporter > importer (%)"]
-        + summary["Importer > exporter (%)"]
+        summary["Exact agreement"]
+        + summary["Exporter > importer"]
+        + summary["Importer > exporter"]
     )
 
     x_labels = [
-        f"≤ {100.0 * threshold:.0f}%"
+        f"≤ {100.0 * float(threshold):.0f}%"
         for threshold in summary[
             "disagreement_threshold"
         ]
@@ -1168,19 +1154,16 @@ def _plot_mirror_disagreement_retention(
 
     bar_containers = []
 
-    for column in (
-        "Exact agreement (%)",
-        "Exporter > importer (%)",
-        "Importer > exporter (%)",
-    ):
+    for column in direction_columns:
+        values = summary[
+            column
+        ].tolist()
+
         bars = axis.bar(
             x_labels,
-            summary[column].tolist(),
+            values,
             bottom=bottom,
-            label=column.replace(
-                " (%)",
-                "",
-            ),
+            label=column,
             alpha=0.90,
         )
 
@@ -1192,9 +1175,21 @@ def _plot_mirror_disagreement_retention(
             current_bottom + value
             for current_bottom, value in zip(
                 bottom,
-                summary[column].tolist(),
+                values,
             )
         ]
+
+    for index, total in enumerate(
+        summary["Total retained (%)"]
+    ):
+        axis.text(
+            index,
+            float(total) + 0.5,
+            f"{float(total):.1f}%",
+            ha="center",
+            va="bottom",
+            fontsize=8,
+        )
 
     if configured_cutoff is not None:
         configured_index = None
@@ -1205,8 +1200,8 @@ def _plot_mirror_disagreement_retention(
             ].tolist()
         ):
             if math.isclose(
-                threshold,
-                configured_cutoff,
+                float(threshold),
+                float(configured_cutoff),
                 rel_tol=0.0,
                 abs_tol=1e-12,
             ):
@@ -1227,9 +1222,12 @@ def _plot_mirror_disagreement_retention(
 
             axis.text(
                 configured_index,
-                bottom[
-                    configured_index
-                ] + 1.0,
+                float(
+                    summary.loc[
+                        configured_index,
+                        "Total retained (%)",
+                    ]
+                ) + 2.5,
                 (
                     "Configured cutoff\n"
                     f"≤ {100.0 * configured_cutoff:.0f}%"
@@ -2809,7 +2807,7 @@ def build_validation_report(
                 "Mirror-disagreement retention diagnostics are unavailable."
             )
 
-        mirror_retention_display = (
+        mirror_retention_counts = (
             mirror_retention.pivot_table(
                 index="disagreement_threshold",
                 columns="criterion",
@@ -2818,36 +2816,60 @@ def build_validation_report(
                 fill_value=0,
             )
             .reset_index()
-            .sort_values(
-                "disagreement_threshold"
-            )
         )
 
-        for column in (
+        mirror_retention_shares = (
+            mirror_retention.pivot_table(
+                index="disagreement_threshold",
+                columns="criterion",
+                values="share_of_parent",
+                aggfunc="sum",
+                fill_value=0.0,
+            )
+            .reset_index()
+        )
+
+        direction_columns = (
             "Exact agreement",
             "Exporter > importer",
             "Importer > exporter",
-        ):
-            if column not in mirror_retention_display.columns:
-                mirror_retention_display[column] = 0
+        )
 
-        total_direct_bilateral = int(
-            mirror_retention[
-                "total_rows"
-            ].dropna().iloc[0]
+        for column in direction_columns:
+            if column not in mirror_retention_counts.columns:
+                mirror_retention_counts[column] = 0
+
+            if column not in mirror_retention_shares.columns:
+                mirror_retention_shares[column] = 0.0
+
+        mirror_retention_display = (
+            mirror_retention_counts.merge(
+                mirror_retention_shares[
+                    [
+                        "disagreement_threshold",
+                        *direction_columns,
+                    ]
+                ],
+                on="disagreement_threshold",
+                suffixes=("_rows", "_share"),
+            )
+            .sort_values(
+                "disagreement_threshold"
+            )
+            .reset_index(drop=True)
         )
 
         mirror_retention_display[
             "Total retained"
         ] = (
             mirror_retention_display[
-                "Exact agreement"
+                "Exact agreement_rows"
             ]
             + mirror_retention_display[
-                "Exporter > importer"
+                "Exporter > importer_rows"
             ]
             + mirror_retention_display[
-                "Importer > exporter"
+                "Importer > exporter_rows"
             ]
         )
 
@@ -2855,9 +2877,14 @@ def build_validation_report(
             "Share of direct bilateral"
         ] = (
             mirror_retention_display[
-                "Total retained"
+                "Exact agreement_share"
             ]
-            / total_direct_bilateral
+            + mirror_retention_display[
+                "Exporter > importer_share"
+            ]
+            + mirror_retention_display[
+                "Importer > exporter_share"
+            ]
         )
 
         mirror_retention_display[
@@ -2866,7 +2893,7 @@ def build_validation_report(
             "disagreement_threshold"
         ].map(
             lambda value: (
-                f"≤ {100.0 * value:.0f}%"
+                f"≤ {100.0 * float(value):.0f}%"
             )
         )
 
@@ -2874,20 +2901,24 @@ def build_validation_report(
             mirror_retention_display[
                 [
                     "Cutoff",
-                    "Exact agreement",
-                    "Exporter > importer",
-                    "Importer > exporter",
+                    "Exact agreement_rows",
+                    "Exporter > importer_rows",
+                    "Importer > exporter_rows",
                     "Total retained",
                     "Share of direct bilateral",
                 ]
             ]
             .rename(
                 columns={
-                    "Exact agreement": "Exact agreement",
-                    "Exporter > importer": "Exporter > importer",
-                    "Importer > exporter": "Importer > exporter",
-                    "Total retained": "Total retained",
-                    "Share of direct bilateral": "Share of direct bilateral",
+                    "Exact agreement_rows": (
+                        "Exact agreement"
+                    ),
+                    "Exporter > importer_rows": (
+                        "Exporter > importer"
+                    ),
+                    "Importer > exporter_rows": (
+                        "Importer > exporter"
+                    ),
                 }
             )
         )
@@ -4756,6 +4787,16 @@ def build_validation_report(
                 "export_import_quantity_ratio_distribution"
             ],
         )
+
+        _plot_mirror_disagreement_retention(
+            diagnostics=diagnostics,
+            output_path=figure_paths[
+                "mirror_disagreement_retention"
+            ],
+            configured_cutoff=(
+                max_mirror_quantity_disagreement
+            ),
+        )
         
         _plot_quantity_uv_slope_distribution(
             diagnostics=diagnostics,
@@ -6434,6 +6475,25 @@ def build_validation_report(
             #     "reference for year t therefore uses only the focal year and the "
             #     "configured preceding years; it does not use future observations."
             # ),
+            (
+                "The next table and figure show how much of the direct bilateral "
+                "population is retained under increasingly permissive mirror-"
+                "disagreement cutoffs. The retained population is also split by "
+                "disagreement direction to show whether exporter-larger and "
+                "importer-larger observations remain balanced."
+            ),
+            "",
+            _markdown_table(
+                mirror_retention_display
+            ),
+            "",
+            markdown_image(
+                "Cumulative retained population by mirror-disagreement cutoff",
+                figure_paths["mirror_disagreement_retention"],
+                document_path=report_path,
+                width=850,
+            ),
+            "",
 
             "### 4.1. Reference-window evidence",
             "",

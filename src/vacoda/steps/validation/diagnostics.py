@@ -5734,7 +5734,6 @@ def build_diagnostics(
                     }
                 )
 
-
         # ==============================================================
         # Mirror-disagreement retention by cumulative cutoff
         # ==============================================================
@@ -5762,34 +5761,19 @@ def build_diagnostics(
 
             base AS (
                 SELECT
-                    export_synchronized_quantity_kg
-                        AS export_quantity_kg,
+                    export_quantity_kg,
+                    import_quantity_kg,
 
-                    import_synchronized_quantity_kg
-                        AS import_quantity_kg,
-
-                    CASE
-                        WHEN quantity_relative_difference IS NOT NULL
-                            THEN quantity_relative_difference
-                        ELSE
-                            ABS(
-                                export_synchronized_quantity_kg
-                                - import_synchronized_quantity_kg
-                            )
-                            / GREATEST(
-                                export_synchronized_quantity_kg,
-                                import_synchronized_quantity_kg
-                            )
-                    END
+                    quantity_relative_difference
                         AS mirror_disagreement,
 
                     CASE
-                        WHEN export_synchronized_quantity_kg
-                             = import_synchronized_quantity_kg
+                        WHEN export_quantity_kg
+                             = import_quantity_kg
                             THEN 'Exact agreement'
 
-                        WHEN export_synchronized_quantity_kg
-                             > import_synchronized_quantity_kg
+                        WHEN export_quantity_kg
+                             > import_quantity_kg
                             THEN 'Exporter > importer'
 
                         ELSE 'Importer > exporter'
@@ -5799,19 +5783,23 @@ def build_diagnostics(
                 FROM validation_diagnostics_base
 
                 WHERE both_quantities_observed
+                  AND quantity_relative_difference IS NOT NULL
+                  AND isfinite(
+                      quantity_relative_difference
+                  )
             ),
 
             totals AS (
                 SELECT
                     COUNT(*)
                         AS total_direct_bilateral_rows
+
                 FROM base
             )
 
             SELECT
-                thresholds.disagreement_threshold,
-
-                base.disagreement_direction,
+                t.disagreement_threshold,
+                b.disagreement_direction,
 
                 COUNT(*)
                     AS n_rows,
@@ -5823,31 +5811,38 @@ def build_diagnostics(
                 )
                     AS total_rows
 
-            FROM thresholds
+            FROM thresholds AS t
 
-            JOIN base
-              ON base.mirror_disagreement
-                 <= thresholds.disagreement_threshold
+            INNER JOIN base AS b
+                ON b.mirror_disagreement
+                   <= t.disagreement_threshold
 
             GROUP BY
-                thresholds.disagreement_threshold,
-                base.disagreement_direction
+                t.disagreement_threshold,
+                b.disagreement_direction
 
             ORDER BY
-                thresholds.disagreement_threshold,
-                base.disagreement_direction
+                t.disagreement_threshold,
+                b.disagreement_direction
             """
         ).fetchdf()
 
         for row in mirror_retention.itertuples(
             index=False
         ):
-            n_rows = int(row.n_rows)
-            total_rows = int(row.total_rows)
+            n_rows = int(
+                row.n_rows
+            )
+
+            total_rows = int(
+                row.total_rows
+            )
 
             diagnostics_rows.append(
                 {
-                    "scope": "mirror_disagreement_retention",
+                    "scope": (
+                        "mirror_disagreement_retention"
+                    ),
                     "criterion": str(
                         row.disagreement_direction
                     ),
@@ -5859,22 +5854,30 @@ def build_diagnostics(
                     "uv_support_threshold": None,
                     "uv_distance_threshold": None,
 
+                    "disagreement_band": None,
+                    "uv_distance_band": None,
+
                     "year": None,
                     "target_cmd": None,
 
-                    "variable": "retained_population",
+                    "variable": (
+                        "retained_population"
+                    ),
                     "quantile": None,
 
                     "n_rows": n_rows,
-                    "total_rows": total_rows,
 
                     "share_of_all": _share(
                         n_rows,
+                        n_all_rows,
+                    ),
+
+                    "share_of_parent": _share(
+                        n_rows,
                         total_rows,
                     ),
-                    "share_of_parent": None,
 
-                    "value": float(n_rows),
+                    "value": None,
 
                     "validation_years": None,
                     "training_years": None,
@@ -5882,6 +5885,7 @@ def build_diagnostics(
                     "last_training_year": None,
                 }
             )
+
         # ------------------------------------------------------------------
         # Candidate product stability
         # ------------------------------------------------------------------
