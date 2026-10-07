@@ -1043,8 +1043,13 @@ def _build_estimator(
             (128, 64),
         )
 
-        return MLPRegressor(
+        estimator = MLPRegressor(
             **params
+        )
+
+        return make_pipeline(
+            StandardScaler(),
+            estimator,
         )
 
     raise RuntimeError(
@@ -1443,6 +1448,8 @@ def train_validation_models(
 
             for held_out_year in validation_years:
 
+                fold_start = perf_counter()
+
                 fold_years = (
                     frame[
                         validation_year_col
@@ -1681,14 +1688,11 @@ def train_validation_models(
                     fold_predictions
                 )
 
-                fold_start = perf_counter()
-
                 logger.info(
                     "  Fold %s complete in %.1f s",
                     held_out_year,
                     (
-                        perf_counter()
-                        - fold_start
+                        perf_counter() - fold_start
                     ),
                 )
 
@@ -1755,8 +1759,7 @@ def train_validation_models(
                 "  Model %s complete in %.1f s",
                 model_name,
                 (
-                    perf_counter()
-                    - model_start
+                    perf_counter() - model_start
                 ),
             )
 
