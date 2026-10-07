@@ -1,29 +1,30 @@
 """
 vacoda.steps.validation.reporting
 
-Create the VACODA Validation decision and model-development report.
+Create the VACODA Validation model-development report.
 
-The report summarizes the evidence produced by the Validation workflow,
-including:
+The report follows the canonical bilateral Validation methodology:
 
-- structural-integrity results;
-- candidate training population;
-- training-threshold sensitivity;
-- joint threshold-grid evidence;
-- temporal and product coverage;
-- distributional evidence relevant to model development.
+1. structural integrity of the Validation input;
+2. selected canonical bilateral quantity methodology;
+3. source-reporter diagnostics, shown descriptively only;
+4. HS × year unit-value reference evidence;
+5. configured model-training population;
+6. expanding-window model evaluation;
+7. placeholder for later production inference diagnostics.
 
-Scientific calculations belong in the producing Validation steps.
-This module consumes their audit and diagnostics artifacts and turns them
-into human-readable tables, figures, and methodological interpretation.
+Scientific calculations belong in the producing Validation steps.  This module
+consumes structural-audit and diagnostics artifacts and turns them into concise
+human-readable tables, figures, and methodological interpretation.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+import math
 import shutil
 from typing import Any
-import math
+
 import duckdb
 import matplotlib
 
@@ -34,44 +35,31 @@ import pandas as pd
 
 from vacoda.config.paths import get_figure_dir
 from vacoda.config.steps.validation import ValidationConfig
-from vacoda.utils.display import get_symbols, get_table_figure_layout
-from vacoda.utils.markdown import (
-    insert_markdown_toc,
-    markdown_image,
-    markdown_styled_heading
-)
-from vacoda.visualization.relationships import plot_figure_pair
+from vacoda.utils.display import get_symbols
+from vacoda.utils.markdown import insert_markdown_toc, markdown_image
 from vacoda.utils.sql import sql_literal
-from vacoda.steps.validation.diagnostics import (
-    PRE_TRAINING_REFERENCE_WINDOWS,
-    get_common_reference_start_year,
-)
+
 
 # ======================================================================
 # Helpers
 # ======================================================================
 
 
-def valid_output(
-    path: Path,
-) -> bool:
+def valid_output(path: Path) -> bool:
     """Return True when an existing output appears usable."""
 
-    return (
-        path.is_file()
-        and path.stat().st_size > 0
-    )
+    return path.is_file() and path.stat().st_size > 0
 
 
-def _format_integer(
-    value: float | int | None,
-) -> str:
+
+def _format_integer(value: float | int | None) -> str:
     """Format an integer-like value for the report."""
 
     if value is None or pd.isna(value):
         return "NA"
 
     return f"{int(round(float(value))):,}"
+
 
 
 def _format_percent(
@@ -84,9 +72,8 @@ def _format_percent(
     if value is None or pd.isna(value):
         return "NA"
 
-    return (
-        f"{100.0 * float(value):.{digits}f}%"
-    )
+    return f"{100.0 * float(value):.{digits}f}%"
+
 
 
 def _format_number(
@@ -100,6 +87,7 @@ def _format_number(
         return "NA"
 
     return f"{float(value):,.{digits}f}"
+
 
 
 def _markdown_table(
@@ -118,6 +106,7 @@ def _markdown_table(
     )
 
 
+
 def _scope_frame(
     diagnostics: pd.DataFrame,
     scope: str,
@@ -129,92 +118,104 @@ def _scope_frame(
     ].copy()
 
 
+
+def _candidate_label(value: str) -> str:
+    """Return a readable label for the selected quantity methodology."""
+
+    labels = {
+        "simple_mean": "Simple mean",
+        "value_weighted": "Value-weighted",
+        "quantity_reliability_weighted": "Quantity-reliability-weighted",
+    }
+
+    return labels.get(str(value), str(value))
+
+
+
+def _require_diagnostic_scope(
+    diagnostics: pd.DataFrame,
+    scope: str,
+) -> pd.DataFrame:
+    """Return a required scope or raise a clear error."""
+
+    frame = _scope_frame(
+        diagnostics,
+        scope,
+    )
+
+    if frame.empty:
+        raise RuntimeError(
+            f"Validation diagnostics do not contain required scope: {scope}"
+        )
+
+    return frame
+
+
 # ======================================================================
 # Figures
 # ======================================================================
-def _plot_quantity_uv_slope_distribution(
+
+
+def _plot_source_quantity_availability(
     *,
     diagnostics: pd.DataFrame,
     output_path: Path,
 ) -> None:
-    """Plot the distribution of HS × year quantity–UV slopes."""
+    """Plot source-reporter quantity availability."""
 
-    frame = _scope_frame(
+    frame = _require_diagnostic_scope(
         diagnostics,
-        "quantity_uv_relationship_groups",
+        "source_quantity_availability",
     )
+
+    order = (
+        "both",
+        "export_only",
+        "import_only",
+        "neither",
+    )
+
+    labels = {
+        "both": "Both sides",
+        "export_only": "Exporter only",
+        "import_only": "Importer only",
+        "neither": "Neither side",
+    }
 
     frame = frame[
-        frame["variable"] == "quantity_uv_slope"
+        frame["criterion"].isin(order)
     ].copy()
 
-    if frame.empty:
-        raise RuntimeError(
-            "No quantity–UV slope diagnostics are available."
-        )
+    frame["order"] = frame["criterion"].map(
+        {value: index for index, value in enumerate(order)}
+    )
 
-    values = pd.to_numeric(
-        frame["value"],
-        errors="coerce",
-    ).dropna()
-
-    if values.empty:
-        raise RuntimeError(
-            "No valid quantity–UV slope values are available."
-        )
-
-    median = float(values.median())
-    q25 = float(values.quantile(0.25))
-    q75 = float(values.quantile(0.75))
+    frame = frame.sort_values("order")
 
     figure, axis = plt.subplots(
-        figsize=(11, 6)
+        figsize=(9, 5.5)
     )
 
-    axis.hist(
-        values,
-        bins=40,
+    bars = axis.bar(
+        [labels[value] for value in frame["criterion"]],
+        100.0 * pd.to_numeric(frame["share_of_all"], errors="coerce"),
     )
 
-    axis.axvline(
-        0.0,
-        linestyle="--",
-        linewidth=1.5,
-        label="No relationship (β = 0)",
-    )
-
-    axis.axvline(
-        median,
-        linestyle="-",
-        linewidth=1.8,
-        label=f"Median β = {median:.3f}",
-        color='darkorange'
-    )
-
-    axis.axvline(
-        q25,
-        linestyle=":",
-        linewidth=1.2,
-        label=f"P25 = {q25:.3f}",
-        color='orange'
-    )
-
-    axis.axvline(
-        q75,
-        linestyle=":",
-        linewidth=1.2,
-        label=f"P75 = {q75:.3f}",
-        color='orange'
+    axis.bar_label(
+        bars,
+        labels=[
+            _format_percent(value)
+            for value in frame["share_of_all"]
+        ],
+        padding=3,
+        fontsize=8,
     )
 
     axis.set_title(
-        "Distribution of HS × year quantity–UV slopes"
-    )
-    axis.set_xlabel(
-        "Log-log slope β"
+        "Source-reporter quantity availability"
     )
     axis.set_ylabel(
-        "Number of HS × year groups"
+        "Share of canonical bilateral rows (%)"
     )
     axis.grid(
         axis="y",
@@ -222,76 +223,73 @@ def _plot_quantity_uv_slope_distribution(
         alpha=0.5,
     )
     axis.set_axisbelow(True)
-    axis.legend()
-
     figure.tight_layout()
-
     figure.savefig(
         output_path,
         dpi=180,
         bbox_inches="tight",
     )
-
     plt.close(figure)
 
-def _plot_quantity_uv_r_squared_distribution(
+
+
+def _plot_source_disagreement_bands(
     *,
     diagnostics: pd.DataFrame,
     output_path: Path,
 ) -> None:
-    """Plot the distribution of HS × year quantity–UV R² values."""
+    """Plot descriptive exporter/importer quantity disagreement bands."""
 
-    frame = _scope_frame(
+    frame = _require_diagnostic_scope(
         diagnostics,
-        "quantity_uv_relationship_groups",
+        "source_quantity_disagreement_band",
+    )
+
+    order = (
+        "0-5%",
+        "5-10%",
+        "10-25%",
+        "25-50%",
+        "50-100%",
     )
 
     frame = frame[
-        frame["variable"] == "quantity_uv_r_squared"
+        frame["disagreement_band"].isin(order)
     ].copy()
 
-    if frame.empty:
-        raise RuntimeError(
-            "No quantity–UV R² diagnostics are available."
-        )
+    frame["order"] = frame["disagreement_band"].map(
+        {value: index for index, value in enumerate(order)}
+    )
 
-    values = pd.to_numeric(
-        frame["value"],
-        errors="coerce",
-    ).dropna()
-
-    if values.empty:
-        raise RuntimeError(
-            "No valid quantity–UV R² values are available."
-        )
-
-    median = float(values.median())
+    frame = frame.sort_values("order")
 
     figure, axis = plt.subplots(
-        figsize=(11, 6)
+        figsize=(9, 5.5)
     )
 
-    axis.hist(
-        values,
-        bins=40,
+    bars = axis.bar(
+        frame["disagreement_band"],
+        100.0 * pd.to_numeric(frame["share_of_parent"], errors="coerce"),
     )
 
-    axis.axvline(
-        median,
-        linestyle="-",
-        linewidth=1.8,
-        label=f"Median R² = {median:.3f}",
-        color='darkorange'
+    axis.bar_label(
+        bars,
+        labels=[
+            _format_percent(value)
+            for value in frame["share_of_parent"]
+        ],
+        padding=3,
+        fontsize=8,
     )
 
     axis.set_title(
-        "Distribution of HS × year quantity–UV R²"
+        "Exporter/importer quantity disagreement — source diagnostic"
     )
     axis.set_xlabel(
-        "R²"
+        "Relative disagreement band"
     )
     axis.set_ylabel(
-        "Number of HS × year groups"
+        "Share of rows with both source quantities (%)"
     )
     axis.grid(
         axis="y",
@@ -299,2322 +297,314 @@ def _plot_quantity_uv_r_squared_distribution(
         alpha=0.5,
     )
     axis.set_axisbelow(True)
-    axis.legend()
-
     figure.tight_layout()
-
     figure.savefig(
         output_path,
         dpi=180,
         bbox_inches="tight",
     )
-
     plt.close(figure)
 
 
-def _plot_training_uv_distance_distribution(
-    *,
-    diagnostics: pd.DataFrame,
-    output_path: Path,
-    use_factor: bool = False,
-) -> None:
-    """Plot selected UV-distance distribution on log or factor scale."""
-
-    frame = _scope_frame(
-        diagnostics,
-        "training_uv_distance_distribution",
-    ).copy()
-
-    if frame.empty:
-        raise RuntimeError(
-            "Training UV-distance diagnostics are unavailable."
-        )
-
-    frame = frame.sort_values(
-        "quantile"
-    )
-
-    values = pd.to_numeric(
-        frame["value"],
-        errors="coerce",
-    )
-
-    if use_factor:
-        plot_values = values.map(math.exp)
-        y_label = "Factor from HS × year UV reference"
-    else:
-        plot_values = values
-        y_label = "Absolute log-distance from HS × year reference"
-
-    figure, axis = plt.subplots(
-        figsize=(10, 6)
-    )
-
-    axis.plot(
-        100.0 * frame["quantile"],
-        plot_values,
-        marker="o",
-    )
-
-    axis.set_title(
-        "Selected unit-value distance distribution"
-    )
-
-    axis.set_xlabel(
-        "Quantile (%)"
-    )
-
-    axis.set_ylabel(
-        y_label
-    )
-
-    if use_factor:
-        axis.axhline(
-            1.0,
-            linestyle="--",
-            linewidth=1.2,
-            label="Exact reference (1×)",
-        )
-        axis.legend()
-
-    axis.grid(
-        axis="y",
-        linestyle="--",
-        alpha=0.5,
-    )
-
-    figure.tight_layout()
-
-    figure.savefig(
-        output_path,
-        dpi=180,
-        bbox_inches="tight",
-    )
-
-    plt.close(
-        figure
-    )
-
-def _plot_training_reference_support_distribution(
-    *,
-    diagnostics: pd.DataFrame,
-    output_path: Path,
-) -> None:
-    """Plot HS × year reference-support quantiles."""
-
-    frame = _scope_frame(
-        diagnostics,
-        "training_reference_support_distribution",
-    ).copy()
-
-    if frame.empty:
-        raise RuntimeError(
-            "Training reference-support diagnostics are unavailable."
-        )
-
-    frame = frame.sort_values(
-        "quantile"
-    )
-
-    figure, axis = plt.subplots(
-        figsize=(10, 6)
-    )
-
-    axis.plot(
-        100.0 * frame["quantile"],
-        frame["value"],
-        marker="o",
-    )
-
-    axis.set_title(
-        "HS × year unit-value reference support"
-    )
-
-    axis.set_xlabel(
-        "Quantile (%)"
-    )
-
-    axis.set_ylabel(
-        "Reference observations"
-    )
-
-    axis.grid(
-        axis="y",
-        linestyle="--",
-        alpha=0.5,
-    )
-
-    figure.tight_layout()
-
-    figure.savefig(
-        output_path,
-        dpi=180,
-        bbox_inches="tight",
-    )
-
-    plt.close(
-        figure
-    )
-
-def _plot_training_uv_dispersion_distribution(
-    *,
-    diagnostics: pd.DataFrame,
-    output_path: Path,
-) -> None:
-    """Plot HS × year log-UV MAD quantiles."""
-
-    frame = _scope_frame(
-        diagnostics,
-        "training_uv_dispersion_distribution",
-    ).copy()
-
-    if frame.empty:
-        raise RuntimeError(
-            "Training UV-dispersion diagnostics are unavailable."
-        )
-
-    frame = frame.sort_values(
-        "quantile"
-    )
-
-    figure, axis = plt.subplots(
-        figsize=(10, 6)
-    )
-
-    axis.plot(
-        100.0 * frame["quantile"],
-        frame["value"],
-        marker="o",
-    )
-
-    axis.set_title(
-        "HS × year unit-value dispersion"
-    )
-
-    axis.set_xlabel(
-        "Quantile (%)"
-    )
-
-    axis.set_ylabel(
-        "Log-unit-value MAD"
-    )
-
-    axis.grid(
-        axis="y",
-        linestyle="--",
-        alpha=0.5,
-    )
-
-    figure.tight_layout()
-
-    figure.savefig(
-        output_path,
-        dpi=180,
-        bbox_inches="tight",
-    )
-
-    plt.close(
-        figure
-    )
-
-def _plot_training_normalized_uv_distance_distribution(
-    *,
-    diagnostics: pd.DataFrame,
-    output_path: Path,
-) -> None:
-    """Plot selected UV distance relative to HS × year log-UV MAD."""
-
-    frame = _scope_frame(
-        diagnostics,
-        "training_normalized_uv_distance_distribution",
-    ).copy()
-
-    if frame.empty:
-        raise RuntimeError(
-            "Training normalized UV-distance diagnostics "
-            "are unavailable."
-        )
-
-    frame = frame.sort_values(
-        "quantile"
-    )
-
-    figure, axis = plt.subplots(
-        figsize=(10, 6)
-    )
-
-    axis.plot(
-        100.0 * frame["quantile"],
-        frame["value"],
-        marker="o",
-    )
-
-    axis.set_title(
-        "Selected unit-value distance relative to HS × year dispersion"
-    )
-
-    axis.set_xlabel(
-        "Quantile (%)"
-    )
-
-    axis.set_ylabel(
-        "UV log distance / log-UV MAD"
-    )
-
-    axis.grid(
-        axis="y",
-        linestyle="--",
-        alpha=0.5,
-    )
-
-    figure.tight_layout()
-
-    figure.savefig(
-        output_path,
-        dpi=180,
-        bbox_inches="tight",
-    )
-
-    plt.close(
-        figure
-    )
-
-
-def _plot_mirror_disagreement_band_quality(
-    *,
-    diagnostics: pd.DataFrame,
-    output_path: Path,
-    configured_cutoff: float | None = None,
-) -> None:
-    """Plot marginal quantity evidence and UV plausibility by disagreement band."""
-
-    frame = _scope_frame(
-        diagnostics,
-        "mirror_disagreement_band_quality",
-    ).copy()
-
-    if frame.empty:
-        raise RuntimeError(
-            "Mirror-disagreement band-quality diagnostics are unavailable."
-        )
-
-    summary = (
-        frame.pivot_table(
-            index=[
-                "disagreement_threshold",
-                "disagreement_band",
-            ],
-            columns="variable",
-            values="value",
-            aggfunc="first",
-        )
-        .reset_index()
-        .sort_values(
-            "disagreement_threshold"
-        )
-        .reset_index(drop=True)
-    )
-
-    x = list(
-        range(
-            len(summary)
-        )
-    )
-
-    labels = summary[
-        "disagreement_band"
-    ].astype(str).tolist()
-
-    figure, axes = plt.subplots(
-        2,
-        1,
-        figsize=(10, 8),
-        sharex=True,
-    )
-
-    # --------------------------------------------------------------
-    # Marginal population size
-    # --------------------------------------------------------------
-
-    axes[0].bar(
-        x,
-        100.0 * summary["band_share"],
-    )
-
-    axes[0].set_ylabel(
-        "Share of direct bilateral observations (%)"
-    )
-
-    axes[0].set_title(
-        "Mirror-disagreement evidence by marginal 5%-band"
-    )
-
-    axes[0].grid(
-        axis="y",
-        linestyle="--",
-        alpha=0.5,
-    )
-
-    # --------------------------------------------------------------
-    # Marginal UV plausibility
-    # --------------------------------------------------------------
-
-    axes[1].plot(
-        x,
-        summary["median_worst_uv_distance"],
-        marker="o",
-        label="Median worst-side UV distance",
-    )
-
-    axes[1].plot(
-        x,
-        summary["p90_worst_uv_distance"],
-        marker="o",
-        label="P90 worst-side UV distance",
-    )
-
-    axes[1].set_ylabel(
-        "Worst-side UV distance"
-    )
-
-    axes[1].set_xlabel(
-        "Mirror quantity disagreement band"
-    )
-
-    axes[1].grid(
-        axis="y",
-        linestyle="--",
-        alpha=0.5,
-    )
-
-    axes[1].legend()
-
-    axes[1].set_xticks(
-        x
-    )
-
-    axes[1].set_xticklabels(
-        labels
-    )
-
-    # Configured cutoff lies between two marginal bands.
-    if configured_cutoff is not None:
-        cutoff_percent = (
-            100.0 * configured_cutoff
-        )
-
-        boundary_index = None
-
-        for index, threshold in enumerate(
-            summary["disagreement_threshold"]
-        ):
-            if math.isclose(
-                100.0 * float(threshold),
-                cutoff_percent,
-                rel_tol=0.0,
-                abs_tol=1e-9,
-            ):
-                boundary_index = (
-                    index + 0.5
-                )
-                break
-
-        if boundary_index is not None:
-            for axis in axes:
-                axis.axvline(
-                    boundary_index,
-                    linestyle="--",
-                    linewidth=1.5,
-                    color="red",
-                )
-
-    figure.tight_layout()
-
-    figure.savefig(
-        output_path,
-        dpi=180,
-        bbox_inches="tight",
-    )
-
-    plt.close(
-        figure
-    )
 
 def _plot_training_population_funnel(
     *,
     diagnostics: pd.DataFrame,
     output_path: Path,
 ) -> None:
-    """Plot row retention through the candidate-training funnel."""
+    """Plot row retention through the configured training rule."""
 
-    frame = _scope_frame(
+    frame = _require_diagnostic_scope(
         diagnostics,
-        "population_funnel",
+        "training_population_funnel",
     )
 
-    if frame.empty:
-        raise RuntimeError(
-            "No population-funnel diagnostics are available."
-        )
-
-    order = [
+    order = (
         "all_rows",
-        "both_quantities_available",
-        "both_quantities_non_estimated",
-        "both_observed_with_disagreement",
-        "both_observed_with_uv_distance",
-        "complete_training_evidence",
-    ]
+        "training_eligible",
+        "support",
+        "positive_uv_mad",
+        "uv_distance_available",
+        "training_selected",
+    )
 
     labels = {
-        "all_rows": "All rows",
-        "both_quantities_available": (
-            "Bilateral quantity observations"
-        ),
-        "both_quantities_non_estimated": (
-            "Direct bilateral observations"
-        ),
-        "both_observed_with_disagreement": (
-            "Mirror disagreement available"
-        ),
-        "both_observed_with_uv_distance": (
-            "UV distance available"
-        ),
-        "complete_training_evidence": (
-            "All candidate-selection diagnostics"
-        ),
+        "all_rows": "All canonical rows",
+        "training_eligible": "Usable quantity + value",
+        "support": "HS×year support threshold",
+        "positive_uv_mad": "Positive UV MAD",
+        "uv_distance_available": "Normalized UV evaluable",
+        "training_selected": "Final training sample",
     }
 
-    frame["order"] = frame[
-        "criterion"
-    ].map(
-        {
-            criterion: index
-            for index, criterion in enumerate(order)
-        }
+    frame = frame[
+        frame["criterion"].isin(order)
+    ].copy()
+
+    frame["order"] = frame["criterion"].map(
+        {value: index for index, value in enumerate(order)}
     )
 
-    frame = (
-        frame[
-            frame["criterion"].isin(order)
-        ]
-        .sort_values("order")
-        .reset_index(drop=True)
-    )
-
-    if frame.empty:
-        raise RuntimeError(
-            "Population-funnel diagnostics do not contain "
-            "the expected criteria."
-        )
-
-    display_labels = [
-        labels.get(
-            criterion,
-            criterion,
-        )
-        for criterion in frame["criterion"]
-    ]
+    frame = frame.sort_values("order")
 
     figure, axis = plt.subplots(
-        figsize=(11, 6)
+        figsize=(10, 6)
     )
 
     bars = axis.barh(
-        display_labels,
-        frame["n_rows"],
+        [labels[value] for value in frame["criterion"]],
+        pd.to_numeric(frame["n_rows"], errors="coerce"),
     )
 
     axis.bar_label(
         bars,
         labels=[
-            f"{int(value):,}"
+            _format_integer(value)
             for value in frame["n_rows"]
         ],
         padding=4,
         fontsize=8,
     )
 
-    # First funnel stage at the top
     axis.invert_yaxis()
-
     axis.set_title(
-        "Candidate quantity-training population"
+        "Configured model-training population"
     )
     axis.set_xlabel(
-        "Number of observations"
+        "Number of canonical bilateral observations"
     )
-    axis.set_ylabel(
-        "Evidence requirement"
-    )
-
     axis.grid(
         axis="x",
         linestyle="--",
         alpha=0.5,
     )
     axis.set_axisbelow(True)
-
-    # Give the value labels some room to the right
     axis.margins(x=0.12)
-
     figure.tight_layout()
-
     figure.savefig(
         output_path,
         dpi=180,
         bbox_inches="tight",
     )
+    plt.close(figure)
 
-    plt.close(
-        figure
-    )
 
-def _plot_mirror_cutoff_tradeoff(
+
+def _plot_normalized_uv_cutoff_sensitivity(
     *,
     diagnostics: pd.DataFrame,
     output_path: Path,
-    configured_cutoff: float | None = None,
+    configured_cutoff: float,
 ) -> None:
-    """Plot sample-size / quality trade-off by mirror-disagreement cutoff."""
+    """Plot training retention across normalized-UV cutoffs."""
 
-    frame = _scope_frame(
+    frame = _require_diagnostic_scope(
         diagnostics,
-        "mirror_cutoff_tradeoff",
-    ).copy()
-
-    if frame.empty:
-        raise RuntimeError(
-            "No mirror-cutoff trade-off diagnostics are available."
-        )
-
-    summary = (
-        frame.pivot_table(
-            index="disagreement_threshold",
-            columns="variable",
-            values="value",
-            aggfunc="first",
-        )
-        .reset_index()
-        .sort_values(
-            "disagreement_threshold"
-        )
-        .reset_index(drop=True)
+        "training_normalized_uv_cutoff_sensitivity",
+    ).sort_values(
+        "uv_distance_threshold"
     )
 
-    x = [
-        100.0 * float(value)
-        for value in summary[
-            "disagreement_threshold"
-        ]
-    ]
-
-    retained_share = [
-        100.0 * float(value)
-        for value in summary[
-            "retained_share"
-        ]
-    ]
-
-    median_worst_uv = [
-        float(value)
-        for value in summary[
-            "median_worst_uv_distance"
-        ]
-    ]
-
-    p90_worst_uv = [
-        float(value)
-        for value in summary[
-            "p90_worst_uv_distance"
-        ]
-    ]
-
-    figure, axes = plt.subplots(
-        2,
-        1,
-        figsize=(6, 5),
-        sharex=True,
+    x = pd.to_numeric(
+        frame["uv_distance_threshold"],
+        errors="coerce",
     )
 
-    # Top panel: retained share
-    axes[0].plot(
-        x,
-        retained_share,
-        marker="o",
-        linewidth=2.0,
+    y = 100.0 * pd.to_numeric(
+        frame["share_of_parent"],
+        errors="coerce",
     )
-
-    axes[0].set_ylabel(
-        "Retained share (%)"
-    )
-    axes[0].set_title(
-        "Mirror-disagreement cutoff trade-off"
-    )
-    axes[0].grid(
-        axis="both",
-        linestyle="--",
-        alpha=0.5,
-    )
-
-    # Bottom panel: quality deterioration
-    axes[1].plot(
-        x,
-        median_worst_uv,
-        marker="o",
-        linewidth=2.0,
-        label="Median worst-side UV distance",
-    )
-
-    axes[1].plot(
-        x,
-        p90_worst_uv,
-        marker="o",
-        linewidth=2.0,
-        label="P90 worst-side UV distance",
-    )
-
-    axes[1].set_xlabel(
-        "Maximum mirror quantity disagreement (%)"
-    )
-    axes[1].set_ylabel(
-        "Worst-side UV distance"
-    )
-    axes[1].grid(
-        axis="both",
-        linestyle="--",
-        alpha=0.5,
-    )
-    axes[1].legend()
-
-    if configured_cutoff is not None:
-        cutoff_x = 100.0 * float(
-            configured_cutoff
-        )
-
-        for axis in axes:
-            axis.axvline(
-                cutoff_x,
-                linestyle="--",
-                linewidth=1.5,
-                color="red",
-            )
-
-        axes[0].text(
-            cutoff_x,
-            max(retained_share) * 0.92,
-            (
-                "Configured cutoff\n"
-                f"{cutoff_x:.0f}%"
-            ),
-            ha="center",
-            va="top",
-            fontsize=9,
-        )
-
-    figure.tight_layout()
-
-    figure.savefig(
-        output_path,
-        dpi=180,
-        bbox_inches="tight",
-    )
-
-    plt.close(
-        figure
-    )
-
-def _plot_training_evidence_by_year(
-    *,
-    diagnostics: pd.DataFrame,
-    output_path: Path,
-) -> None:
-    """Plot directly observed bilateral quantity coverage by year."""
-
-    frame = _scope_frame(
-        diagnostics,
-        "year_coverage",
-    )
-
-    if frame.empty:
-        raise RuntimeError(
-            "No year-coverage model diagnostics are available."
-        )
-
-    frame = frame.sort_values(
-        "year"
-    ).copy()
 
     figure, axis = plt.subplots(
-        figsize=(10, 6)
+        figsize=(9, 5.5)
     )
 
     axis.plot(
-        frame["year"],
-        100.0 * frame["share_of_all"],
+        x,
+        y,
+        marker="o",
+    )
+
+    axis.axvline(
+        float(configured_cutoff),
+        linestyle="--",
+        linewidth=1.4,
+        label=f"Configured cutoff = {configured_cutoff:g} MAD",
+    )
+
+    axis.set_title(
+        "Normalized unit-value cutoff sensitivity"
+    )
+    axis.set_xlabel(
+        "Maximum normalized UV distance (MAD units)"
+    )
+    axis.set_ylabel(
+        "Retained share of UV-evaluable rows (%)"
+    )
+    axis.grid(
+        axis="y",
+        linestyle="--",
+        alpha=0.5,
+    )
+    axis.set_axisbelow(True)
+    axis.legend()
+    figure.tight_layout()
+    figure.savefig(
+        output_path,
+        dpi=180,
+        bbox_inches="tight",
+    )
+    plt.close(figure)
+
+
+
+def _plot_training_coverage_by_year(
+    *,
+    diagnostics: pd.DataFrame,
+    output_path: Path,
+) -> None:
+    """Plot final training-sample coverage by year."""
+
+    frame = _require_diagnostic_scope(
+        diagnostics,
+        "training_coverage_by_year",
+    ).sort_values("year")
+
+    figure, axis = plt.subplots(
+        figsize=(10, 5.5)
+    )
+
+    axis.plot(
+        pd.to_numeric(frame["year"], errors="coerce"),
+        100.0 * pd.to_numeric(frame["share_of_all"], errors="coerce"),
         marker="o",
     )
 
     axis.set_title(
-        "Directly observed bilateral quantity evidence by year"
+        "Final training-sample coverage by year"
     )
-    axis.set_xlabel(
-        "Year"
-    )
+    axis.set_xlabel("Year")
     axis.set_ylabel(
-        "Share of annual Validation rows (%)"
+        "Training-selected share of annual Validation rows (%)"
     )
     axis.set_xticks(
-        frame["year"].astype(int)
+        sorted(
+            frame["year"].dropna().astype(int).unique()
+        )
     )
     axis.grid(
         axis="y",
         linestyle="--",
         alpha=0.5,
     )
-
+    axis.set_axisbelow(True)
     figure.tight_layout()
-
     figure.savefig(
         output_path,
         dpi=180,
         bbox_inches="tight",
     )
-
-    plt.close(
-        figure
-    )
-
-
-def _plot_training_evidence_distributions(
-    *,
-    diagnostics: pd.DataFrame,
-    output_path: Path,
-) -> None:
-    """
-    Plot selected quantiles for the main pseudo-truth evidence measures.
-
-    Values are displayed on their native scales. This figure is intended
-    to reveal the shape of candidate-training evidence before final
-    thresholds are selected.
-    """
-
-    frame = _scope_frame(
-        diagnostics,
-        "distribution",
-    )
-
-    if frame.empty:
-        raise RuntimeError(
-            "No distribution diagnostics are available."
-        )
-
-    variables = {
-        "quantity_relative_difference": (
-            "Mirror quantity disagreement"
-        ),
-        "bilateral_max_unit_value_log_distance": (
-            "Worst-side reporter UV distance"
-        ),
-    }
-
-    frame = frame[
-        frame["variable"].isin(
-            variables
-        )
-    ].copy()
-
-    if frame.empty:
-        raise RuntimeError(
-            "Expected model-development distribution variables "
-            "are unavailable."
-        )
-
-    figure, axis = plt.subplots(
-        figsize=(10, 6)
-    )
-
-    for variable, group in frame.groupby(
-        "variable",
-        sort=False,
-    ):
-        group = group.sort_values(
-            "quantile"
-        )
-
-        axis.plot(
-            100.0 * group["quantile"],
-            group["value"],
-            marker="o",
-            label=variables.get(
-                variable,
-                variable,
-            ),
-        )
-
-    axis.set_title(
-        "Distributional evidence in directly observed bilateral rows"
-    )
-    axis.set_xlabel(
-        "Quantile (%)"
-    )
-    axis.set_ylabel(
-        "Diagnostic value"
-    )
-    axis.grid(
-        axis="y",
-        linestyle="--",
-        alpha=0.5,
-    )
-    axis.legend()
-
-    figure.tight_layout()
-
-    figure.savefig(
-        output_path,
-        dpi=180,
-        bbox_inches="tight",
-    )
-
-    plt.close(
-        figure
-    )
-
-
-def _plot_export_import_quantity_ratio_distribution_deprecated(
-    *,
-    diagnostics: pd.DataFrame,
-    output_path: Path,
-    configured_disagreement_cutoff: float | None = None,
-    disagreement_guides: tuple[float, ...] = (
-        0.10,
-        0.20,
-        0.30,
-        0.40,
-        0.50,
-    ),
-) -> None:
-    """
-    Plot exporter/importer log quantity ratios with mirror-disagreement guides.
-
-    Mirror disagreement is defined as:
-
-        d = |Q_export - Q_import| / max(Q_export, Q_import)
-
-    A disagreement threshold d corresponds to:
-
-        log(1 - d)
-            <= log(Q_export / Q_import)
-            <= -log(1 - d)
-
-    The bottom x-axis shows the log quantity ratio.
-    The top x-axis shows the equivalent mirror-disagreement thresholds.
-    """
-
-    frame = _scope_frame(
-        diagnostics,
-        "quantity_ratio_distribution",
-    )
-
-    if frame.empty:
-        raise RuntimeError(
-            "No quantity-ratio distribution diagnostics are available."
-        )
-
-    frame = frame.sort_values(
-        "value"
-    ).copy()
-
-    figure, axis = plt.subplots(
-        figsize=(10, 6)
-    )
-
-    axis.bar(
-        frame["value"],
-        frame["n_rows"],
-        width=0.08,
-        alpha=0.85,
-    )
-
-    # Exact exporter/importer agreement.
-    axis.axvline(
-        0.0,
-        linestyle="--",
-        linewidth=1.8,
-        color="red",
-        label="Exporter = importer",
-    )
-
-    # --------------------------------------------------------------
-    # Mirror-disagreement guide lines
-    # --------------------------------------------------------------
-
-    for threshold in disagreement_guides:
-
-        if not 0.0 < threshold < 1.0:
-            raise ValueError(
-                "Mirror-disagreement guide thresholds "
-                "must lie strictly between 0 and 1."
-            )
-
-        boundary = -math.log(
-            1.0 - threshold
-        )
-
-        is_configured = (
-            configured_disagreement_cutoff is not None
-            and math.isclose(
-                threshold,
-                configured_disagreement_cutoff,
-                rel_tol=0.0,
-                abs_tol=1e-12,
-            )
-        )
-
-        linewidth = (
-            2.0
-            if is_configured
-            else 1.0
-        )
-
-        linestyle = (
-            "--"
-            if is_configured
-            else ":"
-        )
-
-        alpha = (
-            0.9
-            if is_configured
-            else 0.45
-        )
-
-        for position in (
-            -boundary,
-            boundary,
-        ):
-            axis.axvline(
-                position,
-                linestyle=linestyle,
-                linewidth=linewidth,
-                alpha=alpha,
-                color="grey",
-            )
-
-    # --------------------------------------------------------------
-    # Top axis: equivalent mirror disagreement
-    # --------------------------------------------------------------
-
-    top_axis = axis.twiny()
-
-    top_axis.set_xlim(
-        axis.get_xlim()
-    )
-
-    negative_ticks = []
-    negative_labels = []
-
-    positive_ticks = []
-    positive_labels = []
-
-    for threshold in reversed(
-        disagreement_guides
-    ):
-        boundary = -math.log(
-            1.0 - threshold
-        )
-
-        negative_ticks.append(
-            -boundary
-        )
-        negative_labels.append(
-            f"{100.0 * threshold:.0f}%"
-        )
-
-    for threshold in disagreement_guides:
-        boundary = -math.log(
-            1.0 - threshold
-        )
-
-        positive_ticks.append(
-            boundary
-        )
-        positive_labels.append(
-            f"{100.0 * threshold:.0f}%"
-        )
-
-    top_axis.set_xticks(
-        negative_ticks
-        + [0.0]
-        + positive_ticks
-    )
-
-    top_axis.set_xticklabels(
-        negative_labels
-        + ["0%"]
-        + positive_labels
-    )
-
-    top_axis.set_xlabel(
-        "Mirror quantity disagreement"
-    )
-
-    # --------------------------------------------------------------
-    # Main-axis formatting
-    # --------------------------------------------------------------
-
-    axis.set_title(
-        "Exporter/importer quantity ratio distribution"
-    )
-
-    axis.set_xlabel(
-        "log(exporter quantity / importer quantity)"
-    )
-
-    axis.set_ylabel(
-        "Number of observations"
-    )
-
-    axis.grid(
-        axis="y",
-        linestyle="--",
-        alpha=0.5,
-    )
-
-    axis.legend()
-
-    figure.tight_layout()
-
-    figure.savefig(
-        output_path,
-        dpi=180,
-        bbox_inches="tight",
-    )
-
-    plt.close(
-        figure
-    )
-
-def _plot_mirror_disagreement_retention(
-    *,
-    diagnostics: pd.DataFrame,
-    output_path: Path,
-    configured_cutoff: float | None = None,
-) -> None:
-    """Plot cumulative retained population by mirror-disagreement cutoff."""
-
-    frame = _scope_frame(
-        diagnostics,
-        "mirror_disagreement_retention",
-    ).copy()
-
-    if frame.empty:
-        raise RuntimeError(
-            "No mirror-disagreement retention diagnostics are available."
-        )
-
-    summary = (
-        frame.pivot_table(
-            index="disagreement_threshold",
-            columns="criterion",
-            values="share_of_parent",
-            aggfunc="sum",
-            fill_value=0.0,
-        )
-        .reset_index()
-        .sort_values(
-            "disagreement_threshold"
-        )
-        .reset_index(drop=True)
-    )
-
-    direction_columns = (
-        "Exact agreement",
-        "Exporter > importer",
-        "Importer > exporter",
-    )
-
-    for column in direction_columns:
-        if column not in summary.columns:
-            summary[column] = 0.0
-
-    for column in direction_columns:
-        summary[column] = (
-            100.0 * summary[column]
-        )
-
-    summary["Total retained (%)"] = (
-        summary["Exact agreement"]
-        + summary["Exporter > importer"]
-        + summary["Importer > exporter"]
-    )
-
-    x_labels = [
-        f"≤ {100.0 * float(threshold):.0f}%"
-        for threshold in summary[
-            "disagreement_threshold"
-        ]
-    ]
-
-    figure, axis = plt.subplots(
-        figsize=(10, 6)
-    )
-
-    bottom = [
-        0.0
-        for _ in range(
-            len(summary)
-        )
-    ]
-
-    bar_containers = []
-
-    for column in direction_columns:
-        values = summary[
-            column
-        ].tolist()
-
-        bars = axis.bar(
-            x_labels,
-            values,
-            bottom=bottom,
-            label=column,
-            alpha=0.90,
-        )
-
-        bar_containers.append(
-            bars
-        )
-
-        bottom = [
-            current_bottom + value
-            for current_bottom, value in zip(
-                bottom,
-                values,
-            )
-        ]
-
-    for index, total in enumerate(
-        summary["Total retained (%)"]
-    ):
-        axis.text(
-            index,
-            float(total) + 0.5,
-            f"{float(total):.1f}%",
-            ha="center",
-            va="bottom",
-            fontsize=8,
-        )
-
-    if configured_cutoff is not None:
-        configured_index = None
-
-        for idx, threshold in enumerate(
-            summary[
-                "disagreement_threshold"
-            ].tolist()
-        ):
-            if math.isclose(
-                float(threshold),
-                float(configured_cutoff),
-                rel_tol=0.0,
-                abs_tol=1e-12,
-            ):
-                configured_index = idx
-                break
-
-        if configured_index is not None:
-            for bars in bar_containers:
-                patch = bars[
-                    configured_index
-                ]
-                patch.set_edgecolor(
-                    "black"
-                )
-                patch.set_linewidth(
-                    1.8
-                )
-
-            axis.text(
-                configured_index,
-                float(
-                    summary.loc[
-                        configured_index,
-                        "Total retained (%)",
-                    ]
-                ) + 2.5,
-                (
-                    "Configured cutoff\n"
-                    f"≤ {100.0 * configured_cutoff:.0f}%"
-                ),
-                ha="center",
-                va="bottom",
-                fontsize=9,
-            )
-
-    axis.set_title(
-        "Cumulative retained population by mirror-disagreement cutoff"
-    )
-    axis.set_xlabel(
-        "Mirror-disagreement cutoff"
-    )
-    axis.set_ylabel(
-        "Share of direct bilateral observations (%)"
-    )
-    axis.grid(
-        axis="y",
-        linestyle="--",
-        alpha=0.5,
-    )
-    axis.legend(
-        title="Retained observations"
-    )
-
-    figure.tight_layout()
-
-    figure.savefig(
-        output_path,
-        dpi=180,
-        bbox_inches="tight",
-    )
-
-    plt.close(
-        figure
-    )
-
-def _plot_export_import_quantity_ratio_distribution(
-    *,
-    diagnostics: pd.DataFrame,
-    output_path: Path,
-) -> None:
-    """Plot the distribution of exporter/importer log quantity ratios."""
-
-    frame = _scope_frame(
-        diagnostics,
-        "quantity_ratio_distribution",
-    )
-
-    if frame.empty:
-        raise RuntimeError(
-            "No quantity-ratio distribution diagnostics are available."
-        )
-
-    frame = frame.sort_values(
-        "value"
-    ).copy()
-
-    figure, axis = plt.subplots(
-        figsize=(10, 6)
-    )
-
-    axis.bar(
-        frame["value"],
-        frame["n_rows"],
-        width=0.08,
-        alpha=0.85,
-    )
-
-    axis.axvline(
-        0.0,
-        linestyle="--",
-        linewidth=1.5,
-        label="Exporter = importer",
-        color="red",
-    )
-
-    axis.set_title(
-        "Exporter/importer quantity ratio distribution"
-    )
-    axis.set_xlabel(
-        "log(exporter quantity / importer quantity)"
-    )
-    axis.set_ylabel(
-        "Number of observations"
-    )
-    axis.grid(
-        axis="y",
-        linestyle="--",
-        alpha=0.5,
-    )
-    axis.legend()
-
-    figure.tight_layout()
-
-    figure.savefig(
-        output_path,
-        dpi=180,
-        bbox_inches="tight",
-    )
-
-    plt.close(
-        figure
-    )
-
-
-
-
-def _candidate_label(value: str) -> str:
-    """Return a readable label for a fixed quantity candidate."""
-
-    labels = {
-        "simple_mean": "Simple mean",
-        "value_weighted": "Value-weighted",
-        "quantity_reliability_weighted": "Quantity-reliability-weighted",
-        "tie": "Tie",
-    }
-
-    return labels.get(str(value), str(value))
-
-
-def _disagreement_band_order(
-    value: str,
-) -> tuple[int, str]:
-    """Return the intended order of mirror-quantity disagreement bands."""
-
-    label = str(value).strip()
-
-    order = {
-        "5% or less": 0,
-        "5–10%": 1,
-        "10–20%": 2,
-        "20–30%": 3,
-        "30–50%": 4,
-        "50–90%": 5,
-        "> 90%": 6,
-    }
-
-    return (
-        order.get(label, 999),
-        label,
-    )
-
-def _plot_quantity_candidate_uv_summary(
-    *,
-    diagnostics: pd.DataFrame,
-    output_path: Path,
-) -> None:
-    """Plot overall UV-distance evidence for the fixed quantity candidates."""
-
-    frame = _scope_frame(
-        diagnostics,
-        "quantity_candidate_summary",
-    )
-
-    frame = frame[
-        frame["variable"].isin(
-            [
-                "median_uv_log_distance",
-                "p90_uv_log_distance",
-                "p95_uv_log_distance",
-            ]
-        )
-    ].copy()
-
-    if frame.empty:
-        raise RuntimeError(
-            "No fixed quantity-candidate summary diagnostics are available."
-        )
-
-    pivot = frame.pivot_table(
-        index="candidate",
-        columns="variable",
-        values="value",
-        aggfunc="first",
-    )
-
-    candidates = [
-        value
-        for value in (
-            "simple_mean",
-            "value_weighted",
-            "quantity_reliability_weighted",
-        )
-        if value in pivot.index
-    ]
-
-    metrics = [
-        ("median_uv_log_distance", "Median"),
-        ("p90_uv_log_distance", "P90"),
-        ("p95_uv_log_distance", "P95"),
-    ]
-
-    figure, axis = plt.subplots(figsize=(10, 6))
-
-    x = list(range(len(candidates)))
-    width = 0.24
-
-    for offset, (metric, label) in enumerate(metrics):
-        values = [
-            float(pivot.loc[candidate, metric])
-            if metric in pivot.columns and pd.notna(pivot.loc[candidate, metric])
-            else float("nan")
-            for candidate in candidates
-        ]
-        positions = [
-            value + (offset - 1) * width
-            for value in x
-        ]
-        axis.bar(
-            positions,
-            values,
-            width=width,
-            label=label,
-        )
-
-    axis.set_xticks(x)
-    axis.set_xticklabels(
-        [_candidate_label(value) for value in candidates]
-    )
-    axis.set_ylabel("UV log distance")
-    axis.set_title("Fixed quantity candidates: unit-value plausibility")
-    axis.grid(axis="y", linestyle="--", alpha=0.5)
-    axis.set_axisbelow(True)
-    axis.legend()
-    figure.tight_layout()
-    figure.savefig(output_path, dpi=180, bbox_inches="tight")
     plt.close(figure)
 
 
-def _plot_quantity_candidate_by_disagreement(
-    *,
-    diagnostics: pd.DataFrame,
-    output_path: Path,
-    scale: str = "log",
-) -> None:
-    """
-    Plot candidate median UV distance across mirror-disagreement bands.
-
-    scale:
-        "log"    -> absolute log-distance from the product-year UV reference
-        "factor" -> multiplicative factor from the product-year UV reference
-    """
-
-    if scale not in {"log", "factor"}:
-        raise ValueError(
-            "scale must be 'log' or 'factor'."
-        )
-
-    frame = _scope_frame(
-        diagnostics,
-        "quantity_candidate_by_disagreement",
-    )
-
-    frame = frame[
-        frame["variable"].eq("median_uv_log_distance")
-    ].copy()
-
-    if frame.empty:
-        raise RuntimeError(
-            "No quantity-candidate disagreement diagnostics are available."
-        )
-
-    bands = sorted(
-        frame["disagreement_band"]
-        .dropna()
-        .astype(str)
-        .unique(),
-        key=_disagreement_band_order,
-    )
-
-    figure, axis = plt.subplots(
-        figsize=(11, 6)
-    )
-
-    for candidate in (
-        "simple_mean",
-        "value_weighted",
-        "quantity_reliability_weighted",
-    ):
-        subset = frame[
-            frame["candidate"].eq(candidate)
-        ].copy()
-
-        if subset.empty:
-            continue
-
-        lookup = {
-            str(row.disagreement_band): row.value
-            for row in subset.itertuples(index=False)
-        }
-
-        values = [
-            float(lookup[band])
-            if band in lookup
-            and pd.notna(lookup[band])
-            else float("nan")
-            for band in bands
-        ]
-
-        if scale == "factor":
-            values = [
-                math.exp(value)
-                if pd.notna(value)
-                else float("nan")
-                for value in values
-            ]
-
-        axis.plot(
-            bands,
-            values,
-            marker="o",
-            label=_candidate_label(candidate),
-        )
-
-    axis.set_xlabel(
-        "Mirror quantity disagreement"
-    )
-
-    if scale == "log":
-        axis.set_title(
-            "Candidate UV plausibility by mirror-quantity disagreement"
-        )
-        axis.set_ylabel(
-            "Median UV log distance"
-        )
-
-    else:
-        axis.set_title(
-            "Candidate UV factor-distance by mirror-quantity disagreement"
-        )
-        axis.set_ylabel(
-            "Median factor from product-year UV reference"
-        )
-
-        axis.axhline(
-            1.0,
-            linestyle="--",
-            linewidth=1.2,
-            label="Exact reference (1×)",
-        )
-
-    axis.grid(
-        axis="y",
-        linestyle="--",
-        alpha=0.5,
-    )
-    axis.set_axisbelow(True)
-    axis.legend()
-
-    figure.tight_layout()
-
-    figure.savefig(
-        output_path,
-        dpi=180,
-        bbox_inches="tight",
-    )
-
-    plt.close(figure)
-
-def _plot_quantity_candidate_closest_reference(
-    *,
-    diagnostics: pd.DataFrame,
-    output_path: Path,
-) -> None:
-    """Plot closest-to-reference shares for the fixed quantity candidates."""
-
-    frame = _scope_frame(
-        diagnostics,
-        "quantity_candidate_closest_reference",
-    )
-
-    if frame.empty:
-        raise RuntimeError(
-            "No closest-reference quantity-candidate diagnostics are available."
-        )
-
-    order = [
-        "simple_mean",
-        "value_weighted",
-        "quantity_reliability_weighted",
-        "tie",
-    ]
-
-    frame = frame[
-        frame["candidate"].isin(order)
-    ].copy()
-
-    frame["order"] = frame["candidate"].map(
-        {value: index for index, value in enumerate(order)}
-    )
-    frame = frame.sort_values("order")
-
-    figure, axis = plt.subplots(figsize=(10, 6))
-    bars = axis.bar(
-        [_candidate_label(value) for value in frame["candidate"]],
-        100.0 * pd.to_numeric(frame["value"], errors="coerce"),
-    )
-    axis.bar_label(
-        bars,
-        labels=[
-            f"{100.0 * float(value):.1f}%"
-            if pd.notna(value)
-            else "NA"
-            for value in frame["value"]
-        ],
-        padding=3,
-        fontsize=8,
-    )
-    axis.set_ylabel("Share of comparable rows (%)")
-    axis.set_title("Candidate closest to the product-year UV reference")
-    axis.grid(axis="y", linestyle="--", alpha=0.5)
-    axis.set_axisbelow(True)
-    figure.tight_layout()
-    figure.savefig(output_path, dpi=180, bbox_inches="tight")
-    plt.close(figure)
-
-
-def _plot_quantity_candidate_by_year(
-    *,
-    diagnostics: pd.DataFrame,
-    output_path: Path,
-) -> None:
-    """Plot candidate median UV distance by year."""
-
-    frame = _scope_frame(
-        diagnostics,
-        "quantity_candidate_by_year",
-    )
-
-    frame = frame[
-        frame["variable"].eq("median_uv_log_distance")
-    ].copy()
-
-    if frame.empty:
-        raise RuntimeError(
-            "No quantity-candidate temporal diagnostics are available."
-        )
-
-    figure, axis = plt.subplots(figsize=(11, 6))
-
-    for candidate in (
-        "simple_mean",
-        "value_weighted",
-        "quantity_reliability_weighted",
-    ):
-        subset = frame[
-            frame["candidate"].eq(candidate)
-        ].copy()
-
-        if subset.empty:
-            continue
-
-        subset = subset.sort_values("year")
-
-        axis.plot(
-            pd.to_numeric(subset["year"], errors="coerce"),
-            pd.to_numeric(subset["value"], errors="coerce"),
-            marker="o",
-            label=_candidate_label(candidate),
-        )
-
-    axis.set_title("Candidate unit-value plausibility by year")
-    axis.set_xlabel("Year")
-    axis.set_ylabel("Median UV log distance")
-    axis.grid(axis="y", linestyle="--", alpha=0.5)
-    axis.set_axisbelow(True)
-    axis.legend()
-    figure.tight_layout()
-    figure.savefig(output_path, dpi=180, bbox_inches="tight")
-    plt.close(figure)
-
-
-def _plot_quantity_candidate_product_distribution(
-    *,
-    diagnostics: pd.DataFrame,
-    output_path: Path,
-) -> None:
-    """Plot product-level distributions of candidate median UV distance."""
-
-    frame = _scope_frame(
-        diagnostics,
-        "quantity_candidate_by_product",
-    )
-
-    frame = frame[
-        frame["variable"].eq("median_uv_log_distance")
-    ].copy()
-
-    if frame.empty:
-        raise RuntimeError(
-            "No quantity-candidate product diagnostics are available."
-        )
-
-    candidates = [
-        value
-        for value in (
-            "simple_mean",
-            "value_weighted",
-            "quantity_reliability_weighted",
-        )
-        if frame["candidate"].eq(value).any()
-    ]
-
-    data = [
-        pd.to_numeric(
-            frame.loc[frame["candidate"].eq(candidate), "value"],
-            errors="coerce",
-        ).dropna().to_numpy()
-        for candidate in candidates
-    ]
-
-    figure, axis = plt.subplots(figsize=(10, 6))
-    axis.boxplot(
-        data,
-        labels=[_candidate_label(value) for value in candidates],
-        showfliers=False,
-    )
-    axis.set_title(
-        "Product-level distribution of candidate median UV distance"
-    )
-    axis.set_ylabel("Median UV log distance within HS product")
-    axis.grid(axis="y", linestyle="--", alpha=0.5)
-    axis.set_axisbelow(True)
-    figure.tight_layout()
-    figure.savefig(output_path, dpi=180, bbox_inches="tight")
-    plt.close(figure)
-
-
-def _plot_quantity_candidate_spread(
-    *,
-    diagnostics: pd.DataFrame,
-    output_path: Path,
-) -> None:
-    """Plot the spread among fixed quantity candidates by disagreement band."""
-
-    frame = _scope_frame(
-        diagnostics,
-        "quantity_candidate_spread",
-    )
-
-    if frame.empty:
-        raise RuntimeError(
-            "No quantity-candidate spread diagnostics are available."
-        )
-
-    bands = sorted(
-        frame["disagreement_band"].dropna().astype(str).unique(),
-        key=_disagreement_band_order,
-    )
-
-    figure, axis = plt.subplots(figsize=(11, 6))
-
-    for variable, label in (
-        ("median_relative_candidate_spread", "Median"),
-        ("p95_relative_candidate_spread", "P95"),
-    ):
-        subset = frame[
-            frame["variable"].eq(variable)
-        ].copy()
-        lookup = {
-            str(row.disagreement_band): row.value
-            for row in subset.itertuples(index=False)
-        }
-        values = [
-            100.0 * float(lookup[band])
-            if band in lookup and pd.notna(lookup[band])
-            else float("nan")
-            for band in bands
-        ]
-        axis.plot(
-            bands,
-            values,
-            marker="o",
-            label=label,
-        )
-
-    axis.set_title("Spread among the three fixed quantity candidates")
-    axis.set_xlabel("Mirror quantity disagreement")
-    axis.set_ylabel("Relative candidate spread (%)")
-    axis.grid(axis="y", linestyle="--", alpha=0.5)
-    axis.set_axisbelow(True)
-    axis.legend()
-    figure.tight_layout()
-    figure.savefig(output_path, dpi=180, bbox_inches="tight")
-    plt.close(figure)
 
 def _plot_model_performance_by_year(
     *,
     diagnostics: pd.DataFrame,
     output_path: Path,
 ) -> None:
-    """Plot LOYO MAE by candidate model and held-out year."""
+    """Plot expanding-window MAE by candidate model and validation year."""
 
-    frame = _scope_frame(
+    frame = _require_diagnostic_scope(
         diagnostics,
         "model_performance_by_year",
     )
 
     frame = frame[
-        frame["variable"].eq(
-            "mae_log"
-        )
+        frame["variable"].eq("mae_log")
     ].copy()
 
     if frame.empty:
         raise RuntimeError(
-            "Model performance-by-year diagnostics "
-            "are unavailable."
+            "Model performance-by-year diagnostics contain no mae_log rows."
         )
 
     figure, axis = plt.subplots(
-        figsize=(11, 6)
+        figsize=(10, 5.5)
     )
 
     for model_name, group in frame.groupby(
         "model_name",
         sort=False,
     ):
-
-        group = group.sort_values(
-            "year"
-        )
-
+        group = group.sort_values("year")
         axis.plot(
-            group["year"],
-            group["value"],
+            pd.to_numeric(group["year"], errors="coerce"),
+            pd.to_numeric(group["value"], errors="coerce"),
             marker="o",
-            label=str(
-                model_name
-            ),
+            label=str(model_name),
         )
 
     axis.set_title(
-        "Leave-one-year-out model performance"
+        "Expanding-window model performance by validation year"
     )
-
     axis.set_xlabel(
-        "Held-out year"
+        "Validation year"
     )
-
     axis.set_ylabel(
         "MAE on log quantity"
     )
-
     axis.set_xticks(
         sorted(
-            frame["year"]
-            .dropna()
-            .astype(int)
-            .unique()
+            frame["year"].dropna().astype(int).unique()
         )
     )
-
     axis.grid(
         axis="y",
         linestyle="--",
         alpha=0.5,
     )
-
-    axis.set_axisbelow(
-        True
-    )
-
+    axis.set_axisbelow(True)
     axis.legend()
-
     figure.tight_layout()
-
     figure.savefig(
         output_path,
         dpi=180,
         bbox_inches="tight",
     )
-
-    plt.close(
-        figure
-    )
-
-
-def _plot_quantity_candidate_conditioned_summary(
-    *,
-    diagnostics: pd.DataFrame,
-    output_path: Path,
-) -> None:
-    """Plot quantity-conditioned UV residuals for fixed candidates."""
-
-    frame = _scope_frame(
-        diagnostics,
-        "quantity_candidate_conditioned_summary",
-    )
-    frame = frame[
-        frame["variable"].eq("median_conditioned_uv_abs_residual")
-    ].copy()
-
-    if frame.empty:
-        raise RuntimeError(
-            "No quantity-conditioned candidate summary diagnostics are available."
-        )
-
-    labels = {
-        "simple_mean": "Simple mean",
-        "value_weighted": "Value-weighted",
-        "quantity_reliability_weighted": "Quantity-reliability-weighted",
-    }
-    frame["label"] = frame["candidate"].map(labels).fillna(frame["candidate"])
-
-    figure, axis = plt.subplots(figsize=(10, 6))
-    axis.bar(frame["label"], frame["value"])
-    axis.set_title("Quantity-conditioned UV plausibility by candidate")
-    axis.set_ylabel("Median absolute log-UV residual")
-    axis.grid(axis="y", linestyle="--", alpha=0.5)
-    axis.set_axisbelow(True)
-    figure.tight_layout()
-    figure.savefig(output_path, dpi=180, bbox_inches="tight")
     plt.close(figure)
 
 
-def _plot_quantity_candidate_conditioned_by_disagreement(
-    *,
-    diagnostics: pd.DataFrame,
-    output_path: Path,
-) -> None:
-    """Plot conditioned candidate residuals by mirror-disagreement band."""
-
-    frame = _scope_frame(
-        diagnostics,
-        "quantity_candidate_conditioned_by_disagreement",
-    )
-    frame = frame[
-        frame["variable"].eq("median_conditioned_uv_abs_residual")
-    ].copy()
-
-    if frame.empty:
-        raise RuntimeError(
-            "No conditioned candidate-by-disagreement diagnostics are available."
-        )
-
-    band_order = [
-        "5% or less",
-        "5–10%",
-        "10–20%",
-        "20–30%",
-        "30–50%",
-        "50–90%",
-        "> 90%",
-    ]
-    candidate_labels = {
-        "simple_mean": "Simple mean",
-        "value_weighted": "Value-weighted",
-        "quantity_reliability_weighted": "Quantity-reliability-weighted",
-    }
-
-    figure, axis = plt.subplots(figsize=(11, 6))
-    for candidate, group in frame.groupby("candidate", sort=False):
-        group = group.copy()
-        group["order"] = group["disagreement_band"].map(
-            {value: index for index, value in enumerate(band_order)}
-        )
-        group = group.sort_values("order")
-        axis.plot(
-            group["disagreement_band"],
-            group["value"],
-            marker="o",
-            label=candidate_labels.get(candidate, candidate),
-        )
-
-    axis.set_title("Quantity-conditioned UV plausibility by mirror disagreement")
-    axis.set_xlabel("Mirror quantity disagreement")
-    axis.set_ylabel("Median absolute log-UV residual")
-    axis.grid(axis="y", linestyle="--", alpha=0.5)
-    axis.legend()
-    figure.tight_layout()
-    figure.savefig(output_path, dpi=180, bbox_inches="tight")
-    plt.close(figure)
-
-
-def _plot_quantity_candidate_closest_conditioned(
-    *,
-    diagnostics: pd.DataFrame,
-    output_path: Path,
-) -> None:
-    """Plot closest candidate under quantity-conditioned UV residuals."""
-
-    frame = _scope_frame(
-        diagnostics,
-        "quantity_candidate_closest_conditioned",
-    )
-    if frame.empty:
-        raise RuntimeError(
-            "No closest quantity-conditioned candidate diagnostics are available."
-        )
-
-    labels = {
-        "simple_mean": "Simple mean",
-        "value_weighted": "Value-weighted",
-        "quantity_reliability_weighted": "Quantity-reliability-weighted",
-        "tie": "Tie",
-    }
-    frame["label"] = frame["candidate"].map(labels).fillna(frame["candidate"])
-
-    figure, axis = plt.subplots(figsize=(10, 6))
-    axis.bar(frame["label"], 100.0 * frame["value"])
-    axis.set_title("Candidate closest to quantity-conditioned expected UV")
-    axis.set_ylabel("Share of comparable rows (%)")
-    axis.grid(axis="y", linestyle="--", alpha=0.5)
-    axis.set_axisbelow(True)
-    figure.tight_layout()
-    figure.savefig(output_path, dpi=180, bbox_inches="tight")
-    plt.close(figure)
-
-def _plot_pre_training_reference_support_comparison(
-    *,
-    diagnostics: pd.DataFrame,
-    output_path: Path,
-) -> None:
-    """Compare HS × year reference support across candidate windows."""
-
-    frame = _scope_frame(
-        diagnostics,
-        "pre_training_reference_support_distribution",
-    ).copy()
-
-    if frame.empty:
-        raise RuntimeError(
-            "Pre-training reference-window support diagnostics "
-            "are unavailable."
-        )
-
-    figure, axis = plt.subplots(
-        figsize=(10, 6)
-    )
-
-    window_labels = {
-        window_name: label
-        for (
-            window_name,
-            _,
-            label,
-        ) in PRE_TRAINING_REFERENCE_WINDOWS
-    }
-
-    for window_name, group in frame.groupby(
-        "criterion",
-        sort=False,
-    ):
-
-        group = group.sort_values(
-            "quantile"
-        )
-
-        axis.plot(
-            100.0 * group["quantile"],
-            group["value"],
-            marker="o",
-            label=window_labels.get(
-                str(window_name),
-                str(window_name),
-            ),
-        )
-
-    axis.set_title(
-        "HS × year reference support by temporal window"
-    )
-
-    axis.set_xlabel(
-        "Quantile (%)"
-    )
-
-    axis.set_ylabel(
-        "Reference observations"
-    )
-
-    axis.grid(
-        axis="y",
-        linestyle="--",
-        alpha=0.5,
-    )
-
-    axis.set_axisbelow(True)
-    axis.legend()
-
-    figure.tight_layout()
-
-    figure.savefig(
-        output_path,
-        dpi=180,
-        bbox_inches="tight",
-    )
-
-    plt.close(
-        figure
-    )
 
 def _build_validation_figure_paths(
     *,
     figure_dir: Path,
     target_hs: str,
 ) -> dict[str, Path]:
-    """Return the standard figure paths for the Validation report."""
+    """Return figure paths used by the streamlined Validation report."""
 
     target_hs = str(target_hs).lower()
+    prefix = f"target_{target_hs}_validation_"
 
     return {
-
-        "pre_training_reference_support_comparison": (
-            figure_dir
-            / (
-                f"target_{target_hs}"
-                "_validation_pre_training_reference_support_comparison.png"
-            )
+        "source_quantity_availability": (
+            figure_dir / f"{prefix}source_quantity_availability.png"
         ),
-        "training_uv_distance_distribution": (
-            figure_dir
-            / (
-                f"target_{target_hs}"
-                "_validation_training_uv_distance_distribution.png"
-            )
-        ),
-        "training_reference_support_distribution": (
-            figure_dir
-            / (
-                f"target_{target_hs}"
-                "_validation_training_reference_support_distribution.png"
-            )
-        ),
-        "training_uv_dispersion_distribution": (
-            figure_dir
-            / (
-                f"target_{target_hs}"
-                "_validation_training_uv_dispersion_distribution.png"
-            )
-        ),
-        "training_normalized_uv_distance_distribution": (
-            figure_dir
-            / (
-                f"target_{target_hs}"
-                "_validation_training_normalized_uv_distance_distribution.png"
-            )
+        "source_quantity_disagreement": (
+            figure_dir / f"{prefix}source_quantity_disagreement.png"
         ),
         "training_population_funnel": (
-            figure_dir
-            / (
-                f"target_{target_hs}"
-                "_validation_training_population_funnel.png"
-            )
+            figure_dir / f"{prefix}training_population_funnel.png"
         ),
-        "training_evidence_by_year": (
-            figure_dir
-            / (
-                f"target_{target_hs}"
-                "_validation_training_evidence_by_year.png"
-            )
+        "normalized_uv_cutoff_sensitivity": (
+            figure_dir / f"{prefix}normalized_uv_cutoff_sensitivity.png"
         ),
-        "training_evidence_distributions": (
-            figure_dir
-            / (
-                f"target_{target_hs}"
-                "_validation_training_evidence_distributions.png"
-            )
+        "training_coverage_by_year": (
+            figure_dir / f"{prefix}training_coverage_by_year.png"
         ),
-        "export_import_quantity_ratio_distribution": (
-            figure_dir
-            / (
-                f"target_{target_hs}"
-                "_validation_export_import_quantity_ratio_distribution.png"
-            )
-        ),
-        "quantity_uv_slope_distribution": (
-            figure_dir
-            / (
-                f"target_{target_hs}"
-                "_validation_quantity_uv_slope_distribution.png"
-            )
-        ),
-        "quantity_uv_r_squared_distribution": (
-            figure_dir
-            / (
-                f"target_{target_hs}"
-                "_validation_quantity_uv_r_squared_distribution.png"
-            )
-        ),
-        "quantity_candidate_uv_summary": (
-            figure_dir
-            / (
-                f"target_{target_hs}"
-                "_validation_quantity_candidate_uv_summary.png"
-            )
-        ),
-        "quantity_candidate_by_disagreement": (
-            figure_dir
-            / (
-                f"target_{target_hs}"
-                "_validation_quantity_candidate_by_disagreement.png"
-            )
-        ),
-        "quantity_candidate_by_disagreement_factor": (
-            figure_dir
-            / (
-                f"target_{target_hs}"
-                "_validation_quantity_candidate_by_disagreement_factor.png"
-            )
-        ),
-        "quantity_candidate_closest_reference": (
-            figure_dir
-            / (
-                f"target_{target_hs}"
-                "_validation_quantity_candidate_closest_reference.png"
-            )
-        ),
-        "quantity_candidate_by_year": (
-            figure_dir
-            / (
-                f"target_{target_hs}"
-                "_validation_quantity_candidate_by_year.png"
-            )
-        ),
-        "quantity_candidate_product_distribution": (
-            figure_dir
-            / (
-                f"target_{target_hs}"
-                "_validation_quantity_candidate_product_distribution.png"
-            )
-        ),
-        "quantity_candidate_spread": (
-            figure_dir
-            / (
-                f"target_{target_hs}"
-                "_validation_quantity_candidate_spread.png"
-            )
-        ),
-        "quantity_candidate_conditioned_summary": (
-            figure_dir
-            / (
-                f"target_{target_hs}"
-                "_validation_quantity_candidate_conditioned_summary.png"
-            )
-        ),
-        "quantity_candidate_conditioned_by_disagreement": (
-            figure_dir
-            / (
-                f"target_{target_hs}"
-                "_validation_quantity_candidate_conditioned_by_disagreement.png"
-            )
-        ),
-        "quantity_candidate_closest_conditioned": (
-            figure_dir
-            / (
-                f"target_{target_hs}"
-                "_validation_quantity_candidate_closest_conditioned.png"
-            )
-        ),
-        "mirror_disagreement_retention":
-            figure_dir
-            / (
-                f"target_{target_hs}"
-                "_validation_mirror_disagreement_retention.png"
-            ),
         "model_performance_by_year": (
-            figure_dir
-            / (
-                f"target_{target_hs}"
-                "_validation_model_performance_by_year.png"
-            )
+            figure_dir / f"{prefix}model_performance_by_year.png"
         ),
-        "mirror_cutoff_tradeoff":
-            figure_dir
-            / (
-                f"target_{target_hs}"
-                "_validation_mirror_cutoff_tradeoff.png"
-            ),
     }
 
 
@@ -2634,18 +624,12 @@ def build_validation_report(
     logger,
 ) -> dict[str, Any]:
     """
-    Create the current VACODA Validation Markdown decision report.
+    Create the VACODA Validation Markdown model-development report.
 
-    At the present model-development stage, the report documents:
-
-    - the canonical Validation input;
-    - structural-integrity results;
-    - candidate training population evidence;
-    - sensitivity to possible training-sample thresholds;
-    - coverage across years and products;
-    - the current training-population decision status.
-
-    The report will be extended as later Validation stages become active.
+    The report documents the canonical bilateral quantity methodology,
+    descriptive source-reporter diagnostics, the configured HS × year UV
+    training-sample rule, training coverage, and expanding-window model
+    evaluation.  Production inference remains a later Validation stage.
     """
 
     prepared_input_path = Path(prepared_input_path)
@@ -2653,27 +637,14 @@ def build_validation_report(
     diagnostics_path = Path(diagnostics_path)
 
     for label, path in (
-        (
-            "prepared Validation input",
-            prepared_input_path,
-        ),
-        (
-            "Validation structural audit",
-            structural_audit_path,
-        ),
-        (
-            "Validation model diagnostics",
-            diagnostics_path,
-        ),
+        ("prepared Validation input", prepared_input_path),
+        ("Validation structural audit", structural_audit_path),
+        ("Validation diagnostics", diagnostics_path),
     ):
         if not path.is_file():
             raise FileNotFoundError(
                 f"{label} not found: {path}"
             )
-
-    # ------------------------------------------------------------------
-    # Report configuration
-    # ------------------------------------------------------------------
 
     if not cfg.artifacts.enable:
         return {
@@ -2684,13 +655,8 @@ def build_validation_report(
             "ready_for_training_decision": False,
         }
 
-    report_path = cfg.artifacts_path(
-        run_id
-    )
-
-    latest_path = (
-        cfg.artifacts_latest_path()
-    )
+    report_path = cfg.artifacts_path(run_id)
+    latest_path = cfg.artifacts_latest_path()
 
     figure_dir = (
         get_figure_dir()
@@ -2702,77 +668,36 @@ def build_validation_report(
         parents=True,
         exist_ok=True,
     )
-
     figure_dir.mkdir(
         parents=True,
         exist_ok=True,
     )
 
-    # if (
-    #     not force
-    #     and valid_output(report_path)
-    # ):
-    #     logger.info(
-    #         "REUSE — Validation report already exists: %s",
-    #         report_path,
-    #     )
-
-    #     return {
-    #         "status": "reused",
-    #         "output_path": report_path,
-    #         "report_path": report_path,
-    #         "latest_report_path": (
-    #             latest_path
-    #             if latest_path.exists()
-    #             else None
-    #         ),
-    #         "ready_for_training_decision": True,
-    #     }
-
     structural_sql = sql_literal(
         structural_audit_path
     )
-
     diagnostics_sql = sql_literal(
         diagnostics_path
     )
 
-    info = get_symbols(
-        "info"
-    )
-
-    ok = get_symbols(
-        "check"
-    )
+    info = get_symbols("info")
+    ok = get_symbols("check")
 
     logger.info(
-        "%s Building Validation decision report.",
+        "%s Building Validation model-development report.",
         info,
     )
-
     logger.info(
         "  Prepared input: %s",
         prepared_input_path,
     )
-
     logger.info(
         "  Structural audit: %s",
         structural_audit_path,
     )
-
     logger.info(
-        "  Model diagnostics: %s",
+        "  Diagnostics: %s",
         diagnostics_path,
-    )
-
-    logger.info(
-        "  Report: %s",
-        report_path,
-    )
-
-    logger.info(
-        "  Figure directory: %s",
-        figure_dir,
     )
 
     con = duckdb.connect()
@@ -2781,10 +706,6 @@ def build_validation_report(
         con.execute(
             f"SET threads = {int(cfg.engine.threads)}"
         )
-
-        # ==============================================================
-        # Read produced artifacts
-        # ==============================================================
 
         structural_audit = con.execute(
             f"""
@@ -2802,2505 +723,604 @@ def build_validation_report(
 
         if len(structural_audit) != 1:
             raise RuntimeError(
-                "Validation structural audit must contain "
-                "exactly one row."
+                "Validation structural audit must contain exactly one row."
             )
 
         if diagnostics.empty:
             raise RuntimeError(
-                "Validation model diagnostics contain no rows."
+                "Validation diagnostics contain no rows."
             )
 
         required_diagnostic_columns = {
             "scope",
             "criterion",
-            "candidate",
             "n_rows",
             "share_of_all",
             "share_of_parent",
+            "value",
         }
 
-        missing_diagnostic_columns = (
+        missing = (
             required_diagnostic_columns
             - set(diagnostics.columns)
         )
 
-        if missing_diagnostic_columns:
+        if missing:
             raise RuntimeError(
-                "Validation model diagnostics are missing "
-                "required columns: "
-                + ", ".join(
-                    sorted(
-                        missing_diagnostic_columns
-                    )
-                )
+                "Validation diagnostics are missing required columns: "
+                + ", ".join(sorted(missing))
             )
 
-        # ==============================================================
-        # Structural audit
-        # ==============================================================
+        # ============================================================== 
+        # Structural integrity
+        # ============================================================== 
+        audit_row = structural_audit.iloc[0]
 
-        audit_row = structural_audit.iloc[
-            0
-        ]
+        if "audit_passed" not in structural_audit.columns:
+            raise RuntimeError(
+                "Validation structural audit is missing audit_passed."
+            )
 
         audit_passed = bool(
             audit_row["audit_passed"]
         )
 
-        n_rows = int(
-            audit_row["n_rows"]
+        structural_fields = (
+            ("n_rows", "Rows"),
+            ("n_duplicate_rows", "Duplicate rows"),
+            ("n_null_key_rows", "Null canonical-key rows"),
+            ("n_invalid_year_rows", "Invalid year rows"),
+            ("n_invalid_hs_rows", "Invalid HS rows"),
+            ("n_invalid_nominal_value_rows", "Invalid nominal-value rows"),
+            (
+                "n_invalid_constant_value_rows",
+                "Invalid constant-USD value rows",
+            ),
+            (
+                "n_invalid_value_weighted_rows",
+                "Invalid value-weighted quantity rows",
+            ),
+            ("n_missing_quantity_rows", "Rows without quantity"),
+            ("n_available_quantity_rows", "Rows with quantity"),
         )
 
-        n_duplicate_rows = int(
-            audit_row[
-                "n_duplicate_rows"
-            ]
-        )
+        structural_rows = []
 
-        n_null_key_rows = int(
-            audit_row[
-                "n_null_key_rows"
-            ]
-        )
+        for column, label in structural_fields:
+            if column in structural_audit.columns:
+                structural_rows.append(
+                    {
+                        "Check": label,
+                        "Result": _format_integer(
+                            audit_row[column]
+                        ),
+                    }
+                )
 
-        n_invalid_year_rows = int(
-            audit_row[
-                "n_invalid_year_rows"
-            ]
-        )
-
-        n_invalid_hs_rows = int(
-            audit_row[
-                "n_invalid_hs_rows"
-            ]
-        )
-
-        n_invalid_nominal_value_rows = int(
-            audit_row[
-                "n_invalid_nominal_value_rows"
-            ]
-        )
-
-        n_invalid_constant_value_rows = int(
-            audit_row[
-                "n_invalid_constant_value_rows"
-            ]
-        )
-
-        n_invalid_simple_mean_rows = int(
-            audit_row[
-                "n_invalid_simple_mean_rows"
-            ]
-        )
-
-        n_invalid_value_weighted_rows = int(
-            audit_row[
-                "n_invalid_value_weighted_rows"
-            ]
-        )
-
-        n_invalid_quantity_reliability_weighted_rows = int(
-            audit_row[
-                "n_invalid_quantity_reliability_weighted_rows"
-            ]
-        )
-
-        n_missing_quantity_rows = int(
-            audit_row[
-                "n_missing_quantity_rows"
-            ]
-        )
-
-        n_available_quantity_rows = int(
-            audit_row[
-                "n_available_quantity_rows"
-            ]
+        structural_rows.append(
+            {
+                "Check": "Structural audit passed",
+                "Result": str(audit_passed),
+            }
         )
 
         structural_summary = pd.DataFrame(
+            structural_rows
+        )
+
+        # ============================================================== 
+        # Canonical quantity methodology
+        # ============================================================== 
+        methodology = _require_diagnostic_scope(
+            diagnostics,
+            "quantity_methodology",
+        )
+
+        selected_candidates = (
+            methodology["candidate"]
+            .dropna()
+            .astype(str)
+            .unique()
+        )
+
+        if len(selected_candidates) != 1:
+            raise RuntimeError(
+                "Validation report requires exactly one canonical "
+                "quantity methodology."
+            )
+
+        selected_candidate = str(
+            selected_candidates[0]
+        )
+        selected_candidate_label = _candidate_label(
+            selected_candidate
+        )
+
+        # ============================================================== 
+        # Source diagnostics
+        # ============================================================== 
+        source_availability = _require_diagnostic_scope(
+            diagnostics,
+            "source_quantity_availability",
+        )
+
+        source_labels = {
+            "both": "Both exporter and importer quantities available",
+            "export_only": "Exporter quantity only",
+            "import_only": "Importer quantity only",
+            "neither": "Neither source quantity available",
+            "both_non_estimated": "Both source quantities non-estimated",
+        }
+
+        source_availability_display = pd.DataFrame(
             [
                 {
-                    "Check": "Rows",
-                    "Result": _format_integer(
-                        n_rows
+                    "Source evidence": source_labels.get(
+                        str(row.criterion),
+                        str(row.criterion),
                     ),
-                },
-                {
-                    "Check": (
-                        "Duplicate rows"
-                    ),
-                    "Result": _format_integer(
-                        n_duplicate_rows
-                    ),
-                },
-                {
-                    "Check": "Null rows",
-                    "Result": _format_integer(
-                        n_null_key_rows
-                    ),
-                },
-                {
-                    "Check": "Invalid year rows",
-                    "Result": _format_integer(
-                        n_invalid_year_rows
-                    ),
-                },
-                {
-                    "Check": "Invalid HS rows",
-                    "Result": _format_integer(
-                        n_invalid_hs_rows
-                    ),
-                },
-                {
-                    "Check": "Invalid nominal values",
-                    "Result": _format_integer(
-                        n_invalid_nominal_value_rows
-                    ),
-                },
-                {
-                    "Check": (
-                        "Invalid constant-USD values"
-                    ),
-                    "Result": _format_integer(
-                        n_invalid_constant_value_rows
-                    ),
-                },
-                {
-                    "Check": "Invalid simple-mean quantities",
-                    "Result": _format_integer(
-                        n_invalid_simple_mean_rows
-                    ),
-                },
-                {
-                    "Check": "Invalid value-weighted quantities",
-                    "Result": _format_integer(
-                        n_invalid_value_weighted_rows
-                    ),
-                },
-                {
-                    "Check": (
-                        "Invalid quantity-reliability-weighted quantities"
-                    ),
-                    "Result": _format_integer(
-                        n_invalid_quantity_reliability_weighted_rows
-                    ),
-                },
-                {
-                    "Check": "Structural audit passed",
-                    "Result": str(
-                        audit_passed
-                    ),
-                },
-            ]
-        )
-
-
-        training_rejection_by_product = _scope_frame(
-            diagnostics,
-            "training_evidence_rejection_by_product",
-        )
-
-        training_rejection_display = (
-            training_rejection_by_product
-            .pivot_table(
-                index="target_cmd",
-                columns="criterion",
-                values="n_rows",
-                aggfunc="first",
-            )
-            .reset_index()
-        )
-
-        training_rejection_display = (
-            training_rejection_display.rename(
-                columns={
-                    "target_cmd": "HS product",
-                    "reference_eligible": (
-                        "Reference eligible"
-                    ),
-                    "mirror_disagreement": (
-                        "After mirror ≤ cutoff"
-                    ),
-                    "reference_support": (
-                        "After support ≥ minimum"
-                    ),
-                    "positive_uv_mad": (
-                        "After positive MAD"
-                    ),
-                    "uv_distance_available": (
-                        "After UV distance available"
-                    ),
-                    "normalized_uv_distance": (
-                        "After normalized UV cutoff"
-                    ),
-                    "training_selected": (
-                        "Training selected"
+                    "Rows": _format_integer(row.n_rows),
+                    "Share of all rows": _format_percent(
+                        row.share_of_all
                     ),
                 }
-            )
-        )
-
-        training_rejection_display = (
-            training_rejection_display[
-                [
-                    "HS product",
-                    "Reference eligible",
-                    "After mirror ≤ cutoff",
-                    "After support ≥ minimum",
-                    "After positive MAD",
-                    "After UV distance available",
-                    "After normalized UV cutoff",
-                    "Training selected",
-                ]
+                for row in source_availability.itertuples(
+                    index=False
+                )
             ]
         )
 
-        for column in training_rejection_display.columns[1:]:
-            training_rejection_display[column] = (
-                training_rejection_display[column]
-                .map(_format_integer)
-            )
-
-
-        mirror_cutoff_tradeoff = _scope_frame(
+        source_disagreement = _require_diagnostic_scope(
             diagnostics,
-            "mirror_cutoff_tradeoff",
-        ).copy()
+            "source_quantity_disagreement_distribution",
+        ).sort_values("quantile")
 
-        if mirror_cutoff_tradeoff.empty:
+        source_disagreement_display = pd.DataFrame(
+            {
+                "Quantile": [
+                    f"P{100.0 * float(value):g}"
+                    for value in source_disagreement["quantile"]
+                ],
+                "Relative exporter/importer disagreement": [
+                    _format_percent(value)
+                    for value in source_disagreement["value"]
+                ],
+            }
+        )
+
+        # ============================================================== 
+        # Training rule and coverage
+        # ============================================================== 
+        training_funnel = _require_diagnostic_scope(
+            diagnostics,
+            "training_population_funnel",
+        )
+
+        funnel_labels = {
+            "all_rows": "All canonical rows",
+            "training_eligible": "Technically usable quantity/value",
+            "support": "HS×year UV support threshold satisfied",
+            "positive_uv_mad": "Positive finite HS×year UV MAD",
+            "uv_distance_available": "Normalized UV distance evaluable",
+            "training_selected": "Final training sample",
+        }
+
+        training_funnel_display = pd.DataFrame(
+            [
+                {
+                    "Stage": funnel_labels.get(
+                        str(row.criterion),
+                        str(row.criterion),
+                    ),
+                    "Rows": _format_integer(row.n_rows),
+                    "Share of all rows": _format_percent(
+                        row.share_of_all
+                    ),
+                    "Retention from previous stage": _format_percent(
+                        row.share_of_parent
+                    ),
+                }
+                for row in training_funnel.itertuples(
+                    index=False
+                )
+            ]
+        )
+
+        training_definition = _require_diagnostic_scope(
+            diagnostics,
+            "training_definition",
+        )
+
+        if len(training_definition) != 1:
             raise RuntimeError(
-                "Mirror-cutoff trade-off diagnostics are unavailable."
+                "Validation diagnostics must contain exactly one "
+                "training_definition row."
             )
 
-        mirror_cutoff_tradeoff_display = (
-            mirror_cutoff_tradeoff.pivot_table(
-                index="disagreement_threshold",
-                columns="variable",
-                values="value",
-                aggfunc="first",
-            )
-            .reset_index()
-            .sort_values(
-                "disagreement_threshold"
-            )
-            .reset_index(drop=True)
-        )
-
-        mirror_cutoff_tradeoff_display[
-            "Cutoff"
-        ] = mirror_cutoff_tradeoff_display[
-            "disagreement_threshold"
-        ].map(
-            lambda value: (
-                f"≤ {100.0 * float(value):.0f}%"
-            )
-        )
-
-        mirror_cutoff_tradeoff_display = (
-            mirror_cutoff_tradeoff_display[
-                [
-                    "Cutoff",
-                    "retained_rows",
-                    "retained_share",
-                    "median_worst_uv_distance",
-                    "p90_worst_uv_distance",
-                ]
-            ]
-            .rename(
-                columns={
-                    "retained_rows": "Retained rows",
-                    "retained_share": (
-                        "Share of direct bilateral"
-                    ),
-                    "median_worst_uv_distance": (
-                        "Median worst-side UV distance"
-                    ),
-                    "p90_worst_uv_distance": (
-                        "P90 worst-side UV distance"
-                    ),
-                }
-            )
-        )
-
-        mirror_cutoff_tradeoff_display[
-            "Retained rows"
-        ] = mirror_cutoff_tradeoff_display[
-            "Retained rows"
-        ].map(
-            lambda value: _format_integer(
-                int(value)
-            )
-        )
-
-        mirror_cutoff_tradeoff_display[
-            "Share of direct bilateral"
-        ] = mirror_cutoff_tradeoff_display[
-            "Share of direct bilateral"
-        ].map(
-            _format_percent
-        )
-
-        for column in (
-            "Median worst-side UV distance",
-            "P90 worst-side UV distance",
-        ):
-            mirror_cutoff_tradeoff_display[
-                column
-            ] = mirror_cutoff_tradeoff_display[
-                column
-            ].map(
-                lambda value: (
-                    f"{float(value):.3f}"
-                    if pd.notna(value)
-                    else ""
+        training_definition_row = training_definition.iloc[0]
+        min_reference_observations = int(
+            round(
+                float(
+                    training_definition_row[
+                        "uv_support_threshold"
+                    ]
                 )
             )
+        )
+        max_normalized_uv_distance_mad = float(
+            training_definition_row[
+                "uv_distance_threshold"
+            ]
+        )
+        n_training_selected = int(
+            training_definition_row["n_rows"]
+        )
+        training_selected_share = float(
+            training_definition_row["share_of_all"]
+        )
 
-        # ==========================================================
-        # Model Diagnostics
-        # ==========================================================
-        model_performance_overall = _scope_frame(
+        training_rule_display = pd.DataFrame(
+            [
+                {
+                    "Criterion": "Minimum HS×year UV reference support",
+                    "Configured value": (
+                        f"≥ {min_reference_observations:,} observations"
+                    ),
+                },
+                {
+                    "Criterion": "HS×year log-UV dispersion",
+                    "Configured value": "> 0 MAD",
+                },
+                {
+                    "Criterion": "Maximum normalized UV distance",
+                    "Configured value": (
+                        f"≤ {max_normalized_uv_distance_mad:g} MAD"
+                    ),
+                },
+            ]
+        )
+
+        training_by_year = _require_diagnostic_scope(
+            diagnostics,
+            "training_coverage_by_year",
+        ).sort_values("year")
+
+        training_year_display = pd.DataFrame(
+            {
+                "Year": training_by_year["year"].astype(int),
+                "Training rows": [
+                    _format_integer(value)
+                    for value in training_by_year["n_rows"]
+                ],
+                "Share of annual rows": [
+                    _format_percent(value)
+                    for value in training_by_year["share_of_all"]
+                ],
+                "Share of technically eligible rows": [
+                    _format_percent(value)
+                    for value in training_by_year["share_of_parent"]
+                ],
+                "Products represented": [
+                    _format_integer(value)
+                    for value in training_by_year["value"]
+                ],
+            }
+        )
+
+        training_by_product = _require_diagnostic_scope(
+            diagnostics,
+            "training_coverage_by_product",
+        )
+
+        n_products = int(
+            training_by_product["target_cmd"]
+            .dropna()
+            .astype(str)
+            .nunique()
+        )
+        n_unseen_products = int(
+            training_by_product["criterion"]
+            .eq("unseen")
+            .sum()
+        )
+
+        product_display = (
+            training_by_product
+            .sort_values(
+                ["n_rows", "target_cmd"],
+                ascending=[True, True],
+            )
+            .head(20)
+            .copy()
+        )
+
+        product_display = pd.DataFrame(
+            {
+                "HS product": product_display["target_cmd"].astype(str),
+                "Training rows": [
+                    _format_integer(value)
+                    for value in product_display["n_rows"]
+                ],
+                "Technically eligible rows": [
+                    _format_integer(value)
+                    for value in product_display["eligible_rows"]
+                ],
+                "Training share": [
+                    _format_percent(value)
+                    for value in product_display["share_of_all"]
+                ],
+                "Training-year coverage": [
+                    _format_percent(value)
+                    for value in product_display[
+                        "training_year_coverage"
+                    ]
+                ],
+            }
+        )
+
+        rejection = _scope_frame(
+            diagnostics,
+            "training_rejection_by_product",
+        )
+
+        if rejection.empty:
+            rejection_display = pd.DataFrame()
+        else:
+            rejection_display = (
+                rejection.pivot_table(
+                    index="target_cmd",
+                    columns="criterion",
+                    values="n_rows",
+                    aggfunc="first",
+                )
+                .reset_index()
+            )
+
+            rejection_columns = [
+                column
+                for column in (
+                    "target_cmd",
+                    "training_eligible",
+                    "reference_support",
+                    "positive_uv_mad",
+                    "uv_distance_available",
+                    "normalized_uv_distance",
+                )
+                if column in rejection_display.columns
+            ]
+
+            rejection_display = rejection_display[
+                rejection_columns
+            ].rename(
+                columns={
+                    "target_cmd": "HS product",
+                    "training_eligible": "Eligible",
+                    "reference_support": "After support",
+                    "positive_uv_mad": "After positive MAD",
+                    "uv_distance_available": "UV evaluable",
+                    "normalized_uv_distance": "After ≤ cutoff",
+                }
+            )
+
+        # ============================================================== 
+        # Reference-window and UV evidence
+        # ============================================================== 
+        reference_window = _require_diagnostic_scope(
+            diagnostics,
+            "reference_window_summary",
+        )
+
+        support_rows = reference_window[
+            reference_window["variable"].eq(
+                "groups_with_support"
+            )
+        ].copy()
+        mad_rows = reference_window[
+            reference_window["variable"].eq(
+                "median_log_mad"
+            )
+        ].copy()
+
+        reference_display_rows = []
+
+        for criterion in (
+            "0_0",
+            "1_0",
+            "2_0",
+        ):
+            support = support_rows[
+                support_rows["criterion"].eq(criterion)
+            ]
+            mad = mad_rows[
+                mad_rows["criterion"].eq(criterion)
+            ]
+
+            if support.empty:
+                continue
+
+            support_row = support.iloc[0]
+            mad_row = (
+                mad.iloc[0]
+                if not mad.empty
+                else None
+            )
+
+            reference_display_rows.append(
+                {
+                    "Window": criterion,
+                    "Groups meeting support": _format_integer(
+                        support_row["n_rows"]
+                    ),
+                    "Share of HS×year groups": _format_percent(
+                        support_row["share_of_parent"]
+                    ),
+                    "Median reference support": _format_number(
+                        support_row["value"],
+                        digits=1,
+                    ),
+                    "Median log-UV MAD": _format_number(
+                        mad_row["value"]
+                        if mad_row is not None
+                        else None,
+                        digits=4,
+                    ),
+                }
+            )
+
+        reference_window_display = pd.DataFrame(
+            reference_display_rows
+        )
+
+        support_distribution = _require_diagnostic_scope(
+            diagnostics,
+            "training_reference_support_distribution",
+        ).sort_values("quantile")
+
+        support_distribution_display = pd.DataFrame(
+            {
+                "Quantile": [
+                    f"P{100.0 * float(value):g}"
+                    for value in support_distribution["quantile"]
+                ],
+                "HS×year reference observations": [
+                    _format_number(value, digits=1)
+                    for value in support_distribution["value"]
+                ],
+            }
+        )
+
+        mad_distribution = _require_diagnostic_scope(
+            diagnostics,
+            "training_uv_mad_distribution",
+        ).sort_values("quantile")
+
+        normalized_distribution = _require_diagnostic_scope(
+            diagnostics,
+            "training_normalized_uv_distance_distribution",
+        ).sort_values("quantile")
+
+        uv_distribution_display = pd.DataFrame(
+            {
+                "Quantile": [
+                    f"P{100.0 * float(value):g}"
+                    for value in normalized_distribution["quantile"]
+                ],
+                "Normalized UV distance (MAD)": [
+                    _format_number(value, digits=3)
+                    for value in normalized_distribution["value"]
+                ],
+                "HS×year log-UV MAD": [
+                    _format_number(value, digits=4)
+                    for value in mad_distribution["value"]
+                ],
+            }
+        )
+
+        cutoff_sensitivity = _require_diagnostic_scope(
+            diagnostics,
+            "training_normalized_uv_cutoff_sensitivity",
+        ).sort_values("uv_distance_threshold")
+
+        cutoff_sensitivity_display = pd.DataFrame(
+            {
+                "Maximum normalized UV distance": [
+                    f"≤ {float(value):g} MAD"
+                    for value in cutoff_sensitivity[
+                        "uv_distance_threshold"
+                    ]
+                ],
+                "Rows retained": [
+                    _format_integer(value)
+                    for value in cutoff_sensitivity["n_rows"]
+                ],
+                "Share of UV-evaluable rows": [
+                    _format_percent(value)
+                    for value in cutoff_sensitivity[
+                        "share_of_parent"
+                    ]
+                ],
+                "Share of all Validation rows": [
+                    _format_percent(value)
+                    for value in cutoff_sensitivity[
+                        "share_of_all"
+                    ]
+                ],
+            }
+        )
+
+        # ============================================================== 
+        # Model evaluation
+        # ============================================================== 
+        model_overall = _require_diagnostic_scope(
             diagnostics,
             "model_performance_overall",
         )
 
-        model_performance_by_year = _scope_frame(
-            diagnostics,
-            "model_performance_by_year",
-        )
+        model_pivot = model_overall.pivot_table(
+            index="model_name",
+            columns="variable",
+            values="value",
+            aggfunc="first",
+        ).reset_index()
 
-        model_error_distribution = _scope_frame(
-            diagnostics,
-            "model_absolute_log_error_distribution",
-        )
-
-        model_performance_display = (
-            model_performance_overall
-            .pivot_table(
-                index="model_name",
-                columns="variable",
-                values="value",
-                aggfunc="first",
-            )
-            .reset_index()
-            .rename(
-                columns={
-                    "model_name": "Model",
-                    "mae_log": "MAE log",
-                    "rmse_log": "RMSE log",
-                    "median_absolute_log_error": (
-                        "Median absolute log error"
-                    ),
-                }
-            )
-        )
-
-        for column in (
-            "MAE log",
-            "RMSE log",
-            "Median absolute log error",
+        for required_metric in (
+            "mae_log",
+            "rmse_log",
+            "median_absolute_log_error",
         ):
-            model_performance_display[column] = (
-                model_performance_display[column]
-                .map(
-                    lambda value: _format_number(
-                        value,
-                        digits=4,
-                    )
-                )
-            )
-        # ============================================================
-        # Training Sample Diagnostics
-        # ============================================================
+            if required_metric not in model_pivot.columns:
+                model_pivot[required_metric] = math.nan
 
-        mirror_retention = _scope_frame(
-            diagnostics,
-            "mirror_disagreement_retention",
-        ).copy()
-
-        if mirror_retention.empty:
-            raise RuntimeError(
-                "Mirror-disagreement retention diagnostics are unavailable."
-            )
-
-        mirror_retention_counts = (
-            mirror_retention.pivot_table(
-                index="disagreement_threshold",
-                columns="criterion",
-                values="n_rows",
-                aggfunc="sum",
-                fill_value=0,
-            )
-            .reset_index()
-        )
-
-        mirror_retention_shares = (
-            mirror_retention.pivot_table(
-                index="disagreement_threshold",
-                columns="criterion",
-                values="share_of_parent",
-                aggfunc="sum",
-                fill_value=0.0,
-            )
-            .reset_index()
-        )
-
-        direction_columns = (
-            "Exact agreement",
-            "Exporter > importer",
-            "Importer > exporter",
-        )
-
-        for column in direction_columns:
-            if column not in mirror_retention_counts.columns:
-                mirror_retention_counts[column] = 0
-
-            if column not in mirror_retention_shares.columns:
-                mirror_retention_shares[column] = 0.0
-
-        mirror_retention_display = (
-            mirror_retention_counts.merge(
-                mirror_retention_shares[
-                    [
-                        "disagreement_threshold",
-                        *direction_columns,
-                    ]
-                ],
-                on="disagreement_threshold",
-                suffixes=("_rows", "_share"),
-            )
-            .sort_values(
-                "disagreement_threshold"
-            )
-            .reset_index(drop=True)
-        )
-
-        mirror_retention_display[
-            "Total retained"
-        ] = (
-            mirror_retention_display[
-                "Exact agreement_rows"
-            ]
-            + mirror_retention_display[
-                "Exporter > importer_rows"
-            ]
-            + mirror_retention_display[
-                "Importer > exporter_rows"
-            ]
-        )
-
-        mirror_retention_display[
-            "Share of direct bilateral"
-        ] = (
-            mirror_retention_display[
-                "Exact agreement_share"
-            ]
-            + mirror_retention_display[
-                "Exporter > importer_share"
-            ]
-            + mirror_retention_display[
-                "Importer > exporter_share"
-            ]
-        )
-
-        mirror_retention_display[
-            "Cutoff"
-        ] = mirror_retention_display[
-            "disagreement_threshold"
-        ].map(
-            lambda value: (
-                f"≤ {100.0 * float(value):.0f}%"
-            )
-        )
-
-        mirror_retention_display = (
-            mirror_retention_display[
-                [
-                    "Cutoff",
-                    "Exact agreement_rows",
-                    "Exporter > importer_rows",
-                    "Importer > exporter_rows",
-                    "Total retained",
-                    "Share of direct bilateral",
-                ]
-            ]
-            .rename(
-                columns={
-                    "Exact agreement_rows": (
-                        "Exact agreement"
-                    ),
-                    "Exporter > importer_rows": (
-                        "Exporter > importer"
-                    ),
-                    "Importer > exporter_rows": (
-                        "Importer > exporter"
-                    ),
-                }
-            )
-        )
-
-        for column in (
-            "Exact agreement",
-            "Exporter > importer",
-            "Importer > exporter",
-            "Total retained",
-        ):
-            mirror_retention_display[
-                column
-            ] = mirror_retention_display[
-                column
-            ].map(
-                _format_integer
-            )
-
-        mirror_retention_display[
-            "Share of direct bilateral"
-        ] = mirror_retention_display[
-            "Share of direct bilateral"
-        ].map(
-            _format_percent
-        )
-
-        pre_training_reference_product_coverage = _scope_frame(
-            diagnostics,
-            "pre_training_reference_product_coverage",
-        )
-
-        training_candidate_final_rule = _scope_frame(
-            diagnostics,
-            "training_candidate_final_rule",
-        )
-
-        training_sample_summary = _scope_frame(
-            diagnostics,
-            "training_sample_summary",
-        )
-
-        training_uv_distance = _scope_frame(
-            diagnostics,
-            "training_uv_distance_distribution",
-        )
-
-        pre_training_reference_support = _scope_frame(
-            diagnostics,
-            "pre_training_reference_support_distribution",
-        )
-
-        pre_training_reference_support_bands = _scope_frame(
-            diagnostics,
-            "pre_training_reference_support_bands",
-        )
-
-        pre_training_reference_worst = _scope_frame(
-            diagnostics,
-            "pre_training_reference_worst_groups",
-        )
-
-        pre_training_reference_availability = _scope_frame(
-            diagnostics,
-            "pre_training_reference_availability",
-        )
-
-        pre_training_reference_median_shift = _scope_frame(
-            diagnostics,
-            "pre_training_reference_median_shift",
-        )
-
-        pre_training_reference_mad_shift = _scope_frame(
-            diagnostics,
-            "pre_training_reference_mad_shift",
-        )
-
-        training_reference_support = _scope_frame(
-            diagnostics,
-            "training_reference_support_distribution",
-        )
-
-        training_uv_dispersion = _scope_frame(
-            diagnostics,
-            "training_uv_dispersion_distribution",
-        )
-
-        training_normalized_uv_distance = _scope_frame(
-            diagnostics,
-            "training_normalized_uv_distance_distribution",
-        )
-        training_normalized_uv_cutoffs = _scope_frame(
-            diagnostics,
-            "training_normalized_uv_cutoff_sensitivity",
-        )
-        training_by_year = _scope_frame(
-            diagnostics,
-            "training_sample_by_year",
-        )
-
-        training_by_product = _scope_frame(
-            diagnostics,
-            "training_sample_by_product",
-        )
-
-        training_evidence_by_year_audit = _scope_frame(
-            diagnostics,
-            "training_evidence_by_year",
-        )
-
-        training_evidence_by_product_audit = _scope_frame(
-            diagnostics,
-            "training_evidence_by_product",
-        )
-
-        training_summary_labels = {
-            "all_rows": "All Validation rows",
-            "selected_unit_value_available": (
-                "Selected unit value available"
-            ),
-            "reference_population": (
-                "Direct bilateral reference population"
-            ),
-            "hs_year_reference_available": (
-                "HS × year UV reference available"
-            ),
-            "uv_distance_available": (
-                "Selected UV distance available"
-            ),
-            "hard_eligible": (
-                "Mechanically eligible for training evaluation"
-            ),
-        }
-
-        training_sample_summary_display = (
-            training_sample_summary.copy()
-        )
-
-        training_sample_summary_display[
-            "Population"
-        ] = training_sample_summary_display[
-            "criterion"
-        ].map(
-            training_summary_labels
-        )
-
-        training_sample_summary_display[
-            "Rows"
-        ] = training_sample_summary_display[
-            "n_rows"
-        ].map(
-            _format_integer
-        )
-
-        training_sample_summary_display[
-            "Share of Validation rows"
-        ] = training_sample_summary_display[
-            "share_of_all"
-        ].map(
-            _format_percent
-        )
-
-        training_sample_summary_display = (
-            training_sample_summary_display[
-                [
-                    "Population",
-                    "Rows",
-                    "Share of Validation rows",
-                ]
-            ]
-        )
-
-        zero_support_products = (
-            pre_training_reference_product_coverage[
-                pre_training_reference_product_coverage[
-                    "value"
-                ].eq(0)
-            ]
-            .copy()
-        )
-
-        def _quantile_label(
-            value: float,
-        ) -> str:
-
-            return (
-                f"P{100 * float(value):g}"
-            )
-
-
-        training_distribution_rows = []
-
-        for label, frame in (
-            (
-                "Selected UV log distance",
-                training_uv_distance,
-            ),
-            (
-                "HS × year reference support",
-                training_reference_support,
-            ),
-            (
-                "HS × year UV log MAD",
-                training_uv_dispersion,
-            ),
-            (
-                "Selected UV distance / HS × year log MAD",
-                training_normalized_uv_distance,
-            ),
-        ):
-
-            for row in frame.itertuples(
-                index=False
-            ):
-                training_distribution_rows.append(
-                    {
-                        "Evidence": label,
-                        "Quantile": _quantile_label(
-                            row.quantile
-                        ),
-                        "Value": _format_number(
-                            row.value,
-                            digits=4,
-                        ),
-                    }
-                )
-
-        training_distribution_display = (
-            pd.DataFrame(
-                training_distribution_rows
-            )
-        )
-
-        training_normalized_uv_distance_display = (
-            training_normalized_uv_distance[
-                [
-                    "quantile",
-                    "value",
-                ]
-            ].copy()
-        )
-
-        training_normalized_uv_distance_display["Quantile"] = (
-            training_normalized_uv_distance_display["quantile"]
-            .map(_quantile_label)
-        )
-
-        training_normalized_uv_distance_display["Distance (MAD)"] = (
-            training_normalized_uv_distance_display["value"]
-            .map(
-                lambda value: _format_number(
-                    value,
-                    digits=4,
-                )
-            )
-        )
-
-        training_normalized_uv_distance_display = (
-            training_normalized_uv_distance_display[
-                [
-                    "Quantile",
-                    "Distance (MAD)",
-                ]
-            ]
-        )
-        training_uv_dispersion_display = training_uv_dispersion[
-            [
-                "quantile",
-                "value",
-            ]
-        ].copy()
-
-        training_uv_dispersion_display["Quantile"] = (
-            training_uv_dispersion_display["quantile"]
-            .map(_quantile_label)
-        )
-
-        training_uv_dispersion_display["Log-UV MAD"] = (
-            training_uv_dispersion_display["value"]
-            .map(
-                lambda value: _format_number(
-                    value,
-                    digits=4,
-                )
-            )
-        )
-
-        training_uv_dispersion_display[
-            "Multiplicative dispersion"
-        ] = (
-            training_uv_dispersion_display["value"]
-            .map(
-                lambda value: (
-                    f"{math.exp(float(value)):.2f}×"
-                )
-            )
-        )
-        training_uv_dispersion_display = (
-            training_uv_dispersion_display[
-                [
-                    "Quantile",
-                    "Log-UV MAD",
-                    "Multiplicative dispersion",
-                ]
-            ]
-        )
-        training_reference_support_display = training_reference_support[
-            [
-                "quantile",
-                "value",
-            ]
-        ].copy()
-
-        training_reference_support_display["Quantile"] = (
-            training_reference_support_display["quantile"]
-            .map(_quantile_label)
-        )
-
-        training_reference_support_display["Reference observations"] = (
-            training_reference_support_display["value"]
-            .map(_format_integer)
-        )
-
-        training_reference_support_display = (
-            training_reference_support_display[
-                [
-                    "Quantile",
-                    "Reference observations",
-                ]
-            ]
-        )
-        training_uv_distance_display = training_uv_distance[
-            [
-                "quantile",
-                "value",
-            ]
-        ].copy()
-
-        training_uv_distance_display["Quantile"] = (
-            training_uv_distance_display["quantile"]
-            .map(_quantile_label)
-        )
-
-        training_uv_distance_display["Log distance"] = (
-            training_uv_distance_display["value"]
-            .map(
-                lambda value: _format_number(
-                    value,
-                    digits=4,
-                )
-            )
-        )
-
-        training_uv_distance_display["Factor from reference"] = (
-            training_uv_distance_display["value"]
-            .map(
-                lambda value: f"{math.exp(float(value)):.2f}×"
-            )
-        )
-
-        training_uv_distance_display = (
-            training_uv_distance_display[
-                [
-                    "Quantile",
-                    "Log distance",
-                    "Factor from reference",
-                ]
-            ]
-        )
-
-        training_cfg = cfg.model.training_sample
-
-        min_reference_n = int(
-            training_cfg.min_hs_year_reference_observations
-        )
-
-        max_uv_distance = float(
-            training_cfg.max_normalized_uv_distance_mad
-        )
-
-        max_mirror_quantity_disagreement = float(
-            training_cfg.max_mirror_quantity_disagreement
-        )
-
-        candidate_training_rule_display = pd.DataFrame(
-            [
-                {
-                    "Criterion": (
-                        "Reference eligible"
-                        f" + mirror disagreement ≤ "
-                        f"{100.0 * max_mirror_quantity_disagreement:g}%"
-                        f" + support ≥ {min_reference_n}"
-                        f" + normalized UV distance ≤ "
-                        f"{max_uv_distance:g} MAD"                    
-                        ),
-                    "Rows": _format_integer(
-                        training_candidate_final_rule.iloc[0]["n_rows"]
-                    ),
-                    "Share of evaluable reference rows": _format_percent(
-                        training_candidate_final_rule.iloc[0]["share_of_parent"]
-                    ),
-                    "Share of all Validation rows": _format_percent(
-                        training_candidate_final_rule.iloc[0]["share_of_all"]
-                    ),
-                }
-            ]
-        )
-        # ============================================================
-        # Normalized UV cutoff sensitivity
-        # ============================================================
-
-        reference_cutoffs = (
-            training_normalized_uv_cutoffs[
-                training_normalized_uv_cutoffs[
-                    "criterion"
-                ].eq(
-                    "reference_population"
-                )
-            ]
-            .copy()
-            .sort_values(
-                "uv_distance_threshold"
-            )
-        )
-
-        hard_cutoffs = (
-            training_normalized_uv_cutoffs[
-                training_normalized_uv_cutoffs[
-                    "criterion"
-                ].eq(
-                    "hard_eligible_population"
-                )
-            ]
-            .copy()
-            .sort_values(
-                "uv_distance_threshold"
-            )
-        )
-
-
-        normalized_cutoff_display = (
-            reference_cutoffs[
-                [
-                    "uv_distance_threshold",
-                    "n_rows",
-                    "share_of_parent",
-                ]
-            ]
-            .rename(
-                columns={
-                    "n_rows": (
-                        "reference_rows"
-                    ),
-                    "share_of_parent": (
-                        "reference_share"
-                    ),
-                }
-            )
-            .merge(
-                hard_cutoffs[
-                    [
-                        "uv_distance_threshold",
-                        "n_rows",
-                        "share_of_parent",
-                    ]
-                ].rename(
-                    columns={
-                        "n_rows": (
-                            "hard_rows"
-                        ),
-                        "share_of_parent": (
-                            "hard_share"
-                        ),
-                    }
-                ),
-                on="uv_distance_threshold",
-                how="outer",
-                validate="one_to_one",
-            )
-            .sort_values(
-                "uv_distance_threshold"
-            )
-        )
-
-
-        normalized_cutoff_display = pd.DataFrame(
+        model_performance_display = pd.DataFrame(
             {
-                "Maximum normalized UV distance": (
-                    normalized_cutoff_display[
-                        "uv_distance_threshold"
-                    ].map(
-                        lambda value: (
-                            f"≤ {float(value):g} MAD"
-                        )
-                    )
+                "Model": model_pivot["model_name"].astype(str),
+                "MAE log": model_pivot["mae_log"],
+                "Median absolute log error": (
+                    model_pivot["median_absolute_log_error"]
                 ),
-
-                "Direct bilateral reference rows": (
-                    normalized_cutoff_display[
-                        "reference_rows"
-                    ].map(
-                        _format_integer
-                    )
-                ),
-
-                "Share of evaluable reference rows": (
-                    normalized_cutoff_display[
-                        "reference_share"
-                    ].map(
-                        _format_percent
-                    )
-                ),
-
-                "All hard-eligible rows": (
-                    normalized_cutoff_display[
-                        "hard_rows"
-                    ].map(
-                        _format_integer
-                    )
-                ),
-
-                "Share of evaluable hard-eligible rows": (
-                    normalized_cutoff_display[
-                        "hard_share"
-                    ].map(
-                        _format_percent
-                    )
-                ),
+                "RMSE log": model_pivot["rmse_log"],
             }
-        )
-        # ==============================================================
-        # Quantity availability by reporting side
-        # ==============================================================
+        ).sort_values("MAE log")
 
-        quantity_availability = _scope_frame(
-            diagnostics,
-            "quantity_availability",
-        )
-
-        if quantity_availability.empty:
-            raise RuntimeError(
-                "No quantity-availability diagnostics are available."
-            )
-
-        quantity_availability_order = [
-            "both",
-            "export_only",
-            "import_only",
-            "neither",
-        ]
-
-        quantity_availability_labels = {
-            "both": (
-                "Both exporter and importer quantities available"
-            ),
-            "export_only": (
-                "Exporter quantity only"
-            ),
-            "import_only": (
-                "Importer quantity only"
-            ),
-            "neither": (
-                "Neither exporter nor importer quantity available"
-            ),
-        }
-
-        quantity_availability["order"] = (
-            quantity_availability[
-                "criterion"
-            ].map(
-                {
-                    criterion: index
-                    for index, criterion
-                    in enumerate(
-                        quantity_availability_order
-                    )
-                }
-            )
-        )
-
-        quantity_availability = (
-            quantity_availability[
-                quantity_availability[
-                    "criterion"
-                ].isin(
-                    quantity_availability_order
-                )
-            ]
-            .sort_values("order")
-            .reset_index(drop=True)
-        )
-
-        if len(quantity_availability) != 4:
-            raise RuntimeError(
-                "Quantity-availability diagnostics must contain "
-                "exactly four mutually exclusive categories."
-            )
-
-        n_quantity_availability_rows = int(
-            quantity_availability[
-                "n_rows"
-            ].sum()
-        )
-
-        if n_quantity_availability_rows != n_rows:
-            raise RuntimeError(
-                "Quantity-availability categories do not sum to "
-                "the full Validation population."
-            )
-
-        quantity_availability_display = pd.DataFrame(
-            {
-                "Quantity availability": (
-                    quantity_availability[
-                        "criterion"
-                    ].map(
-                        quantity_availability_labels
-                    )
-                ),
-                "Rows": (
-                    quantity_availability[
-                        "n_rows"
-                    ].map(
-                        _format_integer
-                    )
-                ),
-                "Share of all Validation rows": (
-                    quantity_availability[
-                        "share_of_all"
-                    ].map(
-                        _format_percent
-                    )
-                ),
-            }
-        )
-
-
-        quantity_availability_counts = {
-            str(row.criterion): int(row.n_rows)
-            for row in quantity_availability.itertuples(
-                index=False
-            )
-        }
-
-        n_quantity_both = (
-            quantity_availability_counts["both"]
-        )
-
-        n_quantity_export_only = (
-            quantity_availability_counts[
-                "export_only"
-            ]
-        )
-
-        n_quantity_import_only = (
-            quantity_availability_counts[
-                "import_only"
-            ]
-        )
-
-        n_quantity_neither = (
-            quantity_availability_counts["neither"]
-        )
-
-        n_quantity_any = (
-            n_quantity_both
-            + n_quantity_export_only
-            + n_quantity_import_only
-        )
-
-        quantity_any_share = (
-            n_quantity_any / n_rows
-            if n_rows > 0
-            else 0.0
-        )
-
-        quantity_bilateral_share = (
-            n_quantity_both / n_rows
-            if n_rows > 0
-            else 0.0
-        )
-
-
-        # ==============================================================
-        # Training-population funnel
-        # ==============================================================
-
-        funnel = _scope_frame(
-            diagnostics,
-            "population_funnel",
-        )
-
-        funnel_order = [
-            "all_rows",
-            "both_quantities_available",
-            "both_quantities_non_estimated",
-            "both_observed_with_disagreement",
-            "both_observed_with_uv_distance",
-            "complete_training_evidence",
-        ]
-
-        funnel_labels = {
-            "all_rows": "All Validation rows",
-            "both_quantities_available": (
-                "Bilateral quantity observation"
-            ),
-            "both_quantities_non_estimated": (
-                "Direct bilateral quantity observations"
-            ),
-            "both_observed_with_disagreement": (
-                "Direct bilateral observations with exporter–importer quantity difference available"
-            ),
-            "both_observed_with_uv_distance": (
-                "Direct bilateral observations with unit-value distance available"
-            ),
-            "complete_training_evidence": (
-                "Direct bilateral observations with all candidate-selection diagnostics available"
-            ),
-        }
-
-        funnel["order"] = funnel[
-            "criterion"
-        ].map(
-            {
-                criterion: index
-                for index, criterion
-                in enumerate(funnel_order)
-            }
-        )
-
-        funnel = (
-            funnel[
-                funnel["criterion"].isin(
-                    funnel_order
-                )
-            ]
-            .sort_values("order")
-            .reset_index(drop=True)
-        )
-
-        funnel_display = pd.DataFrame(
-            {
-                "Population": funnel[
-                    "criterion"
-                ].map(
-                    funnel_labels
-                ),
-                "Rows": funnel[
-                    "n_rows"
-                ].map(
-                    _format_integer
-                ),
-                "Share of all": funnel[
-                    "share_of_all"
-                ].map(
-                    _format_percent
-                ),
-                "Share of parent (previous group)": funnel[
-                    "share_of_parent"
-                ].map(
-                    _format_percent
-                ),
-            }
-        )
-
-        # ==============================================================
-        # Threshold sensitivity
-        # ==============================================================
-
-        sensitivity = _scope_frame(
-            diagnostics,
-            "threshold_sensitivity",
-        )
-
-        sensitivity_rows: list[
-            dict[str, Any]
-        ] = []
-
-        for row in sensitivity.itertuples(
-            index=False
-        ):
-
-            criterion = str(
-                row.criterion
-            )
-
-            if (
-                criterion
-                == "quantity_relative_difference"
-            ):
-                threshold_label = (
-                    f"≤ "
-                    f"{100.0 * float(row.disagreement_threshold):.0f}%"
-                )
-
-                evidence_label = (
-                    "Mirror quantity disagreement"
-                )
-
-            elif (
-                criterion
-                == "unit_value_reference_observations"
-            ):
-                threshold_label = (
-                    f"≥ "
-                    f"{int(row.uv_support_threshold):,}"
-                )
-
-                evidence_label = (
-                    "Product-year UV support"
-                )
-
-            elif (
-                criterion
-                == "bilateral_max_unit_value_log_distance"
-            ):
-                threshold_label = (
-                    f"≤ "
-                    f"{float(row.uv_distance_threshold):g}"
-                )
-
-                evidence_label = (
-                    "Worst-side reporter UV distance"
-                )
-
-            else:
-                threshold_label = "—"
-                evidence_label = criterion
-
-            sensitivity_rows.append(
-                {
-                    "Evidence": evidence_label,
-                    "Threshold": threshold_label,
-                    "Rows": _format_integer(
-                        row.n_rows
-                    ),
-                    "Share of direct bilateral observations": (
-                        _format_percent(
-                            row.share_of_parent
-                        )
-                    ),
-                }
-            )
-
-        sensitivity_display = pd.DataFrame(
-            sensitivity_rows
-        )
-
-        # ==============================================================
-        # Joint threshold grid
-        # ==============================================================
-
-        threshold_grid = _scope_frame(
-            diagnostics,
-            "threshold_grid",
-        )
-
-        threshold_grid = threshold_grid[
-            [
-                "disagreement_threshold",
-                "uv_support_threshold",
-                "uv_distance_threshold",
-                "n_rows",
-                "share_of_parent",
-            ]
-        ].copy()
-
-        threshold_grid = threshold_grid.sort_values(
-            [
-                "disagreement_threshold",
-                "uv_support_threshold",
-                "uv_distance_threshold",
-            ]
-        )
-
-        threshold_grid_display = pd.DataFrame(
-            {
-                "Maximum Mirror quantity disagreement": (
-                    threshold_grid[
-                        "disagreement_threshold"
-                    ].map(
-                        lambda value: (
-                            f"≤ {100.0 * float(value):.0f}%"
-                        )
-                    )
-                ),
-                "Minimum Product-year UV support": (
-                    threshold_grid[
-                        "uv_support_threshold"
-                    ].map(
-                        lambda value: (
-                            f"{int(value):,}"
-                        )
-                    )
-                ),
-                "Maximum Worst-side reporter UV distance": (
-                    threshold_grid[
-                        "uv_distance_threshold"
-                    ].map(
-                        lambda value: (
-                            f"{float(value):g}"
-                        )
-                    )
-                ),
-                "Candidate rows": (
-                    threshold_grid[
-                        "n_rows"
-                    ].map(
-                        _format_integer
-                    )
-                ),
-                "Share of direct bilateral observations": (
-                    threshold_grid[
-                        "share_of_parent"
-                    ].map(
-                        _format_percent
-                    )
-                ),
-            }
-        )
-
-        evidence_matrix = _scope_frame(
-            diagnostics,
-            "evidence_matrix",
-        )
-
-        evidence_matrix = evidence_matrix[
-            [
-                "disagreement_band",
-                "uv_distance_band",
-                "n_rows",
-                "share_of_parent",
-            ]
-        ].copy()
-
-        evidence_matrix = evidence_matrix.sort_values(
-            [
-                "disagreement_band",
-                "uv_distance_band",
-            ]
-        )
-
-        evidence_matrix_display = pd.DataFrame(
-            {
-                "Mirror agreement": (
-                    evidence_matrix[
-                        "disagreement_band"
-                    ]
-                ),
-                "Bilateral UV plausibility": (
-                    evidence_matrix[
-                        "uv_distance_band"
-                    ]
-                ),
-                "Rows": (
-                    evidence_matrix[
-                        "n_rows"
-                    ].map(
-                        _format_integer
-                    )
-                ),
-                "Share of direct bilateral observations": (
-                    evidence_matrix[
-                        "share_of_parent"
-                    ].map(
-                        _format_percent
-                    )
-                ),
-            }
-        )
-
-        # ==============================================================
-        # Year coverage
-        # ==============================================================
-
-        year_coverage = _scope_frame(
-            diagnostics,
-            "year_coverage",
-        ).sort_values(
-            "year"
-        )
-
-        for column in (
-            "median_quantity_difference_vs_import",
-            "median_absolute_quantity_difference_vs_import",
-            "exporter_higher_share",
-        ):
-            if column not in year_coverage.columns:
-                year_coverage[column] = None
-
-        year_display = pd.DataFrame(
-            {
-                "Year": (
-                    year_coverage[
-                        "year"
-                    ].astype(
-                        "Int64"
-                    )
-                ),
-                "All rows": (
-                    year_coverage[
-                        "total_rows"
-                    ].map(
-                        _format_integer
-                    )
-                ),
-                "Direct bilateral quantity rows": (
-                    year_coverage[
-                        "n_rows"
-                    ].map(
-                        _format_integer
-                    )
-                ),
-                "Share": (
-                    year_coverage[
-                        "share_of_all"
-                    ].map(
-                        _format_percent
-                    )
-                ),
-                "Median Mirror quantity disagreement": (
-                    year_coverage[
-                        "median_quantity_relative_difference"
-                    ].map(
-                        _format_percent
-                    )
-                ),
-                "Median Worst-side reporter UV distance": (
-                    year_coverage[
-                        "median_worst_side_uv_log_distance"
-                    ].map(
-                        lambda value: (
-                            _format_number(
-                                value,
-                                digits=3,
-                            )
-                        )
-                    )
-                ),
-                "Median Product-year UV support": (
-                    year_coverage[
-                        "median_uv_reference_observations"
-                    ].map(
-                        _format_integer
-                    )
-                ),
-
-                "Median exporter difference vs importer": (
-                    year_coverage[
-                        "median_quantity_difference_vs_import"
-                    ].map(
-                        _format_percent
-                    )
-                ),
-
-                "Median absolute difference vs importer": (
-                    year_coverage[
-                        "median_absolute_quantity_difference_vs_import"
-                    ].map(
-                        _format_percent
-                    )
-                ),
-
-                "Exporter quantity higher": (
-                    year_coverage[
-                        "exporter_higher_share"
-                    ].map(
-                        _format_percent
-                    )
-                ),
-            }
-        )
-
-        # ==============================================================
-        # Product coverage summary
-        # ==============================================================
-
-        product_coverage = _scope_frame(
-            diagnostics,
-            "product_coverage",
-        )
-
-        n_products = int(
-            len(
-                product_coverage
-            )
-        )
-
-        n_products_with_direct_evidence = int(
-            (
-                product_coverage["n_rows"]
-                > 0
-            ).sum()
-        )
-
-        median_product_direct_share = (
-            float(
-                product_coverage[
-                    "share_of_all"
-                ].median()
-            )
-            if not product_coverage.empty
-            else None
-        )
-
-        product_rows = product_coverage[
-            [
-                "target_cmd",
-                "total_rows",
-                "n_rows",
-                "share_of_all",
-                "median_quantity_relative_difference",
-                "median_worst_side_uv_log_distance",
-            ]
-        ].copy()
-
-        product_rows = product_rows.sort_values(
-            [
-                "n_rows",
-                "target_cmd",
-            ],
-            ascending=[
-                False,
-                True,
-            ],
-        )
-
-        product_display = product_rows.head(
-            20
-        ).copy()
-
-        product_display["total_rows"] = (
-            product_display[
-                "total_rows"
-            ].map(
-                _format_integer
-            )
-        )
-
-        product_display["n_rows"] = (
-            product_display[
-                "n_rows"
-            ].map(
-                _format_integer
-            )
-        )
-
-        product_display["share_of_all"] = (
-            product_display[
-                "share_of_all"
-            ].map(
-                _format_percent
-            )
-        )
-
-        product_display[
-            "median_quantity_relative_difference"
-        ] = (
-            product_display[
-                "median_quantity_relative_difference"
-            ].map(
-                _format_percent
-            )
-        )
-
-        product_display[
-            "median_worst_side_uv_log_distance"
-        ] = (
-            product_display[
-                "median_worst_side_uv_log_distance"
-            ].map(
-                lambda value: (
-                    _format_number(
-                        value,
-                        digits=3,
-                    )
-                )
-            )
-        )
-
-        product_display = product_display.rename(
-            columns={
-                "target_cmd": "HS code",
-                "total_rows": "All rows",
-                "n_rows": (
-                    "Direct bilateral quantity rows"
-                ),
-                "share_of_all": "Direct share",
-                "median_quantity_relative_difference": (
-                    "Median Mirror quantity disagreement"
-                ),
-                "median_worst_side_uv_log_distance": (
-                    "Median Worst-side reporter UV distance"
-                ),
-            }
-        )
-
-        # ==============================================================
-        # Distribution diagnostics
-        # ==============================================================
-
-        distribution = _scope_frame(
-            diagnostics,
-            "distribution",
-        )
-
-        distribution_labels = {
-            "quantity_relative_difference": (
-                "Mirror quantity disagreement"
-            ),
-            "quantity_difference_vs_import": (
-                "Exporter quantity relative to importer"
-            ),
-            "quantity_absolute_difference_vs_import": (
-                "Absolute exporter quantity difference relative to importer"
-            ),
-            "bilateral_max_unit_value_log_distance": (
-                "Worst-side reporter UV distance"
-            ),
-            "unit_value_reference_observations": (
-                "Product-year UV support"
-            ),
-        }
-
-        distribution_display = (
-            distribution[
-                [
-                    "variable",
-                    "quantile",
-                    "value",
-                ]
-            ]
-            .copy()
-        )
-
-        distribution_display[
-            "variable"
-        ] = (
-            distribution_display[
-                "variable"
-            ].map(
-                distribution_labels
-            )
-        )
-
-        distribution_display[
-            "quantile"
-        ] = (
-            distribution_display[
-                "quantile"
-            ].map(
-                lambda value: (
-                    f"P{int(round(100 * float(value)))}"
-                )
-            )
-        )
-
-        percentage_distribution_variables = {
-            "Mirror quantity disagreement",
-            "Exporter quantity relative to importer",
-            "Absolute exporter quantity difference relative to importer",
-        }
-
-        distribution_display[
-            "value"
-        ] = (
-            distribution_display.apply(
-                lambda row: (
-                    _format_percent(
-                        row["value"]
-                    )
-                    if row["variable"]
-                    in percentage_distribution_variables
-                    else _format_number(
-                        row["value"],
-                        digits=3,
-                    )
-                ),
-                axis=1,
-            )
-        )
-
-        distribution_display = (
-            distribution_display
-            .pivot(
-                index="variable",
-                columns="quantile",
-                values="value",
-            )
-            .reset_index()
-            .rename(
-                columns={
-                    "variable": "Evidence"
-                }
-            )
-        )
-
-        percentile_order = [
-            "P1",
-            "P5",
-            "P10",
-            "P25",
-            "P50",
-            "P75",
-            "P90",
-            "P95",
-            "P99",
-        ]
-
-        distribution_display = distribution_display[
-            [
-                "Evidence",
-                *percentile_order,
-            ]
-        ]
-
-        mirror_disagreement_p75 = "NA"
-        mirror_p75_series = distribution_display.loc[
-            distribution_display["Evidence"].eq(
-                "Mirror quantity disagreement"
-            ),
-            "P75",
-        ]
-        if not mirror_p75_series.empty:
-            mirror_disagreement_p75 = str(
-                mirror_p75_series.iloc[0]
-            )
-
-        # ==============================================================
-        # Current population totals
-        # ==============================================================
-
-        funnel_lookup = {
-            row.criterion: int(
-                row.n_rows
-            )
-            for row in funnel.itertuples(
-                index=False
-            )
-        }
-
-
-        n_both_quantities = funnel_lookup.get(
-            "both_quantities_available",
-            0,
-        )
-
-        n_both_observed = funnel_lookup.get(
-            "both_quantities_non_estimated",
-            0,
-        )
-
-        n_complete_training_evidence = (
-            funnel_lookup.get(
-                "complete_training_evidence",
-                0,
-            )
-        )
-
-        # ==============================================================
-        # Fixed quantity-candidate comparison
-        # ==============================================================
-
-        candidate_summary = _scope_frame(
-            diagnostics,
-            "quantity_candidate_summary",
-        )
-
-        candidate_by_disagreement = _scope_frame(
-            diagnostics,
-            "quantity_candidate_by_disagreement",
-        )
-
-        candidate_closest = _scope_frame(
-            diagnostics,
-            "quantity_candidate_closest_reference",
-        )
-
-        candidate_by_year = _scope_frame(
-            diagnostics,
-            "quantity_candidate_by_year",
-        )
-
-        candidate_by_product = _scope_frame(
-            diagnostics,
-            "quantity_candidate_by_product",
-        )
-
-        candidate_spread = _scope_frame(
-            diagnostics,
-            "quantity_candidate_spread",
-        )
-
-        candidate_conditioned_summary = _scope_frame(
-            diagnostics,
-            "quantity_candidate_conditioned_summary",
-        )
-
-        candidate_conditioned_by_disagreement = _scope_frame(
-            diagnostics,
-            "quantity_candidate_conditioned_by_disagreement",
-        )
-
-        candidate_closest_conditioned = _scope_frame(
-            diagnostics,
-            "quantity_candidate_closest_conditioned",
-        )
-
-        candidate_scopes = {
-            "quantity_candidate_summary": candidate_summary,
-            "quantity_candidate_by_disagreement": candidate_by_disagreement,
-            "quantity_candidate_closest_reference": candidate_closest,
-            "quantity_candidate_by_year": candidate_by_year,
-            "quantity_candidate_by_product": candidate_by_product,
-            "quantity_candidate_spread": candidate_spread,
-            "quantity_candidate_conditioned_summary": candidate_conditioned_summary,
-            "quantity_candidate_conditioned_by_disagreement": candidate_conditioned_by_disagreement,
-            "quantity_candidate_closest_conditioned": candidate_closest_conditioned,
-        }
-
-        missing_candidate_scopes = [
-            scope
-            for scope, frame in candidate_scopes.items()
-            if frame.empty
-        ]
-
-        if missing_candidate_scopes:
-            raise RuntimeError(
-                "Validation quantity-candidate diagnostics are incomplete: "
-                + ", ".join(missing_candidate_scopes)
-            )
-
-        # ==============================================================
-        # Quantity-conditioned candidate comparison
-        # ==============================================================
-
-        candidate_order = [
-            "simple_mean",
-            "value_weighted",
-            "quantity_reliability_weighted",
-        ]
-
-        candidate_labels = {
-            "simple_mean": "Simple mean",
-            "value_weighted": "Value-weighted",
-            "quantity_reliability_weighted": "Quantity-reliability-weighted",
-            "tie": "Tie",
-        }
-
-        conditioned_summary_display = (
-            candidate_conditioned_summary
-            .pivot_table(
-                index="candidate",
-                columns="variable",
-                values="value",
-                aggfunc="first",
-            )
-            .reset_index()
-            .rename(
-                columns={
-                    "candidate": "Candidate",
-                    "median_conditioned_uv_abs_residual": "Median residual",
-                    "p90_conditioned_uv_abs_residual": "P90 residual",
-                    "p95_conditioned_uv_abs_residual": "P95 residual",
-                }
-            )
-        )
-        conditioned_summary_display["Candidate"] = (
-            conditioned_summary_display["Candidate"]
-            .map(candidate_labels)
-            .fillna(conditioned_summary_display["Candidate"])
-        )
-
-        conditioned_disagreement_display = (
-            candidate_conditioned_by_disagreement
-            .pivot_table(
-                index=["disagreement_band", "candidate"],
-                columns="variable",
-                values="value",
-                aggfunc="first",
-            )
-            .reset_index()
-            .rename(
-                columns={
-                    "disagreement_band": "Mirror disagreement",
-                    "candidate": "Candidate",
-                    "median_conditioned_uv_abs_residual": "Median residual",
-                    "p90_conditioned_uv_abs_residual": "P90 residual",
-                    "p95_conditioned_uv_abs_residual": "P95 residual",
-                }
-            )
-        )
-
-        conditioned_disagreement_display["_band_order"] = (
-            conditioned_disagreement_display["Mirror disagreement"]
-            .map(lambda value: _disagreement_band_order(value)[0])
-        )
-
-        conditioned_disagreement_display["_candidate_order"] = (
-            conditioned_disagreement_display["Candidate"].map(
-                {
-                    value: index
-                    for index, value in enumerate(candidate_order)
-                }
-            )
-        )
-
-        conditioned_disagreement_display = (
-            conditioned_disagreement_display
-            .sort_values(
-                [
-                    "_band_order",
-                    "_candidate_order",
-                ]
-            )
-            .drop(
-                columns=[
-                    "_band_order",
-                    "_candidate_order",
-                ]
-            )
-        )
-
-
-        conditioned_disagreement_display["Candidate"] = (
-            conditioned_disagreement_display["Candidate"]
-            .map(candidate_labels)
-            .fillna(conditioned_disagreement_display["Candidate"])
-        )
-
-        conditioned_closest_display = candidate_closest_conditioned[[
-            "candidate", "n_rows", "value"
-        ]].copy()
-        conditioned_closest_display["candidate"] = (
-            conditioned_closest_display["candidate"]
-            .map(candidate_labels)
-            .fillna(conditioned_closest_display["candidate"])
-        )
-        conditioned_closest_display["value"] = conditioned_closest_display[
-            "value"
-        ].apply(_format_percent)
-        conditioned_closest_display = conditioned_closest_display.rename(
-            columns={
-                "candidate": "Closest candidate",
-                "n_rows": "Rows",
-                "value": "Share",
-            }
-        )
-        candidate_summary_wide = (
-            candidate_summary
-            .pivot_table(
-                index="candidate",
-                columns="variable",
-                values="value",
-                aggfunc="first",
-            )
-            .reindex(candidate_order)
-        )
-
-        candidate_counts = (
-            candidate_summary
-            .groupby("candidate", as_index=True)
-            .agg(
-                n_rows=("n_rows", "max"),
-                n_candidate_uv_rows=("n_candidate_uv_rows", "max"),
-            )
-            .reindex(candidate_order)
-        )
-
-        candidate_summary_display = (
-            candidate_counts
-            .join(candidate_summary_wide)
-            .reset_index()
-            .rename(
-                columns={
-                    "candidate": "Candidate",
-                    "n_rows": "Available rows",
-                    "n_candidate_uv_rows": "Rows with UV distance",
-                    "median_uv_log_distance": "Median UV distance",
-                    "p90_uv_log_distance": "P90 UV distance",
-                    "p95_uv_log_distance": "P95 UV distance",
-                    "p99_uv_log_distance": "P99 UV distance",
-                    "median_export_log_gap": "Median log-gap to exporter",
-                    "median_import_log_gap": "Median log-gap to importer",
-                }
-            )
-        )
-
-        candidate_summary_display["Candidate"] = (
-            candidate_summary_display["Candidate"].map(_candidate_label)
-        )
-
-        for column in (
-            "Available rows",
-            "Rows with UV distance",
-        ):
-            candidate_summary_display[column] = (
-                candidate_summary_display[column].map(_format_integer)
-            )
-
-        for column in (
-            "Median UV distance",
-            "P90 UV distance",
-            "P95 UV distance",
-            "P99 UV distance",
-            "Median log-gap to exporter",
-            "Median log-gap to importer",
-        ):
-            candidate_summary_display[column] = (
-                candidate_summary_display[column]
-                .map(lambda value: _format_number(value, digits=4))
-            )
-
-        disagreement_display = candidate_by_disagreement[
-            candidate_by_disagreement["variable"].isin(
-                [
-                    "median_uv_log_distance",
-                    "p90_uv_log_distance",
-                    "p95_uv_log_distance",
-                ]
-            )
-        ].copy()
-
-        disagreement_display = (
-            disagreement_display
-            .pivot_table(
-                index=["disagreement_band", "candidate"],
-                columns="variable",
-                values="value",
-                aggfunc="first",
-            )
-            .reset_index()
-            .rename(
-                columns={
-                    "disagreement_band": "Mirror disagreement",
-                    "candidate": "Candidate",
-                    "median_uv_log_distance": "Median UV distance",
-                    "p90_uv_log_distance": "P90 UV distance",
-                    "p95_uv_log_distance": "P95 UV distance",
-                }
-            )
-        )
-
-        disagreement_display["_band_order"] = (
-            disagreement_display["Mirror disagreement"]
-            .map(lambda value: _disagreement_band_order(value)[0])
-        )
-        disagreement_display["_candidate_order"] = (
-            disagreement_display["Candidate"].map(
-                {value: index for index, value in enumerate(candidate_order)}
-            )
-        )
-        disagreement_display = (
-            disagreement_display
-            .sort_values(["_band_order", "_candidate_order"])
-            .drop(columns=["_band_order", "_candidate_order"])
-        )
-        disagreement_display["Candidate"] = (
-            disagreement_display["Candidate"].map(_candidate_label)
-        )
-
-        for column in (
-            "Median UV distance",
-            "P90 UV distance",
-            "P95 UV distance",
-        ):
-            disagreement_display[column] = (
-                disagreement_display[column]
-                .map(lambda value: _format_number(value, digits=4))
-            )
-
-        closest_order = [
-            "simple_mean",
-            "value_weighted",
-            "quantity_reliability_weighted",
-            "tie",
-        ]
-
-        closest_display = candidate_closest[
-            ["candidate", "n_rows", "value"]
-        ].copy()
-        closest_display["_order"] = closest_display["candidate"].map(
-            {value: index for index, value in enumerate(closest_order)}
-        )
-        closest_display = (
-            closest_display
-            .sort_values("_order")
-            .drop(columns="_order")
-            .rename(
-                columns={
-                    "candidate": "Closest candidate",
-                    "n_rows": "Rows",
-                    "value": "Share",
-                }
-            )
-        )
-        closest_display["Closest candidate"] = (
-            closest_display["Closest candidate"].map(_candidate_label)
-        )
-        closest_display["Rows"] = closest_display["Rows"].map(
-            _format_integer
-        )
-        closest_display["Share"] = closest_display["Share"].map(
-            _format_percent
-        )
-
-        spread_display = (
-            candidate_spread
-            .pivot_table(
-                index="disagreement_band",
-                columns="variable",
-                values="value",
-                aggfunc="first",
-            )
-            .reset_index()
-            .rename(
-                columns={
-                    "disagreement_band": "Mirror disagreement",
-                    "median_relative_candidate_spread": "Median candidate spread",
-                    "p95_relative_candidate_spread": "P95 candidate spread",
-                }
-            )
-        )
-        spread_display["_order"] = spread_display[
-            "Mirror disagreement"
-        ].map(lambda value: _disagreement_band_order(value)[0])
-        spread_display = (
-            spread_display.sort_values("_order").drop(columns="_order")
-        )
-        for column in (
-            "Median candidate spread",
-            "P95 candidate spread",
-        ):
-            spread_display[column] = spread_display[column].map(
-                _format_percent
-            )
-
-        candidate_year_display = candidate_by_year[
-            candidate_by_year["variable"].eq("median_uv_log_distance")
-        ].copy()
-        candidate_year_display = (
-            candidate_year_display
-            .pivot_table(
-                index="year",
-                columns="candidate",
-                values="value",
-                aggfunc="first",
-            )
-            .reset_index()
-            .rename(
-                columns={
-                    "year": "Year",
-                    "simple_mean": "Simple mean",
-                    "value_weighted": "Value-weighted",
-                    "quantity_reliability_weighted": (
-                        "Quantity-reliability-weighted"
-                    ),
-                }
-            )
-        )
-        candidate_year_display["Year"] = (
-            pd.to_numeric(
-                candidate_year_display["Year"],
-                errors="coerce",
-            )
-            .astype("Int64")
-        )
-        for column in (
-            "Simple mean",
-            "Value-weighted",
-            "Quantity-reliability-weighted",
-        ):
-            if column in candidate_year_display.columns:
-                candidate_year_display[column] = (
-                    candidate_year_display[column]
-                    .map(lambda value: _format_number(value, digits=4))
-                )
-
-        candidate_product_display = candidate_by_product[
-            candidate_by_product["variable"].eq("median_uv_log_distance")
-        ][
-            ["target_cmd", "candidate", "n_rows", "value"]
-        ].copy()
-        candidate_product_display = candidate_product_display.rename(
-            columns={
-                "target_cmd": "HS product",
-                "candidate": "Candidate",
-                "n_rows": "Rows",
-                "value": "Median UV distance",
-            }
-        )
-        candidate_product_display["Candidate"] = (
-            candidate_product_display["Candidate"].map(_candidate_label)
-        )
-        candidate_product_display["Rows"] = (
-            candidate_product_display["Rows"].map(_format_integer)
-        )
-        candidate_product_display["Median UV distance"] = (
-            candidate_product_display["Median UV distance"]
-            .map(lambda value: _format_number(value, digits=4))
-        )
-
-        # ==============================================================
+        # ============================================================== 
         # Figures
-        # ==============================================================
-
+        # ============================================================== 
         figure_paths = _build_validation_figure_paths(
             figure_dir=figure_dir,
             target_hs=cfg.scope.target_hs,
         )
 
+        _plot_source_quantity_availability(
+            diagnostics=diagnostics,
+            output_path=figure_paths[
+                "source_quantity_availability"
+            ],
+        )
+        _plot_source_disagreement_bands(
+            diagnostics=diagnostics,
+            output_path=figure_paths[
+                "source_quantity_disagreement"
+            ],
+        )
         _plot_training_population_funnel(
             diagnostics=diagnostics,
             output_path=figure_paths[
                 "training_population_funnel"
             ],
         )
-
-        _plot_pre_training_reference_support_comparison(
+        _plot_normalized_uv_cutoff_sensitivity(
             diagnostics=diagnostics,
             output_path=figure_paths[
-                "pre_training_reference_support_comparison"
+                "normalized_uv_cutoff_sensitivity"
             ],
+            configured_cutoff=max_normalized_uv_distance_mad,
         )
-        _plot_training_evidence_by_year(
+        _plot_training_coverage_by_year(
             diagnostics=diagnostics,
             output_path=figure_paths[
-                "training_evidence_by_year"
+                "training_coverage_by_year"
             ],
         )
-
-        _plot_training_evidence_distributions(
-            diagnostics=diagnostics,
-            output_path=figure_paths[
-                "training_evidence_distributions"
-            ],
-        )
-        _plot_training_uv_distance_distribution(
-            diagnostics=diagnostics,
-            output_path=figure_paths[
-                "training_uv_distance_distribution"
-            ],
-        )
-        _plot_training_reference_support_distribution(
-            diagnostics=diagnostics,
-            output_path=figure_paths[
-                "training_reference_support_distribution"
-            ],
-        )
-
-        _plot_training_uv_dispersion_distribution(
-            diagnostics=diagnostics,
-            output_path=figure_paths[
-                "training_uv_dispersion_distribution"
-            ],
-        )
-
-        _plot_training_normalized_uv_distance_distribution(
-            diagnostics=diagnostics,
-            output_path=figure_paths[
-                "training_normalized_uv_distance_distribution"
-            ],
-        )
-        _plot_export_import_quantity_ratio_distribution(
-            diagnostics=diagnostics,
-            output_path=figure_paths[
-                "export_import_quantity_ratio_distribution"
-            ],
-        )
-
-        _plot_mirror_disagreement_retention(
-            diagnostics=diagnostics,
-            output_path=figure_paths[
-                "mirror_disagreement_retention"
-            ],
-            configured_cutoff=(
-                max_mirror_quantity_disagreement
-            ),
-        )
-        
-        _plot_quantity_uv_slope_distribution(
-            diagnostics=diagnostics,
-            output_path=figure_paths[
-                "quantity_uv_slope_distribution"
-            ],
-        )
-
-        _plot_quantity_uv_r_squared_distribution(
-            diagnostics=diagnostics,
-            output_path=figure_paths[
-                "quantity_uv_r_squared_distribution"
-            ],
-        )
-
-        _plot_quantity_candidate_uv_summary(
-            diagnostics=diagnostics,
-            output_path=figure_paths[
-                "quantity_candidate_uv_summary"
-            ],
-        )
-
-        _plot_quantity_candidate_by_disagreement(
-            diagnostics=diagnostics,
-            output_path=figure_paths[
-                "quantity_candidate_by_disagreement"
-            ],
-            scale="log",
-        )
-
-        _plot_quantity_candidate_by_disagreement(
-            diagnostics=diagnostics,
-            output_path=figure_paths[
-                "quantity_candidate_by_disagreement_factor"
-            ],
-            scale="factor",
-        )
-
-        _plot_quantity_candidate_closest_reference(
-            diagnostics=diagnostics,
-            output_path=figure_paths[
-                "quantity_candidate_closest_reference"
-            ],
-        )
-
-        _plot_quantity_candidate_by_year(
-            diagnostics=diagnostics,
-            output_path=figure_paths[
-                "quantity_candidate_by_year"
-            ],
-        )
-
-        _plot_quantity_candidate_product_distribution(
-            diagnostics=diagnostics,
-            output_path=figure_paths[
-                "quantity_candidate_product_distribution"
-            ],
-        )
-
-        _plot_quantity_candidate_spread(
-            diagnostics=diagnostics,
-            output_path=figure_paths[
-                "quantity_candidate_spread"
-            ],
-        )
-
-        _plot_quantity_candidate_conditioned_summary(
-            diagnostics=diagnostics,
-            output_path=figure_paths[
-                "quantity_candidate_conditioned_summary"
-            ],
-        )
-
-        _plot_quantity_candidate_conditioned_by_disagreement(
-            diagnostics=diagnostics,
-            output_path=figure_paths[
-                "quantity_candidate_conditioned_by_disagreement"
-            ],
-        )
-
-        _plot_quantity_candidate_closest_conditioned(
-            diagnostics=diagnostics,
-            output_path=figure_paths[
-                "quantity_candidate_closest_conditioned"
-            ],
-        )
-
         _plot_model_performance_by_year(
             diagnostics=diagnostics,
             output_path=figure_paths[
@@ -5308,1981 +1328,279 @@ def build_validation_report(
             ],
         )
 
-        _plot_mirror_cutoff_tradeoff(
-            diagnostics=diagnostics,
-            output_path=figure_paths[
-                "mirror_cutoff_tradeoff"
-            ],
-            configured_cutoff=(
-                max_mirror_quantity_disagreement
-            ),
-        )
-        # ==============================================================
-        # Current methodological status
-        # ==============================================================
-
-        training_selection_enabled = bool(
-            cfg.diagnostics.selection.enabled
-        )
-
-        if training_selection_enabled:
-            training_status = (
-                "A final candidate-training selection is configured."
-            )
-        else:
-            training_status = (
-                "No final training population has "
-                "been selected yet. The current diagnostics are intended "
-                "to support that decision before model fitting."
-            )
-
-
-        # ==============================================================
-        # Mirror agreement × bilateral UV plausibility
-        # ==============================================================
-
-        evidence_matrix = _scope_frame(
-            diagnostics,
-            "evidence_matrix",
-        )
-
-        if evidence_matrix.empty:
-            raise RuntimeError(
-                "Validation evidence-matrix diagnostics are unavailable."
-            )
-
-        matrix_display = (
-            evidence_matrix
-            .pivot_table(
-                index="disagreement_band",
-                columns="uv_distance_band",
-                values="n_rows",
-                aggfunc="sum",
-                fill_value=0,
-            )
-        )
-
-        matrix_display = matrix_display.map(
-            _format_integer
-        )
-
-        matrix_display.index.name = (
-            "Mirror quantity disagreement"
-        )
-
-
-        # ==============================================================
-        # Side-specific unit-value plausibility
-        # ==============================================================
-
-        side_plausibility = _scope_frame(
-            diagnostics,
-            "side_plausibility",
-        )
-
-        if side_plausibility.empty:
-            raise RuntimeError(
-                "Validation side-plausibility diagnostics are unavailable."
-            )
-
-        side_plausibility_display = (
-            side_plausibility
-            .pivot_table(
-                index="disagreement_band",
-                columns="variable",
-                values="value",
-                aggfunc="first",
-            )
-            .reset_index()
-        )
-
-        side_plausibility_display = (
-            side_plausibility_display.rename(
-                columns={
-                    "disagreement_band": (
-                        "Mirror quantity disagreement"
-                    ),
-
-                    "median_export_uv_distance": (
-                        "Median Exporter UV distance"
-                    ),
-
-                    "median_import_uv_distance": (
-                        "Median Importer UV distance"
-                    ),
-
-                    "median_bilateral_max_uv_distance": (
-                        "Median Worst-side reporter UV distance"
-                    ),
-
-                    "both_within_025_share": (
-                        "Both within 0.25"
-                    ),
-
-                    "both_within_050_share": (
-                        "Both within 0.50"
-                    ),
-
-                    "both_within_100_share": (
-                        "Both within 1.00"
-                    ),
-                }
-            )
-        )
-
-        for column in (
-            "Both within 0.25",
-            "Both within 0.50",
-            "Both within 1.00",
-        ):
-            side_plausibility_display[
-                column
-            ] = side_plausibility_display[
-                column
-            ].map(
-                _format_percent
-            )
-
-        # ==============================================================
-        # Importer-referenced quantity comparison
-        # ==============================================================
-
-        importer_reference = _scope_frame(
-            diagnostics,
-            "importer_reference",
-        )
-
-        if importer_reference.empty:
-            raise RuntimeError(
-                "Importer-reference quantity diagnostics are unavailable."
-            )
-
-        importer_reference_lookup = {
-            str(row.variable): (
-                float(row.value)
-                if pd.notna(row.value)
-                else None
-            )
-            for row in importer_reference.itertuples(
-                index=False
-            )
-        }
-
-        n_importer_reference_rows = int(
-            importer_reference["n_rows"].max()
-        )
-
-        mean_difference_vs_import = (
-            importer_reference_lookup.get(
-                "mean_quantity_difference_vs_import"
-            )
-        )
-
-        median_difference_vs_import = (
-            importer_reference_lookup.get(
-                "median_quantity_difference_vs_import"
-            )
-        )
-
-        median_absolute_difference_vs_import = (
-            importer_reference_lookup.get(
-                "median_absolute_quantity_difference_vs_import"
-            )
-        )
-
-        exporter_higher_share = (
-            importer_reference_lookup.get(
-                "exporter_quantity_higher_share"
-            )
-        )
-
-        importer_higher_share = (
-            importer_reference_lookup.get(
-                "importer_quantity_higher_share"
-            )
-        )
-
-        exact_agreement_share = (
-            importer_reference_lookup.get(
-                "exact_quantity_agreement_share"
-            )
-        )
-
-        importer_reference_display = pd.DataFrame(
-            [
-                {
-                    "Measure": (
-                        "Comparable directly observed bilateral rows"
-                    ),
-                    "Result": _format_integer(
-                        n_importer_reference_rows
-                    ),
-                },
-                {
-                    "Measure": (
-                        "Mean exporter difference relative to importer"
-                    ),
-                    "Result": _format_percent(
-                        mean_difference_vs_import
-                    ),
-                },
-                {
-                    "Measure": (
-                        "Median exporter difference relative to importer"
-                    ),
-                    "Result": _format_percent(
-                        median_difference_vs_import
-                    ),
-                },
-                {
-                    "Measure": (
-                        "Median absolute difference relative to importer"
-                    ),
-                    "Result": _format_percent(
-                        median_absolute_difference_vs_import
-                    ),
-                },
-                {
-                    "Measure": (
-                        "Exporter quantity larger than importer"
-                    ),
-                    "Result": _format_percent(
-                        exporter_higher_share
-                    ),
-                },
-                {
-                    "Measure": (
-                        "Importer quantity larger than exporter"
-                    ),
-                    "Result": _format_percent(
-                        importer_higher_share
-                    ),
-                },
-                {
-                    "Measure": (
-                        "Exact exporter-importer agreement"
-                    ),
-                    "Result": _format_percent(
-                        exact_agreement_share
-                    ),
-                },
-            ]
-        )
-
-        # ==============================================================
-        # Diagnostics
-        # ============================================================
-
-        common_reference_start_year = (
-            get_common_reference_start_year(
-                cfg.scope.min_year
-            )
-        )
-
-        support_band_labels = {
-            "no_support": "No support",
-            "1_4": "1–4",
-            "5_9": "5–9",
-            "10_29": "10–29",
-            "30_plus": "≥30",
-        }
-
-        pre_training_support_bands_display = (
-            pre_training_reference_support_bands[
-                [
-                    "criterion",
-                    "candidate",
-                    "n_rows",
-                    "share_of_parent",
-                ]
-            ]
-            .copy()
-        )
-
-        pre_training_support_bands_display[
-            "Support band"
-        ] = (
-            pre_training_support_bands_display[
-                "candidate"
-            ].map(
-                support_band_labels
-            )
-        )
-
-        pre_training_support_bands_display[
-            "Window"
-        ] = (
-            pre_training_support_bands_display[
-                "criterion"
-            ]
-        )
-
-        pre_training_support_bands_display[
-            "HS × year groups"
-        ] = (
-            pre_training_support_bands_display[
-                "n_rows"
-            ].map(
-                _format_integer
-            )
-        )
-
-        pre_training_support_bands_display[
-            "Share"
-        ] = (
-            pre_training_support_bands_display[
-                "share_of_parent"
-            ].map(
-                _format_percent
-            )
-        )
-
-        pre_training_support_bands_display = (
-            pre_training_support_bands_display[
-                [
-                    "Window",
-                    "Support band",
-                    "HS × year groups",
-                    "Share",
-                ]
-            ]
-        )
-
-
-        pre_training_worst_display = (
-            pre_training_reference_worst[
-                [
-                    "criterion",
-                    "year",
-                    "target_cmd",
-                    "value",
-                ]
-            ]
-            .copy()
-        )
-
-        pre_training_worst_display = (
-            pre_training_worst_display.rename(
-                columns={
-                    "criterion": "Window",
-                    "year": "Year",
-                    "target_cmd": "HS product",
-                    "value": "Reference observations",
-                }
-            )
-        )
-
-        pre_training_worst_display["Year"] = (pre_training_worst_display["Year"].map(_format_integer))
-
-        pre_training_worst_display["Reference observations"] = (pre_training_worst_display["Reference observations"].map(_format_integer))
-
-
-        # --------------------------------------------------------------
-        # HS products with zero reference support across all years
-        # --------------------------------------------------------------
-
-        pre_training_zero_support_products = (
-            pre_training_reference_product_coverage[
-                pre_training_reference_product_coverage[
-                    "value"
-                ].eq(0)
-            ]
-            .copy()
-        )
-
-        pre_training_zero_support_products_display = (
-            pre_training_zero_support_products[
-                [
-                    "criterion",
-                    "target_cmd",
-                    "n_rows",
-                    "total_rows",
-                    "value",
-                ]
-            ]
-            .copy()
-        )
-
-        pre_training_zero_support_products_display = (
-            pre_training_zero_support_products_display.rename(
-                columns={
-                    "criterion": "Window",
-                    "target_cmd": "HS product",
-                    "n_rows": "Years present",
-                    "total_rows": "Years with reference",
-                    "value": "Total reference support",
-                }
-            )
-        )
-
-        pre_training_zero_support_products_display[
-            "Years present"
-        ] = (
-            pre_training_zero_support_products_display[
-                "Years present"
-            ].map(
-                _format_integer
-            )
-        )
-
-        pre_training_zero_support_products_display[
-            "Years with reference"
-        ] = (
-            pre_training_zero_support_products_display[
-                "Years with reference"
-            ].map(
-                _format_integer
-            )
-        )
-
-        pre_training_zero_support_products_display[
-            "Total reference support"
-        ] = (
-            pre_training_zero_support_products_display[
-                "Total reference support"
-            ].map(
-                _format_integer
-            )
-        )
-
-        pre_training_zero_support_products_display = (
-            pre_training_zero_support_products_display.sort_values(
-                [
-                    "Window",
-                    "HS product",
-                ]
-            )
-            .reset_index(
-                drop=True
-            )
-        )
-        pre_training_availability_display = (
-            pre_training_reference_availability[
-                [
-                    "criterion",
-                    "candidate",
-                    "n_rows",
-                    "share_of_parent",
-                ]
-            ]
-            .copy()
-        )
-
-        pre_training_availability_display[
-            "Window"
-        ] = (
-            pre_training_availability_display[
-                "criterion"
-            ]
-        )
-
-        pre_training_availability_display[
-            "Status"
-        ] = (
-            pre_training_availability_display[
-                "candidate"
-            ].map(
-                {
-                    "all_groups": "All groups",
-                    "reference_available": "Reference available",
-                    "reference_missing": "No reference",
-                }
-            )
-        )
-
-        pre_training_availability_display[
-            "HS × year groups"
-        ] = (
-            pre_training_availability_display[
-                "n_rows"
-            ].map(
-                _format_integer
-            )
-        )
-
-        pre_training_availability_display[
-            "Share"
-        ] = (
-            pre_training_availability_display[
-                "share_of_parent"
-            ].map(
-                _format_percent
-            )
-        )
-
-        pre_training_availability_display = (
-            pre_training_availability_display[
-                [
-                    "Window",
-                    "Status",
-                    "HS × year groups",
-                    "Share",
-                ]
-            ]
-        )
-
-        stability_rows = []
-
-        for label, frame in (
-            (
-                "Reference median",
-                pre_training_reference_median_shift,
-            ),
-            (
-                "Reference MAD",
-                pre_training_reference_mad_shift,
-            ),
-        ):
-
-            for row in frame.itertuples(
-                index=False
-            ):
-
-                stability_rows.append(
-                    {
-                        "Measure": label,
-                        "Comparison": row.criterion,
-                        "Quantile": (
-                            f"P{100 * float(row.quantile):g}"
-                        ),
-                        "Absolute log shift": (
-                            _format_number(
-                                row.value,
-                                digits=4,
-                            )
-                        ),
-                    }
-                )
-
-        pre_training_stability_display = (
-            pd.DataFrame(
-                stability_rows
-            )
-        )
-        # ==============================================================
-        # Quantity Candidate
-        # ==============================================================
-
-        quantity_selection = _scope_frame(
-            diagnostics,
-            "quantity_selection",
-        )
-
-        if len(quantity_selection) != 1:
-            raise RuntimeError(
-                "Validation diagnostics must contain exactly one "
-                "selected quantity methodology."
-            )
-
-        selected_candidate = str(
-            quantity_selection.iloc[0]["candidate"]
-        )
-
-        selected_candidate_label = _candidate_label(
-            selected_candidate
-        )
-
-        mirror_band_quality = _scope_frame(
-            diagnostics,
-            "mirror_disagreement_band_quality",
-        )
-
-        summary = (
-            mirror_band_quality.pivot_table(
-                index=[
-                    "disagreement_threshold",
-                    "disagreement_band",
-                ],
-                columns="variable",
-                values="value",
-                aggfunc="first",
-            )
-            .reset_index()
-            .sort_values(
-                "disagreement_threshold"
-            )
-            .reset_index(drop=True)
-        )
-        # ==============================================================
-        # Quantity–UV relationship
-        # ==============================================================
-
-        quantity_uv_relationship = _scope_frame(
-            diagnostics,
-            "quantity_uv_relationship",
-        )
-
-        quantity_uv_summary = _scope_frame(
-            diagnostics,
-            "quantity_uv_summary",
-        )
-
-        if quantity_uv_relationship.empty:
-            raise RuntimeError(
-                "Quantity–UV relationship diagnostics are unavailable."
-            )
-
-        if quantity_uv_summary.empty:
-            raise RuntimeError(
-                "Quantity–UV summary diagnostics are unavailable."
-            )
-        
-        quantity_uv_summary_lookup = {
-            str(row.variable): (
-                float(row.value)
-                if pd.notna(row.value)
-                else None
-            )
-            for row in quantity_uv_summary.itertuples(
-                index=False
-            )
-        }
-
-
-        n_quantity_uv_groups = int(
-            quantity_uv_summary_lookup[
-                "n_product_year_groups"
-            ]
-        )
-
-        median_quantity_uv_slope = (
-            quantity_uv_summary_lookup[
-                "median_log_uv_quantity_slope"
-            ]
-        )
-
-        p25_quantity_uv_slope = (
-            quantity_uv_summary_lookup[
-                "p25_log_uv_quantity_slope"
-            ]
-        )
-
-        p75_quantity_uv_slope = (
-            quantity_uv_summary_lookup[
-                "p75_log_uv_quantity_slope"
-            ]
-        )
-
-        negative_quantity_uv_share = (
-            quantity_uv_summary_lookup[
-                "negative_slope_share"
-            ]
-        )
-
-        median_quantity_uv_r2 = (
-            quantity_uv_summary_lookup[
-                "median_log_uv_quantity_r2"
-            ]
-        )
-
-        quantity_uv_summary_display = pd.DataFrame(
-            [
-                {
-                    "Measure": (
-                        "HS × year groups with at least 30 observations"
-                    ),
-                    "Result": _format_integer(
-                        n_quantity_uv_groups
-                    ),
-                },
-                {
-                    "Measure": (
-                        "Median quantity–UV slope"
-                    ),
-                    "Result": _format_number(
-                        median_quantity_uv_slope,
-                        digits=3,
-                    ),
-                },
-                {
-                    "Measure": (
-                        "25th percentile slope"
-                    ),
-                    "Result": _format_number(
-                        p25_quantity_uv_slope,
-                        digits=3,
-                    ),
-                },
-                {
-                    "Measure": (
-                        "75th percentile slope"
-                    ),
-                    "Result": _format_number(
-                        p75_quantity_uv_slope,
-                        digits=3,
-                    ),
-                },
-                {
-                    "Measure": (
-                        "Groups with negative slope"
-                    ),
-                    "Result": _format_percent(
-                        negative_quantity_uv_share
-                    ),
-                },
-                {
-                    "Measure": (
-                        "Median R²"
-                    ),
-                    "Result": _format_number(
-                        median_quantity_uv_r2,
-                        digits=3,
-                    ),
-                },
-            ]
-        )
-
-        ### LOG
-        training_cfg = cfg.model.training_sample
-        validation_cfg = cfg.model.validation
-
-        reference_before = int(
-            training_cfg.reference_year_window.before
-        )
-
-        reference_after = int(
-            training_cfg.reference_year_window.after
-        )
-
-        min_reference_n = int(
-            training_cfg.min_hs_year_reference_observations
-        )
-
-        max_uv_distance = float(
-            training_cfg.max_normalized_uv_distance_mad
-        )
-
-        max_mirror_quantity_disagreement = float(
-            training_cfg.max_mirror_quantity_disagreement
-        )
-
-        require_reference_eligible = bool(
-            training_cfg.require_reference_eligible
-        )
-
-        require_positive_uv_mad = bool(
-            training_cfg.require_positive_uv_mad
-        )
-
+        # ============================================================== 
+        # Report narrative
+        # ============================================================== 
         validation_strategy = str(
-            validation_cfg.strategy
+            cfg.model.validation.strategy
         )
-
         minimum_training_years = int(
-            validation_cfg.minimum_training_years
+            cfg.model.validation.minimum_training_years
         )
-
-        enabled_model_names = list(
-            cfg.model.models.enabled().keys()
-        )
-
-        configured_years = list(
-            range(
-                int(cfg.scope.min_year),
-                int(cfg.scope.max_year) + 1,
-            )
-        )
-
-        training_definition = (
-            f"refwin_{reference_before}_{reference_after}"
-            f"_n{min_reference_n}"
-            f"_uv{max_uv_distance:g}"
-            f"_qd{max_mirror_quantity_disagreement:g}"
-        ).replace(".", "p")
 
         if validation_strategy == "expanding_window":
-            configured_validation_years = (
-                configured_years[
-                    minimum_training_years:
-                ]
+            validation_description = (
+                "Candidate models are evaluated using expanding-window "
+                "validation. Each validation year is predicted using only "
+                "earlier training years, with at least "
+                f"{minimum_training_years} preceding training years required "
+                "before the first validation fold."
+            )
+            performance_image_alt = (
+                "Expanding-window model performance"
             )
         else:
-            configured_validation_years = []
-
-        ## Training Evidence Audit
-        training_rule_parts = []
-
-        if require_reference_eligible:
-            training_rule_parts.append(
-                "reference-eligible bilateral observations"
+            validation_description = (
+                "Candidate models are evaluated using the configured "
+                f"`{validation_strategy}` validation strategy."
+            )
+            performance_image_alt = (
+                "Model performance by validation year"
             )
 
-        training_rule_parts.append(
-            (
-                "mirror quantity disagreement "
-                f"≤ {100.0 * max_mirror_quantity_disagreement:g}%"
-            )
-        )
-
-        training_rule_parts.append(
-            (
-                "minimum HS × year reference support observations "
-                f"{min_reference_n}"
-            )
-        )
-
-        if require_positive_uv_mad:
-            training_rule_parts.append(
-                "positive HS × year log-UV MAD"
-            )
-
-        training_rule_parts.append(
-            (
-                "normalized selected-unit-value distance "
-                f"≤ {max_uv_distance:g} MAD"
-            )
-        )
-
-        if training_evidence_by_product_audit.empty:
-            raise RuntimeError(
-                "Training Evidence Audit product diagnostics are unavailable."
-            )
-
-        if "reference_eligible_rows" not in (
-            training_evidence_by_product_audit.columns
-        ):
-            training_evidence_by_product_audit[
-                "reference_eligible_rows"
-            ] = 0
-
-        n_audit_validation_rows = int(
-            training_evidence_by_product_audit[
-                "total_rows"
-            ].sum()
-        )
-
-        n_audit_reference_eligible_rows = int(
-            training_evidence_by_product_audit[
-                "reference_eligible_rows"
-            ].sum()
-        )
-
-        n_audit_training_rows = int(
-            training_evidence_by_product_audit[
-                "n_rows"
-            ].sum()
-        )
-
-        n_audit_products = int(
-            training_evidence_by_product_audit[
-                "target_cmd"
-            ].nunique()
-        )
-
-        n_audit_seen_products = int(
-            training_evidence_by_product_audit[
-                "criterion"
-            ].eq("seen").sum()
-        )
-
-        n_audit_unseen_products = int(
-            training_evidence_by_product_audit[
-                "criterion"
-            ].eq("unseen").sum()
-        )
-        
-        training_evidence_summary_display = pd.DataFrame(
-            [
-                {
-                    "Measure": "Validation rows",
-                    "Result": _format_integer(
-                        n_audit_validation_rows
-                    ),
-                },
-                {
-                    "Measure": "Reference-eligible rows",
-                    "Result": _format_integer(
-                        n_audit_reference_eligible_rows
-                    ),
-                },
-                {
-                    "Measure": "Training-selected rows",
-                    "Result": _format_integer(
-                        n_audit_training_rows
-                    ),
-                },
-                {
-                    "Measure": "HS products in Validation",
-                    "Result": _format_integer(
-                        n_audit_products
-                    ),
-                },
-                {
-                    "Measure": "HS products seen in training",
-                    "Result": _format_integer(
-                        n_audit_seen_products
-                    ),
-                },
-                {
-                    "Measure": "HS products unseen in training",
-                    "Result": _format_integer(
-                        n_audit_unseen_products
-                    ),
-                },
-            ]
-        )
-
-        training_unseen_products_display = (
-            training_evidence_by_product_audit[
-                training_evidence_by_product_audit[
-                    "criterion"
-                ].eq("unseen")
-            ]
-            [
-                [
-                    "target_cmd",
-                    "total_rows",
-                    "reference_eligible_rows",
-                    "validation_years",
-                    "training_years",
-                ]
-            ]
-            .copy()
-        )
-
-        training_unseen_products_display = (
-            training_unseen_products_display.rename(
-                columns={
-                    "target_cmd": "HS product",
-                    "total_rows": "Validation rows",
-                    "reference_eligible_rows": (
-                        "Reference-eligible rows"
-                    ),
-                    "validation_years": "Validation years",
-                    "training_years": "Training years",
-                }
-            )
-        )
-
-        for column in (
-            "Validation rows",
-            "Reference-eligible rows",
-            "Validation years",
-            "Training years",
-        ):
-            training_unseen_products_display[column] = (
-                training_unseen_products_display[column]
-                .map(_format_integer)
-            )
-
-        training_evidence_year_display = (
-            training_evidence_by_year_audit[
-                [
-                    "year",
-                    "total_rows",
-                    "reference_eligible_rows",
-                    "n_rows",
-                    "training_products",
-                ]
-            ]
-            .copy()
-            .rename(
-                columns={
-                    "year": "Year",
-                    "total_rows": "Validation rows",
-                    "reference_eligible_rows": (
-                        "Reference-eligible rows"
-                    ),
-                    "n_rows": "Training rows",
-                    "training_products": (
-                        "HS products in training"
-                    ),
-                }
-            )
-        )
-
-
-        training_evidence_year_display[
-            "Training share of Validation"
-        ] = (
-            training_evidence_by_year_audit[
-                "n_rows"
-            ]
-            / training_evidence_by_year_audit[
-                "total_rows"
-            ]
-        )
-
-        training_evidence_year_display[
-            "Training share of reference eligible"
-        ] = (
-            training_evidence_by_year_audit[
-                "n_rows"
-            ]
-            / training_evidence_by_year_audit[
-                "reference_eligible_rows"
-            ]
-        )
-
-        training_evidence_year_display["Year"] = (
-            pd.to_numeric(
-                training_evidence_year_display["Year"],
-                errors="coerce",
-            ).astype("Int64")
-        )
-
-        for column in (
-            "Validation rows",
-            "Reference-eligible rows",
-            "Training rows",
-            "HS products in training",
-        ):
-            training_evidence_year_display[column] = (
-                training_evidence_year_display[column]
-                .map(_format_integer)
-            )
-
-        for column in (
-            "Training share of Validation",
-            "Training share of reference eligible",
-        ):
-            training_evidence_year_display[column] = (
-                training_evidence_year_display[column]
-                .map(_format_percent)
-            )
-
-        selected_quantity_column = (f"quantity_{selected_candidate}_kg")
-
-        # ==============================================================
-        # Report
-        # ==============================================================
         lines = [
             (
-                "# VACODA Validation Decision Report — "
-                f"{cfg.scope.target_hs.upper()}"
+                "# VACODA Validation Model-Development Report — "
+                f"{str(cfg.scope.target_hs).upper()}"
             ),
-            "",
-            "__TOC__",
-            "",
-
-            # ==========================================================
-            # 1. Validation Input
-            # ==========================================================
             "",
             "## 1. Run overview",
             "",
-            f"- **Run ID:** `{run_id}`",
-            f"- **Target HS:** `{cfg.scope.target_hs.upper()}`",
             (
-                f"- **Configured year range:** "
-                f"{cfg.scope.min_year}–{cfg.scope.max_year}"
-            ),
-            "- **Training sample criteria:**",
-            f"  - Training definition: `{training_definition}`",
-            (
-                f"  - Reference-year window: `before={reference_before}, "
-                f"after={reference_after}`"
-            ),
-            (
-                f"  - Minimum HS × year reference observations: "
-                f"`{min_reference_n}`"
-            ),
-            (
-                f"  - Maximum normalized UV distance: "
-                f"`{max_uv_distance:g} MAD`"
-            ),
-            (
-                f"  - Require positive UV MAD: "
-                f"`{require_positive_uv_mad}`"
-            ),
-            (
-                f"  - Maximum mirror quantity disagreement: "
-                f"`{100.0 * max_mirror_quantity_disagreement:g}%`"
-            ),
-            (
-                f"  - Require reference eligible: "
-                f"`{require_reference_eligible}`"
-            ),
-            "- **Validation criteria:**",
-            f"  - Validation strategy: `{validation_strategy}`",
-            f"  - Minimum training years: `{minimum_training_years}`",
-            (
-                "  - Validation years: "
-                f"`{', '.join(str(year) for year in configured_validation_years)}`"
-            ),
-            "- **Enabled candidate models:**",
-            *[
-                f"  - `{name}`"
-                for name in enabled_model_names
-            ],
-            "- **Artifacts:**",
-            f"  - Prepared input: `{prepared_input_path}`",
-            f"  - Structural audit: `{structural_audit_path}`",
-            f"  - Diagnostics: `{diagnostics_path}`",
-            f"  - Figure directory: `{figure_dir}`",
-            f"  - Report: `{report_path}`",
-            "",
-            "## 2. Validation scope and terminology",
-            "### 2.1 Validation Scope",
-            "",
-            (
-                "The final VACODA Validation workflow assesses whether "
-                "the available bilateral quantity evidence is credible, "
-                "identifies observations that require further attention, "
-                "compares fixed reconciliation candidates, and ultimately determines whether missing or implausible "
-                "quantities can be reconstructed with sufficient evidence."
+                "This report summarizes the Validation evidence at the canonical "
+                "bilateral grain `(exporter, importer, year, HS product)`. "
+                "Reporter-side exporter/importer quantities are retained as "
+                "descriptive source diagnostics only; they do not define model-"
+                "training eligibility."
             ),
             "",
-            "### 2.2. Terminology",
-                        (
-                r"The following terminology is used throughout this section \(unless stated otherwise, "
-                r"\(p\) denotes the HS product, \(t\) the year, "
-                r"and \(i\) an individual trade observation within the corresponding "
-                            r"HS × year group\):"
+            f"- Run ID: `{run_id}`",
+            f"- Prepared input: `{prepared_input_path}`",
+            f"- Structural audit: `{structural_audit_path}`",
+            f"- Diagnostics: `{diagnostics_path}`",
+            "",
+            "## 2. Structural integrity",
+            "",
+            _markdown_table(structural_summary),
+            "",
+            "## 3. Canonical bilateral quantity methodology",
+            "",
+            (
+                "The quantity-selection stage has fixed one canonical bilateral "
+                "quantity methodology for downstream Validation. The current "
+                f"methodology is **{selected_candidate_label}**."
             ),
             "",
             (
-                "- **Mirror quantity disagreement** — the symmetric relative difference "
-                "between exporter- and importer-reported quantities. A value of `0%` means exact agreement. Larger values indicate greater disagreement."
+                "All subsequent unit-value, training-sample, and model-evaluation "
+                "diagnostics refer to this canonical selected quantity rather than "
+                "treating exporter or importer quantities as separate truth labels."
             ),
             "",
-            "$$",
-            r"d^{Q}_{p,t}"
-            r" = "
-            r"\frac{\left|Q^{E}_{p,t} - Q^{I}_{p,t}\right|}"
-            r"{\max\left(Q^{E}_{p,t}, Q^{I}_{p,t}\right)}",
-            "$$",
-            (
-                "- **Unit value (UV)** —  trade value per kilogram:"
-            ),
-            "",
-            "$$",
-            r"UV_{i,p,t}"
-            r" = "
-            r"\frac{V_{i,p,t}}{Q_{i,p,t}}",
-            "$$",
-            "",
+            "## 4. Source-reporter diagnostics",
             "",
             (
-                "- **Product-year UV reference** — the reference is the exponential of the median log unit value "
-                "across all valid exporter- and importer-implied unit values:"
+                "The following diagnostics describe the quantity evidence supplied "
+                "by the two reporting sides before reconciliation. They are retained "
+                "to characterize source-data quality and provenance only. **No "
+                "reporter-availability or mirror-disagreement threshold is used in "
+                "the model-training sample.**"
             ),
             "",
-            "$$",
-            r"UV^{\mathrm{ref}}_{p,t}"
-            r" = "
-            r"\exp\left("
-            r"\operatorname{median}_{i}"
-            r"\left[\log\left(UV_{i,p,t}\right)\right]"
-            r"\right)",
-            "$$",
+            "### 4.1. Quantity availability by reporting side",
             "",
-            (
-                "- **Product-year UV support** — the number of observations "
-                "supporting the product-year UV reference, where "
-                r"$\mathcal{I}_{p,t}$ "
-                "is the set of valid observations used to construct the `Product-year UV reference`."
-            ),
-            "",
-            "$$",
-            r"N^{\mathrm{ref}}_{p,t}"
-            r" = "
-            r"\left|\mathcal{I}_{p,t}\right|",
-            "$$",
-            "",
-            (
-                "- **UV distance** —  the absolute log-distance between an observation's "
-                "implied unit value and the `Product-year UV reference`. A value close to `0` means that the implied unit value is close "
-                "to the reference, whereas larger values indicate greater separation."
-            ),
-            "",
-            "$$",
-            r"D^{UV}_{i,p,t}"
-            r" = "
-            r"\left|"
-            r"\log\left(UV_{i,p,t}\right)"
-            r" - "
-            r"\log\left(UV^{\mathrm{ref}}_{p,t}\right)"
-            r"\right|",
-            "$$",
-            "",
-            (
-                "- **Exporter UV distance** and **Importer UV distance** — the "
-                "corresponding UV distances calculated separately using the exporter- "
-                "and importer-reported quantities:"
-            ),
-            "",
-            "$$",
-            r"D^{UV,E}_{p,t}"
-            r" = "
-            r"\left|"
-            r"\log\left(UV^{E}_{p,t}\right)"
-            r" - "
-            r"\log\left(UV^{\mathrm{ref}}_{p,t}\right)"
-            r"\right|",
-            "$$",
-            "",
-            "$$",
-            r"D^{UV,I}_{p,t}"
-            r" = "
-            r"\left|"
-            r"\log\left(UV^{I}_{p,t}\right)"
-            r" - "
-            r"\log\left(UV^{\mathrm{ref}}_{p,t}\right)"
-            r"\right|",
-            "$$",
-            "",
-            (
-                "- **Worst-side reporter UV distance** — the larger of the exporter "
-                "and importer UV distances. A small value therefore requires both "
-                "reporting sides to be close to the product-year UV reference:"
-            ),
-            "",
-            "$$",
-            r"D^{UV,\mathrm{worst}}_{p,t}"
-            r" = "
-            r"\max\left("
-            r"D^{UV,E}_{p,t}, "
-            r"D^{UV,I}_{p,t}"
-            r"\right)",
-            "$$",
-            "",
-            (
-                "- **Log-UV MAD (Median Absolute Deviation)** — robust within-group dispersion of log unit values "
-                "around the HS × year median log unit value, signifies the typical spread of unit values within one HS × year group:"
-            ),
-            "",
-            "$$",
-            r"MAD^{UV}_{p,t}"
-            r" = "
-            r"\operatorname{median}_{i}"
-            r"\left("
-            r"\left|"
-            r"\log(UV_{i,p,t})"
-            r" - "
-            r"\operatorname{median}_{j}"
-            r"\left[\log(UV_{j,p,t})\right]"
-            r"\right|"
-            r"\right)",
-            "$$",
-            "",
-            (
-                "- **Dispersion-normalized UV distance** — the absolute UV log distance "
-                "expressed relative to the natural within-group log-UV dispersion (A value of `1` means "
-                "that the observation lies one within-group MAD from the HS × year UV reference):"
-            ),
-            "",
-            "$$",
-            r"D^{UV,\mathrm{norm}}_{i,p,t}"
-            r" = "
-            r"\frac{D^{UV}_{i,p,t}}{MAD^{UV}_{p,t}}",
-            "$$",
-            "",
-
-            "## 3. Structural integrity",
-            "",
-            (
-                f"The prepared Validation dataset contains "
-                f"`{_format_integer(n_rows)}` observations across "
-                f"`{cfg.scope.min_year}–{cfg.scope.max_year}`."
-            ),
-            "",
-            _markdown_table(
-                structural_summary
-            ),
-            "",
-            (
-                "This audit is deliberately technical: it checks canonical grain, "
-                "required fields, scope and numeric validity. Economic plausibility "
-                "is evaluated in the later methodological sections."
-            ),
-            "",
-
-            "### 3.1. Quantity availability",
-            "",
-            (
-                "Validation first establishes which reporter-side quantities are "
-                "available before making any methodological choice."
-            ),
-            "",
-            _markdown_table(
-                quantity_availability_display
-            ),
-            "",
-            (
-                f"A usable quantity is available from at least one reporting side "
-                f"for `{_format_integer(n_quantity_any)}` observations "
-                f"(`{_format_percent(quantity_any_share)}` of all Validation rows)."
-            ),
-            "",
-            (
-                f"Both exporter and importer quantities are available for "
-                f"`{_format_integer(n_quantity_both)}` observations "
-                f"(`{_format_percent(quantity_bilateral_share)}` of all Validation rows)."
-            ),
-            "",
-
-            "### 3.2. Direct bilateral evidence",
-            "",
-            (
-                "The quantity-selection methodology is learned from direct bilateral "
-                "observations: rows where both exporter and importer quantities are "
-                "available and neither quantity is estimated."
-            ),
-            "",
-            _markdown_table(
-                funnel_display
-            ),
+            _markdown_table(source_availability_display),
             "",
             markdown_image(
-                "Candidate quantity-training population",
+                "Source-reporter quantity availability",
+                figure_paths["source_quantity_availability"],
+                document_path=report_path,
+                width=800,
+            ),
+            "",
+            "### 4.2. Exporter/importer disagreement",
+            "",
+            (
+                "Where both source quantities are available, the distribution below "
+                "shows how strongly they disagree. This is a diagnostic of the raw "
+                "reporting evidence, not a training-selection criterion."
+            ),
+            "",
+            _markdown_table(source_disagreement_display),
+            "",
+            markdown_image(
+                "Exporter/importer quantity disagreement bands",
+                figure_paths["source_quantity_disagreement"],
+                document_path=report_path,
+                width=800,
+            ),
+            "",
+            "## 5. HS × year unit-value reference",
+            "",
+            (
+                "For technically usable canonical bilateral observations, Validation "
+                "forms a robust HS × focal-year unit-value reference in log space. "
+                "The configured reference window pools the focal year with preceding "
+                "years only; the reference centre is the median log unit value and "
+                "dispersion is the median absolute deviation (MAD)."
+            ),
+            "",
+            "### 5.1. Reference-window comparison",
+            "",
+            (
+                "The table compares same-year, one-year-back, and two-year-back "
+                "causal reference windows. It is diagnostic evidence for the chosen "
+                "reference construction, not a separate training criterion."
+            ),
+            "",
+            _markdown_table(reference_window_display),
+            "",
+            "### 5.2. Current reference support",
+            "",
+            _markdown_table(support_distribution_display),
+            "",
+            "### 5.3. UV dispersion and normalized distance",
+            "",
+            (
+                "The selected unit-value distance is normalized by the HS × year "
+                "log-UV MAD so that deviations are interpreted relative to the "
+                "natural dispersion of each product/time group."
+            ),
+            "",
+            _markdown_table(uv_distribution_display),
+            "",
+            "## 6. Model-training sample",
+            "",
+            (
+                "The model-training sample is defined only from canonical bilateral "
+                "unit-value evidence. Reporter-side quantity agreement is not part "
+                "of this rule."
+            ),
+            "",
+            "### 6.1. Configured training rule",
+            "",
+            _markdown_table(training_rule_display),
+            "",
+            (
+                f"The resulting training sample contains **{_format_integer(n_training_selected)}** "
+                f"rows, or **{_format_percent(training_selected_share)}** of all "
+                "Validation rows."
+            ),
+            "",
+            "### 6.2. Population funnel",
+            "",
+            _markdown_table(training_funnel_display),
+            "",
+            markdown_image(
+                "Configured model-training population",
                 figure_paths["training_population_funnel"],
                 document_path=report_path,
+                width=850,
             ),
+            "",
+            "### 6.3. Normalized-UV cutoff sensitivity",
             "",
             (
-                f"This leaves `{_format_integer(n_both_observed)}` direct bilateral "
-                f"quantity observations, representing "
-                f"`{_format_percent(n_both_observed / n_rows)}` of all Validation rows."
+                "The cutoff sensitivity is retained to show how the final tail "
+                "restriction changes sample size. It does not reopen reporter-side "
+                "truth assumptions."
             ),
             "",
-            (
-                "For descriptive purposes, Validation also measures the direction "
-                "and magnitude of exporter/importer disagreement."
-            ),
-            "",
-            _markdown_table(
-                importer_reference_display
-            ),
+            _markdown_table(cutoff_sensitivity_display),
             "",
             markdown_image(
-                "Exporter/importer quantity ratio distribution",
-                figure_paths["export_import_quantity_ratio_distribution"],
+                "Normalized unit-value cutoff sensitivity",
+                figure_paths["normalized_uv_cutoff_sensitivity"],
                 document_path=report_path,
+                width=800,
             ),
             "",
-
-            "### 3.3. Evidence coverage",
+            "### 6.4. Training coverage by year",
             "",
-            (
-                "The following diagnostics show whether direct bilateral evidence is "
-                "distributed across the time horizon and across HS products."
-            ),
-            "",
-            _markdown_table(
-                year_display
-            ),
+            _markdown_table(training_year_display),
             "",
             markdown_image(
-                "Direct bilateral quantity evidence by year",
-                figure_paths["training_evidence_by_year"],
-                document_path=report_path,
-            ),
-            "",
-            _markdown_table(
-                product_display
-            ),
-            "",
-
-            # ==========================================================
-            # 4. Quantity–UV Relationship
-            # ==========================================================
-            # "## 4. Quantity–UV Relationship",
-            # "",
-            # (
-            #     "Unit value may vary systematically with trade quantity. Validation "
-            #     "therefore estimates this relationship before comparing the fixed "
-            #     "bilateral quantity candidates."
-            # ),
-            # "",
-            # (
-            #     "Only direct bilateral observations are used. To avoid declaring "
-            #     "either reporter quantity to be the true quantity, the relationship "
-            #     "is fitted using the symmetric bilateral quantity:"
-            # ),
-            # "",
-            # "$$",
-            # r"Q^{bilateral}_i="
-            # r"\sqrt{Q^{E}_iQ^{I}_i}",
-            # "$$",
-            # "",
-            # (
-            #     "The corresponding bilateral unit value is:"
-            # ),
-            # "",
-            # "$$",
-            # r"UV^{bilateral}_i="
-            # r"\frac{V_i}{Q^{bilateral}_i}",
-            # "$$",
-            # "",
-            # (
-            #     "For each sufficiently supported HS × year group, Validation fits:"
-            # ),
-            # "",
-            # "$$",
-            # r"\log(UV^{bilateral})="
-            # r"\alpha_{p,t}+\beta_{p,t}\log(Q^{bilateral})",
-            # "$$",
-            # "",
-            # (
-            #     "The coefficient β describes the quantity–UV relationship. "
-            #     "A negative β means that larger quantities tend to be associated "
-            #     "with lower unit values; β near zero indicates little systematic "
-            #     "relationship."
-            # ),
-            # "",
-            # (
-            #     "The summary below uses HS × year groups containing at least "
-            #     "30 direct bilateral observations."
-            # ),
-            # "",
-            # _markdown_table(
-            #     quantity_uv_summary_display
-            # ),
-            # "",
-            # markdown_image(
-            #     "Distribution of HS × year quantity–UV slopes",
-            #     figure_paths["quantity_uv_slope_distribution"],
-            #     document_path=report_path,
-            #     width=850,
-            # ),
-            # "",
-            # markdown_image(
-            #     "Distribution of HS × year quantity–UV R² values",
-            #     figure_paths["quantity_uv_r_squared_distribution"],
-            #     document_path=report_path,
-            #     width=850,
-            # ),
-            # "",
-
-            # ==========================================================
-            # 4. Quantity Selection
-            # ==========================================================
-            # "## 4. Quantity Selection",
-            # "",
-            # (
-            #     "Validation compares three fixed bilateral quantity candidates:"
-            # ),
-            # "",
-            # "- **Simple mean** — equal weight for exporter and importer quantities.",
-            # (
-            #     "- **Value-weighted** — uses the existing Trade Sync "
-            #     "value-reliability weights."
-            # ),
-            # (
-            #     "- **Quantity-reliability-weighted** — uses reliability estimated "
-            #     "from quantity mirror consistency."
-            # ),
-            # "",
-            # "### 4.1. Selection criterion",
-            # "",
-            # (
-            #     "The candidates are evaluated against the quantity–UV relationship "
-            #     "from Section 2 at each candidate's own quantity value. For candidate "
-            #     "Q, Validation calculates:"
-            # ),
-            # "",
-            # "$$",
-            # r"R^{cond}_i(Q)="
-            # r"\left|"
-            # r"\log\left(\frac{V_i}{Q}\right)"
-            # r"-"
-            # r"\left[\alpha_{p,t}+\beta_{p,t}\log(Q)\right]"
-            # r"\right|",
-            # "$$",
-            # "",
-            # (
-            #     "The selected methodology is the candidate with the smallest median "
-            #     "quantity-conditioned residual across the common directly observed "
-            #     "bilateral evaluation population. P95 and then P90 residuals are "
-            #     "used as deterministic tie-breakers."
-            # ),
-            # "",
-            # (
-            #     f"The selected bilateral quantity methodology is "
-            #     f"**{selected_candidate_label}**."
-            # ),
-            # "",
-            # _markdown_table(
-            #     conditioned_summary_display
-            # ),
-            # "",
-            # markdown_image(
-            #     "Quantity-conditioned UV plausibility by candidate",
-            #     figure_paths["quantity_candidate_conditioned_summary"],
-            #     document_path=report_path,
-            #     width=850,
-            # ),
-            # "",
-
-            # "### 4.2. Behavior as mirror disagreement increases",
-            # "",
-            # (
-            #     "Candidate construction matters most where exporter and importer "
-            #     "quantities disagree. The following evidence therefore shows the "
-            #     "quantity-conditioned residual by mirror-disagreement band."
-            # ),
-            # "",
-            # _markdown_table(
-            #     conditioned_disagreement_display
-            # ),
-            # "",
-            # markdown_image(
-            #     "Quantity-conditioned candidate plausibility by mirror disagreement",
-            #     figure_paths["quantity_candidate_conditioned_by_disagreement"],
-            #     document_path=report_path,
-            #     width=850,
-            # ),
-            # "",
-            # _markdown_table(
-            #     conditioned_closest_display
-            # ),
-            # "",
-            # markdown_image(
-            #     "Candidate closest to quantity-conditioned expected UV",
-            #     figure_paths["quantity_candidate_closest_conditioned"],
-            #     document_path=report_path,
-            #     width=850,
-            # ),
-            # "",
-
-            # "### 4.3. Candidate spread and stability",
-            # "",
-            # (
-            #     "The following diagnostics show how far the three candidate "
-            #     "quantities separate from one another and whether their behavior "
-            #     "is stable across time and HS products."
-            # ),
-            # "",
-            # _markdown_table(
-            #     spread_display
-            # ),
-            # "",
-            # markdown_image(
-            #     "Spread among the three fixed quantity candidates",
-            #     figure_paths["quantity_candidate_spread"],
-            #     document_path=report_path,
-            #     width=850,
-            # ),
-            # "",
-            # markdown_image(
-            #     "Candidate unit-value plausibility by year",
-            #     figure_paths["quantity_candidate_by_year"],
-            #     document_path=report_path,
-            #     width=850,
-            # ),
-            # "",
-            # markdown_image(
-            #     "Product-level distribution of candidate median UV distance",
-            #     figure_paths["quantity_candidate_product_distribution"],
-            #     document_path=report_path,
-            #     width=850,
-            # ),
-            # "",
-
-            # ==========================================================
-            # 5. Product-Year UV Reference
-            # ==========================================================
-            "## 4. Product-Year UV Reference",
-            "",
-            (
-                f"The current Validation workflow uses: "
-            ),
-            (
-                f"{selected_candidate_label} bilateral quantity "
-                f"(`{selected_quantity_column}`) as the selected quantity. "
-                "The Product-Year UV Reference is therefore constructed from "
-                "unit values calculated using this selected quantity."
-            ),
-            "",
-            "$$",
-            r"UV^{selected}_i"
-            r"="
-            r"\frac{V^{reconciled}_i}"
-            r"{Q^{selected}_i}",
-            "$$",
-            "",
-            (
-                f"Here, $Q^{{selected}}_i$ corresponds to "
-                f"`{selected_quantity_column}` for the current Validation run."
-            ),
-            "",
-            "",
-            "$$",
-            r"UV^{selected}_i="
-            r"\frac{V_i}{Q^{selected}_i}",
-            "$$",
-            "",
-            (
-                "For focal HS product p and year t, the product-year reference is "
-                "constructed from eligible selected unit values of the same product "
-                "within the configured causal year window:"
-            ),
-            "",
-            "$$",
-            r"UV^{ref}_{p,t}="
-            r"\exp\left("
-            r"\operatorname{median}_{i\in\mathcal{I}_{p,t}}"
-            r"\left[\log(UV^{selected}_i)\right]"
-            r"\right)",
-            "$$",
-            "",
-            # (
-            #     f"The configured window is `before={reference_before}, "
-            #     f"after={reference_after}`. With the current configuration, the "
-            #     "reference for year t therefore uses only the focal year and the "
-            #     "configured preceding years; it does not use future observations."
-            # ),
-            (
-                "The next table and figure show how much of the direct bilateral "
-                "population is retained under increasingly permissive mirror-"
-                "disagreement cutoffs. The retained population is also split by "
-                "disagreement direction to show whether exporter-larger and "
-                "importer-larger observations remain balanced."
-            ),
-            "",
-            _markdown_table(
-                mirror_retention_display
-            ),
-            "",
-            markdown_image(
-                "Cumulative retained population by mirror-disagreement cutoff",
-                figure_paths["mirror_disagreement_retention"],
+                "Final training-sample coverage by year",
+                figure_paths["training_coverage_by_year"],
                 document_path=report_path,
                 width=850,
             ),
             "",
-
-            "### 4.1. Reference-window evidence",
+            "### 6.5. Product coverage",
             "",
             (
-                "Before fixing the final reference window, Validation compares the "
-                "causal windows `0_0`, `1_0`, and `2_0` on common mature years."
-            ),
-            "",
-            markdown_image(
-                "HS × year reference support by temporal window",
-                figure_paths["pre_training_reference_support_comparison"],
-                document_path=report_path,
-                width=850,
-            ),
-            "",
-            _markdown_table(
-                pre_training_support_bands_display
-            ),
-            "",
-            _markdown_table(
-                pre_training_worst_display
-            ),
-            "",
-            _markdown_table(
-                pre_training_availability_display
-            ),
-            "",
-            _markdown_table(
-                pre_training_zero_support_products_display
+                f"The Validation population contains **{_format_integer(n_products)}** "
+                f"HS products; **{_format_integer(n_unseen_products)}** have no "
+                "training-selected observations under the configured UV-based rule."
             ),
             "",
             (
-                "Support should not be increased at the cost of materially changing "
-                "the reference. The following table therefore compares robust-centre "
-                "and MAD stability across the candidate windows."
+                "The table below shows the 20 products with the smallest final "
+                "training populations."
             ),
             "",
-            _markdown_table(
-                pre_training_stability_display
-            ),
+            _markdown_table(product_display),
             "",
-
-            "### 4.2. Reference support",
+            "### 6.6. Rejection path for products unseen in training",
             "",
             (
-                "Reference support is the number of eligible observations entering "
-                "the HS × year reference. This quantity is later used as one of the "
-                "training-sample evidence requirements."
+                "For products with no final training observations, the cumulative "
+                "table shows whether rows disappear because of insufficient "
+                "reference support, non-positive/undefined MAD, unavailable UV "
+                "distance, or the configured normalized-UV tail cutoff."
             ),
             "",
-            get_table_figure_layout(
-                training_reference_support_display,
-                markdown_image(
-                    "HS × year unit-value reference support",
-                    figure_paths["training_reference_support_distribution"],
-                    document_path=report_path,
-                    width=700,
-                    height=None,
-                ),
-                table_width=38,
-            ),
+            _markdown_table(rejection_display),
             "",
-
-            "### 4.3. Reference dispersion",
+            "## 7. Model evaluation",
             "",
-            (
-                "Natural UV variation differs across HS × year groups. Validation "
-                "therefore measures robust within-reference dispersion using the "
-                "median absolute deviation of log unit values."
-            ),
-            "",
-            "$$",
-            r"MAD^{UV}_{p,t}="
-            r"\operatorname{median}_{i\in\mathcal{I}_{p,t}}"
-            r"\left|"
-            r"\log(UV^{selected}_i)"
-            r"-"
-            r"\operatorname{median}_{j\in\mathcal{I}_{p,t}}"
-            r"\log(UV^{selected}_j)"
-            r"\right|",
-            "$$",
-            "",
-            get_table_figure_layout(
-                training_uv_dispersion_display,
-                markdown_image(
-                    "HS × year unit-value dispersion",
-                    figure_paths["training_uv_dispersion_distribution"],
-                    document_path=report_path,
-                    width=700,
-                    height=None,
-                ),
-                table_width=38,
-            ),
-            "",
-
-            # ==========================================================
-            # 6. Training Sample
-            # ==========================================================
-            "## 5. Training Sample",
-            "",
-            (
-                "The training sample is intended to provide high-confidence "
-                "pseudo-ground truth rather than maximize row count. It starts from "
-                "direct bilateral, non-estimated quantity observations and then "
-                "requires sufficient mirror agreement and product-year UV evidence."
-            ),
-            "",
-            "### 5.1. Mirror-disagreement cutoff trade-off",
-            "",
-            (
-                "The mirror-disagreement cutoff should not be chosen only by "
-                "retained sample size. A more permissive cutoff retains more "
-                "direct bilateral observations, but it may also admit less "
-                "plausible reporter-side unit values. The following table and "
-                "figure therefore compare retained population size against the "
-                "distribution of worst-side reporter UV distance across a fine "
-                "grid of cumulative cutoffs."
-            ),
-            "",
-            _markdown_table(
-                summary
-            ),
-            "",
-            _markdown_table(
-                mirror_cutoff_tradeoff_display
-            ),
-            "",
-            markdown_image(
-                "Mirror-disagreement cutoff trade-off",
-                figure_paths["mirror_cutoff_tradeoff"],
-                document_path=report_path,
-                width=850,
-            ),
-            "",
-            (
-                f"The configured cutoff is "
-                f"`{100.0 * max_mirror_quantity_disagreement:g}%`. "
-                "This diagnostic is intended to identify whether an empirical "
-                "elbow exists, i.e. whether additional retained rows beyond a "
-                "certain cutoff are accompanied by disproportionately worse "
-                "reporter-side UV plausibility."
-            ),
-            "",
-            "### 5.2. Evidence behind the training criteria",
-            "",
-            (
-                "Mirror quantity disagreement and UV plausibility provide "
-                "complementary evidence. Validation therefore studies their "
-                "distributions and joint behavior before applying the configured "
-                "training rule."
-            ),
-            "",
-            _markdown_table(
-                sensitivity_display
-            ),
-            "",
-            _markdown_table(
-                threshold_grid_display
-            ),
-            "",
-            _markdown_table(
-                matrix_display,
-                index=True,
-            ),
-            "",
-            _markdown_table(
-                side_plausibility_display
-            ),
-            "",
-            _markdown_table(
-                distribution_display
-            ),
-            "",
-            markdown_image(
-                "Quantity-model training evidence distributions",
-                figure_paths["training_evidence_distributions"],
-                document_path=report_path,
-            ),
-            "",
-
-            "### 6.2. Selected-unit-value distance",
-            "",
-            (
-                "For every row with a usable selected quantity and product-year "
-                "reference, Validation computes the absolute log distance:"
-            ),
-            "",
-            "$$",
-            r"D^{UV}_{i,p,t}="
-            r"\left|"
-            r"\log(UV^{selected}_{i})"
-            r"-"
-            r"\log(UV^{ref}_{p,t})"
-            r"\right|",
-            "$$",
-            "",
-            get_table_figure_layout(
-                training_uv_distance_display,
-                markdown_image(
-                    "Selected unit-value distance distribution",
-                    figure_paths["training_uv_distance_distribution"],
-                    document_path=report_path,
-                    width=700,
-                    height=None,
-                ),
-                table_width=38,
-            ),
-            "",
-
-            "### 6.3. Dispersion-normalized UV distance",
-            "",
-            (
-                "Because HS × year groups have different natural UV dispersion, "
-                "the absolute distance is normalized by the corresponding log-UV "
-                "MAD:"
-            ),
-            "",
-            "$$",
-            r"D^{UV,norm}_{i,p,t}="
-            r"\frac{D^{UV}_{i,p,t}}{MAD^{UV}_{p,t}}",
-            "$$",
-            "",
-            get_table_figure_layout(
-                training_normalized_uv_distance_display,
-                markdown_image(
-                    "Selected unit-value distance relative to HS × year dispersion",
-                    figure_paths["training_normalized_uv_distance_distribution"],
-                    document_path=report_path,
-                    width=700,
-                    height=None,
-                ),
-                table_width=34,
-            ),
-            "",
-            _markdown_table(
-                normalized_cutoff_display
-            ),
-            "",
-
-            "### 6.4. Final training rule",
-            "",
-            "The configured training-sample rule requires:",
-            *[
-                f"- {part}"
-                for part in training_rule_parts
-            ],
-            "",
-            _markdown_table(
-                candidate_training_rule_display
-            ),
-            "",
-            _markdown_table(
-                training_sample_summary_display
-            ),
-            "",
-
-            "### 6.5. Training evidence audit",
-            "",
-            (
-                "The Training Evidence Audit verifies the population that actually "
-                "survives the configured rule and shows whether the resulting "
-                "pseudo-ground-truth sample remains represented across years and "
-                "products."
-            ),
-            "",
-            _markdown_table(
-                training_evidence_summary_display
-            ),
-            "",
-            "#### 6.5.1. Training evidence by year",
-            "",
-            _markdown_table(
-                training_evidence_year_display
-            ),
-            "",
-            "#### 6.5.2. Products unseen in training",
-            "",
-            (
-                f"`{_format_integer(n_audit_unseen_products)}` of "
-                f"`{_format_integer(n_audit_products)}` HS products present in "
-                "Validation have no training-selected observations."
-            ),
-            "",
-            _markdown_table(
-                training_unseen_products_display
-            ),
-            "",
-            "#### 6.5.3. Cumulative rejection path",
-            "",
-            (
-                "For products unseen in training, the following table shows the "
-                "cumulative stage at which their observations are removed."
-            ),
-            "",
-            _markdown_table(
-                training_rejection_display
-            ),
-            "",
-
-            # ==========================================================
-            # 7. Model Evaluation
-            # ==========================================================
-            "## 7. Model Evaluation",
-            "",
-            (
-                "Candidate reconstruction models are evaluated on held-out temporal "
-                "data using the configured Validation strategy. The training sample "
-                "defined in Section 5 is the pseudo-ground-truth population used for "
-                "model development."
-            ),
+            validation_description,
             "",
             "### 7.1. Overall out-of-fold performance",
             "",
-            _markdown_table(
-                model_performance_display
-            ),
+            _markdown_table(model_performance_display),
             "",
-            "### 7.2. Performance by held-out year",
+            "### 7.2. Performance by validation year",
             "",
             markdown_image(
-                "Leave-one-year-out model performance",
+                performance_image_alt,
                 figure_paths["model_performance_by_year"],
                 document_path=report_path,
                 width=850,
             ),
             "",
-
-            # ==========================================================
-            # 8. Inference
-            # ==========================================================
-            "## 8. Inference",
+            "## 8. Current methodological status",
+            "",
+            (
+                f"- Canonical bilateral quantity methodology: **{selected_candidate_label}**."
+            ),
+            (
+                "- Training sample: fixed by HS×year support, positive MAD, and "
+                f"normalized UV distance ≤ {max_normalized_uv_distance_mad:g} MAD."
+            ),
+            (
+                "- Exporter/importer disagreement is retained only as descriptive "
+                "source-data evidence and does not determine training eligibility."
+            ),
+            (
+                f"- Model validation strategy: `{validation_strategy}`."
+            ),
+            (
+                "- Production inference remains a subsequent Validation stage."
+            ),
+            "",
+            "## 9. Inference",
             "",
             (
                 "Production inference is not yet reported by the current Validation "
                 "workflow. This section is reserved for the final selected model, "
-                "the population requiring reconstruction, prediction coverage, "
-                "post-inference plausibility checks, and the resulting completed "
+                "the canonical bilateral rows requiring reconstruction, prediction "
+                "coverage, post-inference unit-value plausibility, and the completed "
                 "quantity output."
             ),
             "",
         ]
+
         insert_markdown_toc(
             lines,
             min_level=2,
@@ -7291,17 +1609,13 @@ def build_validation_report(
         )
 
         report_path.write_text(
-            "\n".join(
-                lines
-            ),
+            "\n".join(lines),
             encoding="utf-8",
         )
 
-        if not valid_output(
-            report_path
-        ):
+        if not valid_output(report_path):
             raise RuntimeError(
-                "Validation decision report was not written correctly."
+                "Validation report was not written correctly."
             )
 
         latest_report_path: Path | None = None
@@ -7311,31 +1625,24 @@ def build_validation_report(
                 parents=True,
                 exist_ok=True,
             )
-
             shutil.copyfile(
                 report_path,
                 latest_path,
             )
-
-            latest_report_path = (
-                latest_path
-            )
+            latest_report_path = latest_path
 
         logger.info(
-            "%s Validation decision report created.",
+            "%s Validation model-development report created.",
             ok,
         )
-
         logger.info(
             "  Structural audit passed: %s",
             audit_passed,
         )
-
         logger.info(
-            "  Training population selected: %s",
-            training_selection_enabled,
+            "  Selected training rows: %s",
+            f"{n_training_selected:,}",
         )
-
         logger.info(
             "  Report: %s",
             report_path,
@@ -7349,36 +1656,19 @@ def build_validation_report(
 
         logger.info(
             "  Figures written: %d",
-            len(
-                figure_paths
-            ),
+            len(figure_paths),
         )
 
         return {
             "status": "completed",
             "run_id": run_id,
-
             "output_path": report_path,
             "report_path": report_path,
-
-            "latest_report_path": (
-                latest_report_path
-            ),
-
-            "figure_paths": (
-                figure_paths
-            ),
-
-            "audit_passed": (
-                audit_passed
-            ),
-
-            "training_population_selected": (
-                training_selection_enabled
-            ),
-
+            "latest_report_path": latest_report_path,
+            "figure_paths": figure_paths,
+            "audit_passed": audit_passed,
+            "training_population_selected": True,
             "ready_for_training_decision": True,
-
             "duration_seconds": None,
         }
 

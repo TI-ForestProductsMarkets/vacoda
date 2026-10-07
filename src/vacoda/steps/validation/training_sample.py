@@ -3,7 +3,7 @@ vacoda.steps.validation.training_sample
 
 Build the model-training sample and HS x year unit-value evidence.
 
-This step prepares the selected quantity/value data, defines the robust
+This step prepares the canonical value-weighted quantity/value data, defines the robust
 HS × year unit-value reference, derives row-level plausibility evidence,
 and applies the configured model-training population rule.
 
@@ -119,7 +119,6 @@ def build_training_sample(
     *,
     cfg: ValidationConfig,
     input_path: Path,
-    quantity_selection_audit_path: Path,
     run_id: str,
     output_path: Path | None = None,
     force: bool = False,
@@ -128,30 +127,22 @@ def build_training_sample(
     """
     Build the candidate model-training sample.
 
-    The input is the audited quantity-selection dataset.
 
     This step:
 
     1. preserves all upstream columns;
-    2. derives the selected unit value V / Q_selected;
-    3. identifies a high-confidence reference population using directly
-       observed bilateral exporter/importer quantities;
+    2. derives the canonical value-weighted unit value V / Q_canonical;
     4. derives robust HS × year unit-value reference statistics;
-    5. measures each selected quantity/value observation relative to that
+    5. measures each canonical value-weighted quantity/value observation relative to that
        reference;
     6. writes the resulting evidence for Diagnostics.
 
-    No final training-population threshold is selected here.
     """
 
     start = perf_counter()
 
     input_path = Path(
         input_path
-    )
-
-    quantity_selection_audit_path = Path(
-        quantity_selection_audit_path
     )
 
     if output_path is not None:
@@ -188,12 +179,6 @@ def build_training_sample(
         raise FileNotFoundError(
             "Validation training-sample input not found: "
             f"{input_path}"
-        )
-
-    if not quantity_selection_audit_path.is_file():
-        raise FileNotFoundError(
-            "Validation quantity-selection audit not found: "
-            f"{quantity_selection_audit_path}"
         )
 
     output_path.parent.mkdir(
@@ -235,11 +220,6 @@ def build_training_sample(
     )
 
     logger.info(
-        "  Quantity-selection audit: %s",
-        quantity_selection_audit_path,
-    )
-
-    logger.info(
         "  Output: %s",
         output_path,
     )
@@ -267,14 +247,6 @@ def build_training_sample(
         model_training_cfg.reference_year_window.after
     )
 
-    require_reference_eligible = bool(
-        model_training_cfg.require_reference_eligible
-    )
-
-    require_positive_uv_mad = bool(
-        model_training_cfg.require_positive_uv_mad
-    )
-
     max_normalized_uv_distance_mad = float(
         model_training_cfg.max_normalized_uv_distance_mad
     )
@@ -283,11 +255,6 @@ def build_training_sample(
     ### Logging Training-Sample Configuration
     logger.info(
         "  Training-sample configuration:"
-    )
-
-    logger.info(
-        "    Require reference eligible: %s",
-        require_reference_eligible,
     )
 
     logger.info(
@@ -306,11 +273,6 @@ def build_training_sample(
         f"{max_normalized_uv_distance_mad:g}",
     )
 
-    logger.info(
-        "    Require positive UV MAD: %s",
-        require_positive_uv_mad,
-    )
-
     year_col = str(
         columns_cfg.year
     )
@@ -323,33 +285,10 @@ def build_training_sample(
         columns_cfg.nominal_value
     )
 
-    export_quantity_col = str(
-        columns_cfg.export_quantity
-    )
-
-    import_quantity_col = str(
-        columns_cfg.import_quantity
-    )
-
-    export_estimated_col = str(
-        columns_cfg.export_estimated
-    )
-
-    import_estimated_col = str(
-        columns_cfg.import_estimated
-    )
-
     selected_quantity_col = (
-        "quantity_selected_kg"
+        "quantity_value_weighted_kg"
     )
 
-    selected_candidate_col = (
-        "quantity_selected_candidate"
-    )
-
-    selected_source_col = (
-        "quantity_selected_source"
-    )
 
     required_columns = {
         year_col,
@@ -357,13 +296,7 @@ def build_training_sample(
         "exporter_iso",
         "importer_iso",
         nominal_value_col,
-        export_quantity_col,
-        import_quantity_col,
-        export_estimated_col,
-        import_estimated_col,
         selected_quantity_col,
-        selected_candidate_col,
-        selected_source_col,
     }
 
     # ==================================================================
@@ -381,31 +314,6 @@ def build_training_sample(
             input_path
         )
 
-        audit_sql = sql_literal(
-            quantity_selection_audit_path
-        )
-
-        # --------------------------------------------------------------
-        # Require passing quantity-selection audit
-        # --------------------------------------------------------------
-
-        audit_row = con.execute(
-            f"""
-            SELECT audit_passed
-            FROM read_parquet({audit_sql})
-            LIMIT 1
-            """
-        ).fetchone()
-
-        if (
-            audit_row is None
-            or not bool(audit_row[0])
-        ):
-            raise RuntimeError(
-                "Validation training-sample construction requires "
-                "a passing quantity-selection audit."
-            )
-
         # --------------------------------------------------------------
         # Input contract
         # --------------------------------------------------------------
@@ -420,19 +328,15 @@ def build_training_sample(
         # Base population
         # --------------------------------------------------------------
         #
-        # The selected unit value uses the already-audited final quantity
-        # selected by the previous Validation step.
+        # The selected unit value is defined from the canonical bilateral
+        # canonical value-weighted quantity and reconciled nominal trade value:
         #
-        # The reference population is deliberately stricter:
+        #     UV = V_reconciled / Q_selected
         #
-        #   - exporter quantity usable
-        #   - importer quantity usable
-        #   - neither reporter quantity estimated
-        #   - selected quantity usable
-        #   - reconciled value usable
-        #
-        # This avoids defining the HS × year reference from weak unilateral
-        # quantity evidence.
+        # training_eligible identifies observations with a usable positive,
+        # finite canonical value-weighted quantity, reconciled value, and selected unit value.
+        # These observations form the population from which HS × year
+        # unit-value reference statistics are constructed.
         # --------------------------------------------------------------
 
         con.execute(
@@ -482,39 +386,8 @@ def build_training_sample(
                     AS selected_unit_value,
 
                 (
-                    {export_quantity_col} IS NOT NULL
-                    AND {import_quantity_col} IS NOT NULL
-
-                    AND {export_quantity_col} > 0
-                    AND {import_quantity_col} > 0
-
-                    AND isfinite(
-                        CAST(
-                            {export_quantity_col}
-                            AS DOUBLE
-                        )
-                    )
-
-                    AND isfinite(
-                        CAST(
-                            {import_quantity_col}
-                            AS DOUBLE
-                        )
-                    )
-
-                    AND COALESCE(
-                        {export_estimated_col},
-                        FALSE
-                    ) = FALSE
-
-                    AND COALESCE(
-                        {import_estimated_col},
-                        FALSE
-                    ) = FALSE
-
-                    AND {selected_quantity_col} IS NOT NULL
+                    {selected_quantity_col} IS NOT NULL
                     AND {selected_quantity_col} > 0
-
                     AND isfinite(
                         CAST(
                             {selected_quantity_col}
@@ -524,15 +397,18 @@ def build_training_sample(
 
                     AND {nominal_value_col} IS NOT NULL
                     AND {nominal_value_col} > 0
-
                     AND isfinite(
                         CAST(
                             {nominal_value_col}
                             AS DOUBLE
                         )
                     )
+
+                    AND selected_unit_value IS NOT NULL
+                    AND selected_unit_value > 0
+                    AND isfinite(selected_unit_value)
                 )
-                    AS training_reference_eligible
+                    AS training_eligible
 
             FROM read_parquet({input_sql})
             """
@@ -591,7 +467,7 @@ def build_training_sample(
 
                 FROM validation_training_base
 
-                WHERE training_reference_eligible
+                WHERE training_eligible
 
                 AND selected_unit_value IS NOT NULL
                 AND selected_unit_value > 0
@@ -721,11 +597,11 @@ def build_training_sample(
         #
         # No statistical cutoff is applied.
         #
-        # training_hard_eligible only indicates that the row contains the
+        # uv_evidence_available only indicates that the row contains the
         # mechanically necessary information for later training-population
         # evaluation:
         #
-        #   - selected quantity
+        #   - canonical value-weighted quantity
         #   - reconciled value
         #   - selected unit value
         #   - HS × year reference
@@ -776,7 +652,7 @@ def build_training_sample(
                         AS training_normalized_uv_distance,
 
                     (
-                        AND evidence.hs_year_uv_reference_n IS NOT NULL
+                        evidence.hs_year_uv_reference_n IS NOT NULL
                         AND evidence.hs_year_uv_reference_n
                             >= {min_reference_observations}
 
@@ -877,7 +753,7 @@ def build_training_sample(
 
                             AND r.hs_year_uv_reference_n IS NOT NULL
                         )
-                            AS training_hard_eligible
+                            AS uv_evidence_available
 
                     FROM validation_training_base AS b
 
@@ -913,14 +789,14 @@ def build_training_sample(
                     AS n_rows,
 
                 COUNT(*) FILTER (
-                    WHERE training_reference_eligible
+                    WHERE training_eligible
                 )
                     AS n_reference_rows,
 
                 COUNT(*) FILTER (
-                    WHERE training_hard_eligible
+                    WHERE uv_evidence_available
                 )
-                    AS n_hard_eligible_rows,
+                    AS n_uv_evidence_available_rows,
 
                 COUNT(*) FILTER (
                     WHERE selected_unit_value IS NOT NULL
@@ -949,7 +825,7 @@ def build_training_sample(
         (
             n_rows,
             n_reference_rows,
-            n_hard_eligible_rows,
+            n_uv_evidence_available_rows,
             n_selected_unit_value_rows,
             n_rows_with_reference,
             n_rows_with_uv_distance,
@@ -1014,8 +890,8 @@ def build_training_sample(
     )
 
     logger.info(
-        "  Hard-eligible rows: %s",
-        f"{n_hard_eligible_rows:,}",
+        "  Rows with complete UV evidence: %s",
+        f"{n_uv_evidence_available_rows:,}",
     )
 
     logger.info(
@@ -1051,8 +927,8 @@ def build_training_sample(
         "n_rows_with_uv_distance": (
             n_rows_with_uv_distance
         ),
-        "n_hard_eligible_rows": (
-            n_hard_eligible_rows
+        "n_uv_evidence_available_rows": (
+            n_uv_evidence_available_rows
         ),
 
         "n_training_selected_rows": (

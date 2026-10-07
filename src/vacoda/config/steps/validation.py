@@ -341,12 +341,9 @@ class ValidationReferenceYearWindowConfig:
 
 @dataclass(frozen=True)
 class ValidationTrainingSampleConfig:
-    require_reference_eligible: bool
     reference_year_window: ValidationReferenceYearWindowConfig
     min_hs_year_reference_observations: int
     max_normalized_uv_distance_mad: float
-    max_mirror_quantity_disagreement: float
-    require_positive_uv_mad: bool
 
     @classmethod
     def from_dict(
@@ -354,13 +351,6 @@ class ValidationTrainingSampleConfig:
         cfg: dict[str, Any],
     ) -> "ValidationTrainingSampleConfig":
         return cls(
-            require_reference_eligible=require_bool(
-                cfg.get("require_reference_eligible"),
-                key=(
-                    "validation.model.training_sample."
-                    "require_reference_eligible"
-                ),
-            ),
             reference_year_window=(
                 ValidationReferenceYearWindowConfig.from_dict(
                     require_dict(
@@ -387,21 +377,6 @@ class ValidationTrainingSampleConfig:
                     "max_normalized_uv_distance_mad"
                 ),
                 min_value=0.0,
-            ),
-            max_mirror_quantity_disagreement=require_float(
-                cfg.get("max_mirror_quantity_disagreement"),
-                key=(
-                    "validation.model.training_sample."
-                    "max_mirror_quantity_disagreement"
-                ),
-                min_value=0.0,
-            ),
-            require_positive_uv_mad=require_bool(
-                cfg.get("require_positive_uv_mad"),
-                key=(
-                    "validation.model.training_sample."
-                    "require_positive_uv_mad"
-                ),
             ),
         )
 

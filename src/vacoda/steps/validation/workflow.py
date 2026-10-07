@@ -18,8 +18,8 @@ from vacoda.config.steps.validation import ValidationConfig
 
 from vacoda.steps.validation.prepare_input import prepare_validation_input
 from vacoda.steps.validation.structural import  audit_structural_integrity
-from vacoda.steps.validation.quantity import  select_quantity_candidate
-from vacoda.steps.validation.quantity_audit import audit_quantity_selection
+# from vacoda.steps.validation.quantity import select_quantity_candidate
+# from vacoda.steps.validation.quantity_audit import audit_quantity_selection
 from vacoda.steps.validation.training_sample import build_training_sample
 from vacoda.steps.validation.model_training import train_validation_models
 from vacoda.steps.validation.diagnostics import  build_diagnostics
@@ -43,8 +43,6 @@ from vacoda.utils.runtime import (
 REQUIRED_PRODUCTS = (
     "prepared_input",
     "structural_audit",
-    "quantity_selection",
-    "quantity_selection_audit",
     "training_sample",
     "diagnostics",
     "consistency_audit",
@@ -56,8 +54,6 @@ REQUIRED_PRODUCTS = (
 WORKFLOW_STEPS = [
     "Prepare Validation input",
     "Audit Structural integrity",
-    "Select Quantity candidate",
-    "Audit Quantity candidate",
     "Build Training sample",
     "Train Validation Models",
     # "Build validated trade",
@@ -221,66 +217,66 @@ def run_validation_workflow(
             producer_product="Validation structural audit",
         )
 
-        # ==================================================================
-        # Step 3 — Select quantity candidate
-        # ==================================================================
+        # # ==================================================================
+        # # Step 3 — Select quantity candidate
+        # # ==================================================================
 
-        quantity_selection_result = run_step(
-            logger=logger,
-            step_number=3,
-            total_steps=TOTAL_WORKFLOW_STEPS,
-            title=WORKFLOW_STEPS[2],
-            runner=lambda: select_quantity_candidate(
-                cfg=cfg,
-                input_path=prepared_path,
-                structural_audit_path=structural_audit_path,
-                run_id=run_id,
-                force=force,
-                logger=logger,
-            ),
-        )
+        # quantity_selection_result = run_step(
+        #     logger=logger,
+        #     step_number=3,
+        #     total_steps=TOTAL_WORKFLOW_STEPS,
+        #     title=WORKFLOW_STEPS[2],
+        #     runner=lambda: select_quantity_candidate(
+        #         cfg=cfg,
+        #         input_path=prepared_path,
+        #         structural_audit_path=structural_audit_path,
+        #         run_id=run_id,
+        #         force=force,
+        #         logger=logger,
+        #     ),
+        # )
 
-        quantity_selected_path = require_artifact(
-            result=quantity_selection_result,
-            path_key="quantity_selected_path",
-            consumer_step=WORKFLOW_STEPS[3],
-            producer_product="selected quantity",
-        )
+        # quantity_selected_path = require_artifact(
+        #     result=quantity_selection_result,
+        #     path_key="quantity_selected_path",
+        #     consumer_step=WORKFLOW_STEPS[3],
+        #     producer_product="selected quantity",
+        # )
 
-        selection_evidence_path = require_artifact(
-            result=quantity_selection_result,
-            path_key="selection_evidence_path",
-            consumer_step="Audit quantity selection",
-            producer_product="quantity-selection evidence",
-        )
+        # selection_evidence_path = require_artifact(
+        #     result=quantity_selection_result,
+        #     path_key="selection_evidence_path",
+        #     consumer_step="Audit quantity selection",
+        #     producer_product="quantity-selection evidence",
+        # )
 
-        # ==================================================================
-        # Step 4 — Audit quantity candidate
-        # ==================================================================
+        # # ==================================================================
+        # # Step 4 — Audit quantity candidate
+        # # ==================================================================
 
-        quantity_audit_result = run_step(
-            logger=logger,
-            step_number=4,
-            total_steps=TOTAL_WORKFLOW_STEPS,
-            title="Audit quantity selection",
-            runner=lambda: audit_quantity_selection(
-                cfg=cfg,
-                input_path=prepared_path,
-                structural_audit_path=structural_audit_path,
-                quantity_selection_path=quantity_selected_path,
-                selection_evidence_path=selection_evidence_path,
-                run_id=run_id,
-                force=force,
-                logger=logger,
-            ),
-        )
+        # quantity_audit_result = run_step(
+        #     logger=logger,
+        #     step_number=4,
+        #     total_steps=TOTAL_WORKFLOW_STEPS,
+        #     title="Audit quantity selection",
+        #     runner=lambda: audit_quantity_selection(
+        #         cfg=cfg,
+        #         input_path=prepared_path,
+        #         structural_audit_path=structural_audit_path,
+        #         quantity_selection_path=quantity_selected_path,
+        #         selection_evidence_path=selection_evidence_path,
+        #         run_id=run_id,
+        #         force=force,
+        #         logger=logger,
+        #     ),
+        # )
 
-        quantity_selection_audit_path = require_artifact(
-            result=quantity_audit_result,
-            path_key="quantity_selection_audit_path",
-            consumer_step="Build diagnostics",
-            producer_product="quantity-selection audit",
-        )
+        # quantity_selection_audit_path = require_artifact(
+        #     result=quantity_audit_result,
+        #     path_key="quantity_selection_audit_path",
+        #     consumer_step="Build diagnostics",
+        #     producer_product="quantity-selection audit",
+        # )
 
         # ==================================================================
         # Step 5 — Build training sample
@@ -293,8 +289,7 @@ def run_validation_workflow(
             title=WORKFLOW_STEPS[4],
             runner=lambda: build_training_sample(
                 cfg=cfg,
-                input_path=quantity_selected_path,
-                quantity_selection_audit_path=quantity_selection_audit_path,
+                input_path=prepared_path,
                 run_id=run_id,
                 force=force,
                 logger=logger,
