@@ -5680,6 +5680,65 @@ def build_diagnostics(
             """
         ).fetchdf()
 
+        for row in mirror_disagreement_bands.itertuples(
+            index=False
+        ):
+            lower = float(row.lower_bound)
+            upper = float(row.upper_bound)
+
+            band_label = (
+                f"{100 * lower:.0f}–{100 * upper:.0f}%"
+            )
+
+            metrics = {
+                "band_share": row.share_of_direct_bilateral,
+                "n_uv_evaluable": row.n_uv_evaluable,
+                "median_worst_uv_distance": row.median_worst_uv_distance,
+                "p90_worst_uv_distance": row.p90_worst_uv_distance,
+                "both_within_050_share": row.both_within_050_share,
+                "both_within_100_share": row.both_within_100_share,
+            }
+
+            for variable, value in metrics.items():
+                diagnostics_rows.append(
+                    {
+                        "scope": "mirror_disagreement_band_quality",
+                        "criterion": band_label,
+
+                        # Upper edge of the marginal band.
+                        # 0–5%  -> 0.05
+                        # 5–10% -> 0.10
+                        # ...
+                        "disagreement_threshold": upper,
+
+                        "uv_support_threshold": None,
+                        "uv_distance_threshold": None,
+
+                        "disagreement_band": band_label,
+                        "uv_distance_band": None,
+
+                        "year": None,
+                        "target_cmd": None,
+
+                        "variable": variable,
+                        "quantile": None,
+
+                        "n_rows": int(
+                            row.n_rows
+                        ),
+
+                        "share_of_all": None,
+                        "share_of_parent": None,
+
+                        "value": (
+                            float(value)
+                            if value is not None
+                            and pd.notna(value)
+                            else None
+                        ),
+                    }
+                )
+
         # ------------------------------------------------------------------
         # Candidate performance by mirror-disagreement band
         # ------------------------------------------------------------------

@@ -579,6 +579,167 @@ def _plot_training_normalized_uv_distance_distribution(
         figure
     )
 
+
+def _plot_mirror_disagreement_band_quality(
+    *,
+    diagnostics: pd.DataFrame,
+    output_path: Path,
+    configured_cutoff: float | None = None,
+) -> None:
+    """Plot marginal quantity evidence and UV plausibility by disagreement band."""
+
+    frame = _scope_frame(
+        diagnostics,
+        "mirror_disagreement_band_quality",
+    ).copy()
+
+    if frame.empty:
+        raise RuntimeError(
+            "Mirror-disagreement band-quality diagnostics are unavailable."
+        )
+
+    summary = (
+        frame.pivot_table(
+            index=[
+                "disagreement_threshold",
+                "disagreement_band",
+            ],
+            columns="variable",
+            values="value",
+            aggfunc="first",
+        )
+        .reset_index()
+        .sort_values(
+            "disagreement_threshold"
+        )
+        .reset_index(drop=True)
+    )
+
+    x = list(
+        range(
+            len(summary)
+        )
+    )
+
+    labels = summary[
+        "disagreement_band"
+    ].astype(str).tolist()
+
+    figure, axes = plt.subplots(
+        2,
+        1,
+        figsize=(10, 8),
+        sharex=True,
+    )
+
+    # --------------------------------------------------------------
+    # Marginal population size
+    # --------------------------------------------------------------
+
+    axes[0].bar(
+        x,
+        100.0 * summary["band_share"],
+    )
+
+    axes[0].set_ylabel(
+        "Share of direct bilateral observations (%)"
+    )
+
+    axes[0].set_title(
+        "Mirror-disagreement evidence by marginal 5%-band"
+    )
+
+    axes[0].grid(
+        axis="y",
+        linestyle="--",
+        alpha=0.5,
+    )
+
+    # --------------------------------------------------------------
+    # Marginal UV plausibility
+    # --------------------------------------------------------------
+
+    axes[1].plot(
+        x,
+        summary["median_worst_uv_distance"],
+        marker="o",
+        label="Median worst-side UV distance",
+    )
+
+    axes[1].plot(
+        x,
+        summary["p90_worst_uv_distance"],
+        marker="o",
+        label="P90 worst-side UV distance",
+    )
+
+    axes[1].set_ylabel(
+        "Worst-side UV distance"
+    )
+
+    axes[1].set_xlabel(
+        "Mirror quantity disagreement band"
+    )
+
+    axes[1].grid(
+        axis="y",
+        linestyle="--",
+        alpha=0.5,
+    )
+
+    axes[1].legend()
+
+    axes[1].set_xticks(
+        x
+    )
+
+    axes[1].set_xticklabels(
+        labels
+    )
+
+    # Configured cutoff lies between two marginal bands.
+    if configured_cutoff is not None:
+        cutoff_percent = (
+            100.0 * configured_cutoff
+        )
+
+        boundary_index = None
+
+        for index, threshold in enumerate(
+            summary["disagreement_threshold"]
+        ):
+            if math.isclose(
+                100.0 * float(threshold),
+                cutoff_percent,
+                rel_tol=0.0,
+                abs_tol=1e-9,
+            ):
+                boundary_index = (
+                    index + 0.5
+                )
+                break
+
+        if boundary_index is not None:
+            for axis in axes:
+                axis.axvline(
+                    boundary_index,
+                    linestyle="--",
+                    linewidth=1.5,
+                    color="red",
+                )
+
+    figure.tight_layout()
+
+    figure.savefig(
+        output_path,
+        dpi=180,
+        bbox_inches="tight",
+    )
+
+    plt.close(
+        figure
+    )
+
 def _plot_training_population_funnel(
     *,
     diagnostics: pd.DataFrame,
@@ -5720,6 +5881,28 @@ def build_validation_report(
         selected_candidate_label = _candidate_label(
             selected_candidate
         )
+
+        mirror_band_quality = _scope_frame(
+            diagnostics,
+            "mirror_disagreement_band_quality",
+        )
+
+        summary = (
+            mirror_band_quality.pivot_table(
+                index=[
+                    "disagreement_threshold",
+                    "disagreement_band",
+                ],
+                columns="variable",
+                values="value",
+                aggfunc="first",
+            )
+            .reset_index()
+            .sort_values(
+                "disagreement_threshold"
+            )
+            .reset_index(drop=True)
+        )
         # ==============================================================
         # Quantity–UV relationship
         # ==============================================================
@@ -6876,6 +7059,10 @@ def build_validation_report(
                 "figure therefore compare retained population size against the "
                 "distribution of worst-side reporter UV distance across a fine "
                 "grid of cumulative cutoffs."
+            ),
+            "",
+            _markdown_table(
+                summary
             ),
             "",
             _markdown_table(

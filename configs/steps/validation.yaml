@@ -85,7 +85,7 @@ validation:
         after: 0
       min_hs_year_reference_observations: 30
       max_normalized_uv_distance_mad: 2.5
-      max_mirror_quantity_disagreement: 0.30
+      max_mirror_quantity_disagreement: 0.30 # not in use
       require_positive_uv_mad: true
 
     # ------------------------------------------------------------
