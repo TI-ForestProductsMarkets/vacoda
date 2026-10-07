@@ -709,6 +709,160 @@ def _plot_training_population_funnel(
         figure
     )
 
+def _plot_mirror_cutoff_tradeoff(
+    *,
+    diagnostics: pd.DataFrame,
+    output_path: Path,
+    configured_cutoff: float | None = None,
+) -> None:
+    """Plot sample-size / quality trade-off by mirror-disagreement cutoff."""
+
+    frame = _scope_frame(
+        diagnostics,
+        "mirror_cutoff_tradeoff",
+    ).copy()
+
+    if frame.empty:
+        raise RuntimeError(
+            "No mirror-cutoff trade-off diagnostics are available."
+        )
+
+    summary = (
+        frame.pivot_table(
+            index="disagreement_threshold",
+            columns="variable",
+            values="value",
+            aggfunc="first",
+        )
+        .reset_index()
+        .sort_values(
+            "disagreement_threshold"
+        )
+        .reset_index(drop=True)
+    )
+
+    x = [
+        100.0 * float(value)
+        for value in summary[
+            "disagreement_threshold"
+        ]
+    ]
+
+    retained_share = [
+        100.0 * float(value)
+        for value in summary[
+            "retained_share"
+        ]
+    ]
+
+    median_worst_uv = [
+        float(value)
+        for value in summary[
+            "median_worst_uv_distance"
+        ]
+    ]
+
+    p90_worst_uv = [
+        float(value)
+        for value in summary[
+            "p90_worst_uv_distance"
+        ]
+    ]
+
+    figure, axes = plt.subplots(
+        2,
+        1,
+        figsize=(6, 5),
+        sharex=True,
+    )
+
+    # Top panel: retained share
+    axes[0].plot(
+        x,
+        retained_share,
+        marker="o",
+        linewidth=2.0,
+    )
+
+    axes[0].set_ylabel(
+        "Retained share (%)"
+    )
+    axes[0].set_title(
+        "Mirror-disagreement cutoff trade-off"
+    )
+    axes[0].grid(
+        axis="both",
+        linestyle="--",
+        alpha=0.5,
+    )
+
+    # Bottom panel: quality deterioration
+    axes[1].plot(
+        x,
+        median_worst_uv,
+        marker="o",
+        linewidth=2.0,
+        label="Median worst-side UV distance",
+    )
+
+    axes[1].plot(
+        x,
+        p90_worst_uv,
+        marker="o",
+        linewidth=2.0,
+        label="P90 worst-side UV distance",
+    )
+
+    axes[1].set_xlabel(
+        "Maximum mirror quantity disagreement (%)"
+    )
+    axes[1].set_ylabel(
+        "Worst-side UV distance"
+    )
+    axes[1].grid(
+        axis="both",
+        linestyle="--",
+        alpha=0.5,
+    )
+    axes[1].legend()
+
+    if configured_cutoff is not None:
+        cutoff_x = 100.0 * float(
+            configured_cutoff
+        )
+
+        for axis in axes:
+            axis.axvline(
+                cutoff_x,
+                linestyle="--",
+                linewidth=1.5,
+                color="red",
+            )
+
+        axes[0].text(
+            cutoff_x,
+            max(retained_share) * 0.92,
+            (
+                "Configured cutoff\n"
+                f"{cutoff_x:.0f}%"
+            ),
+            ha="center",
+            va="top",
+            fontsize=9,
+        )
+
+    figure.tight_layout()
+
+    figure.savefig(
+        output_path,
+        dpi=180,
+        bbox_inches="tight",
+    )
+
+    plt.close(
+        figure
+    )
+
 def _plot_training_evidence_by_year(
     *,
     diagnostics: pd.DataFrame,
@@ -2294,6 +2448,12 @@ def _build_validation_figure_paths(
                 "_validation_model_performance_by_year.png"
             )
         ),
+        "mirror_cutoff_tradeoff":
+            figure_dir
+            / (
+                f"target_{target_hs}"
+                "_validation_mirror_cutoff_tradeoff.png"
+            ),
     }
 
 
@@ -2740,6 +2900,102 @@ def build_validation_report(
                 training_rejection_display[column]
                 .map(_format_integer)
             )
+
+
+        mirror_cutoff_tradeoff = _scope_frame(
+            diagnostics,
+            "mirror_cutoff_tradeoff",
+        ).copy()
+
+        if mirror_cutoff_tradeoff.empty:
+            raise RuntimeError(
+                "Mirror-cutoff trade-off diagnostics are unavailable."
+            )
+
+        mirror_cutoff_tradeoff_display = (
+            mirror_cutoff_tradeoff.pivot_table(
+                index="disagreement_threshold",
+                columns="variable",
+                values="value",
+                aggfunc="first",
+            )
+            .reset_index()
+            .sort_values(
+                "disagreement_threshold"
+            )
+            .reset_index(drop=True)
+        )
+
+        mirror_cutoff_tradeoff_display[
+            "Cutoff"
+        ] = mirror_cutoff_tradeoff_display[
+            "disagreement_threshold"
+        ].map(
+            lambda value: (
+                f"≤ {100.0 * float(value):.0f}%"
+            )
+        )
+
+        mirror_cutoff_tradeoff_display = (
+            mirror_cutoff_tradeoff_display[
+                [
+                    "Cutoff",
+                    "retained_rows",
+                    "retained_share",
+                    "median_worst_uv_distance",
+                    "p90_worst_uv_distance",
+                ]
+            ]
+            .rename(
+                columns={
+                    "retained_rows": "Retained rows",
+                    "retained_share": (
+                        "Share of direct bilateral"
+                    ),
+                    "median_worst_uv_distance": (
+                        "Median worst-side UV distance"
+                    ),
+                    "p90_worst_uv_distance": (
+                        "P90 worst-side UV distance"
+                    ),
+                }
+            )
+        )
+
+        mirror_cutoff_tradeoff_display[
+            "Retained rows"
+        ] = mirror_cutoff_tradeoff_display[
+            "Retained rows"
+        ].map(
+            lambda value: _format_integer(
+                int(value)
+            )
+        )
+
+        mirror_cutoff_tradeoff_display[
+            "Share of direct bilateral"
+        ] = mirror_cutoff_tradeoff_display[
+            "Share of direct bilateral"
+        ].map(
+            _format_percent
+        )
+
+        for column in (
+            "Median worst-side UV distance",
+            "P90 worst-side UV distance",
+        ):
+            mirror_cutoff_tradeoff_display[
+                column
+            ] = mirror_cutoff_tradeoff_display[
+                column
+            ].map(
+                lambda value: (
+                    f"{float(value):.3f}"
+                    if pd.notna(value)
+                    else ""
+                )
+            )
+
         # ==========================================================
         # Model Diagnostics
         # ==========================================================
@@ -4891,6 +5147,15 @@ def build_validation_report(
             ],
         )
 
+        _plot_mirror_cutoff_tradeoff(
+            diagnostics=diagnostics,
+            output_path=figure_paths[
+                "mirror_cutoff_tradeoff"
+            ],
+            configured_cutoff=(
+                max_mirror_quantity_disagreement
+            ),
+        )
         # ==============================================================
         # Current methodological status
         # ==============================================================
@@ -6601,8 +6866,39 @@ def build_validation_report(
                 "requires sufficient mirror agreement and product-year UV evidence."
             ),
             "",
-
-            "### 5.1. Evidence behind the training criteria",
+            "### 5.1. Mirror-disagreement cutoff trade-off",
+            "",
+            (
+                "The mirror-disagreement cutoff should not be chosen only by "
+                "retained sample size. A more permissive cutoff retains more "
+                "direct bilateral observations, but it may also admit less "
+                "plausible reporter-side unit values. The following table and "
+                "figure therefore compare retained population size against the "
+                "distribution of worst-side reporter UV distance across a fine "
+                "grid of cumulative cutoffs."
+            ),
+            "",
+            _markdown_table(
+                mirror_cutoff_tradeoff_display
+            ),
+            "",
+            markdown_image(
+                "Mirror-disagreement cutoff trade-off",
+                figure_paths["mirror_cutoff_tradeoff"],
+                document_path=report_path,
+                width=850,
+            ),
+            "",
+            (
+                f"The configured cutoff is "
+                f"`{100.0 * max_mirror_quantity_disagreement:g}%`. "
+                "This diagnostic is intended to identify whether an empirical "
+                "elbow exists, i.e. whether additional retained rows beyond a "
+                "certain cutoff are accompanied by disproportionately worse "
+                "reporter-side UV plausibility."
+            ),
+            "",
+            "### 5.2. Evidence behind the training criteria",
             "",
             (
                 "Mirror quantity disagreement and UV plausibility provide "

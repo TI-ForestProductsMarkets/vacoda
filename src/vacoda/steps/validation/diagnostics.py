@@ -5484,6 +5484,201 @@ def build_diagnostics(
                         "n_candidate_uv_rows": int(row.n_with_uv_distance),
                     }
                 )
+        # ==============================================================
+        # Mirror-disagreement quality by marginal band
+        # ==============================================================
+
+        mirror_band_edges = (
+            0.00,
+            0.05,
+            0.10,
+            0.15,
+            0.20,
+            0.25,
+            0.30,
+            0.35,
+            0.40,
+            0.45,
+            0.50,
+        )
+
+        band_rows = []
+
+        for lower, upper in zip(
+            mirror_band_edges[:-1],
+            mirror_band_edges[1:],
+        ):
+            band_rows.append(
+                (
+                    float(lower),
+                    float(upper),
+                )
+            )
+
+        bands_sql = ", ".join(
+            f"({lower:.6f}, {upper:.6f})"
+            for lower, upper in band_rows
+        )
+
+        mirror_disagreement_bands = con.execute(
+            f"""
+            WITH bands(
+                lower_bound,
+                upper_bound
+            ) AS (
+                VALUES
+                    {bands_sql}
+            ),
+
+            base AS (
+                SELECT
+                    quantity_relative_difference
+                        AS mirror_disagreement,
+
+                    export_unit_value_log_distance,
+                    import_unit_value_log_distance
+
+                FROM validation_diagnostics_base
+
+                WHERE both_quantities_observed
+                  AND quantity_relative_difference IS NOT NULL
+                  AND isfinite(
+                      quantity_relative_difference
+                  )
+            ),
+
+            totals AS (
+                SELECT
+                    COUNT(*) AS total_direct_bilateral_rows
+                FROM base
+            )
+
+            SELECT
+                bands.lower_bound,
+                bands.upper_bound,
+
+                COUNT(*)
+                    AS n_rows,
+
+                COUNT(*) * 1.0
+                    / (
+                        SELECT
+                            total_direct_bilateral_rows
+                        FROM totals
+                    )
+                    AS share_of_direct_bilateral,
+
+                COUNT(*) FILTER (
+                    WHERE export_unit_value_log_distance IS NOT NULL
+                      AND import_unit_value_log_distance IS NOT NULL
+                      AND isfinite(
+                          export_unit_value_log_distance
+                      )
+                      AND isfinite(
+                          import_unit_value_log_distance
+                      )
+                )
+                    AS n_uv_evaluable,
+
+                MEDIAN(
+                    GREATEST(
+                        export_unit_value_log_distance,
+                        import_unit_value_log_distance
+                    )
+                ) FILTER (
+                    WHERE export_unit_value_log_distance IS NOT NULL
+                      AND import_unit_value_log_distance IS NOT NULL
+                      AND isfinite(
+                          export_unit_value_log_distance
+                      )
+                      AND isfinite(
+                          import_unit_value_log_distance
+                      )
+                )
+                    AS median_worst_uv_distance,
+
+                QUANTILE_CONT(
+                    GREATEST(
+                        export_unit_value_log_distance,
+                        import_unit_value_log_distance
+                    ),
+                    0.90
+                ) FILTER (
+                    WHERE export_unit_value_log_distance IS NOT NULL
+                      AND import_unit_value_log_distance IS NOT NULL
+                      AND isfinite(
+                          export_unit_value_log_distance
+                      )
+                      AND isfinite(
+                          import_unit_value_log_distance
+                      )
+                )
+                    AS p90_worst_uv_distance,
+
+                AVG(
+                    CASE
+                        WHEN GREATEST(
+                            export_unit_value_log_distance,
+                            import_unit_value_log_distance
+                        ) <= 0.50
+                            THEN 1.0
+                        ELSE 0.0
+                    END
+                ) FILTER (
+                    WHERE export_unit_value_log_distance IS NOT NULL
+                      AND import_unit_value_log_distance IS NOT NULL
+                      AND isfinite(
+                          export_unit_value_log_distance
+                      )
+                      AND isfinite(
+                          import_unit_value_log_distance
+                      )
+                )
+                    AS both_within_050_share,
+
+                AVG(
+                    CASE
+                        WHEN GREATEST(
+                            export_unit_value_log_distance,
+                            import_unit_value_log_distance
+                        ) <= 1.00
+                            THEN 1.0
+                        ELSE 0.0
+                    END
+                ) FILTER (
+                    WHERE export_unit_value_log_distance IS NOT NULL
+                      AND import_unit_value_log_distance IS NOT NULL
+                      AND isfinite(
+                          export_unit_value_log_distance
+                      )
+                      AND isfinite(
+                          import_unit_value_log_distance
+                      )
+                )
+                    AS both_within_100_share
+
+            FROM bands
+
+            INNER JOIN base
+                ON (
+                    bands.lower_bound = 0.0
+                    AND base.mirror_disagreement >= bands.lower_bound
+                    AND base.mirror_disagreement <= bands.upper_bound
+                )
+                OR (
+                    bands.lower_bound > 0.0
+                    AND base.mirror_disagreement > bands.lower_bound
+                    AND base.mirror_disagreement <= bands.upper_bound
+                )
+
+            GROUP BY
+                bands.lower_bound,
+                bands.upper_bound
+
+            ORDER BY
+                bands.lower_bound
+            """
+        ).fetchdf()
 
         # ------------------------------------------------------------------
         # Candidate performance by mirror-disagreement band
@@ -5733,6 +5928,289 @@ def build_diagnostics(
                         ),
                     }
                 )
+
+        # ==============================================================
+        # Mirror-disagreement cutoff trade-off
+        # ==============================================================
+
+        mirror_cutoff_grid = (
+            0.05,
+            0.10,
+            0.15,
+            0.20,
+            0.25,
+            0.30,
+            0.35,
+            0.40,
+            0.45,
+            0.50,
+        )
+
+        cutoff_sql = ", ".join(
+            f"({cutoff:.6f})"
+            for cutoff in mirror_cutoff_grid
+        )
+
+        mirror_cutoff_tradeoff = con.execute(
+            f"""
+            WITH cutoffs(disagreement_threshold) AS (
+                VALUES
+                    {cutoff_sql}
+            ),
+
+            base AS (
+                SELECT
+                    quantity_relative_difference
+                        AS mirror_disagreement,
+
+                    GREATEST(
+                        export_unit_value_log_distance,
+                        import_unit_value_log_distance
+                    )
+                        AS worst_uv_distance
+
+                FROM validation_diagnostics_base
+
+                WHERE both_quantities_observed
+                  AND quantity_relative_difference IS NOT NULL
+                  AND isfinite(
+                      quantity_relative_difference
+                  )
+            ),
+
+            totals AS (
+                SELECT
+                    COUNT(*)
+                        AS total_direct_bilateral_rows
+                FROM base
+            )
+
+            SELECT
+                c.disagreement_threshold,
+
+                COUNT(*)
+                    AS retained_rows,
+
+                (
+                    COUNT(*)
+                    * 1.0
+                    / (
+                        SELECT
+                            total_direct_bilateral_rows
+                        FROM totals
+                    )
+                )
+                    AS retained_share,
+
+                quantile_cont(
+                    worst_uv_distance,
+                    0.50
+                )
+                    AS median_worst_uv_distance,
+
+                quantile_cont(
+                    worst_uv_distance,
+                    0.90
+                )
+                    AS p90_worst_uv_distance
+
+            FROM cutoffs AS c
+
+            INNER JOIN base AS b
+                ON b.mirror_disagreement
+                   <= c.disagreement_threshold
+
+            GROUP BY
+                c.disagreement_threshold
+
+            ORDER BY
+                c.disagreement_threshold
+            """
+        ).fetchdf()
+
+        for row in mirror_cutoff_tradeoff.itertuples(
+            index=False
+        ):
+            disagreement_threshold = float(
+                row.disagreement_threshold
+            )
+
+            retained_rows = int(
+                row.retained_rows
+            )
+
+            retained_share = float(
+                row.retained_share
+            )
+
+            median_worst_uv_distance = (
+                float(row.median_worst_uv_distance)
+                if row.median_worst_uv_distance
+                is not None
+                else None
+            )
+
+            p90_worst_uv_distance = (
+                float(row.p90_worst_uv_distance)
+                if row.p90_worst_uv_distance
+                is not None
+                else None
+            )
+
+            diagnostics_rows.extend(
+                [
+                    {
+                        "scope": "mirror_cutoff_tradeoff",
+                        "criterion": None,
+                        "candidate": None,
+
+                        "disagreement_threshold": (
+                            disagreement_threshold
+                        ),
+                        "uv_support_threshold": None,
+                        "uv_distance_threshold": None,
+
+                        "disagreement_band": None,
+                        "uv_distance_band": None,
+
+                        "year": None,
+                        "target_cmd": None,
+
+                        "variable": "retained_rows",
+                        "quantile": None,
+
+                        "n_rows": retained_rows,
+
+                        "share_of_all": _share(
+                            retained_rows,
+                            n_all_rows,
+                        ),
+                        "share_of_parent": retained_share,
+
+                        "value": float(
+                            retained_rows
+                        ),
+
+                        "validation_years": None,
+                        "training_years": None,
+                        "first_training_year": None,
+                        "last_training_year": None,
+                    },
+                    {
+                        "scope": "mirror_cutoff_tradeoff",
+                        "criterion": None,
+                        "candidate": None,
+
+                        "disagreement_threshold": (
+                            disagreement_threshold
+                        ),
+                        "uv_support_threshold": None,
+                        "uv_distance_threshold": None,
+
+                        "disagreement_band": None,
+                        "uv_distance_band": None,
+
+                        "year": None,
+                        "target_cmd": None,
+
+                        "variable": "retained_share",
+                        "quantile": None,
+
+                        "n_rows": retained_rows,
+
+                        "share_of_all": _share(
+                            retained_rows,
+                            n_all_rows,
+                        ),
+                        "share_of_parent": retained_share,
+
+                        "value": retained_share,
+
+                        "validation_years": None,
+                        "training_years": None,
+                        "first_training_year": None,
+                        "last_training_year": None,
+                    },
+                    {
+                        "scope": "mirror_cutoff_tradeoff",
+                        "criterion": None,
+                        "candidate": None,
+
+                        "disagreement_threshold": (
+                            disagreement_threshold
+                        ),
+                        "uv_support_threshold": None,
+                        "uv_distance_threshold": None,
+
+                        "disagreement_band": None,
+                        "uv_distance_band": None,
+
+                        "year": None,
+                        "target_cmd": None,
+
+                        "variable": (
+                            "median_worst_uv_distance"
+                        ),
+                        "quantile": None,
+
+                        "n_rows": retained_rows,
+
+                        "share_of_all": _share(
+                            retained_rows,
+                            n_all_rows,
+                        ),
+                        "share_of_parent": retained_share,
+
+                        "value": (
+                            median_worst_uv_distance
+                        ),
+
+                        "validation_years": None,
+                        "training_years": None,
+                        "first_training_year": None,
+                        "last_training_year": None,
+                    },
+                    {
+                        "scope": "mirror_cutoff_tradeoff",
+                        "criterion": None,
+                        "candidate": None,
+
+                        "disagreement_threshold": (
+                            disagreement_threshold
+                        ),
+                        "uv_support_threshold": None,
+                        "uv_distance_threshold": None,
+
+                        "disagreement_band": None,
+                        "uv_distance_band": None,
+
+                        "year": None,
+                        "target_cmd": None,
+
+                        "variable": (
+                            "p90_worst_uv_distance"
+                        ),
+                        "quantile": None,
+
+                        "n_rows": retained_rows,
+
+                        "share_of_all": _share(
+                            retained_rows,
+                            n_all_rows,
+                        ),
+                        "share_of_parent": retained_share,
+
+                        "value": (
+                            p90_worst_uv_distance
+                        ),
+
+                        "validation_years": None,
+                        "training_years": None,
+                        "first_training_year": None,
+                        "last_training_year": None,
+                    },
+                ]
+            )
 
         # ==============================================================
         # Mirror-disagreement retention by cumulative cutoff
