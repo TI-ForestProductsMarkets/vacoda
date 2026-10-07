@@ -172,7 +172,6 @@ def build_diagnostics(
     cfg: ValidationConfig,
     input_path: Path,
     structural_audit_path: Path,
-    quantity_selection_audit_path: Path,
     model_predictions_path: Path,
     run_id: str,
     force: bool = False,
@@ -191,7 +190,6 @@ def build_diagnostics(
 
     input_path = Path(input_path)
     structural_audit_path = Path(structural_audit_path)
-    quantity_selection_audit_path = Path(quantity_selection_audit_path)
     model_predictions_path = Path(model_predictions_path)
 
     if not input_path.is_file():
@@ -203,12 +201,6 @@ def build_diagnostics(
         raise FileNotFoundError(
             "Validation diagnostics structural-audit artifact not found: "
             f"{structural_audit_path}"
-        )
-
-    if not quantity_selection_audit_path.is_file():
-        raise FileNotFoundError(
-            "Validation diagnostics quantity-selection audit artifact not found: "
-            f"{quantity_selection_audit_path}"
         )
 
     if not model_predictions_path.is_file():
@@ -262,10 +254,8 @@ def build_diagnostics(
     import_estimated_col = str(columns_cfg.import_estimated)
     relative_difference_col = str(columns_cfg.quantity_relative_difference)
 
-    selected_quantity_col = "quantity_selected_kg"
-    selected_candidate_col = "quantity_selected_candidate"
-    selected_source_col = "quantity_selected_source"
-
+    quantity_col = "quantity_value_weighted_kg"
+    
     min_reference_observations = int(
         training_cfg.min_hs_year_reference_observations
     )
@@ -293,9 +283,7 @@ def build_diagnostics(
         export_estimated_col,
         import_estimated_col,
         relative_difference_col,
-        selected_quantity_col,
-        selected_candidate_col,
-        selected_source_col,
+        quantity_col,
         "selected_unit_value",
         "training_eligible",
         "hs_year_uv_reference",
@@ -316,19 +304,6 @@ def build_diagnostics(
         # --------------------------------------------------------------
         # Require passing quantity-method audit
         # --------------------------------------------------------------
-        audit_passed_row = con.execute(
-            f"""
-            SELECT audit_passed
-            FROM read_parquet({sql_literal(quantity_selection_audit_path)})
-            LIMIT 1
-            """
-        ).fetchone()
-
-        if audit_passed_row is None or not bool(audit_passed_row[0]):
-            raise RuntimeError(
-                "Validation diagnostics require a passing quantity-selection "
-                "audit."
-            )
 
         _require_columns(
             con=con,
@@ -351,9 +326,7 @@ def build_diagnostics(
                 importer_iso,
                 "{product_col}" AS target_cmd,
 
-                "{selected_quantity_col}" AS quantity_selected_kg,
-                "{selected_candidate_col}" AS quantity_selected_candidate,
-                "{selected_source_col}" AS quantity_selected_source,
+                "{quantity_col}" AS quantity_value_weighted_kg,
 
                 "{nominal_value_col}" AS trade_value_reconciled,
                 "{constant_value_col}" AS trade_value_reconciled_constant_usd,
@@ -446,36 +419,44 @@ def build_diagnostics(
             ).fetchone()[0]
         )
 
-        # ==================================================================
-        # 1. Selected canonical quantity methodology
-        # ==================================================================
-        selected_candidates = con.execute(
-            """
-            SELECT DISTINCT quantity_selected_candidate
-            FROM validation_diagnostics_base
-            WHERE quantity_selected_candidate IS NOT NULL
-            ORDER BY quantity_selected_candidate
-            """
-        ).fetchall()
-
-        if len(selected_candidates) != 1:
-            raise RuntimeError(
-                "Validation diagnostics require exactly one selected canonical "
-                "bilateral quantity methodology."
-            )
-
-        selected_candidate = str(selected_candidates[0][0])
-
         _append_metric(
             diagnostics_rows,
             scope="quantity_methodology",
-            criterion="selected_canonical_quantity",
-            candidate=selected_candidate,
+            criterion="canonical_bilateral_quantity",
+            candidate="value_weighted",
             n_rows=n_all_rows,
             total_rows=n_all_rows,
             share_of_all=1.0,
         )
 
+
+        for quantile in DIAGNOSTIC_QUANTILES:
+
+            value = con.execute(
+                f"""
+                SELECT QUANTILE_CONT(
+                    selected_uv_log_distance,
+                    {float(quantile):.17g}
+                )
+                FROM validation_diagnostics_base
+                WHERE training_eligible
+                AND selected_uv_log_distance IS NOT NULL
+                AND isfinite(selected_uv_log_distance)
+                """
+            ).fetchone()[0]
+
+            _append_metric(
+                diagnostics_rows,
+                scope="training_uv_distance_distribution",
+                criterion="canonical_eligible_population",
+                variable="selected_uv_log_distance",
+                quantile=float(quantile),
+                value=(
+                    float(value)
+                    if value is not None
+                    else None
+                ),
+            )
         # ==================================================================
         # 2. Source-reporter diagnostics
         # ==================================================================

@@ -35,9 +35,10 @@ import pandas as pd
 
 from vacoda.config.paths import get_figure_dir
 from vacoda.config.steps.validation import ValidationConfig
-from vacoda.utils.display import get_symbols
+from vacoda.utils.display import get_symbols, get_table_figure_layout
 from vacoda.utils.markdown import insert_markdown_toc, markdown_image
 from vacoda.utils.sql import sql_literal
+from vacoda.visualization.relationships import plot_figure_pair
 
 
 # ======================================================================
@@ -75,6 +76,76 @@ def _format_percent(
     return f"{100.0 * float(value):.{digits}f}%"
 
 
+def _plot_reference_window_comparison(
+    *,
+    diagnostics: pd.DataFrame,
+    output_path: Path,
+) -> None:
+    frame = _require_diagnostic_scope(
+        diagnostics,
+        "reference_window_summary",
+    )
+
+    frame = frame[
+        frame["variable"].eq("groups_with_support")
+    ].copy()
+
+    order = ["0_0", "1_0", "2_0"]
+
+    frame["order"] = frame["criterion"].map(
+        {value: index for index, value in enumerate(order)}
+    )
+    frame = frame.sort_values("order")
+
+    figure, axis = plt.subplots(figsize=(9, 5.5))
+
+    x = range(len(frame))
+
+    bars = axis.bar(
+        x,
+        100.0 * pd.to_numeric(
+            frame["share_of_parent"],
+            errors="coerce",
+        ),
+    )
+
+    axis.set_xticks(list(x))
+    axis.set_xticklabels(
+        frame["criterion"].astype(str)
+    )
+
+    axis.bar_label(
+        bars,
+        labels=[
+            _format_percent(value)
+            for value in frame["share_of_parent"]
+        ],
+        padding=3,
+        fontsize=8,
+    )
+
+    axis.set_title(
+        "HS × year reference support by temporal window"
+    )
+    axis.set_xlabel("Reference window")
+    axis.set_ylabel(
+        "HS × year groups meeting support threshold (%)"
+    )
+    axis.set_ylim(0, 100)
+    axis.grid(
+        axis="y",
+        linestyle="--",
+        alpha=0.5,
+    )
+    axis.set_axisbelow(True)
+
+    figure.tight_layout()
+    figure.savefig(
+        output_path,
+        dpi=180,
+        bbox_inches="tight",
+    )
+    plt.close(figure)
 
 def _format_number(
     value: float | int | None,
@@ -119,6 +190,275 @@ def _scope_frame(
 
 
 
+def _plot_training_uv_distance_distribution(
+    *,
+    diagnostics: pd.DataFrame,
+    output_path: Path,
+    use_factor: bool = False,
+) -> None:
+    """Plot selected UV-distance distribution on log or factor scale."""
+
+    frame = _scope_frame(
+        diagnostics,
+        "training_uv_distance_distribution",
+    ).copy()
+
+    if frame.empty:
+        raise RuntimeError(
+            "Training UV-distance diagnostics are unavailable."
+        )
+
+    frame = frame.sort_values(
+        "quantile"
+    )
+
+    values = pd.to_numeric(
+        frame["value"],
+        errors="coerce",
+    )
+
+    if use_factor:
+        plot_values = values.map(math.exp)
+        y_label = "Factor from HS × year UV reference"
+    else:
+        plot_values = values
+        y_label = "Absolute log-distance from HS × year reference"
+
+    figure, axis = plt.subplots(
+        figsize=(10, 6)
+    )
+
+    axis.plot(
+        100.0 * frame["quantile"],
+        plot_values,
+        marker="o",
+    )
+
+    axis.set_title(
+        "Selected unit-value distance distribution"
+    )
+
+    axis.set_xlabel(
+        "Quantile (%)"
+    )
+
+    axis.set_ylabel(
+        y_label
+    )
+
+    if use_factor:
+        axis.axhline(
+            1.0,
+            linestyle="--",
+            linewidth=1.2,
+            label="Exact reference (1×)",
+        )
+        axis.legend()
+
+    axis.grid(
+        axis="y",
+        linestyle="--",
+        alpha=0.5,
+    )
+
+    figure.tight_layout()
+
+    figure.savefig(
+        output_path,
+        dpi=180,
+        bbox_inches="tight",
+    )
+
+    plt.close(
+        figure
+    )
+
+def _plot_training_reference_support_distribution(
+    *,
+    diagnostics: pd.DataFrame,
+    output_path: Path,
+) -> None:
+    """Plot HS × year reference-support quantiles."""
+
+    frame = _scope_frame(
+        diagnostics,
+        "training_reference_support_distribution",
+    ).copy()
+
+    if frame.empty:
+        raise RuntimeError(
+            "Training reference-support diagnostics are unavailable."
+        )
+
+    frame = frame.sort_values(
+        "quantile"
+    )
+
+    figure, axis = plt.subplots(
+        figsize=(10, 6)
+    )
+
+    axis.plot(
+        100.0 * frame["quantile"],
+        frame["value"],
+        marker="o",
+    )
+
+    axis.set_title(
+        "HS × year unit-value reference support"
+    )
+
+    axis.set_xlabel(
+        "Quantile (%)"
+    )
+
+    axis.set_ylabel(
+        "Reference observations"
+    )
+
+    axis.grid(
+        axis="y",
+        linestyle="--",
+        alpha=0.5,
+    )
+
+    figure.tight_layout()
+
+    figure.savefig(
+        output_path,
+        dpi=180,
+        bbox_inches="tight",
+    )
+
+    plt.close(
+        figure
+    )
+
+def _plot_training_uv_mad_distribution(
+    *,
+    diagnostics: pd.DataFrame,
+    output_path: Path,
+) -> None:
+    """Plot HS × year log-UV MAD quantiles."""
+
+    frame = _scope_frame(
+        diagnostics,
+        "training_uv_mad_distribution",
+    ).copy()
+
+    if frame.empty:
+        raise RuntimeError(
+            "Training UV-MAD diagnostics are unavailable."
+        )
+
+    frame = frame.sort_values(
+        "quantile"
+    )
+
+    figure, axis = plt.subplots(
+        figsize=(10, 6)
+    )
+
+    axis.plot(
+        100.0 * frame["quantile"],
+        frame["value"],
+        marker="o",
+    )
+
+    axis.set_title(
+        "HS × year unit-value dispersion"
+    )
+
+    axis.set_xlabel(
+        "Quantile (%)"
+    )
+
+    axis.set_ylabel(
+        "Log-unit-value MAD"
+    )
+
+    axis.grid(
+        axis="y",
+        linestyle="--",
+        alpha=0.5,
+    )
+
+    figure.tight_layout()
+
+    figure.savefig(
+        output_path,
+        dpi=180,
+        bbox_inches="tight",
+    )
+
+    plt.close(
+        figure
+    )
+
+
+
+def _plot_training_normalized_uv_distance_distribution(
+    *,
+    diagnostics: pd.DataFrame,
+    output_path: Path,
+) -> None:
+    """Plot selected UV distance relative to HS × year log-UV MAD."""
+
+    frame = _scope_frame(
+        diagnostics,
+        "training_normalized_uv_distance_distribution",
+    ).copy()
+
+    if frame.empty:
+        raise RuntimeError(
+            "Training normalized UV-distance diagnostics "
+            "are unavailable."
+        )
+
+    frame = frame.sort_values(
+        "quantile"
+    )
+
+    figure, axis = plt.subplots(
+        figsize=(10, 6)
+    )
+
+    axis.plot(
+        100.0 * frame["quantile"],
+        frame["value"],
+        marker="o",
+    )
+
+    axis.set_title(
+        "Selected unit-value distance relative to HS × year dispersion"
+    )
+
+    axis.set_xlabel(
+        "Quantile (%)"
+    )
+
+    axis.set_ylabel(
+        "UV log distance / log-UV MAD"
+    )
+
+    axis.grid(
+        axis="y",
+        linestyle="--",
+        alpha=0.5,
+    )
+
+    figure.tight_layout()
+
+    figure.savefig(
+        output_path,
+        dpi=180,
+        bbox_inches="tight",
+    )
+
+    plt.close(
+        figure
+    )
+
 def _candidate_label(value: str) -> str:
     """Return a readable label for the selected quantity methodology."""
 
@@ -154,7 +494,55 @@ def _require_diagnostic_scope(
 # ======================================================================
 # Figures
 # ======================================================================
+def _plot_training_coverage_by_product(
+    *,
+    diagnostics: pd.DataFrame,
+    output_path: Path,
+) -> None:
+    frame = _require_diagnostic_scope(
+        diagnostics,
+        "training_coverage_by_product",
+    ).copy()
 
+    frame["training_share"] = pd.to_numeric(
+        frame["share_of_all"],
+        errors="coerce",
+    )
+
+    frame = frame.sort_values(
+        ["training_share", "target_cmd"]
+    ).reset_index(drop=True)
+
+    figure, axis = plt.subplots(figsize=(10, 6))
+
+    axis.plot(
+        range(len(frame)),
+        100.0 * frame["training_share"],
+    )
+
+    axis.set_title(
+        "Training-sample coverage across HS products"
+    )
+    axis.set_xlabel(
+        "HS products ranked by training coverage"
+    )
+    axis.set_ylabel(
+        "Training-selected share of product rows (%)"
+    )
+    axis.grid(
+        axis="y",
+        linestyle="--",
+        alpha=0.5,
+    )
+    axis.set_axisbelow(True)
+
+    figure.tight_layout()
+    figure.savefig(
+        output_path,
+        dpi=180,
+        bbox_inches="tight",
+    )
+    plt.close(figure)
 
 def _plot_source_quantity_availability(
     *,
@@ -587,6 +975,30 @@ def _build_validation_figure_paths(
     prefix = f"target_{target_hs}_validation_"
 
     return {
+        "training_coverage_by_product": (
+            figure_dir / f"{prefix}training_coverage_by_product.png"
+        ),
+        "reference_window_comparison": (
+            figure_dir / f"{prefix}reference_window_comparison.png"
+        ),
+        "training_uv_dispersion_distribution": (
+            figure_dir / f"{prefix}training_uv_dispersion_distribution.png"
+        ),
+        "training_uv_distance_distribution": (
+            figure_dir / f"{prefix}training_uv_distance_distribution.png"
+        ),
+
+        "training_reference_support_distribution": (
+            figure_dir / f"{prefix}training_reference_support_distribution.png"
+        ),
+
+        "training_uv_mad_distribution": (
+            figure_dir / f"{prefix}training_uv_mad_distribution.png"
+        ),
+
+        "training_normalized_uv_distance_distribution": (
+            figure_dir / f"{prefix}training_normalized_uv_distance_distribution.png"
+        ),
         "source_quantity_availability": (
             figure_dir / f"{prefix}source_quantity_availability.png"
         ),
@@ -1248,6 +1660,18 @@ def build_validation_report(
             }
         )
 
+        mad_distribution_display = pd.DataFrame(
+            {
+                "Quantile": [
+                    f"P{100.0 * float(value):g}"
+                    for value in mad_distribution["quantile"]
+                ],
+                "HS×year log-UV MAD": [
+                    _format_number(value, digits=4)
+                    for value in mad_distribution["value"]
+                ],
+            }
+        )
         # ============================================================== 
         # Model evaluation
         # ============================================================== 
@@ -1282,6 +1706,43 @@ def build_validation_report(
             }
         ).sort_values("MAE log")
 
+        uv_distance_distribution = _require_diagnostic_scope(
+            diagnostics,
+            "training_uv_distance_distribution",
+        ).sort_values("quantile")
+
+        uv_distance_display = pd.DataFrame(
+            {
+                "Quantile": [
+                    f"P{100.0 * float(value):g}"
+                    for value in uv_distance_distribution["quantile"]
+                ],
+                "Absolute UV log distance": [
+                    _format_number(value, digits=4)
+                    for value in uv_distance_distribution["value"]
+                ],
+                "Equivalent factor": [
+                    _format_number(
+                        math.exp(float(value)),
+                        digits=2,
+                    )
+                    for value in uv_distance_distribution["value"]
+                ],
+            }
+        )
+
+        normalized_uv_distance_display = pd.DataFrame(
+            {
+                "Quantile": [
+                    f"P{100.0 * float(value):g}"
+                    for value in normalized_distribution["quantile"]
+                ],
+                "Normalized UV distance (MAD)": [
+                    _format_number(value, digits=3)
+                    for value in normalized_distribution["value"]
+                ],
+            }
+        )
         # ============================================================== 
         # Figures
         # ============================================================== 
@@ -1289,7 +1750,45 @@ def build_validation_report(
             figure_dir=figure_dir,
             target_hs=cfg.scope.target_hs,
         )
+        _plot_training_uv_distance_distribution(
+            diagnostics=diagnostics,
+            output_path=figure_paths[
+                "training_uv_distance_distribution"
+            ],
+        )
+        _plot_training_reference_support_distribution(
+            diagnostics=diagnostics,
+            output_path=figure_paths[
+                "training_reference_support_distribution"
+            ],
+        )
 
+        _plot_training_uv_mad_distribution(
+            diagnostics=diagnostics,
+            output_path=figure_paths[
+                "training_uv_mad_distribution"
+            ],
+        )
+
+        _plot_training_normalized_uv_distance_distribution(
+            diagnostics=diagnostics,
+            output_path=figure_paths[
+                "training_normalized_uv_distance_distribution"
+            ],
+        )
+
+        _plot_reference_window_comparison(
+            diagnostics=diagnostics,
+            output_path=figure_paths[
+                "reference_window_comparison"
+            ],
+        )
+        _plot_training_coverage_by_product(
+            diagnostics=diagnostics,
+            output_path=figure_paths[
+                "training_coverage_by_product"
+            ],
+        )
         _plot_source_quantity_availability(
             diagnostics=diagnostics,
             output_path=figure_paths[
@@ -1331,14 +1830,47 @@ def build_validation_report(
         # ============================================================== 
         # Report narrative
         # ============================================================== 
+        training_cfg = cfg.model.training_sample
+        validation_cfg = cfg.model.validation
+
+        enabled_model_names = list(
+            cfg.model.models.enabled().keys()
+        )
+        reference_before = int(
+            training_cfg.reference_year_window.before
+        )
+
+        reference_after = int(
+            training_cfg.reference_year_window.after
+        )
+
+        min_reference_n = int(
+            training_cfg.min_hs_year_reference_observations
+        )
+
+        max_uv_distance = float(
+            training_cfg.max_normalized_uv_distance_mad
+        )
+
         validation_strategy = str(
-            cfg.model.validation.strategy
+            validation_cfg.strategy
         )
         minimum_training_years = int(
-            cfg.model.validation.minimum_training_years
+            validation_cfg.minimum_training_years
+        )
+        configured_years = list(
+            range(
+                int(cfg.scope.min_year),
+                int(cfg.scope.max_year) + 1,
+            )
         )
 
         if validation_strategy == "expanding_window":
+            configured_validation_years = (
+                configured_years[
+                    minimum_training_years:
+                ]
+            )
             validation_description = (
                 "Candidate models are evaluated using expanding-window "
                 "validation. Each validation year is predicted using only "
@@ -1350,6 +1882,7 @@ def build_validation_report(
                 "Expanding-window model performance"
             )
         else:
+            configured_validation_years = []
             validation_description = (
                 "Candidate models are evaluated using the configured "
                 f"`{validation_strategy}` validation strategy."
@@ -1364,31 +1897,63 @@ def build_validation_report(
                 f"{str(cfg.scope.target_hs).upper()}"
             ),
             "",
-            "## 1. Run overview",
             "",
+            f"- **Run ID:** `{run_id}`",
+            f"- **Target HS:** `{cfg.scope.target_hs.upper()}`",
             (
-                "This report summarizes the Validation evidence at the canonical "
-                "bilateral grain `(exporter, importer, year, HS product)`. "
-                "Reporter-side exporter/importer quantities are retained as "
-                "descriptive source diagnostics only; they do not define model-"
-                "training eligibility."
+                f"- **Configured year range:** "
+                f"{cfg.scope.min_year}–{cfg.scope.max_year}"
             ),
+                "- **Training Sample Criteria:**",
+                (
+                    f"  - Reference-year window: `before={reference_before}, "
+                    f"after={reference_after}`"
+                ),
+                (
+                    f"  - Minimum HS × year reference observations: "
+                    f"`{min_reference_n}`"
+                ),
+                (
+                    f"  - Maximum normalized UV distance: "
+                    f"`{max_uv_distance:g} MAD`"
+                ),
+            "- **Validation Criteria:**",
+            (
+                    f"  - Validation Strategy: `{validation_strategy}`"
+            ),
+            (
+                    f"  - Minimum training years: `{minimum_training_years}`"
+            ),
+            (
+                "  - Validation years: "
+                f"`{', '.join(str(year) for year in configured_validation_years)}`"
+            ),
+            "- **Enabled candidate models:**",
+            *[
+                f"  - `{name}`"
+                for name in enabled_model_names
+            ],
+            "- **Artifacts:**",
+                f"  - Prepared input: `{prepared_input_path}`",
+                f"  - Structural audit: `{structural_audit_path}`",
+                f"  - Diagnostics: `{diagnostics_path}`",
+                f"  - Figure directory: `{figure_dir}`",
+                f"  - Report: `{report_path}`",
             "",
-            f"- Run ID: `{run_id}`",
-            f"- Prepared input: `{prepared_input_path}`",
-            f"- Structural audit: `{structural_audit_path}`",
-            f"- Diagnostics: `{diagnostics_path}`",
+            "__TOC__",
             "",
-            "## 2. Structural integrity",
+            "",
+            "",
+            "## 1. Structural integrity",
             "",
             _markdown_table(structural_summary),
             "",
-            "## 3. Canonical bilateral quantity methodology",
+            "## 2. Canonical bilateral quantity methodology",
             "",
             (
                 "The quantity-selection stage has fixed one canonical bilateral "
                 "quantity methodology for downstream Validation. The current "
-                f"methodology is **{selected_candidate_label}**."
+                f"methodology is `{selected_candidate_label}`."
             ),
             "",
             (
@@ -1397,7 +1962,7 @@ def build_validation_report(
                 "treating exporter or importer quantities as separate truth labels."
             ),
             "",
-            "## 4. Source-reporter diagnostics",
+            "## 3. Source-reporter diagnostics",
             "",
             (
                 "The following diagnostics describe the quantity evidence supplied "
@@ -1407,18 +1972,19 @@ def build_validation_report(
                 "the model-training sample.**"
             ),
             "",
-            "### 4.1. Quantity availability by reporting side",
+            "### 3.1. Quantity availability by reporting side",
             "",
-            _markdown_table(source_availability_display),
-            "",
-            markdown_image(
-                "Source-reporter quantity availability",
-                figure_paths["source_quantity_availability"],
-                document_path=report_path,
-                width=800,
+            get_table_figure_layout(
+                source_availability_display,
+                markdown_image(
+                    "Source-reporter quantity availability",
+                    figure_paths["source_quantity_availability"],
+                    document_path=report_path,
+                    width=800,
+                ),
             ),
             "",
-            "### 4.2. Exporter/importer disagreement",
+            "### 3.2. Exporter/importer disagreement",
             "",
             (
                 "Where both source quantities are available, the distribution below "
@@ -1426,7 +1992,15 @@ def build_validation_report(
                 "reporting evidence, not a training-selection criterion."
             ),
             "",
-            _markdown_table(source_disagreement_display),
+            get_table_figure_layout(
+                source_disagreement_display,
+                markdown_image(
+                    "Exporter/importer quantity disagreement bands",
+                    figure_paths["source_quantity_disagreement"],
+                    document_path=report_path,
+                    width=800,
+                ),
+            ),
             "",
             markdown_image(
                 "Exporter/importer quantity disagreement bands",
@@ -1435,7 +2009,7 @@ def build_validation_report(
                 width=800,
             ),
             "",
-            "## 5. HS × year unit-value reference",
+            "## 4. HS × year unit-value evidence",
             "",
             (
                 "For technically usable canonical bilateral observations, Validation "
@@ -1445,31 +2019,99 @@ def build_validation_report(
                 "dispersion is the median absolute deviation (MAD)."
             ),
             "",
-            "### 5.1. Reference-window comparison",
+
+            "### 4.1. Reference-window comparison",
             "",
             (
                 "The table compares same-year, one-year-back, and two-year-back "
-                "causal reference windows. It is diagnostic evidence for the chosen "
-                "reference construction, not a separate training criterion."
+                "causal reference windows."
             ),
             "",
-            _markdown_table(reference_window_display),
+            get_table_figure_layout(
+                reference_window_display,
+                markdown_image(
+                    "HS × year reference support by temporal window",
+                    figure_paths["reference_window_comparison"],
+                    document_path=report_path,
+                    #width=800,
+                ),
+            ),
             "",
-            "### 5.2. Current reference support",
-            "",
-            _markdown_table(support_distribution_display),
-            "",
-            "### 5.3. UV dispersion and normalized distance",
+
+            "### 4.2. HS × year reference support",
             "",
             (
-                "The selected unit-value distance is normalized by the HS × year "
-                "log-UV MAD so that deviations are interpreted relative to the "
-                "natural dispersion of each product/time group."
+                "Reference support is the number of canonical eligible observations "
+                "contributing to each HS × year unit-value reference."
             ),
             "",
-            _markdown_table(uv_distribution_display),
+            get_table_figure_layout(
+                support_distribution_display,
+                markdown_image(
+                    "HS × year unit-value reference support",
+                    figure_paths["training_reference_support_distribution"],
+                    document_path=report_path,
+                    #width=800,
+                ),
+            ),
             "",
-            "## 6. Model-training sample",
+
+            "### 4.3. HS × year unit-value dispersion",
+            "",
+            (
+                "The log-UV MAD describes the natural within-group dispersion around "
+                "the robust HS × year reference."
+            ),
+            "",
+            get_table_figure_layout(
+                mad_distribution_display,
+                markdown_image(
+                    "HS × year unit-value dispersion",
+                    figure_paths["training_uv_dispersion_distribution"],
+                    document_path=report_path,
+                    #width=800,
+                ),
+            ),
+            "",
+            "### 4.4. Canonical unit-value distance",
+            "",
+            (
+                "For each technically eligible canonical observation, Validation "
+                "measures the absolute log-distance between its implied unit value "
+                "and the corresponding HS × year reference."
+            ),
+            "",
+            get_table_figure_layout(
+                uv_distance_display,
+                markdown_image(
+                    "Canonical unit-value distance distribution",
+                    figure_paths["training_uv_distance_distribution"],
+                    document_path=report_path,
+                    #width=800,
+                ),
+            ),
+            "",
+
+            "### 4.5. Dispersion-normalized unit-value distance",
+            "",
+            (
+                "Because natural unit-value dispersion differs across HS × year "
+                "groups, the absolute log-distance is also divided by the group MAD. "
+                "A value of 1 means that the observation lies one within-group MAD "
+                "from the reference."
+            ),
+            "",
+            get_table_figure_layout(
+                normalized_uv_distance_display,
+                markdown_image(
+                    "Unit-value distance relative to HS × year dispersion",
+                    figure_paths["training_normalized_uv_distance_distribution"],
+                    document_path=report_path,
+                    #width=800,
+                ),
+            ),
+            "",
+            "## 5. Training sample selection and coverage",
             "",
             (
                 "The model-training sample is defined only from canonical bilateral "
@@ -1477,7 +2119,7 @@ def build_validation_report(
                 "of this rule."
             ),
             "",
-            "### 6.1. Configured training rule",
+            "### 5.1. Configured training rule",
             "",
             _markdown_table(training_rule_display),
             "",
@@ -1487,18 +2129,18 @@ def build_validation_report(
                 "Validation rows."
             ),
             "",
-            "### 6.2. Population funnel",
+            "### 5.2. Population funnel",
             "",
-            _markdown_table(training_funnel_display),
-            "",
-            markdown_image(
-                "Configured model-training population",
-                figure_paths["training_population_funnel"],
-                document_path=report_path,
-                width=850,
+            get_table_figure_layout(training_funnel_display,
+                markdown_image(
+                    "Training-sample population funnel",
+                    figure_paths["training_population_funnel"],
+                    document_path=report_path,
+                    width=850,
+                ),
             ),
             "",
-            "### 6.3. Normalized-UV cutoff sensitivity",
+            "### 5.3. Normalized-UV cutoff sensitivity",
             "",
             (
                 "The cutoff sensitivity is retained to show how the final tail "
@@ -1506,27 +2148,29 @@ def build_validation_report(
                 "truth assumptions."
             ),
             "",
-            _markdown_table(cutoff_sensitivity_display),
-            "",
-            markdown_image(
-                "Normalized unit-value cutoff sensitivity",
-                figure_paths["normalized_uv_cutoff_sensitivity"],
-                document_path=report_path,
-                width=800,
+            get_table_figure_layout(
+                cutoff_sensitivity_display,
+                markdown_image(
+                    "Normalized unit-value cutoff sensitivity",
+                    figure_paths["normalized_uv_cutoff_sensitivity"],
+                    document_path=report_path,
+                    width=800,
+                ),
             ),
             "",
-            "### 6.4. Training coverage by year",
+            "### 5.4. Training coverage by year",
             "",
-            _markdown_table(training_year_display),
-            "",
-            markdown_image(
-                "Final training-sample coverage by year",
-                figure_paths["training_coverage_by_year"],
-                document_path=report_path,
-                width=850,
+            get_table_figure_layout(
+                training_year_display,
+                markdown_image(
+                    "Final training-sample coverage by year",
+                    figure_paths["training_coverage_by_year"],
+                    document_path=report_path,
+                    width=850,
+                ),
             ),
             "",
-            "### 6.5. Product coverage",
+            "### 5.5. Product coverage",
             "",
             (
                 f"The Validation population contains **{_format_integer(n_products)}** "
@@ -1539,9 +2183,17 @@ def build_validation_report(
                 "training populations."
             ),
             "",
-            _markdown_table(product_display),
+            get_table_figure_layout(
+                product_display,
+                markdown_image(
+                    "Training-sample coverage across HS products",
+                    figure_paths["training_coverage_by_product"],
+                    document_path=report_path,
+                    width=850,
+                ),
+            ),
             "",
-            "### 6.6. Rejection path for products unseen in training",
+            "### 5.6. Rejection path for products unseen in training",
             "",
             (
                 "For products with no final training observations, the cumulative "
@@ -1552,15 +2204,15 @@ def build_validation_report(
             "",
             _markdown_table(rejection_display),
             "",
-            "## 7. Model evaluation",
+            "## 6. Model evaluation",
             "",
             validation_description,
             "",
-            "### 7.1. Overall out-of-fold performance",
+            "### 6.1. Overall out-of-fold performance",
             "",
             _markdown_table(model_performance_display),
             "",
-            "### 7.2. Performance by validation year",
+            "### 6.2. Performance by validation year",
             "",
             markdown_image(
                 performance_image_alt,
@@ -1569,7 +2221,7 @@ def build_validation_report(
                 width=850,
             ),
             "",
-            "## 8. Current methodological status",
+            "## 7. Current methodological status",
             "",
             (
                 f"- Canonical bilateral quantity methodology: **{selected_candidate_label}**."
@@ -1589,7 +2241,7 @@ def build_validation_report(
                 "- Production inference remains a subsequent Validation stage."
             ),
             "",
-            "## 9. Inference",
+            "## 8. Inference",
             "",
             (
                 "Production inference is not yet reported by the current Validation "
