@@ -254,7 +254,7 @@ def build_diagnostics(
     import_estimated_col = str(columns_cfg.import_estimated)
     relative_difference_col = str(columns_cfg.quantity_relative_difference)
 
-    quantity_col = "quantity_value_weighted_kg"
+    quantity_col = "trade_synced_quantity_kg"
     
     min_reference_observations = int(
         training_cfg.min_hs_year_reference_observations
@@ -326,7 +326,7 @@ def build_diagnostics(
                 importer_iso,
                 "{product_col}" AS target_cmd,
 
-                "{quantity_col}" AS quantity_value_weighted_kg,
+                "{quantity_col}" AS trade_synced_quantity_kg,
 
                 "{nominal_value_col}" AS trade_value_reconciled,
                 "{constant_value_col}" AS trade_value_reconciled_constant_usd,

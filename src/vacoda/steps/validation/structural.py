@@ -251,12 +251,14 @@ def audit_structural_integrity(
                 ) AS n_invalid_simple_mean_rows,
 
                 COUNT(*) FILTER (
-                    WHERE quantity_value_weighted_kg IS NOT NULL
+                    WHERE trade_synced_quantity_kg IS NOT NULL
                     AND (
-                        NOT isfinite(quantity_value_weighted_kg)
-                        OR quantity_value_weighted_kg <= 0
+                        NOT isfinite(
+                            CAST(trade_synced_quantity_kg AS DOUBLE)
+                        )
+                        OR trade_synced_quantity_kg <= 0
                     )
-                ) AS n_invalid_value_weighted_rows,
+                ) AS n_invalid_quantity_rows,
 
                 COUNT(*) FILTER (
                     WHERE quantity_reliability_weighted_kg IS NOT NULL
@@ -292,7 +294,7 @@ def audit_structural_integrity(
             n_invalid_nominal_value_rows,
             n_invalid_constant_value_rows,
             n_invalid_simple_mean_rows,
-            n_invalid_value_weighted_rows,
+            n_invalid_quantity_rows,
             n_invalid_quantity_reliability_weighted_rows,
             n_missing_quantity_rows,
             n_available_quantity_rows,
@@ -311,8 +313,8 @@ def audit_structural_integrity(
         n_invalid_simple_mean_rows = int(
             n_invalid_simple_mean_rows
         )
-        n_invalid_value_weighted_rows = int(
-            n_invalid_value_weighted_rows
+        n_invalid_quantity_rows = int(
+            n_invalid_quantity_rows
         )
         n_invalid_quantity_reliability_weighted_rows = int(
             n_invalid_quantity_reliability_weighted_rows
@@ -326,7 +328,7 @@ def audit_structural_integrity(
 
         quantity_candidates_numeric_valid = (
             n_invalid_simple_mean_rows == 0
-            and n_invalid_value_weighted_rows == 0
+            and n_invalid_quantity_rows == 0
             and n_invalid_quantity_reliability_weighted_rows == 0
         )
         # --------------------------------------------------------------
@@ -606,8 +608,8 @@ def audit_structural_integrity(
                 n_invalid_simple_mean_rows
             ),
 
-            "n_invalid_value_weighted_rows": (
-                n_invalid_value_weighted_rows
+            "n_invalid_quantity_rows": (
+                n_invalid_quantity_rows
             ),
 
             "n_invalid_quantity_reliability_weighted_rows": (
@@ -700,8 +702,8 @@ def audit_structural_integrity(
     )
 
     logger.info(
-        "  Invalid value-weighted quantities: %s",
-        f"{n_invalid_value_weighted_rows:,}",
+        "  Invalid quantities: %s",
+        f"{n_invalid_quantity_rows:,}",
     )
 
     logger.info(

@@ -285,10 +285,7 @@ def build_training_sample(
         columns_cfg.nominal_value
     )
 
-    selected_quantity_col = (
-        "quantity_value_weighted_kg"
-    )
-
+    quantity_col = str(cfg.model.target.column)
 
     required_columns = {
         year_col,
@@ -296,7 +293,7 @@ def build_training_sample(
         "exporter_iso",
         "importer_iso",
         nominal_value_col,
-        selected_quantity_col,
+        quantity_col,
     }
 
     # ==================================================================
@@ -350,15 +347,15 @@ def build_training_sample(
 
                 CASE
                     WHEN
-                        {selected_quantity_col} IS NOT NULL
-                        AND {selected_quantity_col} > 0
+                        {quantity_col} IS NOT NULL
+                        AND {quantity_col} > 0
 
                         AND {nominal_value_col} IS NOT NULL
                         AND {nominal_value_col} > 0
 
                         AND isfinite(
                             CAST(
-                                {selected_quantity_col}
+                                {quantity_col}
                                 AS DOUBLE
                             )
                         )
@@ -377,7 +374,7 @@ def build_training_sample(
                         )
                         /
                         CAST(
-                            {selected_quantity_col}
+                            {quantity_col}
                             AS DOUBLE
                         )
 
@@ -386,11 +383,11 @@ def build_training_sample(
                     AS selected_unit_value,
 
                 (
-                    {selected_quantity_col} IS NOT NULL
-                    AND {selected_quantity_col} > 0
+                    {quantity_col} IS NOT NULL
+                    AND {quantity_col} > 0
                     AND isfinite(
                         CAST(
-                            {selected_quantity_col}
+                            {quantity_col}
                             AS DOUBLE
                         )
                     )
@@ -717,12 +714,12 @@ def build_training_sample(
                             AS selected_uv_log_distance,
 
                         (
-                            b.{selected_quantity_col} IS NOT NULL
-                            AND b.{selected_quantity_col} > 0
+                            b.{quantity_col} IS NOT NULL
+                            AND b.{quantity_col} > 0
 
                             AND isfinite(
                                 CAST(
-                                    b.{selected_quantity_col}
+                                    b.{quantity_col}
                                     AS DOUBLE
                                 )
                             )

@@ -43,7 +43,7 @@ from sklearn.preprocessing import (
     StandardScaler,
     TargetEncoder,
 )
-
+from sklearn.neural_network import MLPRegressor
 from vacoda.steps.validation.training_sample import training_definition_name
 from vacoda.config.steps.validation import ValidationConfig
 
@@ -1031,11 +1031,26 @@ def _build_estimator(
             **params
         )
 
+    if model_type == "mlp":
+
+        params.setdefault(
+            "random_state",
+            cfg.model.random_seed,
+        )
+
+        params.setdefault(
+            "hidden_layer_sizes",
+            (128, 64),
+        )
+
+        return MLPRegressor(
+            **params
+        )
+
     raise RuntimeError(
         "Unsupported Validation model type: "
         f"{model_type!r}"
     )
-
 
 # ======================================================================
 # Public step

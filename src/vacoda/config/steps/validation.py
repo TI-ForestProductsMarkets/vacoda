@@ -598,6 +598,7 @@ class ValidationCandidateModelConfig:
             "hist_gradient_boosting",
             "extra_trees",
             "random_forest",
+            "mlp"
         }
 
         if model_type not in allowed_types:
