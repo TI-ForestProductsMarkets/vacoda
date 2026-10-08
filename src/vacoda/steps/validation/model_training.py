@@ -1581,6 +1581,36 @@ def train_validation_models(
                     y_train,
                 )
 
+                if model_cfg.type == "mlp":
+                    mlp_model = estimator.named_steps["mlpregressor"]
+
+                    validation_scores = getattr(
+                        mlp_model,
+                        "validation_scores_",
+                        None,
+                    )
+
+                    best_internal_r2 = (
+                        max(validation_scores)
+                        if validation_scores is not None
+                        and len(validation_scores) > 0
+                        else None
+                    )
+
+                    logger.info(
+                        "  MLP fit — iterations=%d, "
+                        "half-MSE_log %.6f -> %.6f, "
+                        "best internal R2_log=%s",
+                        mlp_model.n_iter_,
+                        mlp_model.loss_curve_[0],
+                        mlp_model.loss_,
+                        (
+                            f"{best_internal_r2:.6f}"
+                            if best_internal_r2 is not None
+                            else "n/a"
+                        ),
+                    )
+
                 # ------------------------------------------------------
                 # Held-out prediction
                 # ------------------------------------------------------
@@ -1594,6 +1624,20 @@ def train_validation_models(
                     )
                 )
 
+                heldout_mae_log = float(
+                    np.mean(
+                        np.abs(
+                            y_validation
+                            - prediction_transformed
+                        )
+                    )
+                )
+
+                logger.info(
+                    "  Held-out %s — MAE_log=%.6f",
+                    held_out_year,
+                    heldout_mae_log,
+                )
                 if not np.isfinite(
                     prediction_transformed
                 ).all():
