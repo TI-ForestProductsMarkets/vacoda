@@ -29,7 +29,12 @@ from vacoda.config.steps.validation import ValidationConfig
 from vacoda.steps.validation.training_sample import training_definition_name
 from vacoda.utils.display import get_symbols
 from vacoda.utils.sql import sql_literal
-
+from vacoda.pipeline.checkpoint import (
+    validate_local_checkpoint,
+    file_fingerprint,
+    write_local_checkpoint,
+    semantic_config_fingerprint,
+)
 
 PRE_TRAINING_REFERENCE_WINDOWS = (
     ("0_0", 0, "Same year"),
@@ -209,22 +214,165 @@ def build_diagnostics(
             f"{model_predictions_path}"
         )
 
-    output_path = cfg.product_path("diagnostics")
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    training_definition = training_definition_name(
+        cfg=cfg
+    )
 
-    if (
-        not force
-        and output_path.is_file()
-        and output_path.stat().st_size > 0
-    ):
+    base_output_path = cfg.product_path(
+        "diagnostics"
+    )
+
+    output_path = (
+        base_output_path.parent
+        / training_definition
+        / base_output_path.name
+    )
+
+    columns_cfg = cfg.diagnostics.columns
+    training_cfg = cfg.model.training_sample
+
+    year_col = str(
+        columns_cfg.year
+    )
+
+    product_col = str(
+        columns_cfg.product
+    )
+
+    nominal_value_col = str(
+        columns_cfg.nominal_value
+    )
+
+    constant_value_col = str(
+        columns_cfg.constant_value
+    )
+
+    export_quantity_col = str(
+        columns_cfg.export_quantity
+    )
+
+    import_quantity_col = str(
+        columns_cfg.import_quantity
+    )
+
+    export_estimated_col = str(
+        columns_cfg.export_estimated
+    )
+
+    import_estimated_col = str(
+        columns_cfg.import_estimated
+    )
+
+    relative_difference_col = str(
+        columns_cfg.quantity_relative_difference
+    )
+
+    quantity_col = "trade_synced_quantity_kg"
+
+    min_reference_observations = int(
+        training_cfg.min_hs_year_reference_observations
+    )
+
+    max_normalized_uv_distance_mad = float(
+        training_cfg.max_normalized_uv_distance_mad
+    )
+
+    reference_year_before = int(
+        training_cfg.reference_year_window.before
+    )
+
+    reference_year_after = int(
+        training_cfg.reference_year_window.after
+    )
+
+
+    ## local checkpoints
+    checkpoint_path = (
+        output_path.parent
+        / "checkpoints"
+        / "diagnostics.json"
+    )
+
+    config_fp = semantic_config_fingerprint(
+        config={
+            "columns": {
+                "year": year_col,
+                "product": product_col,
+                "nominal_value": nominal_value_col,
+                "constant_value": constant_value_col,
+                "export_quantity": export_quantity_col,
+                "import_quantity": import_quantity_col,
+                "export_estimated": export_estimated_col,
+                "import_estimated": import_estimated_col,
+                "quantity_relative_difference": (
+                    relative_difference_col
+                ),
+                "quantity": quantity_col,
+            },
+            "training_sample": {
+                "reference_year_before": (
+                    reference_year_before
+                ),
+                "reference_year_after": (
+                    reference_year_after
+                ),
+                "min_reference_observations": (
+                    min_reference_observations
+                ),
+                "max_normalized_uv_distance_mad": (
+                    max_normalized_uv_distance_mad
+                ),
+            },
+            "diagnostic_definitions": {
+                "reference_windows": list(
+                    PRE_TRAINING_REFERENCE_WINDOWS
+                ),
+                "normalized_uv_cutoffs": list(
+                    NORMALIZED_UV_CUTOFFS
+                ),
+                "source_disagreement_bands": list(
+                    SOURCE_DISAGREEMENT_BANDS
+                ),
+                "quantiles": list(
+                    DIAGNOSTIC_QUANTILES
+                ),
+            },
+        }
+    )
+
+    input_fp = {
+        "training_sample": file_fingerprint(
+            input_path,
+            hash_file=True,
+        ),
+        "structural_audit": file_fingerprint(
+            structural_audit_path,
+            hash_file=True,
+        ),
+        "model_predictions": file_fingerprint(
+            model_predictions_path,
+            hash_file=True,
+        ),
+    }
+
+    reusable, reason = validate_local_checkpoint(
+        checkpoint_path=checkpoint_path,
+        current_config=config_fp,
+        current_input=input_fp,
+        output_path=output_path,
+    )
+
+    if not force and reusable:
+
         logger.info(
-            "%s REUSE — Validation diagnostics: %s",
+            "%s REUSE — Validation diagnostics "
+            "local checkpoint matches: %s",
             get_symbols("reuse"),
             output_path,
         )
 
         return {
-            "status": "completed",
+            "status": "reused",
             "run_id": run_id,
             "output_path": output_path,
             "diagnostics_path": output_path,
@@ -234,15 +382,16 @@ def build_diagnostics(
         }
 
     logger.info(
-        "%s REBUILD — Validation diagnostics",
+        "%s REBUILD — Validation diagnostics: %s",
         get_symbols("rebuilt"),
+        "forced" if force else reason,
     )
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
     logger.info("  Input: %s", input_path)
     logger.info("  Model predictions: %s", model_predictions_path)
     logger.info("  Output: %s", output_path)
-
-    columns_cfg = cfg.diagnostics.columns
-    training_cfg = cfg.model.training_sample
 
     year_col = str(columns_cfg.year)
     product_col = str(columns_cfg.product)
@@ -1289,8 +1438,38 @@ def build_diagnostics(
         # ==================================================================
         diagnostics = pd.DataFrame(diagnostics_rows)
 
+        ready_for_reporting = (
+            n_all_rows > 0
+            and len(diagnostics) > 0
+            and n_training_eligible > 0
+            and n_training_selected > 0
+        )
+
+        if n_all_rows <= 0:
+            raise RuntimeError(
+                "Validation diagnostics contain no Validation rows."
+            )
+
+        if len(diagnostics) <= 0:
+            raise RuntimeError(
+                "Validation diagnostics artifact contains no diagnostics."
+            )
+
+        if n_training_eligible <= 0:
+            raise RuntimeError(
+                "Validation diagnostics contain no "
+                "training-eligible observations."
+            )
+
+        if n_training_selected <= 0:
+            raise RuntimeError(
+                "Validation diagnostics contain no selected "
+                "training observations."
+            )
+        
         if diagnostics.empty:
             raise RuntimeError("Validation diagnostics contain no rows.")
+
 
         optional_columns = (
             "candidate",
@@ -1374,6 +1553,16 @@ def build_diagnostics(
         )
 
         temporary_path.replace(output_path)
+        
+        if ready_for_reporting:
+            write_local_checkpoint(
+                checkpoint_path=checkpoint_path,
+                step_name="diagnostics",
+                run_id=run_id,
+                config=config_fp,
+                input_fingerprint=input_fp,
+                output_path=output_path,
+            )
 
     finally:
         con.close()
@@ -1395,6 +1584,7 @@ def build_diagnostics(
         "%s CHECK — Validation diagnostics built.",
         get_symbols("check"),
     )
+    logger.info("  Ready for reporting: %s", ready_for_reporting)
 
     return {
         "status": "completed",
@@ -1408,5 +1598,6 @@ def build_diagnostics(
         "fitted": False,
         "selection_already_applied": True,
         "duration_seconds": elapsed,
+        "ready_for_reporting": ready_for_reporting,
         "reused": False,
     }

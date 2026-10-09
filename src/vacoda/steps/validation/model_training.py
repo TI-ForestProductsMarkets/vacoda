@@ -971,6 +971,16 @@ def _fit_predict_embedding_mlp(
 
     torch.manual_seed(random_seed)
 
+    torch.set_num_threads(
+        int(cfg.engine.threads)
+    )
+
+    logger.info(
+        "  PyTorch CPU threads — intraop=%d, interop=%d",
+        torch.get_num_threads(),
+        torch.get_num_interop_threads(),
+    )
+
     device = torch.device(
         "cuda"
         if torch.cuda.is_available()

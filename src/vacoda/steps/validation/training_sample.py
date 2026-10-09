@@ -398,6 +398,15 @@ def build_training_sample(
             input_path
         )
 
+        n_input_rows = int(
+            con.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM read_parquet({input_sql})
+                """
+            ).fetchone()[0]
+        )
+
         # --------------------------------------------------------------
         # Input contract
         # --------------------------------------------------------------
@@ -938,6 +947,11 @@ def build_training_sample(
     elapsed = perf_counter() - start
 
     logger.info(
+        "  Input rows: %s",
+        f"{n_input_rows:,}",
+    )
+
+    logger.info(
         "  Output rows: %s",
         f"{n_rows:,}",
     )
@@ -992,12 +1006,76 @@ def build_training_sample(
         get_symbols("check"),
     )
 
+    ready_for_model_training = (
+        n_rows > 0
+        and n_rows == n_input_rows
+        and n_reference_groups > 0
+        and n_uv_evidence_available_rows > 0
+        and n_training_selected_rows > 0
+        and n_training_selected_rows
+            <= n_uv_evidence_available_rows
+    )
+
+    if n_rows <= 0:
+        raise RuntimeError(
+            "Validation training sample contains no rows."
+        )
+
+    if n_rows != n_input_rows:
+        raise RuntimeError(
+            "Validation training sample did not preserve the "
+            "complete input population: "
+            f"input={n_input_rows:,}, output={n_rows:,}."
+        )
+
+    if n_reference_groups <= 0:
+        raise RuntimeError(
+            "Validation training sample contains no "
+            "HS × year reference groups."
+        )
+
+    if n_uv_evidence_available_rows <= 0:
+        raise RuntimeError(
+            "Validation training sample contains no rows "
+            "with complete UV evidence."
+        )
+
+    if n_training_selected_rows <= 0:
+        raise RuntimeError(
+            "Validation training rule selected no rows."
+        )
+
+    if (
+        n_training_selected_rows
+        > n_uv_evidence_available_rows
+    ):
+        raise RuntimeError(
+            "Selected training population exceeds the "
+            "UV-evidence population."
+        )
+    
+    if ready_for_model_training:
+        write_local_checkpoint(
+            checkpoint_path=checkpoint_path,
+            step_name="training_sample",
+            run_id=run_id,
+            config=config_fp,
+            input_fingerprint=input_fp,
+            output_path=output_path,
+        )
+
+
+    logger.info(
+        "  Ready for model training: %s",
+        ready_for_model_training,
+    )
     return {
         "status": "completed",
         "run_id": run_id,
 
         "output_path": output_path,
         "training_sample_path": output_path,
+        "ready_for_model_training": ready_for_model_training,
 
         "n_rows": n_rows,
         "n_reference_rows": n_reference_rows,
