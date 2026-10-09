@@ -256,7 +256,7 @@ validation:
         fail_on_duplicates: true
 
       require_positive_value: true
-      require_nonnegative_quantity: true
+      require_positive_quantity: true
 
 
   # --------------------------------------------------------------

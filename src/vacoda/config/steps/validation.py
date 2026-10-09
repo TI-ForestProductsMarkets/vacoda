@@ -972,7 +972,7 @@ class ValidationStructuralConfig:
     canonical_key: tuple[str, ...]
     duplicate_keys: ValidationDuplicateKeysConfig
     require_positive_value: bool
-    require_nonnegative_quantity: bool
+    require_positive_quantity: bool
 
     @classmethod
     def from_dict(
@@ -1011,11 +1011,11 @@ class ValidationStructuralConfig:
                     "require_positive_value"
                 ),
             ),
-            require_nonnegative_quantity=require_bool(
-                cfg.get("require_nonnegative_quantity"),
+            require_positive_quantity=require_bool(
+                cfg.get("require_positive_quantity"),
                 key=(
                     "validation.method.structural."
-                    "require_nonnegative_quantity"
+                    "require_positive_quantity"
                 ),
             ),
         )

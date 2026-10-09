@@ -15,7 +15,12 @@ from time import perf_counter
 from typing import Any
 
 import duckdb
-
+from vacoda.pipeline.checkpoint import (
+    validate_local_checkpoint,
+    file_fingerprint,
+    write_local_checkpoint,
+    semantic_config_fingerprint,
+)
 from vacoda.config.steps.validation import ValidationConfig
 from vacoda.utils.display import get_symbols
 from vacoda.utils.sql import sql_literal
@@ -54,34 +59,66 @@ def prepare_validation_input(
         )
 
     output_path = cfg.product_path("prepared_input")
-    output_path.parent.mkdir(
-        parents=True,
-        exist_ok=True,
+
+    required_fields = tuple(
+        cfg.method.structural.required_fields
     )
 
-    if (
-        not force
-        and output_path.is_file()
-        and output_path.stat().st_size > 0
-    ):
+    checkpoint_path = (
+        cfg.output_dir()
+        / "checkpoints"
+        / "prepared_input.json"
+    )
+
+    config_fp = semantic_config_fingerprint(
+        config={
+            "target_hs": cfg.scope.target_hs,
+            "min_year": int(cfg.scope.min_year),
+            "max_year": int(cfg.scope.max_year),
+            "required_fields": list(required_fields),
+        }
+    )
+
+    input_fp = {
+        "validation_input": file_fingerprint(
+            input_path,
+            hash_file=True,
+        ),
+    }
+
+    reusable, reason = validate_local_checkpoint(
+        checkpoint_path=checkpoint_path,
+        current_config=config_fp,
+        current_input=input_fp,
+        output_path=output_path,
+    )
+
+    if not force and reusable:
+
         logger.info(
-            "%s REUSE — Prepared Validation input: %s",
+            "%s REUSE — Prepared Validation input checkpoint matches: %s",
             get_symbols("reuse"),
             output_path,
         )
 
         return {
-            "status": "completed",
+            "status": "reused",
             "output_path": output_path,
             "prepared_input_path": output_path,
             "reused": True,
-            "ready_for_structural_audit": True,
+            "ready_for_structural_audit": ready_for_structural_audit,
             "run_id": run_id,
         }
 
     logger.info(
-        "%s REBUILD — Prepared Validation input",
+        "%s REBUILD — Prepared Validation input: %s",
         get_symbols("rebuilt"),
+        "forced" if force else reason,
+    )
+
+    output_path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
     )
     logger.info("Preparing Validation input.")
     logger.info("  Input: %s", input_path)
@@ -93,9 +130,6 @@ def prepare_validation_input(
         cfg.scope.max_year,
     )
 
-    required_fields = tuple(
-        cfg.method.structural.required_fields
-    )
 
     con = duckdb.connect()
 
@@ -286,6 +320,14 @@ def prepare_validation_input(
     finally:
         con.close()
 
+    ready_for_structural_audit = (
+        prepared_rows > 0
+        and prepared_min_year is not None
+        and prepared_max_year is not None
+        and prepared_min_year >= cfg.scope.min_year
+        and prepared_max_year <= cfg.scope.max_year
+    )
+
     if prepared_rows <= 0:
         raise RuntimeError(
             "Prepared Validation input contains no rows."
@@ -303,6 +345,21 @@ def prepare_validation_input(
             "the configured maximum year."
         )
 
+    if not ready_for_structural_audit:
+        raise RuntimeError(
+            "Prepared Validation input failed readiness checks "
+            "for structural audit."
+        )
+
+    write_local_checkpoint(
+        checkpoint_path=checkpoint_path,
+        step_name="prepared_input",
+        run_id=run_id,
+        config=config_fp,
+        input_fingerprint=input_fp,
+        output_path=output_path,
+    )
+
     elapsed = perf_counter() - start
 
     logger.info(
@@ -319,7 +376,7 @@ def prepare_validation_input(
         prepared_max_year,
     )
     logger.info("  Output: %s", output_path)
-    logger.info("  Ready for structural audit: True")
+    logger.info("  Ready for structural audit: %s", ready_for_structural_audit)
 
     return {
         "status": "completed",
@@ -339,7 +396,7 @@ def prepare_validation_input(
         "required_fields": required_fields,
         "reused": False,
 
-        "ready_for_structural_audit": True,
+        "ready_for_structural_audit": ready_for_structural_audit,
         "duration_seconds": elapsed,
         
         "n_with_nominal_value": n_with_nominal_value,

@@ -22,7 +22,12 @@ import duckdb
 from vacoda.config.steps.validation import ValidationConfig
 from vacoda.utils.display import get_symbols
 from vacoda.utils.sql import sql_literal
-
+from vacoda.pipeline.checkpoint import (
+    validate_local_checkpoint,
+    file_fingerprint,
+    write_local_checkpoint,
+    semantic_config_fingerprint,
+)
 
 # ======================================================================
 # Helpers
@@ -141,12 +146,16 @@ def build_training_sample(
 
     start = perf_counter()
 
-    input_path = Path(
-        input_path
-    )
+    input_path = Path(input_path)
+
+
+    if not input_path.is_file():
+        raise FileNotFoundError(
+            "Validation training-sample input not found: "
+            f"{input_path}"
+        )
 
     if output_path is not None:
-
         output_path = Path(
             output_path
         )
@@ -171,38 +180,116 @@ def build_training_sample(
             / base_output_path.name
         )
 
-    # ------------------------------------------------------------------
-    # Input existence
-    # ------------------------------------------------------------------
 
-    if not input_path.is_file():
-        raise FileNotFoundError(
-            "Validation training-sample input not found: "
-            f"{input_path}"
-        )
+    ## local checkpoints
+    diagnostics_cfg = cfg.diagnostics
+    columns_cfg = diagnostics_cfg.columns
 
-    output_path.parent.mkdir(
-        parents=True,
-        exist_ok=True,
+    model_training_cfg = (
+        cfg.model.training_sample
     )
+
+    min_reference_observations = int(
+        model_training_cfg.min_hs_year_reference_observations
+    )
+
+    reference_year_before = int(
+        model_training_cfg.reference_year_window.before
+    )
+
+    reference_year_after = int(
+        model_training_cfg.reference_year_window.after
+    )
+
+    max_normalized_uv_distance_mad = float(
+        model_training_cfg.max_normalized_uv_distance_mad
+    )
+
+    year_col = str(
+        columns_cfg.year
+    )
+
+    product_col = str(
+        columns_cfg.product
+    )
+
+    nominal_value_col = str(
+        columns_cfg.nominal_value
+    )
+
+    quantity_col = str(
+        cfg.model.target.column
+    )
+
+    required_columns = {
+        year_col,
+        product_col,
+        "exporter_iso",
+        "importer_iso",
+        nominal_value_col,
+        quantity_col,
+    }
+
+    checkpoint_path = (
+        output_path.parent
+        / "checkpoints"
+        / "training_sample.json"
+    )
+
+    config_fp = semantic_config_fingerprint(
+        config={
+            "columns": {
+                "year": year_col,
+                "product": product_col,
+                "nominal_value": nominal_value_col,
+                "quantity": quantity_col,
+            },
+            "training_sample": {
+                "reference_year_before": (
+                    reference_year_before
+                ),
+                "reference_year_after": (
+                    reference_year_after
+                ),
+                "min_reference_observations": (
+                    min_reference_observations
+                ),
+                "max_normalized_uv_distance_mad": (
+                    max_normalized_uv_distance_mad
+                ),
+            },
+        }
+    )
+
+    input_fp = {
+        "quantity_selection": file_fingerprint(
+            input_path,
+            hash_file=True,
+        ),
+    }
 
     # ------------------------------------------------------------------
     # Reuse
     # ------------------------------------------------------------------
 
-    if (
-        not force
-        and output_path.is_file()
-        and output_path.stat().st_size > 0
-    ):
+    reusable, reason = validate_local_checkpoint(
+        checkpoint_path=checkpoint_path,
+        current_config=config_fp,
+        current_input=input_fp,
+        output_path=output_path,
+    )
+
+    if not force and reusable:
+
         logger.info(
-            "%s REUSE — Validation training sample: %s",
+            "%s REUSE — Validation training-sample "
+            "local checkpoint matches: %s",
             get_symbols("reuse"),
             output_path,
         )
 
         return {
-            "status": "completed",
+            "status": "reused",
             "run_id": run_id,
             "output_path": output_path,
             "training_sample_path": output_path,
@@ -210,13 +297,9 @@ def build_training_sample(
         }
 
     logger.info(
-        "%s REBUILD — Validation training sample",
+        "%s REBUILD — Validation training sample: %s",
         get_symbols("rebuilt"),
-    )
-
-    logger.info(
-        "  Input: %s",
-        input_path,
+        "forced" if force else reason,
     )
 
     logger.info(
@@ -224,6 +307,10 @@ def build_training_sample(
         output_path,
     )
 
+    output_path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
     # ==================================================================
     # Configuration
     # ==================================================================

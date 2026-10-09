@@ -17,7 +17,7 @@ def test_validation_structural_config_allows_omitted_optional_entries() -> None:
                 "target_cmd",
             ],
             "require_positive_value": True,
-            "require_nonnegative_quantity": True,
+            "require_positive_quantity": True,
         }
     )
 
@@ -36,4 +36,4 @@ def test_validation_structural_config_allows_omitted_optional_entries() -> None:
     assert cfg.valid_flows == ("M", "X")
     assert cfg.duplicate_keys.fail_on_duplicates is True
     assert cfg.require_positive_value is True
-    assert cfg.require_nonnegative_quantity is True
+    assert cfg.require_positive_quantity is True

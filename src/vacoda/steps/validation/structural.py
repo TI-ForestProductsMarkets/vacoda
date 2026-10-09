@@ -23,7 +23,13 @@ import duckdb
 from vacoda.config.steps.validation import ValidationConfig
 from vacoda.utils.display import get_symbols
 from vacoda.utils.sql import sql_literal
-
+from vacoda.pipeline.checkpoint import (
+    checkpoint_path,
+    validate_local_checkpoint,
+    file_fingerprint,
+    write_local_checkpoint,
+    semantic_config_fingerprint,
+)
 
 # ======================================================================
 # Helpers
@@ -82,24 +88,15 @@ def audit_structural_integrity(
         )
 
     output_path = cfg.product_path("structural_audit")
-    output_path.parent.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
 
-    logger.info(
-        "%s REBUILD — Validation structural audit",
-        get_symbols("rebuilt"),
+    structural_cfg = (
+        cfg.method.structural
     )
-    logger.info("Auditing Validation structural integrity.")
-    logger.info("  Input: %s", input_path)
-    logger.info("  Output: %s", output_path)
-
-    structural_cfg = cfg.method.structural
 
     required_fields = tuple(
         structural_cfg.required_fields
     )
+
     canonical_key = tuple(
         structural_cfg.canonical_key
     )
@@ -109,7 +106,155 @@ def audit_structural_integrity(
     )
 
     require_positive_quantity = bool(
-        structural_cfg.require_nonnegative_quantity
+        structural_cfg.require_positive_quantity
+    )
+
+    checkpoint_path = (
+        cfg.output_dir()
+        / "checkpoints"
+        / "structural_audit.json"
+    )
+
+    config_fp = semantic_config_fingerprint(
+        config={
+            "scope": {
+                "target_hs": (
+                    cfg.scope.target_hs
+                ),
+                "min_year": int(
+                    cfg.scope.min_year
+                ),
+                "max_year": int(
+                    cfg.scope.max_year
+                ),
+            },
+            "structural": {
+                "required_fields": list(
+                    required_fields
+                ),
+                "canonical_key": list(
+                    canonical_key
+                ),
+                "require_positive_value": (
+                    require_positive_value
+                ),
+                "require_positive_quantity": (
+                    require_positive_quantity
+                ),
+            },
+        }
+    )
+
+    input_fp = {
+        "prepared_input": file_fingerprint(
+            input_path,
+            hash_file=True,
+        ),
+    }
+
+    reusable, reason = validate_local_checkpoint(
+        checkpoint_path=checkpoint_path,
+        current_config=config_fp,
+        current_input=input_fp,
+        output_path=output_path,
+    )
+
+    if not force and reusable:
+
+        reuse_con = duckdb.connect()
+
+        try:
+            audit_row = reuse_con.execute(
+                """
+                SELECT
+                    audit_passed,
+                    n_rows,
+                    n_missing_quantity_rows
+
+                FROM read_parquet(?)
+
+                LIMIT 1
+                """,
+                [
+                    str(output_path)
+                ],
+            ).fetchone()
+
+        finally:
+            reuse_con.close()
+
+        if audit_row is None:
+            raise RuntimeError(
+                "Reusable Validation structural-audit artifact "
+                "contains no audit row."
+            )
+
+        (
+            reused_audit_passed,
+            reused_n_rows,
+            reused_n_missing_quantity_rows,
+        ) = audit_row
+
+        reused_audit_passed = bool(
+            reused_audit_passed
+        )
+
+        if not reused_audit_passed:
+            raise RuntimeError(
+                "Reusable Validation structural-audit artifact "
+                "does not contain a passing audit."
+            )
+
+        logger.info(
+            "%s REUSE — Validation structural-audit "
+            "local checkpoint matches: %s",
+            get_symbols("reuse"),
+            output_path,
+        )
+
+        return {
+            "status": "reused",
+            "run_id": run_id,
+
+            "output_path": output_path,
+            "structural_audit_path": output_path,
+
+            "audit_passed": True,
+            "ready_for_diagnostics": True,
+
+            "n_rows": int(
+                reused_n_rows
+            ),
+            "n_missing_quantity_rows": int(
+                reused_n_missing_quantity_rows
+            ),
+
+            "duration_seconds": (
+                perf_counter() - start
+            ),
+            "reused": True,
+        }
+
+    logger.info(
+        "%s REBUILD — Validation structural audit: %s",
+        get_symbols("rebuilt"),
+        "forced" if force else reason,
+    )
+
+    output_path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+    logger.info("Auditing Validation structural integrity.")
+    logger.info("  Input: %s", input_path)
+    logger.info("  Output: %s", output_path)
+
+    require_positive_value = bool(
+        structural_cfg.require_positive_value
+    )
+
+    require_positive_quantity = bool(
+        structural_cfg.require_positive_quantity
     )
 
     con = duckdb.connect()
@@ -738,6 +883,15 @@ def audit_structural_integrity(
             "Validation structural-integrity audit failed. "
             f"See audit artifact: {output_path}"
         )
+
+    write_local_checkpoint(
+        checkpoint_path=checkpoint_path,
+        step_name="structural_audit",
+        run_id=run_id,
+        config=config_fp,
+        input_fingerprint=input_fp,
+        output_path=output_path,
+    )
 
     logger.info(
         "%s AUDIT — Validation structural integrity passed.",
