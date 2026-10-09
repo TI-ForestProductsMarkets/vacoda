@@ -31,7 +31,13 @@ from typing import Any
 import duckdb
 import numpy as np
 import pandas as pd
-
+import torch
+from torch import nn
+from torch.utils.data import (
+    DataLoader,
+    TensorDataset,
+)
+from sklearn.neural_network import MLPRegressor
 from sklearn.ensemble import (
     ExtraTreesRegressor,
     HistGradientBoostingRegressor,
@@ -43,7 +49,6 @@ from sklearn.preprocessing import (
     StandardScaler,
     TargetEncoder,
 )
-from sklearn.neural_network import MLPRegressor
 from vacoda.steps.validation.training_sample import training_definition_name
 from vacoda.config.steps.validation import ValidationConfig
 
@@ -290,6 +295,126 @@ def _model_checkpoint_dir(
         / model_name
     )
 
+def _model_fold_checkpoint_paths(
+    *,
+    cfg: ValidationConfig,
+    model_name: str,
+    held_out_year: int,
+) -> dict[str, Path]:
+
+    directory = (
+        _model_checkpoint_dir(
+            cfg=cfg,
+            model_name=model_name,
+        )
+        / "folds"
+        / str(int(held_out_year))
+    )
+
+    predictions_path = (
+        directory
+        / "predictions.parquet"
+    )
+
+    return {
+        "predictions": predictions_path,
+        "manifest": manifest_path_for(
+            predictions_path
+        ),
+    }
+
+
+def _model_fold_semantic_payload(
+    *,
+    cfg: ValidationConfig,
+    model_name: str,
+    model_cfg: Any,
+    held_out_year: int,
+    training_years: list[int],
+    n_training_rows: int,
+    n_validation_rows: int,
+    fold_data_sha256: str,
+) -> dict[str, Any]:
+
+    return {
+        "artifact": (
+            "validation_model_cross_validation_fold"
+        ),
+
+        "cache_version": (
+            MODEL_CACHE_VERSION
+        ),
+
+        "scope": {
+            "target_hs": (
+                cfg.scope.target_hs
+            ),
+        },
+
+        "data": {
+            "semantic_sha256": (
+                fold_data_sha256
+            ),
+            "training_rows": int(
+                n_training_rows
+            ),
+            "validation_rows": int(
+                n_validation_rows
+            ),
+        },
+
+        "target": {
+            "column": (
+                cfg.model.target.column
+            ),
+            "transform": (
+                cfg.model.target.transform
+            ),
+        },
+
+        "features": {
+            "numeric": {
+                name: asdict(feature_cfg)
+                for name, feature_cfg
+                in cfg.model.features.numeric.items()
+            },
+            "categorical": list(
+                cfg.model.features.categorical
+            ),
+        },
+
+        "validation": {
+            "strategy": (
+                cfg.model.validation.strategy
+            ),
+            "year_column": (
+                cfg.model.validation.year_column
+            ),
+            "held_out_year": int(
+                held_out_year
+            ),
+            "training_years": [
+                int(year)
+                for year in training_years
+            ],
+        },
+
+        "model": {
+            "name": (
+                model_name
+            ),
+            "type": (
+                model_cfg.type
+            ),
+            "parameters": json_safe(
+                model_cfg.parameters
+            ),
+        },
+
+        "random_seed": int(
+            cfg.model.random_seed
+        ),
+    }
 
 def _model_checkpoint_paths(
     *,
@@ -489,6 +614,145 @@ def _checkpoint_prediction_columns_valid(
         "prediction checkpoint structure is compatible",
     )
 
+def _model_fold_checkpoint_reusable(
+    *,
+    cfg: ValidationConfig,
+    model_name: str,
+    held_out_year: int,
+    semantic_payload: dict[str, Any],
+) -> tuple[bool, str]:
+
+    paths = _model_fold_checkpoint_paths(
+        cfg=cfg,
+        model_name=model_name,
+        held_out_year=held_out_year,
+    )
+
+    reusable, reason = validate_manifest(
+        artifact_path=paths["predictions"],
+        manifest_path=paths["manifest"],
+        expected_payload=semantic_payload,
+    )
+
+    if not reusable:
+        return False, reason
+
+    (
+        structure_valid,
+        structure_reason,
+    ) = _checkpoint_prediction_columns_valid(
+        prediction_path=paths[
+            "predictions"
+        ],
+    )
+
+    if not structure_valid:
+        return (
+            False,
+            structure_reason,
+        )
+
+    return (
+        True,
+        "manifest and prediction structure match",
+    )
+
+def _write_model_fold_checkpoint(
+    *,
+    cfg: ValidationConfig,
+    model_name: str,
+    held_out_year: int,
+    predictions: pd.DataFrame,
+    semantic_payload: dict[str, Any],
+) -> Path:
+
+    paths = _model_fold_checkpoint_paths(
+        cfg=cfg,
+        model_name=model_name,
+        held_out_year=held_out_year,
+    )
+
+    predictions_path = paths[
+        "predictions"
+    ]
+
+    predictions_path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    temporary_path = (
+        predictions_path.with_suffix(
+            predictions_path.suffix
+            + ".tmp"
+        )
+    )
+
+    if temporary_path.exists():
+        temporary_path.unlink()
+
+    con = duckdb.connect()
+
+    try:
+
+        con.register(
+            "fold_predictions",
+            predictions,
+        )
+
+        temporary_sql = sql_literal(
+            temporary_path
+        )
+
+        con.execute(
+            f"""
+            COPY fold_predictions
+            TO {temporary_sql}
+            (
+                FORMAT PARQUET,
+                COMPRESSION ZSTD
+            )
+            """
+        )
+
+        con.unregister(
+            "fold_predictions"
+        )
+
+    finally:
+        con.close()
+
+    temporary_path.replace(
+        predictions_path
+    )
+
+    write_manifest(
+        manifest_path=paths[
+            "manifest"
+        ],
+        artifact_name=(
+            f"validation_model_"
+            f"{model_name}_"
+            f"{held_out_year}_predictions"
+        ),
+        semantic_payload=(
+            semantic_payload
+        ),
+        artifact_path=(
+            predictions_path
+        ),
+        extra={
+            "model_name": model_name,
+            "held_out_year": int(
+                held_out_year
+            ),
+            "prediction_rows": int(
+                len(predictions)
+            ),
+        },
+    )
+
+    return predictions_path
 
 def _model_checkpoint_reusable(
     *,
@@ -644,6 +908,423 @@ def _write_model_checkpoint(
 # Feature preparation
 # ======================================================================
 
+def _fit_predict_embedding_mlp(
+    *,
+    x_train_numeric: np.ndarray,
+    x_train_categorical: np.ndarray,
+    y_train: np.ndarray,
+    x_validation_numeric: np.ndarray,
+    x_validation_categorical: np.ndarray,
+    category_sizes: list[int],
+    parameters: dict[str, Any],
+    cfg: ValidationConfig,
+    logger,
+) -> np.ndarray:
+
+    params = dict(parameters)
+
+    batch_size = int(
+        params["batch_size"]
+    )
+
+    learning_rate = float(
+        params["learning_rate"]
+    )
+
+    max_epochs = int(
+        params["max_epochs"]
+    )
+
+    patience = int(
+        params["patience"]
+    )
+
+    early_stopping = bool(
+        params["early_stopping"]
+    )
+
+    min_delta = float(
+        params["min_delta"]
+    )
+
+    internal_validation_fraction = float(
+        params["internal_validation_fraction"]
+    )
+
+    embedding_dims = [
+        int(params["exporter_embedding_dim"]),
+        int(params["importer_embedding_dim"]),
+        int(params["product_embedding_dim"]),
+    ]
+
+    hidden_layer_1 = int(
+        params["hidden_layer_1"]
+    )
+
+    hidden_layer_2 = int(
+        params["hidden_layer_2"]
+    )
+
+    random_seed = int(
+        cfg.model.random_seed
+    )
+
+    torch.manual_seed(random_seed)
+
+    device = torch.device(
+        "cuda"
+        if torch.cuda.is_available()
+        else "cpu"
+    )
+
+    logger.info(
+        "  Embedding MLP — device=%s, "
+        "batch_size=%d, learning_rate=%g, "
+        "max_epochs=%d, early_stopping=%s, "
+        "patience=%d, min_delta=%g, "
+        "internal_validation_fraction=%.2f",
+        device,
+        batch_size,
+        learning_rate,
+        max_epochs,
+        early_stopping,
+        patience,
+        min_delta,
+        internal_validation_fraction,
+    )
+
+    logger.info(
+        "  Embedding MLP architecture — "
+        "embedding_dims=%s, hidden_layers=(%d, %d)",
+        embedding_dims,
+        hidden_layer_1,
+        hidden_layer_2,
+    )
+
+
+    if len(category_sizes) != len(
+        embedding_dims
+    ):
+        raise RuntimeError(
+            "Embedding dimensions do not match "
+            "configured categorical features."
+        )
+
+    model = EmbeddingMLP(
+        category_sizes=category_sizes,
+        embedding_dims=embedding_dims,
+        numeric_dim=(
+            x_train_numeric.shape[1]
+        ),
+        hidden_layer_1=hidden_layer_1,
+        hidden_layer_2=hidden_layer_2,
+    ).to(device)
+
+    optimizer = torch.optim.Adam(
+        model.parameters(),
+        lr=learning_rate,
+    )
+
+    loss_function = nn.MSELoss()
+
+    # --------------------------------------------------
+    # Internal training/early-stopping split
+    # --------------------------------------------------
+
+    rng = np.random.default_rng(
+        random_seed
+    )
+
+    n_rows = len(y_train)
+
+    permutation = rng.permutation(
+        n_rows
+    )
+
+    n_internal_validation = max(
+        1,
+        int(
+            internal_validation_fraction
+            * n_rows
+        ),
+    )
+
+    validation_indices = (
+        permutation[
+            :n_internal_validation
+        ]
+    )
+
+    fitting_indices = (
+        permutation[
+            n_internal_validation:
+        ]
+    )
+
+    train_dataset = TensorDataset(
+        torch.from_numpy(
+            x_train_numeric[
+                fitting_indices
+            ]
+        ).float(),
+        torch.from_numpy(
+            x_train_categorical[
+                fitting_indices
+            ]
+        ).long(),
+        torch.from_numpy(
+            y_train[
+                fitting_indices
+            ].astype(np.float32)
+        ),
+    )
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+    )
+
+    internal_numeric = torch.from_numpy(
+        x_train_numeric[
+            validation_indices
+        ]
+    ).float().to(device)
+
+    internal_categorical = torch.from_numpy(
+        x_train_categorical[
+            validation_indices
+        ]
+    ).long().to(device)
+
+    internal_target = torch.from_numpy(
+        y_train[
+            validation_indices
+        ].astype(np.float32)
+    ).to(device)
+
+    # --------------------------------------------------
+    # Training
+    # --------------------------------------------------
+
+    best_validation_loss = np.inf
+    best_state = None
+    best_epoch = 0
+
+    early_stopping_reference_loss = np.inf
+    epochs_without_meaningful_improvement = 0
+
+    for epoch in range(1,
+        max_epochs + 1,
+    ):
+
+        model.train()
+
+        training_loss_sum = 0.0
+        training_rows = 0
+
+        for (
+            batch_numeric,
+            batch_categorical,
+            batch_target,
+        ) in train_loader:
+
+            batch_numeric = (
+                batch_numeric.to(device)
+            )
+
+            batch_categorical = (
+                batch_categorical.to(
+                    device
+                )
+            )
+
+            batch_target = (
+                batch_target.to(device)
+            )
+
+            optimizer.zero_grad()
+
+            prediction = model(
+                batch_numeric,
+                batch_categorical,
+            )
+
+            loss = loss_function(
+                prediction,
+                batch_target,
+            )
+
+            loss.backward()
+
+            optimizer.step()
+
+            batch_n = (
+                batch_target.shape[0]
+            )
+
+            training_loss_sum += (
+                float(loss.item())
+                * batch_n
+            )
+
+            training_rows += batch_n
+
+        training_mse = (
+            training_loss_sum
+            / training_rows
+        )
+
+        # ----------------------------------------------
+        # Internal validation
+        # ----------------------------------------------
+
+        model.eval()
+
+        with torch.no_grad():
+
+            internal_prediction = model(
+                internal_numeric,
+                internal_categorical,
+            )
+
+            internal_loss = float(
+                loss_function(
+                    internal_prediction,
+                    internal_target,
+                ).item()
+            )
+
+        logger.info(
+            "  Embedding MLP epoch %d — "
+            "train_MSE_log=%.6f, "
+            "internal_validation_MSE_log=%.6f",
+            epoch,
+            training_mse,
+            internal_loss,
+        )
+
+        # --------------------------------------------------
+        # Preserve actual best model state
+        # --------------------------------------------------
+
+        if internal_loss < best_validation_loss:
+
+            best_validation_loss = (
+                internal_loss
+            )
+
+            best_epoch = epoch
+
+            best_state = {
+                name: tensor.detach()
+                .cpu()
+                .clone()
+                for name, tensor
+                in model.state_dict().items()
+            }
+
+
+        # --------------------------------------------------
+        # Early stopping
+        # --------------------------------------------------
+
+        if early_stopping:
+
+            if (
+                internal_loss
+                < early_stopping_reference_loss
+                - min_delta
+            ):
+
+                early_stopping_reference_loss = (
+                    internal_loss
+                )
+
+                epochs_without_meaningful_improvement = 0
+
+            else:
+
+                epochs_without_meaningful_improvement += 1
+
+                if (
+                    epochs_without_meaningful_improvement
+                    >= patience
+                ):
+
+                    logger.info(
+                        "  Embedding MLP early stopping "
+                        "at epoch %d; best epoch=%d, "
+                        "best internal MSE_log=%.6f",
+                        epoch,
+                        best_epoch,
+                        best_validation_loss,
+                    )
+
+                    break
+
+    if best_state is None:
+        raise RuntimeError(
+            "Embedding MLP produced no valid "
+            "training state."
+        )
+
+    logger.info(
+        "  Embedding MLP fit complete — "
+        "best_epoch=%d, best_internal_MSE_log=%.6f",
+        best_epoch,
+        best_validation_loss,
+    )
+
+    model.load_state_dict(best_state)
+    model.to(device)
+
+    # --------------------------------------------------
+    # Held-out prediction
+    # --------------------------------------------------
+
+    model.eval()
+
+    validation_dataset = TensorDataset(
+        torch.from_numpy(
+            x_validation_numeric
+        ).float(),
+        torch.from_numpy(
+            x_validation_categorical
+        ).long(),
+    )
+
+    validation_loader = DataLoader(
+        validation_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+    )
+
+    predictions = []
+
+    with torch.no_grad():
+
+        for (
+            batch_numeric,
+            batch_categorical,
+        ) in validation_loader:
+
+            batch_prediction = model(
+                batch_numeric.to(device),
+                batch_categorical.to(
+                    device
+                ),
+            )
+
+            predictions.append(
+                batch_prediction
+                .cpu()
+                .numpy()
+            )
+
+    return np.concatenate(
+        predictions
+    ).astype(float)
 
 def _build_feature_frame(
     *,
@@ -816,6 +1497,125 @@ def _inverse_target(
 # ======================================================================
 # Fold-local feature encoding
 # ======================================================================
+
+def _encode_embedding_features(
+    *,
+    x_train: pd.DataFrame,
+    x_validation: pd.DataFrame,
+    cfg: ValidationConfig,
+) -> tuple[
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    list[int],
+]:
+    numeric_columns = list(
+        cfg.model.features.numeric.keys()
+    )
+
+    categorical_columns = list(
+        cfg.model.features.categorical
+    )
+
+    # Numeric features
+    x_train_numeric = (
+        x_train[numeric_columns]
+        .to_numpy(dtype=np.float32)
+    )
+
+    x_validation_numeric = (
+        x_validation[numeric_columns]
+        .to_numpy(dtype=np.float32)
+    )
+
+    # Fold-local standardization
+    mean = x_train_numeric.mean(
+        axis=0,
+        keepdims=True,
+    )
+
+    std = x_train_numeric.std(
+        axis=0,
+        keepdims=True,
+    )
+
+    std[std == 0] = 1.0
+
+    x_train_numeric = (
+        x_train_numeric - mean
+    ) / std
+
+    x_validation_numeric = (
+        x_validation_numeric - mean
+    ) / std
+
+    train_categorical_parts = []
+    validation_categorical_parts = []
+    category_sizes = []
+
+    for column in categorical_columns:
+
+        categories = (
+            x_train[column]
+            .astype("string")
+            .fillna("__MISSING__")
+            .drop_duplicates()
+            .sort_values()
+            .tolist()
+        )
+
+        mapping = {
+            value: index + 1
+            for index, value
+            in enumerate(categories)
+        }
+
+        train_ids = (
+            x_train[column]
+            .astype("string")
+            .fillna("__MISSING__")
+            .map(mapping)
+            .fillna(0)
+            .to_numpy(dtype=np.int64)
+        )
+
+        validation_ids = (
+            x_validation[column]
+            .astype("string")
+            .fillna("__MISSING__")
+            .map(mapping)
+            .fillna(0)
+            .to_numpy(dtype=np.int64)
+        )
+
+        train_categorical_parts.append(
+            train_ids
+        )
+
+        validation_categorical_parts.append(
+            validation_ids
+        )
+
+        category_sizes.append(
+            len(mapping) + 1
+        )
+
+    x_train_categorical = np.column_stack(
+        train_categorical_parts
+    )
+
+    x_validation_categorical = np.column_stack(
+        validation_categorical_parts
+    )
+
+    return (
+        x_train_numeric,
+        x_validation_numeric,
+        x_train_categorical,
+        x_validation_categorical,
+        category_sizes,
+    )
 
 
 def _encode_features(
@@ -1051,11 +1851,93 @@ def _build_estimator(
             StandardScaler(),
             estimator,
         )
-
+    
     raise RuntimeError(
         "Unsupported Validation model type: "
         f"{model_type!r}"
     )
+
+
+# ======================================================================
+# MLP Embedding
+# =====================================================================
+class EmbeddingMLP(nn.Module):
+
+    def __init__(
+        self,
+        *,
+        category_sizes: list[int],
+        embedding_dims: list[int],
+        numeric_dim: int,
+        hidden_layer_1: int,
+        hidden_layer_2: int,
+    ):
+        super().__init__()
+
+        self.embeddings = nn.ModuleList(
+            [
+                nn.Embedding(
+                    num_embeddings=size,
+                    embedding_dim=dim,
+                    padding_idx=0,
+                )
+                for size, dim
+                in zip(
+                    category_sizes,
+                    embedding_dims,
+                )
+            ]
+        )
+
+        total_embedding_dim = sum(
+            embedding_dims
+        )
+
+        self.network = nn.Sequential(
+            nn.Linear(
+                numeric_dim
+                + total_embedding_dim,
+                hidden_layer_1,
+            ),
+            nn.ReLU(),
+            nn.Linear(
+                hidden_layer_1,
+                hidden_layer_2,
+            ),
+            nn.ReLU(),
+            nn.Linear(
+                hidden_layer_2,
+                1,
+            ),
+        )
+
+    def forward(
+        self,
+        numeric,
+        categorical,
+    ):
+        embedded = [
+            embedding(
+                categorical[:, index]
+            )
+            for index, embedding
+            in enumerate(
+                self.embeddings
+            )
+        ]
+
+        x = torch.cat(
+            [
+                numeric,
+                *embedded,
+            ],
+            dim=1,
+        )
+
+        return (
+            self.network(x)
+            .squeeze(1)
+        )
 
 # ======================================================================
 # Public step
@@ -1442,9 +2324,7 @@ def train_validation_models(
                 reuse_reason,
             )
 
-            model_fold_predictions: list[
-                pd.DataFrame
-            ] = []
+            model_fold_prediction_paths: list[Path] = []
 
             for held_out_year in validation_years:
 
@@ -1462,7 +2342,9 @@ def train_validation_models(
                     fold_years == held_out_year
                 )
 
-                train_mask = fold_years < held_out_year
+                train_mask = (
+                    fold_years < held_out_year
+                )
 
                 n_train = int(
                     train_mask.sum()
@@ -1493,6 +2375,98 @@ def train_validation_models(
                         f"train={n_train:,}, "
                         f"validation={n_validation:,}."
                     )
+
+                # ------------------------------------------------------
+                # Fold checkpoint identity
+                # ------------------------------------------------------
+
+                fold_data_mask = (
+                    train_mask
+                    | validation_mask
+                )
+
+                fold_data_sha256 = (
+                    _model_data_fingerprint(
+                        frame=(
+                            frame.loc[
+                                fold_data_mask
+                            ]
+                            .reset_index(
+                                drop=True
+                            )
+                        ),
+                        cfg=cfg,
+                    )
+                )
+
+                fold_semantic_payload = (
+                    _model_fold_semantic_payload(
+                        cfg=cfg,
+                        model_name=model_name,
+                        model_cfg=model_cfg,
+                        held_out_year=held_out_year,
+                        training_years=training_years,
+                        n_training_rows=n_train,
+                        n_validation_rows=n_validation,
+                        fold_data_sha256=(
+                            fold_data_sha256
+                        ),
+                    )
+                )
+
+                fold_reusable = False
+                fold_reuse_reason = (
+                    "force=True"
+                )
+
+                if not force:
+                    (
+                        fold_reusable,
+                        fold_reuse_reason,
+                    ) = (
+                        _model_fold_checkpoint_reusable(
+                            cfg=cfg,
+                            model_name=model_name,
+                            held_out_year=held_out_year,
+                            semantic_payload=(
+                                fold_semantic_payload
+                            ),
+                        )
+                    )
+
+                fold_checkpoint_paths = (
+                    _model_fold_checkpoint_paths(
+                        cfg=cfg,
+                        model_name=model_name,
+                        held_out_year=held_out_year,
+                    )
+                )
+
+                # ------------------------------------------------------
+                # Reuse completed fold checkpoint
+                # ------------------------------------------------------
+
+                if fold_reusable:
+
+                    logger.info(
+                        "%s REUSE — %s fold %s (%s)",
+                        get_symbols("reuse"),
+                        model_name,
+                        held_out_year,
+                        fold_reuse_reason,
+                    )
+
+                    model_fold_prediction_paths.append(
+                        fold_checkpoint_paths[
+                            "predictions"
+                        ]
+                    )
+
+                    continue
+
+                # ------------------------------------------------------
+                # Rebuild fold
+                # ------------------------------------------------------
 
                 logger.info(
                     "  %s — validate=%s, "
@@ -1547,82 +2521,107 @@ def train_validation_models(
                 )
 
                 # ------------------------------------------------------
-                # Fold-local categorical encoding
+                # Fold-local feature encoding
                 # ------------------------------------------------------
 
-                (
-                    x_train_encoded,
-                    x_validation_encoded,
-                ) = _encode_features(
-                    x_train=x_train,
-                    x_validation=x_validation,
-                    y_train=y_train,
-                    cfg=cfg,
-                )
+                if model_cfg.type == "embedding_mlp":
 
-                # ------------------------------------------------------
-                # Fit candidate
-                # ------------------------------------------------------
-
-                estimator = (
-                    _build_estimator(
-                        model_type=(
-                            model_cfg.type
-                        ),
-                        parameters=(
-                            model_cfg.parameters
-                        ),
+                    (
+                        x_train_numeric,
+                        x_validation_numeric,
+                        x_train_categorical,
+                        x_validation_categorical,
+                        category_sizes,
+                    ) = _encode_embedding_features(
+                        x_train=x_train,
+                        x_validation=x_validation,
                         cfg=cfg,
                     )
-                )
 
-                estimator.fit(
-                    x_train_encoded,
-                    y_train,
-                )
+                else:
 
-                if model_cfg.type == "mlp":
-                    mlp_model = estimator.named_steps["mlpregressor"]
-
-                    validation_scores = getattr(
-                        mlp_model,
-                        "validation_scores_",
-                        None,
-                    )
-
-                    best_internal_r2 = (
-                        max(validation_scores)
-                        if validation_scores is not None
-                        and len(validation_scores) > 0
-                        else None
-                    )
-
-                    logger.info(
-                        "  MLP fit — iterations=%d, "
-                        "half-MSE_log %.6f -> %.6f, "
-                        "best internal R2_log=%s",
-                        mlp_model.n_iter_,
-                        mlp_model.loss_curve_[0],
-                        mlp_model.loss_,
-                        (
-                            f"{best_internal_r2:.6f}"
-                            if best_internal_r2 is not None
-                            else "n/a"
-                        ),
+                    (
+                        x_train_encoded,
+                        x_validation_encoded,
+                    ) = _encode_features(
+                        x_train=x_train,
+                        x_validation=x_validation,
+                        y_train=y_train,
+                        cfg=cfg,
                     )
 
                 # ------------------------------------------------------
-                # Held-out prediction
+                # Fit candidate and predict held-out year
                 # ------------------------------------------------------
 
-                prediction_transformed = (
-                    np.asarray(
-                        estimator.predict(
-                            x_validation_encoded
-                        ),
-                        dtype=float,
+                if model_cfg.type == "embedding_mlp":
+
+                    prediction_transformed = (
+                        _fit_predict_embedding_mlp(
+                            x_train_numeric=(
+                                x_train_numeric
+                            ),
+                            x_train_categorical=(
+                                x_train_categorical
+                            ),
+                            y_train=y_train,
+                            x_validation_numeric=(
+                                x_validation_numeric
+                            ),
+                            x_validation_categorical=(
+                                x_validation_categorical
+                            ),
+                            category_sizes=(
+                                category_sizes
+                            ),
+                            parameters=(
+                                model_cfg.parameters
+                            ),
+                            cfg=cfg,
+                            logger=logger,
+                        )
                     )
-                )
+
+                else:
+
+                    estimator = (
+                        _build_estimator(
+                            model_type=(
+                                model_cfg.type
+                            ),
+                            parameters=(
+                                model_cfg.parameters
+                            ),
+                            cfg=cfg,
+                        )
+                    )
+
+                    estimator.fit(
+                        x_train_encoded,
+                        y_train,
+                    )
+
+                    prediction_transformed = (
+                        np.asarray(
+                            estimator.predict(
+                                x_validation_encoded
+                            ),
+                            dtype=float,
+                        )
+                    )
+
+                # ------------------------------------------------------
+                # Validate transformed prediction
+                # ------------------------------------------------------
+
+                if not np.isfinite(
+                    prediction_transformed
+                ).all():
+                    raise RuntimeError(
+                        f"Model {model_name!r} produced "
+                        "non-finite transformed predictions "
+                        f"for held-out year {held_out_year}."
+                    )
 
                 heldout_mae_log = float(
                     np.mean(
@@ -1638,14 +2637,6 @@ def train_validation_models(
                     held_out_year,
                     heldout_mae_log,
                 )
-                if not np.isfinite(
-                    prediction_transformed
-                ).all():
-                    raise RuntimeError(
-                        f"Model {model_name!r} produced "
-                        "non-finite transformed predictions "
-                        f"for held-out year {held_out_year}."
-                    )
 
                 prediction_quantity = (
                     _inverse_target(
@@ -1728,38 +2719,103 @@ def train_validation_models(
                     prediction_quantity
                 )
 
-                model_fold_predictions.append(
-                    fold_predictions
+                # ------------------------------------------------------
+                # Persist fold immediately
+                # ------------------------------------------------------
+
+                fold_checkpoint_path = (
+                    _write_model_fold_checkpoint(
+                        cfg=cfg,
+                        model_name=model_name,
+                        held_out_year=held_out_year,
+                        predictions=(
+                            fold_predictions
+                        ),
+                        semantic_payload=(
+                            fold_semantic_payload
+                        ),
+                    )
+                )
+
+                model_fold_prediction_paths.append(
+                    fold_checkpoint_path
+                )
+
+                logger.info(
+                    "  Fold %s checkpoint saved: %s",
+                    held_out_year,
+                    fold_checkpoint_path,
                 )
 
                 logger.info(
                     "  Fold %s complete in %.1f s",
                     held_out_year,
                     (
-                        perf_counter() - fold_start
+                        perf_counter()
+                        - fold_start
                     ),
                 )
 
-                del estimator
-                del x_train_encoded
-                del x_validation_encoded
+                # ------------------------------------------------------
+                # Fold cleanup
+                # ------------------------------------------------------
+
                 del fold_predictions
+                del x_train
+                del x_validation
+                del y_train
+                del y_validation
+                del prediction_transformed
+                del prediction_quantity
+
+                if model_cfg.type == "embedding_mlp":
+
+                    del x_train_numeric
+                    del x_validation_numeric
+                    del x_train_categorical
+                    del x_validation_categorical
+                    del category_sizes
+
+                else:
+
+                    del estimator
+                    del x_train_encoded
+                    del x_validation_encoded
+
 
             # ----------------------------------------------------------
             # Completed model checkpoint
             # ----------------------------------------------------------
 
-            if not model_fold_predictions:
+            if not model_fold_prediction_paths:
                 raise RuntimeError(
                     f"Model {model_name!r} produced no "
-                    "cross-validation predictions."
+                    "cross-validation fold checkpoints."
                 )
 
-            model_predictions = (
-                pd.concat(
-                    model_fold_predictions,
-                    ignore_index=True,
+            fold_paths_sql = (
+                ", ".join(
+                    sql_literal(
+                        path
+                    )
+                    for path
+                    in model_fold_prediction_paths
                 )
+            )
+
+            model_predictions = (
+                con.execute(
+                    f"""
+                    SELECT *
+                    FROM read_parquet(
+                        [
+                            {fold_paths_sql}
+                        ],
+                        union_by_name = TRUE
+                    )
+                    """
+                )
+                .df()
             )
 
             expected_rows = int(
@@ -1803,12 +2859,13 @@ def train_validation_models(
                 "  Model %s complete in %.1f s",
                 model_name,
                 (
-                    perf_counter() - model_start
+                    perf_counter()
+                    - model_start
                 ),
             )
 
             del model_predictions
-            del model_fold_predictions
+            del model_fold_prediction_paths
 
         # --------------------------------------------------------------
         # Combine reusable + newly built checkpoints
