@@ -180,6 +180,7 @@ def build_diagnostics(
     input_path: Path,
     structural_audit_path: Path,
     model_predictions_path: Path,
+    selected_model_path: Path,
     run_id: str,
     force: bool = False,
     logger,
@@ -198,6 +199,7 @@ def build_diagnostics(
     input_path = Path(input_path)
     structural_audit_path = Path(structural_audit_path)
     model_predictions_path = Path(model_predictions_path)
+    selected_model_path = Path(selected_model_path)
 
     if not input_path.is_file():
         raise FileNotFoundError(
@@ -214,6 +216,12 @@ def build_diagnostics(
         raise FileNotFoundError(
             "Validation model-prediction artifact not found: "
             f"{model_predictions_path}"
+        )
+
+    if not selected_model_path.is_file():
+        raise FileNotFoundError(
+            "Validation selected-model artifact not found: "
+            f"{selected_model_path}"
         )
 
     training_definition = training_definition_name(

@@ -49,6 +49,14 @@ validation:
       enable: true
       filename: "model/target_{target_hs_lower}_model_predictions.parquet"
     
+    selected_model:
+      enable: true
+      filename: "model/target_{target_hs_lower}_selected_model.parquet"
+
+    fitted_model:
+      enable: true
+      filename: "model/target_{target_hs_lower}_fitted_model.parquet"
+      
     diagnostics:
       enable: true
       filename: "diagnostics/target_{target_hs_lower}_diagnostics.parquet"

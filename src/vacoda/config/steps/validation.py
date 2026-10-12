@@ -268,6 +268,8 @@ class ValidationProductsConfig:
     quantity_selection_audit: ValidationProductConfig
     training_sample: ValidationProductConfig
     model_predictions: ValidationProductConfig
+    selected_model:ValidationProductConfig
+    fitted_model:ValidationProductConfig
     diagnostics: ValidationProductConfig
     validated_trade: ValidationProductConfig
     consistency_audit: ValidationProductConfig
@@ -298,6 +300,8 @@ class ValidationProductsConfig:
             quantity_selection_audit=product("quantity_selection_audit"),
             training_sample=product("training_sample"),
             model_predictions=product("model_predictions"),
+            selected_model=product("selected_model"),
+            fitted_model=product("fitted_model"),
             diagnostics=product("diagnostics"),
             validated_trade=product("validated_trade"),
             consistency_audit=product("consistency_audit"),
@@ -1720,6 +1724,8 @@ class ValidationConfig:
             "quantity_selection_audit": self.products.quantity_selection_audit,
             "training_sample": self.products.training_sample,
             "model_predictions": self.products.model_predictions,
+            "selected_model": self.products.selected_model,
+            "fitted_model": self.products.fitted_model,
             "diagnostics": self.products.diagnostics,
             "validated_trade": self.products.validated_trade,
             "consistency_audit": self.products.consistency_audit,
@@ -1746,6 +1752,8 @@ class ValidationConfig:
                 "quantity_selection_audit",
                 "training_sample",
                 "model_predictions",
+                "selected_model",
+                "fitted_model",
                 "diagnostics",
                 "validated_trade",
                 "consistency_audit",
@@ -1761,6 +1769,8 @@ class ValidationConfig:
             "quantity_selection_audit": self.products.quantity_selection_audit.enable,
             "training_sample": self.products.training_sample.enable,
             "model_predictions": self.products.model_predictions.enable,
+            "selected_model": self.products.selected_model.enable,
+            "fitted_model": self.products.fitted_model.enable,
             "diagnostics": self.products.diagnostics.enable,
             "validated_trade": self.products.validated_trade.enable,
             "consistency_audit": self.products.consistency_audit.enable,

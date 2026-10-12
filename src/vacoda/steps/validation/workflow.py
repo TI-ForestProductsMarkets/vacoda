@@ -22,6 +22,8 @@ from vacoda.steps.validation.structural import  audit_structural_integrity
 # from vacoda.steps.validation.quantity_audit import audit_quantity_selection
 from vacoda.steps.validation.training_sample import build_training_sample
 from vacoda.steps.validation.model_training import train_validation_models
+from vacoda.steps.validation.model_selection import select_validation_model
+from vacoda.steps.validation.model_fitting import fit_selected_validation_model
 from vacoda.steps.validation.diagnostics import  build_diagnostics
 # from vacoda.steps.validation.consistency import  audit_cross_variable_consistency
 # from vacoda.steps.validation.finalize import build_validated_trade
@@ -56,6 +58,8 @@ WORKFLOW_STEPS = [
     "Audit Structural integrity",
     "Build Training sample",
     "Train Validation Models",
+    "Select Validation Model",
+    "Fit Selected Validation Model",
     # "Build validated trade",
     # "Audit cross-variable consistency",
     # "Build VACODA release dataset",
@@ -245,7 +249,7 @@ def run_validation_workflow(
 
 
         # ==================================================================
-        # STEP 4 — Model Training
+        # Step 4 — Model Training
         # ==================================================================
 
         model_predictions_result = run_step(
@@ -271,20 +275,74 @@ def run_validation_workflow(
             ),
         )
         
+
         # ==================================================================
-        # Step 5 — Build diagnostics
+        # Step 5 — Model Selection
         # ==================================================================
 
-        diagnostic_result = run_step(
+        selected_model_result = run_step(
             logger=logger,
             step_number=5,
             total_steps=TOTAL_WORKFLOW_STEPS,
             title=WORKFLOW_STEPS[4],
+            runner=lambda: select_validation_model(
+                cfg=cfg,
+                model_predictions_path=model_predictions_path,
+                run_id=run_id,
+                force=force,
+                logger=logger,
+            ),
+        )
+
+        selected_model_path = require_artifact(
+            result=selected_model_result,
+            path_key="selected_model_path",
+            consumer_step=WORKFLOW_STEPS[5],
+            producer_product="selected Validation model",
+        )
+
+
+        # ==================================================================
+        # Step 6 — Fit Selected Validation Model
+        # ==================================================================
+
+        fitted_model_result = run_step(
+            logger=logger,
+            step_number=6,
+            total_steps=TOTAL_WORKFLOW_STEPS,
+            title=WORKFLOW_STEPS[5],
+            runner=lambda: fit_selected_validation_model(
+                cfg=cfg,
+                training_sample_path=training_sample_path,
+                selected_model_path=selected_model_path,
+                run_id=run_id,
+                force=force,
+                logger=logger,
+            ),
+        )
+
+        fitted_model_path = require_artifact(
+            result=fitted_model_result,
+            path_key="fitted_model_path",
+            consumer_step=WORKFLOW_STEPS[6],
+            producer_product="fitted Validation model",
+        )
+
+        # ==================================================================
+        # Step 7 — Build diagnostics
+        # ==================================================================
+
+        diagnostic_result = run_step(
+            logger=logger,
+            step_number=7,
+            total_steps=TOTAL_WORKFLOW_STEPS,
+            title=WORKFLOW_STEPS[6],
             runner=lambda: build_diagnostics(
                 cfg=cfg,
                 input_path=training_sample_path,
                 structural_audit_path=structural_audit_path,
                 model_predictions_path=model_predictions_path,
+                selected_model_path=selected_model_path,
                 run_id=run_id,
                 force=force,
                 logger=logger,
@@ -294,10 +352,29 @@ def run_validation_workflow(
         diagnostics_path = require_artifact(
             result=diagnostic_result,
             path_key="diagnostics_path",
-            consumer_step=WORKFLOW_STEPS[5],
+            consumer_step=WORKFLOW_STEPS[6],
             producer_product="quantity-model diagnostics",
         )
 
+        # ==================================================================
+        # Step 8 — Build Validation report
+        # ==================================================================
+
+        report_result = run_step(
+            logger=logger,
+            step_number=8,
+            total_steps=TOTAL_WORKFLOW_STEPS,
+            title=WORKFLOW_STEPS[7],
+            runner=lambda: build_validation_report(
+                cfg=cfg,
+                prepared_input_path=prepared_path,
+                structural_audit_path=structural_audit_path,
+                diagnostics_path=diagnostics_path,
+                run_id=run_id,
+                force=force,
+                logger=logger,
+            ),
+        )
         # ==================================================================
         # Step 5 — Cross-variable consistency
         # ==================================================================
@@ -365,25 +442,6 @@ def run_validation_workflow(
     #         producer_product="VACODA release dataset",
     #     )
 
-        # ==================================================================
-        # Step 6 — Build Validation report
-        # ==================================================================
-
-        report_result = run_step(
-            logger=logger,
-            step_number=6,
-            total_steps=TOTAL_WORKFLOW_STEPS,
-            title=WORKFLOW_STEPS[5],
-            runner=lambda: build_validation_report(
-                cfg=cfg,
-                prepared_input_path=prepared_path,
-                structural_audit_path=structural_audit_path,
-                diagnostics_path=diagnostics_path,
-                run_id=run_id,
-                force=force,
-                logger=logger,
-            ),
-        )
 
     #     report_path = require_result_path(
     #         report_result,
