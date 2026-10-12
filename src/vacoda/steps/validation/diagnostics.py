@@ -514,23 +514,46 @@ def build_diagnostics(
             f"""
             CREATE OR REPLACE TEMP VIEW validation_model_predictions AS
             SELECT
+                year,
+                exporter_iso,
+                importer_iso,
+                target_cmd,
+
                 model_name,
                 model_type,
                 held_out_year,
+
                 target_transformed,
                 prediction_transformed,
+
                 target_quantity_kg,
                 prediction_quantity_kg,
-                prediction_transformed - target_transformed AS log_error,
-                ABS(prediction_transformed - target_transformed)
+
+                prediction_transformed
+                    - target_transformed
+                    AS log_error,
+
+                ABS(
+                    prediction_transformed
+                    - target_transformed
+                )
                     AS absolute_log_error,
-                POWER(prediction_transformed - target_transformed, 2)
+
+                POWER(
+                    prediction_transformed
+                    - target_transformed,
+                    2
+                )
                     AS squared_log_error
-            FROM read_parquet({predictions_sql})
+
+            FROM read_parquet(
+                {predictions_sql}
+            )
+
             WHERE target_transformed IS NOT NULL
-              AND prediction_transformed IS NOT NULL
-              AND isfinite(target_transformed)
-              AND isfinite(prediction_transformed)
+            AND prediction_transformed IS NOT NULL
+            AND isfinite(target_transformed)
+            AND isfinite(prediction_transformed)
             """
         )
 
@@ -1407,6 +1430,182 @@ def build_diagnostics(
                     n_rows=int(row.n_rows),
                 )
 
+
+        # ==================================================================
+        # Model ensemble-pair diagnostics
+        # ==================================================================
+        #
+        # Compare signed out-of-fold log errors for the same canonical
+        # validation rows.
+        #
+        # For each model pair, retain:
+        #   - residual correlation
+        #   - MAE of each model on the paired rows
+        #   - MAE difference
+        #   - mean pair MAE
+        #
+        # Low residual correlation together with strong individual MAE
+        # indicates potentially useful diversity for model ensembling.
+        # ==================================================================
+
+        ensemble_pair_diagnostics = con.execute(
+            """
+            SELECT
+                left_model.model_name
+                    AS model_name,
+
+                right_model.model_name
+                    AS candidate,
+
+                COUNT(*)
+                    AS n_rows,
+
+                CORR(
+                    left_model.log_error,
+                    right_model.log_error
+                )
+                    AS residual_correlation,
+
+                AVG(
+                    left_model.absolute_log_error
+                )
+                    AS model_mae_log,
+
+                AVG(
+                    right_model.absolute_log_error
+                )
+                    AS candidate_mae_log,
+
+                ABS(
+                    AVG(
+                        left_model.absolute_log_error
+                    )
+                    -
+                    AVG(
+                        right_model.absolute_log_error
+                    )
+                )
+                    AS mae_difference,
+
+                (
+                    AVG(
+                        left_model.absolute_log_error
+                    )
+                    +
+                    AVG(
+                        right_model.absolute_log_error
+                    )
+                ) / 2.0
+                    AS mean_pair_mae_log
+
+            FROM validation_model_predictions
+                AS left_model
+
+            INNER JOIN validation_model_predictions
+                AS right_model
+
+                ON left_model.year
+                    = right_model.year
+
+                AND left_model.exporter_iso
+                    = right_model.exporter_iso
+
+                AND left_model.importer_iso
+                    = right_model.importer_iso
+
+                AND left_model.target_cmd
+                    = right_model.target_cmd
+
+                AND left_model.held_out_year
+                    = right_model.held_out_year
+
+                AND left_model.model_name
+                    < right_model.model_name
+
+            GROUP BY
+                left_model.model_name,
+                right_model.model_name
+
+            ORDER BY
+                residual_correlation,
+                mean_pair_mae_log
+            """
+        ).fetchdf()
+
+        for row in ensemble_pair_diagnostics.itertuples(index=False):
+
+            _append_metric(
+                diagnostics_rows,
+                scope=(
+                    "model_residual_correlation"
+                ),
+                criterion=(
+                    "paired_out_of_fold_log_errors"
+                ),
+                model_name=str(
+                    row.model_name
+                ),
+                candidate=str(
+                    row.candidate
+                ),
+                variable=(
+                    "residual_correlation"
+                ),
+                value=float(
+                    row.residual_correlation
+                ),
+                n_rows=int(
+                    row.n_rows
+                ),
+            )
+
+        for row in ensemble_pair_diagnostics.itertuples(index=False):
+
+            for variable, value in (
+                (
+                    "residual_correlation",
+                    row.residual_correlation,
+                ),
+                (
+                    "model_mae_log",
+                    row.model_mae_log,
+                ),
+                (
+                    "candidate_mae_log",
+                    row.candidate_mae_log,
+                ),
+                (
+                    "mae_difference",
+                    row.mae_difference,
+                ),
+                (
+                    "mean_pair_mae_log",
+                    row.mean_pair_mae_log,
+                ),
+            ):
+
+                _append_metric(
+                    diagnostics_rows,
+                    scope=(
+                        "model_ensemble_pair_diagnostic"
+                    ),
+                    criterion=(
+                        "paired_out_of_fold_log_errors"
+                    ),
+                    model_name=str(
+                        row.model_name
+                    ),
+                    candidate=str(
+                        row.candidate
+                    ),
+                    variable=variable,
+                    value=float(
+                        value
+                    ),
+                    n_rows=int(
+                        row.n_rows
+                    ),
+                )
         # ==================================================================
         # Diagnostics artifact
         # ==================================================================

@@ -1706,6 +1706,126 @@ def build_validation_report(
             }
         ).sort_values("MAE log")
 
+        # --------------------------------------------------------------
+        # Residual-correlation diagnostic
+        # --------------------------------------------------------------
+
+        model_residual_correlation = _require_diagnostic_scope(
+            diagnostics,
+            "model_residual_correlation",
+        )
+
+        model_residual_correlation_display = pd.DataFrame(
+            {
+                "Model A": (
+                    model_residual_correlation[
+                        "model_name"
+                    ].astype(str)
+                ),
+                "Model B": (
+                    model_residual_correlation[
+                        "candidate"
+                    ].astype(str)
+                ),
+                "Residual correlation": pd.to_numeric(
+                    model_residual_correlation[
+                        "value"
+                    ],
+                    errors="coerce",
+                ),
+                "Paired OOF rows": [
+                    _format_integer(value)
+                    for value in model_residual_correlation[
+                        "n_rows"
+                    ]
+                ],
+            }
+        ).sort_values(
+            [
+                "Residual correlation",
+                "Model A",
+                "Model B",
+            ]
+        )
+
+
+        # --------------------------------------------------------------
+        # Ensemble-pair diagnostic
+        # --------------------------------------------------------------
+
+        ensemble_pair = _require_diagnostic_scope(
+            diagnostics,
+            "model_ensemble_pair_diagnostic",
+        )
+
+        ensemble_pair_pivot = ensemble_pair.pivot_table(
+            index=[
+                "model_name",
+                "candidate",
+            ],
+            columns="variable",
+            values="value",
+            aggfunc="first",
+        ).reset_index()
+
+        for required_metric in (
+            "residual_correlation",
+            "model_mae_log",
+            "candidate_mae_log",
+            "mae_difference",
+            "mean_pair_mae_log",
+        ):
+            if required_metric not in ensemble_pair_pivot.columns:
+                ensemble_pair_pivot[
+                    required_metric
+                ] = math.nan
+
+
+        ensemble_pair_display = pd.DataFrame(
+            {
+                "Model A": (
+                    ensemble_pair_pivot[
+                        "model_name"
+                    ].astype(str)
+                ),
+                "Model B": (
+                    ensemble_pair_pivot[
+                        "candidate"
+                    ].astype(str)
+                ),
+                "MAE A": (
+                    ensemble_pair_pivot[
+                        "model_mae_log"
+                    ]
+                ),
+                "MAE B": (
+                    ensemble_pair_pivot[
+                        "candidate_mae_log"
+                    ]
+                ),
+                "Residual correlation": (
+                    ensemble_pair_pivot[
+                        "residual_correlation"
+                    ]
+                ),
+                "MAE difference": (
+                    ensemble_pair_pivot[
+                        "mae_difference"
+                    ]
+                ),
+                "Mean pair MAE": (
+                    ensemble_pair_pivot[
+                        "mean_pair_mae_log"
+                    ]
+                ),
+            }
+        ).sort_values(
+            [
+                "Residual correlation",
+                "Mean pair MAE",
+            ]
+        )
+
         uv_distance_distribution = _require_diagnostic_scope(
             diagnostics,
             "training_uv_distance_distribution",
@@ -1743,6 +1863,7 @@ def build_validation_report(
                 ],
             }
         )
+
         # ============================================================== 
         # Figures
         # ============================================================== 
@@ -2221,6 +2342,49 @@ def build_validation_report(
                 width=850,
             ),
             "",
+
+            "### 6.3. Residual correlation between candidate models",
+            "",
+            (
+                "Ensemble usefulness depends not only on standalone predictive "
+                "accuracy but also on whether candidate models make different "
+                "out-of-fold errors. The table below reports the Pearson "
+                "correlation between signed log-scale residuals for identical "
+                "held-out canonical observations."
+            ),
+            "",
+            (
+                "Lower residual correlation indicates greater predictive "
+                "diversity. High correlation indicates that two models tend to "
+                "over- or under-predict the same observations in similar ways."
+            ),
+            "",
+            _markdown_table(
+                model_residual_correlation_display
+            ),
+            "",
+
+            "### 6.4. Ensemble-pair diagnostic",
+            "",
+            (
+                "Residual diversity must be interpreted together with standalone "
+                "model quality. A weak model is not automatically a useful "
+                "ensemble member merely because its residuals are weakly "
+                "correlated with those of another model."
+            ),
+            "",
+            (
+                "The following table therefore combines paired out-of-fold MAE "
+                "with residual correlation. Promising ensemble pairs are those "
+                "that combine comparatively low MAE with comparatively low "
+                "residual correlation."
+            ),
+            "",
+            _markdown_table(
+                ensemble_pair_display
+            ),
+            "",
+
             "## 7. Current methodological status",
             "",
             (
