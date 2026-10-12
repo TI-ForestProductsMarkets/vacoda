@@ -76,6 +76,100 @@ def _format_percent(
     return f"{100.0 * float(value):.{digits}f}%"
 
 
+def _plot_weighted_ensemble_curves(
+    *,
+    diagnostics: pd.DataFrame,
+    output_path: Path,
+) -> Path | None:
+
+    curve = diagnostics.loc[
+        diagnostics["scope"]
+        == "model_weighted_ensemble_curve"
+    ].copy()
+
+    if curve.empty:
+        return None
+
+    curve = curve.loc[
+        curve["variable"] == "mae_log"
+    ].copy()
+
+    if curve.empty:
+        return None
+
+    curve["weight"] = pd.to_numeric(
+        curve["weight"],
+        errors="coerce",
+    )
+
+    curve["value"] = pd.to_numeric(
+        curve["value"],
+        errors="coerce",
+    )
+
+    curve = curve.dropna(
+        subset=["weight", "value"]
+    )
+
+    if curve.empty:
+        return None
+
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(
+        figsize=(9, 5.5)
+    )
+
+    for (
+        model_name,
+        candidate,
+    ), group in curve.groupby(
+        ["model_name", "candidate"],
+        sort=True,
+    ):
+        group = group.sort_values(
+            "weight"
+        )
+
+        label = (
+            f"{model_name} + {candidate}"
+        )
+
+        ax.plot(
+            group["weight"].to_numpy(dtype=float),
+            group["value"].to_numpy(dtype=float),
+            marker="o",
+            label=label,
+        )
+
+    ax.set_xlabel(
+        "Weight on Model A"
+    )
+    ax.set_ylabel(
+        "Out-of-fold MAE (log scale)"
+    )
+    ax.set_title(
+        "Weighted ensemble performance curves"
+    )
+    ax.grid(
+        True,
+        alpha=0.3,
+    )
+    ax.legend(
+        loc="best",
+        fontsize=8,
+    )
+
+    fig.tight_layout()
+    fig.savefig(
+        output_path,
+        dpi=150,
+        bbox_inches="tight",
+    )
+    plt.close(fig)
+
+    return output_path
+
 def _plot_reference_window_comparison(
     *,
     diagnostics: pd.DataFrame,
@@ -159,7 +253,24 @@ def _format_number(
 
     return f"{float(value):,.{digits}f}"
 
+def _model_plot_label(value: str) -> str:
+    """Return compact model labels for Validation figures."""
 
+    labels = {
+        "emb_mlp_bs4096_lr0p001": "Emb MLP 4096",
+        "emb_mlp_bs8192_lr0p001": "Emb MLP 8192",
+        "emb_mlp_bs16384_lr0p001": "Emb MLP 16384",
+        "extra_trees": "Extra Trees",
+        "random_forest": "Random Forest",
+        "histogram_gradient_boosting": "HGB",
+        "mlp": "MLP",
+        "ridge": "Ridge",
+    }
+
+    return labels.get(
+        str(value),
+        str(value),
+    )
 
 def _markdown_table(
     dataframe: pd.DataFrame,
@@ -189,6 +300,308 @@ def _scope_frame(
     ].copy()
 
 
+def _plot_model_residual_correlation(
+    *,
+    diagnostics: pd.DataFrame,
+    output_path: Path,
+) -> None:
+    """Plot pairwise out-of-fold residual correlations."""
+
+    frame = _require_diagnostic_scope(
+        diagnostics,
+        "model_residual_correlation",
+    ).copy()
+
+    frame = frame[
+        frame["variable"].eq(
+            "residual_correlation"
+        )
+    ].copy()
+
+    if frame.empty:
+        raise RuntimeError(
+            "Model residual-correlation diagnostics are unavailable."
+        )
+
+    frame["value"] = pd.to_numeric(
+        frame["value"],
+        errors="coerce",
+    )
+
+    frame = frame.dropna(
+        subset=[
+            "model_name",
+            "candidate",
+            "value",
+        ]
+    )
+
+    model_names = sorted(
+        set(
+            frame["model_name"].astype(str)
+        )
+        | set(
+            frame["candidate"].astype(str)
+        )
+    )
+
+    matrix = pd.DataFrame(
+        1.0,
+        index=model_names,
+        columns=model_names,
+        dtype=float,
+    )
+
+    for row in frame.itertuples(
+        index=False
+    ):
+        model_a = str(
+            row.model_name
+        )
+        model_b = str(
+            row.candidate
+        )
+        correlation = float(
+            row.value
+        )
+
+        matrix.loc[
+            model_a,
+            model_b,
+        ] = correlation
+
+        matrix.loc[
+            model_b,
+            model_a,
+        ] = correlation
+
+    labels = [
+        _model_plot_label(
+            model_name
+        )
+        for model_name in model_names
+    ]
+
+    figure, axis = plt.subplots(
+        figsize=(9, 7)
+    )
+
+    image = axis.imshow(
+        matrix.to_numpy(),
+        vmin=0.0,
+        vmax=1.0,
+        aspect="auto",
+    )
+
+    axis.set_xticks(
+        range(
+            len(model_names)
+        )
+    )
+    axis.set_yticks(
+        range(
+            len(model_names)
+        )
+    )
+
+    axis.set_xticklabels(
+        labels,
+        rotation=45,
+        ha="right",
+    )
+
+    axis.set_yticklabels(
+        labels
+    )
+
+    for row_index in range(
+        len(model_names)
+    ):
+        for column_index in range(
+            len(model_names)
+        ):
+            axis.text(
+                column_index,
+                row_index,
+                (
+                    f"{matrix.iloc[row_index, column_index]:.2f}"
+                ),
+                ha="center",
+                va="center",
+                fontsize=8,
+            )
+
+    axis.set_title(
+        "Correlation of out-of-fold model residuals"
+    )
+
+    colorbar = figure.colorbar(
+        image,
+        ax=axis,
+    )
+
+    colorbar.set_label(
+        "Pearson residual correlation"
+    )
+
+    figure.tight_layout()
+
+    figure.savefig(
+        output_path,
+        dpi=180,
+        bbox_inches="tight",
+    )
+
+    plt.close(
+        figure
+    )
+
+def _plot_model_ensemble_pair_diagnostic(
+    *,
+    diagnostics: pd.DataFrame,
+    output_path: Path,
+) -> None:
+    """
+    Plot ensemble-pair quality against residual diversity.
+
+    Lower MAE and lower residual correlation are preferable,
+    so potentially useful ensemble pairs lie toward the lower-left.
+    """
+
+    frame = _require_diagnostic_scope(
+        diagnostics,
+        "model_ensemble_pair_diagnostic",
+    ).copy()
+
+    pivot = (
+        frame.pivot_table(
+            index=[
+                "model_name",
+                "candidate",
+            ],
+            columns="variable",
+            values="value",
+            aggfunc="first",
+        )
+        .reset_index()
+    )
+
+    required = {
+        "residual_correlation",
+        "mean_pair_mae_log",
+    }
+
+    missing = (
+        required
+        - set(
+            pivot.columns
+        )
+    )
+
+    if missing:
+        raise RuntimeError(
+            "Ensemble-pair diagnostics are missing: "
+            + ", ".join(
+                sorted(
+                    missing
+                )
+            )
+        )
+
+    pivot["residual_correlation"] = pd.to_numeric(
+        pivot[
+            "residual_correlation"
+        ],
+        errors="coerce",
+    )
+
+    pivot["mean_pair_mae_log"] = pd.to_numeric(
+        pivot[
+            "mean_pair_mae_log"
+        ],
+        errors="coerce",
+    )
+
+    pivot = pivot.dropna(
+        subset=[
+            "residual_correlation",
+            "mean_pair_mae_log",
+        ]
+    )
+
+    figure, axis = plt.subplots(
+        figsize=(10, 6.5)
+    )
+
+    axis.scatter(
+        pivot[
+            "residual_correlation"
+        ],
+        pivot[
+            "mean_pair_mae_log"
+        ],
+    )
+
+    for row in pivot.itertuples(
+        index=False
+    ):
+
+        label = (
+            f"{_model_plot_label(row.model_name)} + "
+            f"{_model_plot_label(row.candidate)}"
+        )
+
+        axis.annotate(
+            label,
+            (
+                float(
+                    row.residual_correlation
+                ),
+                float(
+                    row.mean_pair_mae_log
+                ),
+            ),
+            xytext=(
+                5,
+                4,
+            ),
+            textcoords="offset points",
+            fontsize=7,
+        )
+
+    axis.set_title(
+        "Candidate ensemble pairs: quality versus residual diversity"
+    )
+
+    axis.set_xlabel(
+        "Residual correlation — lower means more diverse"
+    )
+
+    axis.set_ylabel(
+        "Mean standalone MAE of pair — lower means stronger"
+    )
+
+    axis.grid(
+        axis="both",
+        linestyle="--",
+        alpha=0.5,
+    )
+
+    axis.set_axisbelow(
+        True
+    )
+
+    figure.tight_layout()
+
+    figure.savefig(
+        output_path,
+        dpi=180,
+        bbox_inches="tight",
+    )
+
+    plt.close(
+        figure
+    )
 
 def _plot_training_uv_distance_distribution(
     *,
@@ -1015,7 +1428,21 @@ def _build_validation_figure_paths(
             figure_dir / f"{prefix}training_coverage_by_year.png"
         ),
         "model_performance_by_year": (
-            figure_dir / f"{prefix}model_performance_by_year.png"
+            figure_dir
+            / f"{prefix}model_performance_by_year.png"
+        ),
+        "model_residual_correlation": (
+            figure_dir
+            / f"{prefix}model_residual_correlation.png"
+        ),
+
+        "model_ensemble_pair_diagnostic": (
+            figure_dir
+            / f"{prefix}model_ensemble_pair_diagnostic.png"
+        ),
+        "weighted_ensemble_curves": (
+            figure_dir
+            / f"{prefix}weighted_ensemble_curves.png"
         ),
     }
 
@@ -1514,6 +1941,13 @@ def build_validation_report(
                 }
             )
 
+
+        ## Model weighted ensembling
+        weighted_best = _scope_frame(
+            diagnostics,
+            "model_weighted_ensemble_best",
+        ).copy()
+
         # ============================================================== 
         # Reference-window and UV evidence
         # ============================================================== 
@@ -1773,8 +2207,7 @@ def build_validation_report(
             "model_mae_log",
             "candidate_mae_log",
             "mae_difference",
-            "mean_pair_mae_log",
-        ):
+            "mean_pair_mae_log",):
             if required_metric not in ensemble_pair_pivot.columns:
                 ensemble_pair_pivot[
                     required_metric
@@ -1864,6 +2297,98 @@ def build_validation_report(
             }
         )
 
+
+        ## Model weighted ensembling
+        # --------------------------------------------------------------
+        # Weighted-ensemble best results
+        # --------------------------------------------------------------
+
+        weighted_ensemble_best = _require_diagnostic_scope(
+            diagnostics,
+            "model_weighted_ensemble_best",
+        )
+
+        weighted_ensemble_best_pivot = (
+            weighted_ensemble_best.pivot_table(
+                index=[
+                    "model_name",
+                    "candidate",
+                ],
+                columns="variable",
+                values="value",
+                aggfunc="first",
+            )
+            .reset_index()
+        )
+
+        for required_metric in (
+            "best_weight_model_a",
+            "best_ensemble_mae_log",
+            "model_a_mae_log",
+            "model_b_mae_log",
+            "better_single_mae_log",
+            "improvement_vs_best_single",
+        ):
+            if (
+                required_metric
+                not in weighted_ensemble_best_pivot.columns
+            ):
+                weighted_ensemble_best_pivot[
+                    required_metric
+                ] = math.nan
+
+        weighted_ensemble_best_display = pd.DataFrame(
+            {
+                "Model A": (
+                    weighted_ensemble_best_pivot[
+                        "model_name"
+                    ].astype(str)
+                ),
+
+                "Model B": (
+                    weighted_ensemble_best_pivot[
+                        "candidate"
+                    ].astype(str)
+                ),
+
+                "Best weight on A": (
+                    weighted_ensemble_best_pivot[
+                        "best_weight_model_a"
+                    ]
+                ),
+
+                "Weight on B": (
+                    1.0
+                    - pd.to_numeric(
+                        weighted_ensemble_best_pivot[
+                            "best_weight_model_a"
+                        ],
+                        errors="coerce",
+                    )
+                ),
+
+                "Best ensemble MAE": (
+                    weighted_ensemble_best_pivot[
+                        "best_ensemble_mae_log"
+                    ]
+                ),
+
+                "Best single-model MAE": (
+                    weighted_ensemble_best_pivot[
+                        "better_single_mae_log"
+                    ]
+                ),
+
+                "MAE improvement": (
+                    weighted_ensemble_best_pivot[
+                        "improvement_vs_best_single"
+                    ]
+                ),
+            }
+        ).sort_values(
+            "Best ensemble MAE"
+        )
+
         # ============================================================== 
         # Figures
         # ============================================================== 
@@ -1945,6 +2470,27 @@ def build_validation_report(
             diagnostics=diagnostics,
             output_path=figure_paths[
                 "model_performance_by_year"
+            ],
+        )
+
+        _plot_model_residual_correlation(
+            diagnostics=diagnostics,
+            output_path=figure_paths[
+                "model_residual_correlation"
+            ],
+        )
+
+        _plot_model_ensemble_pair_diagnostic(
+            diagnostics=diagnostics,
+            output_path=figure_paths[
+                "model_ensemble_pair_diagnostic"
+            ],
+        )
+
+        _plot_weighted_ensemble_curves(
+            diagnostics=diagnostics,
+            output_path=figure_paths[
+                "weighted_ensemble_curves"
             ],
         )
 
@@ -2359,8 +2905,16 @@ def build_validation_report(
                 "over- or under-predict the same observations in similar ways."
             ),
             "",
-            _markdown_table(
-                model_residual_correlation_display
+            get_table_figure_layout(
+                model_residual_correlation_display,
+                markdown_image(
+                    "Correlation of out-of-fold model residuals",
+                    figure_paths[
+                        "model_residual_correlation"
+                    ],
+                    document_path=report_path,
+                    width=800,
+                ),
             ),
             "",
 
@@ -2380,11 +2934,60 @@ def build_validation_report(
                 "residual correlation."
             ),
             "",
-            _markdown_table(
-                ensemble_pair_display
+            get_table_figure_layout(
+                ensemble_pair_display,
+                markdown_image(
+                    "Candidate ensemble pairs: quality versus residual diversity",
+                    figure_paths[
+                        "model_ensemble_pair_diagnostic"
+                    ],
+                    document_path=report_path,
+                    width=800,
+                ),
             ),
             "",
 
+            "### 6.5. Weighted ensemble performance",
+            "",
+            (
+                "The candidate pairs above are evaluated as weighted "
+                "two-model ensembles in log-prediction space. For each "
+                "pair, Model A receives weight `w` and Model B receives "
+                "weight `1 - w`. Performance is evaluated directly on "
+                "the same out-of-fold held-out observations used for "
+                "single-model evaluation."
+            ),
+            "",
+            (
+                "- The summary below reports the best tested weighting "
+                "for each model pair. A positive MAE improvement means "
+                "that the weighted ensemble outperforms the stronger "
+                "of its two constituent models."
+            ),
+            "",
+            _markdown_table(
+                weighted_ensemble_best_display
+            ),
+            "",
+            (
+                "- The figure shows how out-of-fold MAE changes as the "
+                "weight assigned to Model A varies from 0 to 1. "
+                "Endpoints therefore correspond to the standalone "
+                "models, while interior points represent blended "
+                "predictions. A curve dipping below both endpoints "
+                "provides direct evidence that combining the models "
+                "improves predictive accuracy."
+            ),
+            "",
+            markdown_image(
+                "Weighted ensemble performance curves",
+                figure_paths[
+                    "weighted_ensemble_curves"
+                ],
+                document_path=report_path,
+                width=850,
+            ),
+            "",
             "## 7. Current methodological status",
             "",
             (

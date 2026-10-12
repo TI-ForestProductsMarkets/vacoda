@@ -137,6 +137,7 @@ def _append_metric(
     quantile: float | None = None,
     candidate: str | None = None,
     model_name: str | None = None,
+    weight: float | None = None,
     uv_support_threshold: float | None = None,
     uv_distance_threshold: float | None = None,
     disagreement_band: str | None = None,
@@ -149,6 +150,7 @@ def _append_metric(
             "criterion": criterion,
             "candidate": candidate,
             "model_name": model_name,
+            "weight":weight,
             "disagreement_threshold": None,
             "uv_support_threshold": uv_support_threshold,
             "uv_distance_threshold": uv_distance_threshold,
@@ -942,6 +944,7 @@ def build_diagnostics(
                     ),
                     "candidate": None,
                     "model_name": None,
+                    "weight":None,
                     "disagreement_threshold": None,
                     "uv_support_threshold": None,
                     "uv_distance_threshold": None,
@@ -1606,6 +1609,454 @@ def build_diagnostics(
                         row.n_rows
                     ),
                 )
+        
+        
+
+        # ==================================================================
+        # Weighted ensemble diagnostics
+        # ==================================================================
+        #
+        # Evaluate simple weighted blends of two candidate models using
+        # out-of-fold predictions on identical held-out canonical rows.
+        #
+        # blended_prediction
+        #   = w * prediction_model_a
+        #   + (1 - w) * prediction_model_b
+        #
+        # Metrics are computed on the transformed (log) target scale.
+        # ==================================================================
+
+        ensemble_pairs = [
+            (
+                "emb_mlp_bs4096_lr0p001",
+                "extra_trees",
+            ),
+            (
+                "emb_mlp_bs4096_lr0p001",
+                "random_forest",
+            ),
+            (
+                "emb_mlp_bs4096_lr0p001",
+                "histogram_gradient_boosting",
+            ),
+            (
+                "emb_mlp_bs4096_lr0p001",
+                "ridge",
+            ),
+        ]
+
+        ensemble_weights = [
+            0.00,
+            0.10,
+            0.20,
+            0.30,
+            0.40,
+            0.50,
+            0.60,
+            0.70,
+            0.80,
+            0.90,
+            1.00,
+        ]
+
+        pair_sql = ", ".join(
+            (
+                f"('{model_a}', '{model_b}')"
+            )
+            for model_a, model_b in ensemble_pairs
+        )
+
+        weight_sql = ", ".join(
+            f"({weight:.6f})"
+            for weight in ensemble_weights
+        )
+
+        weighted_ensemble_curve = con.execute(
+            f"""
+            WITH pair_config(
+                model_a,
+                model_b
+            ) AS (
+                VALUES
+                    {pair_sql}
+            ),
+
+            weight_grid(
+                weight_model_a
+            ) AS (
+                VALUES
+                    {weight_sql}
+            ),
+
+            paired_predictions AS (
+
+                SELECT
+                    pairs.model_a,
+                    pairs.model_b,
+
+                    weights.weight_model_a,
+
+                    left_model.year,
+                    left_model.exporter_iso,
+                    left_model.importer_iso,
+                    left_model.target_cmd,
+                    left_model.held_out_year,
+
+                    left_model.target_transformed,
+
+                    left_model.prediction_transformed
+                        AS prediction_model_a,
+
+                    right_model.prediction_transformed
+                        AS prediction_model_b
+
+                FROM pair_config
+                    AS pairs
+
+                INNER JOIN validation_model_predictions
+                    AS left_model
+
+                    ON left_model.model_name
+                        = pairs.model_a
+
+                INNER JOIN validation_model_predictions
+                    AS right_model
+
+                    ON right_model.model_name
+                        = pairs.model_b
+
+                    AND left_model.year
+                        = right_model.year
+
+                    AND left_model.exporter_iso
+                        = right_model.exporter_iso
+
+                    AND left_model.importer_iso
+                        = right_model.importer_iso
+
+                    AND left_model.target_cmd
+                        = right_model.target_cmd
+
+                    AND left_model.held_out_year
+                        = right_model.held_out_year
+
+                CROSS JOIN weight_grid
+                    AS weights
+            ),
+
+            scored AS (
+
+                SELECT
+                    model_a,
+                    model_b,
+                    weight_model_a,
+
+                    target_transformed,
+
+                    (
+                        weight_model_a
+                        * prediction_model_a
+                        + (1.0 - weight_model_a)
+                        * prediction_model_b
+                    ) AS blended_prediction
+
+                FROM paired_predictions
+            )
+
+            SELECT
+                model_a,
+                model_b,
+                weight_model_a,
+
+                COUNT(*)
+                    AS n_rows,
+
+                AVG(
+                    ABS(
+                        target_transformed
+                        - blended_prediction
+                    )
+                ) AS mae_log,
+
+                MEDIAN(
+                    ABS(
+                        target_transformed
+                        - blended_prediction
+                    )
+                ) AS median_absolute_log_error,
+
+                SQRT(
+                    AVG(
+                        POWER(
+                            target_transformed
+                            - blended_prediction,
+                            2
+                        )
+                    )
+                ) AS rmse_log
+
+            FROM scored
+
+            GROUP BY
+                model_a,
+                model_b,
+                weight_model_a
+
+            ORDER BY
+                model_a,
+                model_b,
+                weight_model_a
+            """
+        ).fetchdf()
+        
+
+        for row in weighted_ensemble_curve.itertuples(
+            index=False
+        ):
+            for variable, value in (
+                (
+                    "mae_log",
+                    row.mae_log,
+                ),
+                (
+                    "median_absolute_log_error",
+                    row.median_absolute_log_error,
+                ),
+                (
+                    "rmse_log",
+                    row.rmse_log,
+                ),
+            ):
+                _append_metric(
+                    diagnostics_rows,
+                    scope=(
+                        "model_weighted_ensemble_curve"
+                    ),
+                    criterion=(
+                        "out_of_fold_weighted_blend"
+                    ),
+                    model_name=str(
+                        row.model_a
+                    ),
+                    candidate=str(
+                        row.model_b
+                    ),
+                    variable=variable,
+                    value=float(
+                        value
+                    ),
+                    n_rows=int(
+                        row.n_rows
+                    ),
+                    weight=float(
+                        row.weight_model_a
+                    ),
+                )
+
+        weighted_ensemble_best = con.execute(
+            f"""
+            WITH pair_config(
+                model_a,
+                model_b
+            ) AS (
+                VALUES
+                    {pair_sql}
+            ),
+
+            weight_grid(
+                weight_model_a
+            ) AS (
+                VALUES
+                    {weight_sql}
+            ),
+
+            paired_predictions AS (
+
+                SELECT
+                    pairs.model_a,
+                    pairs.model_b,
+
+                    weights.weight_model_a,
+
+                    left_model.target_transformed,
+
+                    left_model.prediction_transformed
+                        AS prediction_model_a,
+
+                    right_model.prediction_transformed
+                        AS prediction_model_b
+
+                FROM pair_config
+                    AS pairs
+
+                INNER JOIN validation_model_predictions
+                    AS left_model
+
+                    ON left_model.model_name
+                        = pairs.model_a
+
+                INNER JOIN validation_model_predictions
+                    AS right_model
+
+                    ON right_model.model_name
+                        = pairs.model_b
+
+                    AND left_model.year
+                        = right_model.year
+
+                    AND left_model.exporter_iso
+                        = right_model.exporter_iso
+
+                    AND left_model.importer_iso
+                        = right_model.importer_iso
+
+                    AND left_model.target_cmd
+                        = right_model.target_cmd
+
+                    AND left_model.held_out_year
+                        = right_model.held_out_year
+
+                CROSS JOIN weight_grid
+                    AS weights
+            ),
+
+            scored AS (
+
+                SELECT
+                    model_a,
+                    model_b,
+                    weight_model_a,
+
+                    AVG(
+                        ABS(
+                            target_transformed
+                            - (
+                                weight_model_a
+                                * prediction_model_a
+                                + (1.0 - weight_model_a)
+                                * prediction_model_b
+                            )
+                        )
+                    ) AS mae_log
+
+                FROM paired_predictions
+
+                GROUP BY
+                    model_a,
+                    model_b,
+                    weight_model_a
+            ),
+
+            model_quality AS (
+
+                SELECT
+                    model_name,
+                    AVG(absolute_log_error)
+                        AS mae_log
+                FROM validation_model_predictions
+                GROUP BY
+                    model_name
+            )
+
+            SELECT
+                scored.model_a,
+                scored.model_b,
+                scored.weight_model_a
+                    AS best_weight_model_a,
+                scored.mae_log
+                    AS best_ensemble_mae_log,
+
+                quality_a.mae_log
+                    AS model_a_mae_log,
+
+                quality_b.mae_log
+                    AS model_b_mae_log,
+
+                LEAST(
+                    quality_a.mae_log,
+                    quality_b.mae_log
+                ) AS better_single_mae_log,
+
+                LEAST(
+                    quality_a.mae_log,
+                    quality_b.mae_log
+                ) - scored.mae_log
+                    AS improvement_vs_best_single
+
+            FROM scored
+
+            INNER JOIN model_quality
+                AS quality_a
+                ON scored.model_a = quality_a.model_name
+
+            INNER JOIN model_quality
+                AS quality_b
+                ON scored.model_b = quality_b.model_name
+
+            QUALIFY
+                ROW_NUMBER() OVER (
+                    PARTITION BY
+                        scored.model_a,
+                        scored.model_b
+                    ORDER BY
+                        scored.mae_log,
+                        ABS(scored.weight_model_a - 0.5)
+                ) = 1
+
+            ORDER BY
+                best_ensemble_mae_log
+            """
+        ).fetchdf()
+
+        for row in weighted_ensemble_best.itertuples(
+            index=False
+        ):
+            for variable, value in (
+                (
+                    "best_weight_model_a",
+                    row.best_weight_model_a,
+                ),
+                (
+                    "best_ensemble_mae_log",
+                    row.best_ensemble_mae_log,
+                ),
+                (
+                    "model_a_mae_log",
+                    row.model_a_mae_log,
+                ),
+                (
+                    "model_b_mae_log",
+                    row.model_b_mae_log,
+                ),
+                (
+                    "better_single_mae_log",
+                    row.better_single_mae_log,
+                ),
+                (
+                    "improvement_vs_best_single",
+                    row.improvement_vs_best_single,
+                ),
+            ):
+                _append_metric(
+                    diagnostics_rows,
+                    scope=(
+                        "model_weighted_ensemble_best"
+                    ),
+                    criterion=(
+                        "best_out_of_fold_weighted_blend"
+                    ),
+                    model_name=str(
+                        row.model_a
+                    ),
+                    candidate=str(
+                        row.model_b
+                    ),
+                    variable=variable,
+                    value=float(
+                        value
+                    ),
+                    n_rows=None,
+                )
         # ==================================================================
         # Diagnostics artifact
         # ==================================================================
@@ -1647,6 +2098,7 @@ def build_diagnostics(
         optional_columns = (
             "candidate",
             "model_name",
+            "weight",
             "disagreement_threshold",
             "uv_support_threshold",
             "uv_distance_threshold",
@@ -1679,6 +2131,7 @@ def build_diagnostics(
                 "criterion",
                 "candidate",
                 "model_name",
+                "weight",
                 "disagreement_threshold",
                 "uv_support_threshold",
                 "uv_distance_threshold",
