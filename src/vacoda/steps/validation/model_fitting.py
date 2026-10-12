@@ -2357,7 +2357,6 @@ def fit_selected_validation_model(
                 cfg=cfg,
                 logger=logger,
             )
-        )
 
         logger.info(
             "  Selected final epoch: %s",
