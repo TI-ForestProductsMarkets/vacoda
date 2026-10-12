@@ -43,6 +43,10 @@ from torch.utils.data import (
     DataLoader,
     TensorDataset,
 )
+from vacoda.utils.display import (
+    get_symbols,
+    progress_bar,
+)
 
 from vacoda.config.steps.validation import (
     ValidationConfig,
@@ -71,7 +75,6 @@ from vacoda.steps.validation.training_sample import (
     training_definition_name,
 )
 
-from vacoda.utils.display import get_symbols
 from vacoda.utils.sql import sql_literal
 
 
@@ -617,10 +620,7 @@ def _determine_embedding_best_epoch(
     parameters: dict[str, Any],
     cfg: ValidationConfig,
     logger,
-) -> tuple[
-    int,
-    float,
-]:
+) -> tuple[int, float, float,]:
     """
     Determine the preferred training epoch using internal validation.
 
@@ -849,12 +849,13 @@ def _determine_embedding_best_epoch(
     )
 
     epochs_without_meaningful_improvement = 0
+    phase_start = perf_counter()
 
     for epoch in range(
         1,
         max_epochs + 1,
     ):
-
+        epoch_start = perf_counter()
         model.train()
 
         training_loss_sum = 0.0
@@ -935,13 +936,27 @@ def _determine_embedding_best_epoch(
                 ).item()
             )
 
+        epoch_elapsed = (
+            perf_counter()
+            - epoch_start
+        )
+
+        phase_elapsed = (
+            perf_counter()
+            - phase_start
+        )
+
         logger.info(
             "    Epoch %d — "
             "train_MSE_log=%.6f, "
-            "internal_validation_MSE_log=%.6f",
+            "internal_validation_MSE_log=%.6f, "
+            "epoch_time=%.1fs, "
+            "phase_time=%.1fmin",
             epoch,
             training_mse,
             internal_loss,
+            epoch_elapsed,
+            phase_elapsed / 60.0,
         )
 
         if (
@@ -997,13 +1012,18 @@ def _determine_embedding_best_epoch(
             "produce a valid best epoch."
         )
 
+    logger.info(
+        "  Phase A complete — duration=%.2f min",
+        (
+            perf_counter()
+            - phase_start
+        ) / 60.0,
+    )
+
     return (
-        int(
-            best_epoch
-        ),
-        float(
-            best_validation_loss
-        ),
+        int(best_epoch),
+        float(best_validation_loss),
+        float(perf_counter() - phase_start),
     )
 
 
@@ -1022,7 +1042,7 @@ def _fit_embedding_full_population(
     final_epochs: int,
     cfg: ValidationConfig,
     logger,
-) -> EmbeddingMLP:
+) -> tuple[EmbeddingMLP, float,]:
     """Fit a fresh embedding network on all selected rows."""
 
     params = dict(
@@ -1121,11 +1141,13 @@ def _fit_embedding_full_population(
         generator=loader_generator,
     )
 
+    phase_start = perf_counter()
+
     for epoch in range(
         1,
         final_epochs + 1,
     ):
-
+        epoch_start = perf_counter()
         model.train()
 
         training_loss_sum = 0.0
@@ -1190,20 +1212,60 @@ def _fit_embedding_full_population(
             / training_rows
         )
 
+        epoch_elapsed = (
+            perf_counter()
+            - epoch_start
+        )
+
+        phase_elapsed = (
+            perf_counter()
+            - phase_start
+        )
+
+        average_epoch_seconds = (
+            phase_elapsed / epoch
+        )
+
+        remaining_seconds = (
+            average_epoch_seconds
+            * (
+                final_epochs - epoch
+            )
+        )
+
         logger.info(
             "    Final fit epoch %d/%d — "
-            "train_MSE_log=%.6f",
+            "train_MSE_log=%.6f, "
+            "epoch_time=%.1fs, "
+            "phase_time=%.1fmin, "
+            "eta=%.1fmin",
             epoch,
             final_epochs,
             training_mse,
+            epoch_elapsed,
+            phase_elapsed / 60.0,
+            remaining_seconds / 60.0,
         )
+
+
+    phase_b_duration_seconds = (
+        perf_counter()
+        - phase_start
+    )
+    logger.info(
+        "  Phase B complete — duration=%.2f min",
+            phase_b_duration_seconds / 60.0,
+    )
 
     model.eval()
     model.to(
         "cpu"
     )
 
-    return model
+    return (
+        model,
+        phase_b_duration_seconds,
+    )
 
 
 # ======================================================================
@@ -2269,8 +2331,8 @@ def fit_selected_validation_model(
         (
             final_epochs,
             epoch_selection_validation_loss,
-        ) = (
-            _determine_embedding_best_epoch(
+            phase_a_duration_seconds,
+        ) = _determine_embedding_best_epoch(
                 x_numeric=(
                     phase_a_all_numeric
                 ),
@@ -2330,8 +2392,10 @@ def fit_selected_validation_model(
             )
         )
 
-        final_model = (
-            _fit_embedding_full_population(
+        (
+            final_model,
+            phase_b_duration_seconds,
+        ) = _fit_embedding_full_population(
                 x_numeric=(
                     final_numeric
                 ),
