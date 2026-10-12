@@ -93,6 +93,8 @@ def prepare_validation_input(
         output_path=output_path,
     )
 
+    ready_for_structural_audit = True
+
     if not force and reusable:
 
         logger.info(

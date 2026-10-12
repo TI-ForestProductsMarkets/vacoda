@@ -176,11 +176,51 @@ validation:
           n_iter_no_change: 15
           tol: 0.0001
           
-      embedding_mlp:
+      emb_mlp_bs4096_lr0p001:
         enable: true
         type: "embedding_mlp"
         parameters:
           batch_size: 4096
+          learning_rate: 0.001
+          max_epochs: 35
+          patience: 5
+          early_stopping: true
+
+          min_delta: 0.001
+          internal_validation_fraction: 0.10
+
+          exporter_embedding_dim: 16
+          importer_embedding_dim: 16
+          product_embedding_dim: 32
+
+          hidden_layer_1: 128
+          hidden_layer_2: 64
+
+      emb_mlp_bs8192_lr0p001:
+        enable: true
+        type: "embedding_mlp"
+        parameters:
+          batch_size: 8192
+          learning_rate: 0.001
+          max_epochs: 35
+          patience: 5
+          early_stopping: true
+
+          min_delta: 0.001
+          internal_validation_fraction: 0.10
+
+          exporter_embedding_dim: 16
+          importer_embedding_dim: 16
+          product_embedding_dim: 32
+
+          hidden_layer_1: 128
+          hidden_layer_2: 64
+
+      emb_mlp_bs16384_lr0p001:
+        enable: true
+        type: "embedding_mlp"
+        parameters:
+          batch_size: 16384
           learning_rate: 0.001
           max_epochs: 35
           patience: 5

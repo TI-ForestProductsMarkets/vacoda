@@ -393,32 +393,6 @@ def build_diagnostics(
     logger.info("  Model predictions: %s", model_predictions_path)
     logger.info("  Output: %s", output_path)
 
-    year_col = str(columns_cfg.year)
-    product_col = str(columns_cfg.product)
-    nominal_value_col = str(columns_cfg.nominal_value)
-    constant_value_col = str(columns_cfg.constant_value)
-    export_quantity_col = str(columns_cfg.export_quantity)
-    import_quantity_col = str(columns_cfg.import_quantity)
-    export_estimated_col = str(columns_cfg.export_estimated)
-    import_estimated_col = str(columns_cfg.import_estimated)
-    relative_difference_col = str(columns_cfg.quantity_relative_difference)
-
-    quantity_col = "trade_synced_quantity_kg"
-    
-    min_reference_observations = int(
-        training_cfg.min_hs_year_reference_observations
-    )
-    max_normalized_uv_distance_mad = float(
-        training_cfg.max_normalized_uv_distance_mad
-    )
-    reference_year_before = int(
-        training_cfg.reference_year_window.before
-    )
-    reference_year_after = int(
-        training_cfg.reference_year_window.after
-    )
-
-    training_definition = training_definition_name(cfg=cfg)
 
     required_columns = {
         year_col,

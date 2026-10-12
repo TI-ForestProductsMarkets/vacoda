@@ -88,6 +88,73 @@ def _ordered_unique(
     )
 
 
+def _combined_predictions_manifest_path(
+    *,
+    output_path: Path,
+) -> Path:
+    """Return the manifest path for combined model predictions."""
+
+    return manifest_path_for(
+        output_path
+    )
+
+
+def _combined_predictions_semantic_payload(
+    *,
+    cfg: ValidationConfig,
+    training_data_sha256: str,
+    validation_years: list[int],
+    model_payloads: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """Return semantic identity of the combined model-prediction artifact."""
+
+    return {
+        "artifact": (
+            "validation_model_predictions_combined"
+        ),
+
+        "cache_version": (
+            MODEL_CACHE_VERSION
+        ),
+
+        "scope": {
+            "target_hs": (
+                cfg.scope.target_hs
+            ),
+        },
+
+        "training_definition": (
+            training_definition_name(
+                cfg=cfg
+            )
+        ),
+
+        "data": {
+            "semantic_sha256": (
+                training_data_sha256
+            ),
+        },
+
+        "validation": {
+            "strategy": (
+                cfg.model.validation.strategy
+            ),
+            "year_column": (
+                cfg.model.validation.year_column
+            ),
+            "validation_years": [
+                int(year)
+                for year in validation_years
+            ],
+        },
+
+        "models": {
+            model_name: payload
+            for model_name, payload
+            in model_payloads.items()
+        },
+    }
+
 def _format_checkpoint_value(
     value: float | int,
 ) -> str:
@@ -2245,9 +2312,12 @@ def train_validation_models(
         # Run or reuse one complete checkpoint per candidate model
         # --------------------------------------------------------------
 
-        checkpoint_prediction_paths: list[
-            Path
-        ] = []
+        checkpoint_prediction_paths: list[Path] = []
+
+        model_semantic_payloads: dict[
+            str,
+            dict[str, Any],
+        ] = {}
 
         n_reused_models = 0
         n_rebuilt_models = 0
@@ -2273,6 +2343,10 @@ def train_validation_models(
                     validation_years=validation_years,
                 )
             )
+
+            model_semantic_payloads[
+                model_name
+            ] = semantic_payload
 
             reusable = False
             reuse_reason = (
@@ -2877,6 +2951,47 @@ def train_validation_models(
             del model_predictions
             del model_fold_prediction_paths
 
+        ## Combine all candidate-model checkpoints into one output
+        combined_payload = (
+            _combined_predictions_semantic_payload(
+                cfg=cfg,
+                training_data_sha256=(
+                    training_data_sha256
+                ),
+                validation_years=(
+                    validation_years
+                ),
+                model_payloads=(
+                    model_semantic_payloads
+                ),
+            )
+        )
+
+        combined_manifest_path = (
+            _combined_predictions_manifest_path(
+                output_path=output_path
+            )
+        )
+
+        combined_reusable = False
+        combined_reason = (
+            "force=True"
+        )
+
+        if not force:
+            (
+                combined_reusable,
+                combined_reason,
+            ) = validate_manifest(
+                artifact_path=output_path,
+                manifest_path=(
+                    combined_manifest_path
+                ),
+                expected_payload=(
+                    combined_payload
+                ),
+            )
+
         # --------------------------------------------------------------
         # Combine reusable + newly built checkpoints
         # --------------------------------------------------------------
@@ -2908,39 +3023,90 @@ def train_validation_models(
             run_id
         )
 
-        logger.info(
-            "  Combining %s model prediction checkpoint(s)...",
-            len(
-                checkpoint_prediction_paths
-            ),
-        )
+        if combined_reusable:
 
-        con.execute(
-            f"""
-            COPY (
-                SELECT
-                    {run_id_sql}
-                        AS run_id,
-                    *
+            logger.info(
+                "%s REUSE — Combined model predictions "
+                "(%s)",
+                get_symbols("reuse"),
+                combined_reason,
+            )
 
-                FROM read_parquet(
-                    [
-                        {checkpoint_paths_sql}
-                    ],
-                    union_by_name = TRUE
+        else:
+
+            logger.info(
+                "%s REBUILD — Combined model predictions "
+                "(%s)",
+                get_symbols("rebuilt"),
+                combined_reason,
+            )
+
+            if temporary_path.exists():
+                temporary_path.unlink()
+
+            checkpoint_paths_sql = (
+                ", ".join(
+                    sql_literal(
+                        path
+                    )
+                    for path
+                    in checkpoint_prediction_paths
                 )
             )
-            TO {temporary_sql}
-            (
-                FORMAT PARQUET,
-                COMPRESSION ZSTD
-            )
-            """
-        )
 
-        temporary_path.replace(
-            output_path
-        )
+            temporary_sql = sql_literal(
+                temporary_path
+            )
+
+            logger.info(
+                "  Combining %s model prediction checkpoint(s)...",
+                len(
+                    checkpoint_prediction_paths
+                ),
+            )
+
+            con.execute(
+                f"""
+                COPY (
+                    SELECT *
+                    FROM read_parquet(
+                        [
+                            {checkpoint_paths_sql}
+                        ],
+                        union_by_name = TRUE
+                    )
+                )
+                TO {temporary_sql}
+                (
+                    FORMAT PARQUET,
+                    COMPRESSION ZSTD
+                )
+                """
+            )
+
+            temporary_path.replace(
+                output_path
+            )
+
+            write_manifest(
+                manifest_path=(
+                    combined_manifest_path
+                ),
+                artifact_name=(
+                    "validation_model_predictions_combined"
+                ),
+                semantic_payload=(
+                    combined_payload
+                ),
+                artifact_path=(
+                    output_path
+                ),
+                extra={
+                    "model_count": len(
+                        checkpoint_prediction_paths
+                    ),
+                },
+            )
 
         # --------------------------------------------------------------
         # Final output accounting
