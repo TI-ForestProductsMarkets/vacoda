@@ -27,6 +27,7 @@ from typing import Any
 
 import duckdb
 import matplotlib
+from matplotlib.lines import Line2D
 
 matplotlib.use("Agg")
 
@@ -272,6 +273,27 @@ def _model_plot_label(value: str) -> str:
         str(value),
     )
 
+def _model_plot_marker(
+    model_name: str,
+) -> str:
+    """Return a distinct marker per model."""
+
+    markers = {
+        "ridge": "X",
+        "mlp": "P",
+        "extra_trees": "s",
+        "random_forest": "D",
+        "histogram_gradient_boosting": "^",
+        "emb_mlp_bs4096_lr0p001": "o",
+        "emb_mlp_bs8192_lr0p001": "v",
+        "emb_mlp_bs16384_lr0p001": "*",
+    }
+
+    return markers.get(
+        model_name,
+        "o",
+    )
+
 def _markdown_table(
     dataframe: pd.DataFrame,
     *,
@@ -457,6 +479,292 @@ def _plot_model_residual_correlation(
     )
 
 def _plot_model_ensemble_pair_diagnostic(
+    *,
+    diagnostics: pd.DataFrame,
+    output_path: Path,
+) -> None:
+    """
+    Plot ensemble-pair quality against residual diversity.
+
+    Lower MAE and lower residual correlation are preferable.
+
+    All candidate pairs are shown for context, while Pareto-efficient
+    pairs are emphasized. Cross-family Pareto pairs are labelled;
+    embedding-versus-embedding Pareto pairs remain visible but unlabelled.
+    """
+
+    frame = _require_diagnostic_scope(
+        diagnostics,
+        "model_ensemble_pair_diagnostic",
+    ).copy()
+
+    pivot = (
+        frame.pivot_table(
+            index=[
+                "model_name",
+                "candidate",
+            ],
+            columns="variable",
+            values="value",
+            aggfunc="first",
+        )
+        .reset_index()
+    )
+
+    required = {
+        "residual_correlation",
+        "mean_pair_mae_log",
+    }
+
+    missing = (
+        required
+        - set(
+            pivot.columns
+        )
+    )
+
+    if missing:
+        raise RuntimeError(
+            "Ensemble-pair diagnostics are missing: "
+            + ", ".join(
+                sorted(
+                    missing
+                )
+            )
+        )
+
+    pivot["residual_correlation"] = pd.to_numeric(
+        pivot[
+            "residual_correlation"
+        ],
+        errors="coerce",
+    )
+
+    pivot["mean_pair_mae_log"] = pd.to_numeric(
+        pivot[
+            "mean_pair_mae_log"
+        ],
+        errors="coerce",
+    )
+
+    pivot = pivot.dropna(
+        subset=[
+            "residual_correlation",
+            "mean_pair_mae_log",
+        ]
+    ).copy()
+
+    # --------------------------------------------------------------
+    # Identify Pareto-efficient pairs
+    # --------------------------------------------------------------
+    #
+    # Both axes are minimized:
+    #
+    #   x: residual correlation
+    #   y: mean standalone MAE
+    #
+    # After sorting from lowest residual correlation upward,
+    # a pair enters the Pareto frontier only when it improves
+    # upon the best mean MAE encountered so far.
+    # --------------------------------------------------------------
+
+    ordered = pivot.sort_values(
+        [
+            "residual_correlation",
+            "mean_pair_mae_log",
+        ],
+        ascending=[
+            True,
+            True,
+        ],
+    ).copy()
+
+    pareto_indices = []
+    best_mae_so_far = math.inf
+
+    for row in ordered.itertuples():
+
+        mae = float(
+            row.mean_pair_mae_log
+        )
+
+        if mae < best_mae_so_far:
+
+            pareto_indices.append(
+                row.Index
+            )
+
+            best_mae_so_far = mae
+
+    pivot["pareto"] = (
+        pivot.index.isin(
+            pareto_indices
+        )
+    )
+
+    background = pivot[
+        ~pivot["pareto"]
+    ].copy()
+
+    frontier = (
+        pivot[
+            pivot["pareto"]
+        ]
+        .sort_values(
+            "residual_correlation"
+        )
+        .copy()
+    )
+
+    # --------------------------------------------------------------
+    # Figure
+    # --------------------------------------------------------------
+
+    figure, axis = plt.subplots(
+        figsize=(10, 6.5)
+    )
+
+    # Dominated pairs remain visible as context.
+    axis.scatter(
+        background[
+            "residual_correlation"
+        ],
+        background[
+            "mean_pair_mae_log"
+        ],
+        alpha=0.35,
+        s=45,
+        label="Other candidate pairs",
+    )
+
+    # Pareto-efficient pairs are emphasized.
+    axis.scatter(
+        frontier[
+            "residual_correlation"
+        ],
+        frontier[
+            "mean_pair_mae_log"
+        ],
+        s=75,
+        label="Pareto-efficient pairs",
+    )
+
+    # --------------------------------------------------------------
+    # Connect Pareto-efficient pairs
+    # --------------------------------------------------------------
+
+    axis.plot(
+        frontier[
+            "residual_correlation"
+        ],
+        frontier[
+            "mean_pair_mae_log"
+        ],
+        linestyle="--",
+        linewidth=1.2,
+        alpha=0.7,
+    )
+
+    # --------------------------------------------------------------
+    # Label only cross-family Pareto pairs
+    # --------------------------------------------------------------
+
+    embedding_models = {
+        "emb_mlp_bs4096_lr0p001",
+        "emb_mlp_bs8192_lr0p001",
+        "emb_mlp_bs16384_lr0p001",
+    }
+
+    frontier_to_label = frontier[
+        ~(
+            frontier["model_name"].isin(
+                embedding_models
+            )
+            &
+            frontier["candidate"].isin(
+                embedding_models
+            )
+        )
+    ].copy()
+
+    offsets = [
+        (6, 6),
+        (6, -12),
+        (6, 6),
+        (6, -12),
+        (6, 6),
+        (6, -12),
+    ]
+
+    for index, row in enumerate(
+        frontier_to_label.itertuples(
+            index=False
+        )
+    ):
+
+        label = (
+            f"{_model_plot_label(row.model_name)} + "
+            f"{_model_plot_label(row.candidate)}"
+        )
+
+        axis.annotate(
+            label,
+            (
+                float(
+                    row.residual_correlation
+                ),
+                float(
+                    row.mean_pair_mae_log
+                ),
+            ),
+            xytext=(
+                offsets[
+                    index % len(offsets)
+                ]
+            ),
+            textcoords="offset points",
+            fontsize=8,
+        )
+
+    axis.set_title(
+        "Candidate ensemble pairs: quality versus residual diversity"
+    )
+
+    axis.set_xlabel(
+        "Residual correlation — lower means more diverse"
+    )
+
+    axis.set_ylabel(
+        "Mean standalone MAE of pair — lower means stronger"
+    )
+
+    axis.grid(
+        axis="both",
+        linestyle="--",
+        alpha=0.5,
+    )
+
+    axis.set_axisbelow(
+        True
+    )
+
+    axis.legend(
+        loc="upper right"
+    )
+
+    figure.tight_layout()
+
+    figure.savefig(
+        output_path,
+        dpi=180,
+        bbox_inches="tight",
+    )
+
+    plt.close(
+        figure
+    )
+
+def _plot_model_ensemble_pair_diagnostic_deprecated(
     *,
     diagnostics: pd.DataFrame,
     output_path: Path,
@@ -2218,12 +2526,12 @@ def build_validation_report(
                 "Model A": (
                     ensemble_pair_pivot[
                         "model_name"
-                    ].astype(str)
+                    ].map(_model_plot_label).astype(str)
                 ),
                 "Model B": (
                     ensemble_pair_pivot[
                         "candidate"
-                    ].astype(str)
+                    ].map(_model_plot_label).astype(str)
                 ),
                 "MAE A": (
                     ensemble_pair_pivot[
