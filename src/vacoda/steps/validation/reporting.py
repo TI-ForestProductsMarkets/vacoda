@@ -133,7 +133,8 @@ def _plot_weighted_ensemble_curves(
         )
 
         label = (
-            f"{model_name} + {candidate}"
+            f"{_model_plot_label(model_name)} + "
+            f"{_model_plot_label(candidate)}"
         )
 
         ax.plot(
@@ -1651,7 +1652,7 @@ def _plot_model_performance_by_year(
             pd.to_numeric(group["year"], errors="coerce"),
             pd.to_numeric(group["value"], errors="coerce"),
             marker="o",
-            label=str(model_name),
+            label=_model_plot_label(model_name),
         )
 
     axis.set_title(
