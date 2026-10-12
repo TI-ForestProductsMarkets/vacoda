@@ -255,6 +255,28 @@ def _format_number(
 
     return f"{float(value):,.{digits}f}"
 
+def _model_definition(value:str) -> str:
+    """Return a readable model definition for the report."""
+    
+    definitions = {
+        "ridge": "Ridge regression",
+        "mlp": "Multi-layer perceptron",
+        "extra_trees": "Extra Trees",
+        "random_forest": "Random Forest",
+        "histogram_gradient_boosting": "Histogram Gradient Boosting",
+        "emb_mlp_bs4096_lr0p001": (
+            "Embedding MLP, batch size 4096, learning rate 0.001"
+        ),
+        "emb_mlp_bs8192_lr0p001": (
+            "Embedding MLP, batch size 8192, learning rate 0.001"
+        ),
+        "emb_mlp_bs16384_lr0p001": (
+            "Embedding MLP, batch size 16384, learning rate 0.001"
+        ),
+    }
+
+    return definitions.get(str(value), str(value))
+
 def _model_plot_label(value: str) -> str:
     """Return compact model labels for Validation figures."""
 
@@ -2440,11 +2462,10 @@ def build_validation_report(
 
         model_performance_display = pd.DataFrame(
             {
-                "Model": model_pivot["model_name"].astype(str),
+                "Model": model_pivot["model_name"].map(_model_plot_label).astype(str),
+                "Model definition": model_pivot['model_name'].map(_model_definition).astype(str),
                 "MAE log": model_pivot["mae_log"],
-                "Median absolute log error": (
-                    model_pivot["median_absolute_log_error"]
-                ),
+                "Median absolute log error": (model_pivot["median_absolute_log_error"]),
                 "RMSE log": model_pivot["rmse_log"],
             }
         ).sort_values("MAE log")
@@ -2650,13 +2671,13 @@ def build_validation_report(
                 "Model A": (
                     weighted_ensemble_best_pivot[
                         "model_name"
-                    ].astype(str)
+                    ].map(_model_plot_label).astype(str)
                 ),
 
                 "Model B": (
                     weighted_ensemble_best_pivot[
                         "candidate"
-                    ].astype(str)
+                    ].map(_model_plot_label).astype(str)
                 ),
 
                 "Best weight on A": (
