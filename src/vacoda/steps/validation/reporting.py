@@ -2149,17 +2149,22 @@ def build_validation_report(
             "model_residual_correlation",
         )
 
+        paired_oof_rows = pd.to_numeric(
+            model_residual_correlation["n_rows"],
+            errors="coerce",
+        ).dropna().unique()
+
         model_residual_correlation_display = pd.DataFrame(
             {
                 "Model A": (
                     model_residual_correlation[
                         "model_name"
-                    ].astype(str)
+                    ].map(_model_plot_label).astype(str)
                 ),
                 "Model B": (
                     model_residual_correlation[
                         "candidate"
-                    ].astype(str)
+                    ].map(_model_plot_label).astype(str)
                 ),
                 "Residual correlation": pd.to_numeric(
                     model_residual_correlation[
@@ -2167,12 +2172,6 @@ def build_validation_report(
                     ],
                     errors="coerce",
                 ),
-                "Paired OOF rows": [
-                    _format_integer(value)
-                    for value in model_residual_correlation[
-                        "n_rows"
-                    ]
-                ],
             }
         ).sort_values(
             [
@@ -2903,6 +2902,13 @@ def build_validation_report(
                 "Lower residual correlation indicates greater predictive "
                 "diversity. High correlation indicates that two models tend to "
                 "over- or under-predict the same observations in similar ways."
+            ),
+            "",
+            (
+                "Paired OOF rows: "
+                f"{_format_integer(int(paired_oof_rows[0]))}"
+                if len(paired_oof_rows) == 1
+                else "Paired OOF rows: varies across model pairs"
             ),
             "",
             get_table_figure_layout(
