@@ -114,6 +114,7 @@ validation:
         - exporter_iso
         - importer_iso
         - target_cmd
+        - target_hs4
 
       exclude:
         - quantity_selected_kg
@@ -200,12 +201,13 @@ validation:
           exporter_embedding_dim: 16
           importer_embedding_dim: 16
           product_embedding_dim: 32
+          hs4_embedding_dim: 16
 
           hidden_layer_1: 128
           hidden_layer_2: 64
 
       emb_mlp_bs8192_lr0p001:
-        enable: true
+        enable: false
         type: "embedding_mlp"
         parameters:
           batch_size: 8192
@@ -225,7 +227,7 @@ validation:
           hidden_layer_2: 64
 
       emb_mlp_bs16384_lr0p001:
-        enable: true
+        enable: false
         type: "embedding_mlp"
         parameters:
           batch_size: 16384

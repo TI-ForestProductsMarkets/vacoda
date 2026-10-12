@@ -565,6 +565,11 @@ def _embedding_dimensions(
                 "product_embedding_dim"
             ]
         ),
+        int(
+            parameters[
+                "hs4_embedding_dim"
+            ]
+        ),
     ]
 
 

@@ -1022,6 +1022,7 @@ def _fit_predict_embedding_mlp(
         int(params["exporter_embedding_dim"]),
         int(params["importer_embedding_dim"]),
         int(params["product_embedding_dim"]),
+        int(params["hs4_embedding_dim"]),
     ]
 
     hidden_layer_1 = int(

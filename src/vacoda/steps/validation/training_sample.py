@@ -241,6 +241,7 @@ def build_training_sample(
             "columns": {
                 "year": year_col,
                 "product": product_col,
+                "product_hs4": "target_hs4",
                 "nominal_value": nominal_value_col,
                 "quantity": quantity_col,
             },
@@ -441,6 +442,14 @@ def build_training_sample(
             SELECT
                 *,
 
+                LEFT(
+                    CAST(
+                        {product_col}
+                        AS VARCHAR
+                    ),
+                    4
+                )
+                    AS target_hs4,
                 CASE
                     WHEN
                         {quantity_col} IS NOT NULL
