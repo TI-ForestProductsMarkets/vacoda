@@ -2400,27 +2400,26 @@ def fit_selected_validation_model(
             final_model,
             phase_b_duration_seconds,
         ) = _fit_embedding_full_population(
-                x_numeric=(
-                    final_numeric
-                ),
-                x_categorical=(
-                    final_categorical
-                ),
-                y=y_all,
-                category_sizes=(
-                    final_preprocessing[
-                        "category_sizes"
-                    ]
-                ),
-                parameters=(
-                    parameters
-                ),
-                final_epochs=(
-                    final_epochs
-                ),
-                cfg=cfg,
-                logger=logger,
-            )
+            x_numeric=(
+                final_numeric
+            ),
+            x_categorical=(
+                final_categorical
+            ),
+            y=y_all,
+            category_sizes=(
+                final_preprocessing[
+                    "category_sizes"
+                ]
+            ),
+            parameters=(
+                parameters
+            ),
+            final_epochs=(
+                final_epochs
+            ),
+            cfg=cfg,
+            logger=logger,
         )
 
         # --------------------------------------------------------------
