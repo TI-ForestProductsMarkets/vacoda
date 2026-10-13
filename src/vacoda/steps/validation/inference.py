@@ -409,6 +409,59 @@ def _support_flags_from_mappings(
 
     return flags
 
+def _model_input_valid_mask(
+    *,
+    frame: pd.DataFrame,
+    cfg: ValidationConfig,
+) -> pd.Series:
+    """
+    Return rows for which all configured numeric model predictors
+    are usable at inference time.
+
+    Log-transformed predictors must be finite and strictly positive.
+    Untransformed predictors must be finite.
+    """
+
+    valid = pd.Series(
+        True,
+        index=frame.index,
+        dtype=bool,
+    )
+
+    for (
+        column,
+        feature_cfg,
+    ) in cfg.model.features.numeric.items():
+
+        values = pd.to_numeric(
+            frame[column],
+            errors="coerce",
+        )
+
+        column_valid = (
+            values.notna()
+            & np.isfinite(
+                values.astype(float)
+            )
+        )
+
+        if feature_cfg.transform == "log":
+
+            column_valid &= (
+                values > 0
+            )
+
+        elif feature_cfg.transform != "none":
+
+            raise RuntimeError(
+                "Unsupported numeric feature transform: "
+                f"{feature_cfg.transform!r}"
+            )
+
+        valid &= column_valid
+
+    return valid
+
 
 def _predict_embedding_model(
     *,
@@ -939,11 +992,18 @@ def _build_residual_evidence(
         observed
     )
 
+    prediction_available = (
+        np.isfinite(
+            prediction_log_quantity
+        )
+    )
+
     valid_for_log = (
         available
         & (
             observed > 0
         )
+        & prediction_available
     )
 
     residual = np.full(
@@ -969,6 +1029,10 @@ def _build_residual_evidence(
 
     return pd.DataFrame(
         {
+            "model_prediction_available": (
+                prediction_available
+            ),
+
             "observed_quantity_available": (
                 available
             ),
@@ -1300,6 +1364,70 @@ def run_validation_inference(
         ],
     )
 
+
+    # ------------------------------------------------------------------
+    # Semantic checkpoint — before loading/predicting full population
+    # ------------------------------------------------------------------
+
+    semantic_payload = (
+        _inference_semantic_payload(
+            cfg=cfg,
+            metadata=metadata,
+            bundle=bundle,
+            input_path=input_path,
+            input_rows=input_rows,
+        )
+    )
+
+    manifest_path = (
+        manifest_path_for(
+            output_path
+        )
+    )
+
+    reusable = False
+    reuse_reason = "force=True"
+
+    if not force:
+
+        (
+            reusable,
+            reuse_reason,
+        ) = validate_manifest(
+            artifact_path=output_path,
+            manifest_path=manifest_path,
+            expected_payload=semantic_payload,
+        )
+
+    if reusable:
+
+        logger.info(
+            "%s REUSE — Validation inference (%s)",
+            get_symbols("reuse"),
+            reuse_reason,
+        )
+
+        elapsed = (
+            perf_counter()
+            - start
+        )
+
+        return {
+            "status": "completed",
+            "run_id": run_id,
+            "inference_path": output_path,
+            "model_name": metadata["model_name"],
+            "model_type": metadata["model_type"],
+            "rows": input_rows,
+            "duration_seconds": elapsed,
+            "reused": True,
+        }
+
+    logger.info(
+        "%s REBUILD — Validation inference (%s)",
+        get_symbols("rebuilt"),
+        reuse_reason,
+    )
     # ------------------------------------------------------------------
     # Load complete inference population
     # ------------------------------------------------------------------
@@ -1407,18 +1535,64 @@ def run_validation_inference(
     )
 
     # ------------------------------------------------------------------
-    # Reproduce configured predictor representation
+    # Determine which rows can actually be evaluated by the model
     # ------------------------------------------------------------------
 
-    feature_frame = (
-        _build_feature_frame(
+    model_input_valid = (
+        _model_input_valid_mask(
             frame=frame,
             cfg=cfg,
         )
     )
 
+    n_model_input_valid = int(
+        model_input_valid.sum()
+    )
+
+    n_model_input_invalid = (
+        input_rows
+        - n_model_input_valid
+    )
+
+    logger.info(
+        "  Rows with usable model inputs: %s",
+        f"{n_model_input_valid:,}",
+    )
+
+    logger.info(
+        "  Rows without usable model inputs: %s",
+        f"{n_model_input_invalid:,}",
+    )
+
+    if n_model_input_valid <= 0:
+        raise RuntimeError(
+            "Validation inference contains no rows "
+            "with usable model inputs."
+        )
+
     # ------------------------------------------------------------------
-    # Inference
+    # Build predictors only for rows where all required numeric inputs
+    # are valid.
+    # ------------------------------------------------------------------
+
+    predictable_frame = (
+        frame.loc[
+            model_input_valid
+        ]
+        .reset_index(
+            drop=True
+        )
+    )
+
+    feature_frame = (
+        _build_feature_frame(
+            frame=predictable_frame,
+            cfg=cfg,
+        )
+    )
+
+    # ------------------------------------------------------------------
+    # Model inference on usable rows only
     # ------------------------------------------------------------------
 
     model_type = (
@@ -1430,12 +1604,10 @@ def run_validation_inference(
     if model_type == "embedding_mlp":
 
         (
-            prediction_model_space,
-            support_flags,
+            prediction_valid_rows,
+            support_flags_valid_rows,
         ) = _predict_embedding_model(
-            feature_frame=(
-                feature_frame
-            ),
+            feature_frame=feature_frame,
             bundle=bundle,
             cfg=cfg,
             logger=logger,
@@ -1444,12 +1616,10 @@ def run_validation_inference(
     else:
 
         (
-            prediction_model_space,
-            support_flags,
+            prediction_valid_rows,
+            support_flags_valid_rows,
         ) = _predict_sklearn_model(
-            feature_frame=(
-                feature_frame
-            ),
+            feature_frame=feature_frame,
             bundle=bundle,
         )
 
@@ -1460,17 +1630,60 @@ def run_validation_inference(
         )
     )
 
-    prediction_quantity = (
+    prediction_quantity_valid_rows = (
         _inverse_target_transform(
-            prediction=(
-                prediction_model_space
-            ),
-            target_transform=(
-                target_transform
-            ),
+            prediction=prediction_valid_rows,
+            target_transform=target_transform,
         )
     )
 
+    # ------------------------------------------------------------------
+    # Expand prediction arrays back to the complete Validation population
+    # ------------------------------------------------------------------
+
+    prediction_model_space = np.full(
+        input_rows,
+        np.nan,
+        dtype=float,
+    )
+
+    prediction_quantity = np.full(
+        input_rows,
+        np.nan,
+        dtype=float,
+    )
+
+    valid_positions = (
+        model_input_valid
+        .to_numpy(
+            dtype=bool
+        )
+    )
+
+    prediction_model_space[
+        valid_positions
+    ] = prediction_valid_rows
+
+    prediction_quantity[
+        valid_positions
+    ] = prediction_quantity_valid_rows
+
+    support_flags = pd.DataFrame(
+        pd.NA,
+        index=frame.index,
+        columns=(
+            support_flags_valid_rows.columns
+        ),
+        dtype="boolean",
+    )
+
+    support_flags.loc[
+        model_input_valid,
+        :
+    ] = (
+        support_flags_valid_rows
+        .to_numpy()
+    )
     # ------------------------------------------------------------------
     # Observed-vs-model evidence
     # ------------------------------------------------------------------
@@ -1512,6 +1725,15 @@ def run_validation_inference(
     inference = frame[
         output_columns
     ].copy()
+
+    inference[
+        "model_input_valid"
+    ] = (
+        model_input_valid
+        .to_numpy(
+            dtype=bool
+        )
+    )
 
     inference[
         "model_prediction_log_quantity"
@@ -1588,22 +1810,34 @@ def run_validation_inference(
         if column not in inference.columns:
             continue
 
+        support = inference[
+            column
+        ]
+
+        evaluated_rows = int(
+            support.notna().sum()
+        )
+
         seen_rows = int(
-            inference[
-                column
-            ].sum()
+            support.fillna(False).sum()
         )
 
         unseen_rows = (
-            input_rows
+            evaluated_rows
             - seen_rows
         )
 
+        not_evaluated_rows = (
+            input_rows
+            - evaluated_rows
+        )
+
         logger.info(
-            "  %s — seen=%s, unseen=%s",
+            "  %s — seen=%s, unseen=%s, not_evaluated=%s",
             column,
             f"{seen_rows:,}",
             f"{unseen_rows:,}",
+            f"{not_evaluated_rows:,}",
         )
 
 
