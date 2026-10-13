@@ -24,6 +24,7 @@ from vacoda.steps.validation.training_sample import build_training_sample
 from vacoda.steps.validation.model_training import train_validation_models
 from vacoda.steps.validation.model_selection import select_validation_model
 from vacoda.steps.validation.model_fitting import fit_selected_validation_model
+from vacoda.steps.validation.inference import run_validation_inference
 from vacoda.steps.validation.diagnostics import  build_diagnostics
 # from vacoda.steps.validation.consistency import  audit_cross_variable_consistency
 # from vacoda.steps.validation.finalize import build_validated_trade
@@ -60,7 +61,7 @@ WORKFLOW_STEPS = [
     "Train Validation Models",
     "Select Validation Model",
     "Fit Selected Validation Model",
-    # "Build validated trade",
+    "Run Validation inference",
     # "Audit cross-variable consistency",
     # "Build VACODA release dataset",
     "Build Diagnostics",
@@ -328,15 +329,51 @@ def run_validation_workflow(
             producer_product="fitted Validation model",
         )
 
+        model_bundle_path = require_artifact(
+            result=fitted_model_result,
+            path_key="model_bundle_path",
+            consumer_step=WORKFLOW_STEPS[6],
+            producer_product="fitted Validation model bundle",
+        )
+
+
         # ==================================================================
-        # Step 7 — Build diagnostics
+        # Step 7 — Run Validation inference
         # ==================================================================
 
-        diagnostic_result = run_step(
+        inference_result = run_step(
             logger=logger,
             step_number=7,
             total_steps=TOTAL_WORKFLOW_STEPS,
             title=WORKFLOW_STEPS[6],
+            runner=lambda: run_validation_inference(
+                cfg=cfg,
+                input_path=training_sample_path,
+                fitted_model_path=fitted_model_path,
+                model_bundle_path=model_bundle_path,
+                run_id=run_id,
+                force=force,
+                logger=logger,
+            ),
+        )
+
+        inference_path = require_artifact(
+            result=inference_result,
+            path_key="inference_path",
+            consumer_step=WORKFLOW_STEPS[7],
+            producer_product="Validation inference",
+        )
+
+
+        # ==================================================================
+        # Step 8 — Build diagnostics
+        # ==================================================================
+
+        diagnostic_result = run_step(
+            logger=logger,
+            step_number=8,
+            total_steps=TOTAL_WORKFLOW_STEPS,
+            title=WORKFLOW_STEPS[7],
             runner=lambda: build_diagnostics(
                 cfg=cfg,
                 input_path=training_sample_path,
@@ -352,19 +389,19 @@ def run_validation_workflow(
         diagnostics_path = require_artifact(
             result=diagnostic_result,
             path_key="diagnostics_path",
-            consumer_step=WORKFLOW_STEPS[6],
+            consumer_step=WORKFLOW_STEPS[7],
             producer_product="quantity-model diagnostics",
         )
 
         # ==================================================================
-        # Step 8 — Build Validation report
+        # Step 9 — Build Validation report
         # ==================================================================
 
         report_result = run_step(
             logger=logger,
-            step_number=8,
+            step_number=9,
             total_steps=TOTAL_WORKFLOW_STEPS,
-            title=WORKFLOW_STEPS[7],
+            title=WORKFLOW_STEPS[8],
             runner=lambda: build_validation_report(
                 cfg=cfg,
                 prepared_input_path=prepared_path,
@@ -375,46 +412,6 @@ def run_validation_workflow(
                 logger=logger,
             ),
         )
-        # ==================================================================
-        # Step 5 — Cross-variable consistency
-        # ==================================================================
-
-    #     consistency_result = run_step(
-    #         logger=logger,
-    #         step_number=6,
-    #         total_steps=TOTAL_WORKFLOW_STEPS,
-    #         title=WORKFLOW_STEPS[5],
-    #         runner=lambda: audit_cross_variable_consistency(
-    #             cfg=cfg,
-    #             input_path=prepared_path,
-    #             run_id=run_id,
-    #             force=force,
-    #             logger=logger,
-    #         ),
-    #     )
-
-    #     # ==================================================================
-    #     # Step 7 — Build validated trade and provenance
-    #     # ==================================================================
-
-    #     validated_result = run_step(
-    #         logger=logger,
-    #         step_number=7,
-    #         total_steps=TOTAL_WORKFLOW_STEPS,
-    #         title=WORKFLOW_STEPS[6],
-    #         runner=lambda: build_validated_trade(
-    #             cfg=cfg,
-    #             input_path=prepared_path,
-    #             structural_audit_path=structural_audit_path,
-    #             missingness_path=missingness_path,
-    #             unit_value_diagnostics_path=unit_value_path,
-    #             outliers_path=outliers_path,
-    #             consistency_audit_path=consistency_audit_path,
-    #             run_id=run_id,
-    #             force=force,
-    #             logger=logger,
-    #         ),
-    #     )
 
 
     #     # ==================================================================
