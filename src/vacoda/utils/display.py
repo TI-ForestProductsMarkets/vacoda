@@ -51,6 +51,7 @@ _SYMBOLS = {
     "build": "\U0001F6E0\uFE0F",    # 🛠️
     "rebuilt": "\U0001F6E0\uFE0F",    # 🛠️
     "search": "\U0001F50E",           # 🔎
+    "write": "\U0001F4DD",            # 📝   
 }
 
 _ANSI_COLORS = {

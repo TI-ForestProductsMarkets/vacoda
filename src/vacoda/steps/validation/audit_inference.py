@@ -1,5 +1,5 @@
 """
-vacoda.steps.validation.consistency
+vacoda.steps.validation.audit_inference
 
 Audit internal and cross-variable consistency of Validation inference.
 
@@ -118,7 +118,7 @@ def audit_validation_inference(
         Path(output_path)
         if output_path is not None
         else cfg.product_path(
-            "consistency_audit"
+            "inference_audit"
         )
     )
 
@@ -1232,7 +1232,7 @@ def audit_validation_inference(
             "status": "completed",
             "run_id": run_id,
             "output_path": output_path,
-            "consistency_audit_path": output_path,
+            "inference_audit_path": output_path,
             "audit_passed": True,
             "n_rows": counts[
                 "n_rows"
@@ -1243,8 +1243,8 @@ def audit_validation_inference(
             "n_residual_rows": counts[
                 "n_residual_rows"
             ],
-            "n_unit_value_identity_rows": counts[
-                "n_unit_value_identity_rows"
+            "n_unit_value_identity_mismatches": counts[
+                "n_unit_value_identity_mismatches"
             ],
         }
 
