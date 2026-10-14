@@ -11,7 +11,6 @@ The report follows the Validation methodology:
 4. HS × year unit-value reference evidence;
 5. configured model-training population;
 6. expanding-window model evaluation;
-7. placeholder for later production inference diagnostics.
 
 Scientific calculations belong in the producing Validation steps.  This module
 consumes structural-audit and diagnostics artifacts and turns them into concise
@@ -165,12 +164,14 @@ def _plot_inference_residual_quantiles(
     )
 
     axis.set_xticks(
-        100.0
-        * sorted(
-            frame[
-                "quantile"
-            ].dropna().unique()
-        )
+        [
+            100.0 * float(value)
+            for value in sorted(
+                frame[
+                    "quantile"
+                ].dropna().unique()
+            )
+        ]
     )
 
     axis.grid(
@@ -2274,7 +2275,7 @@ def build_validation_report(
                         str(row.criterion),
                     ),
                     "Rows": _format_integer(row.n_rows),
-                    "Share of all rows": _format_percent(
+                    "Share of Validation population": _format_percent(
                         row.share_of_all
                     ),
                 }
@@ -2327,7 +2328,7 @@ def build_validation_report(
                         str(row.criterion),
                     ),
                     "Rows": _format_integer(row.n_rows),
-                    "Share of all rows": _format_percent(
+                    "Share of Validation population": _format_percent(
                         row.share_of_all
                     ),
                     "Retention from previous stage": _format_percent(
@@ -3295,19 +3296,6 @@ def build_validation_report(
             )
         )
 
-        residual_quantiles[
-            "Quantile"
-        ] = (
-            residual_quantiles[
-                "quantile"
-            ]
-            .map(
-                lambda value: (
-                    f"{100.0 * float(value):.0f}%"
-                )
-            )
-        )
-
         inference_residual_display = pd.DataFrame(
             {
                 "Quantile": residual_quantiles[
@@ -3321,18 +3309,17 @@ def build_validation_report(
 
                 r"Signed residual \(r_i\)": (
                     residual_quantiles[
-                        "signed_log_residual"
+                        "Signed log residual"
                     ]
                 ),
 
                 r"Absolute residual \(|r_i|\)": (
                     residual_quantiles[
-                        "absolute_log_residual"
+                        "Absolute log residual"
                     ]
                 ),
             }
         )
-
 
         # --------------------------------------------------------------
         # Residuals by year
@@ -3372,6 +3359,35 @@ def build_validation_report(
                     column
                 ] = math.nan
 
+
+        inference_residual_by_year[
+            "year"
+        ] = pd.to_numeric(
+            inference_residual_by_year[
+                "year"
+            ],
+            errors="coerce",
+        )
+
+        inference_residual_by_year[
+            "value"
+        ] = pd.to_numeric(
+            inference_residual_by_year[
+                "value"
+            ],
+            errors="coerce",
+        )
+
+        inference_residual_by_year = (
+            inference_residual_by_year.dropna(
+                subset=[
+                    "year",
+                    "value",
+                    "variable",
+                ]
+            )
+        )
+
         inference_residual_by_year_display = pd.DataFrame(
             {
                 "Year": (
@@ -3388,13 +3404,13 @@ def build_validation_report(
                     )
                 ),
 
-                r"Mean absolute residual $\overline{|r_i|}$": (
+                "Mean |r_i|": (
                     inference_residual_year_pivot[
                         "mean_absolute_log_residual"
                     ]
                 ),
 
-                r"Median absolute residual $\widetilde{|r_i|}$": (
+                "Median |r_i|": (
                     inference_residual_year_pivot[
                         "median_absolute_log_residual"
                     ]
@@ -3423,7 +3439,7 @@ def build_validation_report(
                         "Rows",
                         "First year",
                         "Last year",
-                        "Years",
+                        "Years represented",
                     ]
                 )
             )
@@ -3783,13 +3799,6 @@ def build_validation_report(
                     document_path=report_path,
                     width=800,
                 ),
-            ),
-            "",
-            markdown_image(
-                "Exporter/importer quantity disagreement bands",
-                figure_paths["source_quantity_disagreement"],
-                document_path=report_path,
-                width=800,
             ),
             "",
             "## 4. HS × year unit-value evidence",
@@ -4168,8 +4177,8 @@ def build_validation_report(
             ),
             "",
             get_table_pair(
-                inference_support_display,
                 inference_categorical_support_display,
+                inference_support_display,
             ),
             "",
 
@@ -4214,10 +4223,6 @@ def build_validation_report(
                     document_path=report_path,
                     width=850,
                 )
-            ),
-            "",
-            _markdown_table(
-                inference_residual_display
             ),
             "",
             "",
