@@ -380,6 +380,7 @@ def run_validation_workflow(
                 structural_audit_path=structural_audit_path,
                 model_predictions_path=model_predictions_path,
                 selected_model_path=selected_model_path,
+                inference_path=inference_path,
                 run_id=run_id,
                 force=force,
                 logger=logger,

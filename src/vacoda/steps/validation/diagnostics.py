@@ -181,6 +181,7 @@ def build_diagnostics(
     structural_audit_path: Path,
     model_predictions_path: Path,
     selected_model_path: Path,
+    inference_path: Path,
     run_id: str,
     force: bool = False,
     logger,
@@ -200,6 +201,7 @@ def build_diagnostics(
     structural_audit_path = Path(structural_audit_path)
     model_predictions_path = Path(model_predictions_path)
     selected_model_path = Path(selected_model_path)
+    inference_path = Path(inference_path)
 
     if not input_path.is_file():
         raise FileNotFoundError(
@@ -224,6 +226,12 @@ def build_diagnostics(
             f"{selected_model_path}"
         )
 
+    if not inference_path.is_file():
+        raise FileNotFoundError(
+            "Validation inference artifact not found: "
+            f"{inference_path}"
+        )
+    
     training_definition = training_definition_name(
         cfg=cfg
     )
@@ -363,6 +371,10 @@ def build_diagnostics(
             model_predictions_path,
             hash_file=True,
         ),
+        "inference": file_fingerprint(
+            inference_path,
+            hash_file=True,
+        ),
     }
 
     reusable, reason = validate_local_checkpoint(
@@ -446,7 +458,417 @@ def build_diagnostics(
 
         input_sql = sql_literal(input_path)
         predictions_sql = sql_literal(model_predictions_path)
+        inference_sql = sql_literal(inference_path)
 
+        diagnostics_rows: list[dict[str, Any]] = []
+
+        # --------------------------------------------------------------
+        # Inference View
+        # --------------------------------------------------------------
+        con.execute(
+            f"""
+            CREATE OR REPLACE TEMP VIEW validation_inference AS
+
+            SELECT
+                year,
+                exporter_iso,
+                importer_iso,
+                target_cmd,
+                target_hs4,
+
+                trade_synced_quantity_kg,
+                training_selected,
+
+                model_input_valid,
+                model_prediction_available,
+
+                model_prediction_log_quantity,
+                model_prediction_quantity_kg,
+
+                observed_quantity_available,
+                observed_quantity_valid_for_log,
+
+                quantity_log_residual,
+                quantity_abs_log_residual,
+
+                exporter_seen,
+                importer_seen,
+                hs6_seen,
+                hs4_seen,
+
+                validation_model_name,
+                validation_model_type
+
+            FROM read_parquet(
+                {inference_sql}
+            )
+            """
+        )
+
+        inference_counts = con.execute(
+            """
+            SELECT
+                COUNT(*) AS n_all,
+
+                COUNT(*) FILTER (
+                    WHERE model_input_valid
+                ) AS n_model_input_valid,
+
+                COUNT(*) FILTER (
+                    WHERE model_prediction_available
+                ) AS n_prediction_available,
+
+                COUNT(*) FILTER (
+                    WHERE observed_quantity_available
+                ) AS n_observed_quantity,
+
+                COUNT(*) FILTER (
+                    WHERE NOT observed_quantity_available
+                ) AS n_missing_quantity,
+
+                COUNT(*) FILTER (
+                    WHERE observed_quantity_valid_for_log
+                ) AS n_residual_evaluable
+
+            FROM validation_inference
+            """
+        ).fetchone()
+
+        (
+            n_inference_all,
+            n_model_input_valid,
+            n_prediction_available,
+            n_observed_quantity,
+            n_missing_quantity,
+            n_residual_evaluable,
+        ) = map(int, inference_counts)
+
+
+        for criterion, n_rows in (
+            ("all_rows", n_inference_all),
+            ("model_input_valid", n_model_input_valid),
+            ("prediction_available", n_prediction_available),
+            ("observed_quantity_available", n_observed_quantity),
+            ("missing_quantity", n_missing_quantity),
+            ("residual_evaluable", n_residual_evaluable),
+        ):
+
+            _append_metric(
+                diagnostics_rows,
+                scope="inference_population",
+                criterion=criterion,
+                n_rows=n_rows,
+                total_rows=n_inference_all,
+                share_of_all=_share(
+                    n_rows,
+                    n_inference_all,
+                ),
+            )
+
+        support_states = con.execute(
+            """
+            SELECT
+                hs6_seen,
+                hs4_seen,
+                COUNT(*) AS n_rows
+
+            FROM validation_inference
+
+            WHERE model_prediction_available
+            AND hs6_seen IS NOT NULL
+            AND hs4_seen IS NOT NULL
+
+            GROUP BY
+                hs6_seen,
+                hs4_seen
+
+            ORDER BY
+                hs6_seen DESC,
+                hs4_seen DESC
+            """
+        ).fetchdf()
+
+        for row in support_states.itertuples(index=False):
+
+            if bool(row.hs6_seen) and bool(row.hs4_seen):
+                criterion = "hs6_seen_hs4_seen"
+
+            elif not bool(row.hs6_seen) and bool(row.hs4_seen):
+                criterion = "hs6_unseen_hs4_seen"
+
+            elif not bool(row.hs6_seen) and not bool(row.hs4_seen):
+                criterion = "hs6_unseen_hs4_unseen"
+
+            else:
+                criterion = "hs6_seen_hs4_unseen"
+
+            _append_metric(
+                diagnostics_rows,
+                scope="inference_support",
+                criterion=criterion,
+                n_rows=int(row.n_rows),
+                total_rows=n_prediction_available,
+                share_of_all=_share(
+                    int(row.n_rows),
+                    n_inference_all,
+                ),
+                share_of_parent=_share(
+                    int(row.n_rows),
+                    n_prediction_available,
+                ),
+            )
+
+        for variable in (
+            "exporter_seen",
+            "importer_seen",
+        ):
+
+            counts = con.execute(
+                f"""
+                SELECT
+                    COUNT(*) FILTER (
+                        WHERE {variable} = TRUE
+                    ) AS seen_rows,
+
+                    COUNT(*) FILTER (
+                        WHERE {variable} = FALSE
+                    ) AS unseen_rows
+
+                FROM validation_inference
+
+                WHERE model_prediction_available
+                AND {variable} IS NOT NULL
+                """
+            ).fetchone()
+
+            seen_rows = int(counts[0])
+            unseen_rows = int(counts[1])
+            evaluated_rows = seen_rows + unseen_rows
+
+            for criterion, n_rows in (
+                ("seen", seen_rows),
+                ("unseen", unseen_rows),
+            ):
+
+                _append_metric(
+                    diagnostics_rows,
+                    scope="inference_categorical_support",
+                    criterion=criterion,
+                    variable=variable,
+                    n_rows=n_rows,
+                    total_rows=evaluated_rows,
+                    share_of_parent=_share(
+                        n_rows,
+                        evaluated_rows,
+                    ),
+                )
+
+        for quantile in DIAGNOSTIC_QUANTILES:
+
+            value = con.execute(
+                f"""
+                SELECT
+                    QUANTILE_CONT(
+                        quantity_abs_log_residual,
+                        {float(quantile):.17g}
+                    )
+
+                FROM validation_inference
+
+                WHERE observed_quantity_valid_for_log
+                AND quantity_abs_log_residual IS NOT NULL
+                AND isfinite(
+                    quantity_abs_log_residual
+                )
+                """
+            ).fetchone()[0]
+
+            _append_metric(
+                diagnostics_rows,
+                scope="inference_residual_distribution",
+                criterion="observed_quantity_vs_model",
+                variable="absolute_log_residual",
+                quantile=float(quantile),
+                value=(
+                    float(value)
+                    if value is not None
+                    else None
+                ),
+                n_rows=n_residual_evaluable,
+            )
+
+        for quantile in DIAGNOSTIC_QUANTILES:
+
+            value = con.execute(
+                f"""
+                SELECT
+                    QUANTILE_CONT(
+                        quantity_log_residual,
+                        {float(quantile):.17g}
+                    )
+
+                FROM validation_inference
+
+                WHERE observed_quantity_valid_for_log
+                AND quantity_log_residual IS NOT NULL
+                AND isfinite(
+                    quantity_log_residual
+                )
+                """
+            ).fetchone()[0]
+
+            _append_metric(
+                diagnostics_rows,
+                scope="inference_residual_distribution",
+                criterion="observed_quantity_vs_model",
+                variable="signed_log_residual",
+                quantile=float(quantile),
+                value=(
+                    float(value)
+                    if value is not None
+                    else None
+                ),
+                n_rows=n_residual_evaluable,
+            )
+
+        residual_by_year = con.execute(
+            """
+            SELECT
+                year,
+                COUNT(*) AS n_rows,
+                AVG(
+                    ABS(quantity_log_residual)
+                ) AS mean_absolute_log_residual,
+                MEDIAN(
+                    ABS(quantity_log_residual)
+                ) AS median_absolute_log_residual
+
+            FROM validation_inference
+
+            WHERE observed_quantity_valid_for_log
+            AND quantity_log_residual IS NOT NULL
+            AND isfinite(
+                quantity_log_residual
+            )
+
+            GROUP BY year
+            ORDER BY year
+            """
+        ).fetchdf()
+
+
+        for row in residual_by_year.itertuples(index=False):
+
+            _append_metric(
+                diagnostics_rows,
+                scope="inference_residual_by_year",
+                criterion="observed_quantity_vs_model",
+                variable="mean_absolute_log_residual",
+                year=int(row.year),
+                n_rows=int(row.n_rows),
+                value=float(
+                    row.mean_absolute_log_residual
+                ),
+            )
+
+            _append_metric(
+                diagnostics_rows,
+                scope="inference_residual_by_year",
+                criterion="observed_quantity_vs_model",
+                variable="median_absolute_log_residual",
+                year=int(row.year),
+                n_rows=int(row.n_rows),
+                value=float(
+                    row.median_absolute_log_residual
+                ),
+            )
+
+        unseen_products = con.execute(
+            """
+            SELECT
+                target_cmd,
+                target_hs4,
+                COUNT(*) AS n_rows,
+                MIN(year) AS first_year,
+                MAX(year) AS last_year,
+                COUNT(DISTINCT year) AS n_years
+
+            FROM validation_inference
+
+            WHERE model_prediction_available
+            AND hs6_seen = FALSE
+
+            GROUP BY
+                target_cmd,
+                target_hs4
+
+            ORDER BY
+                n_rows DESC,
+                target_cmd
+            """
+        ).fetchdf()
+
+        for row in unseen_products.itertuples(index=False):
+
+            diagnostics_rows.append(
+                {
+                    "scope": "inference_unseen_product",
+                    "criterion": (
+                        "hs4_seen"
+                        if bool(
+                            con.execute(
+                                """
+                                SELECT BOOL_OR(hs4_seen)
+                                FROM validation_inference
+                                WHERE target_cmd = ?
+                                AND model_prediction_available
+                                """,
+                                [str(row.target_cmd)],
+                            ).fetchone()[0]
+                        )
+                        else "hs4_unseen"
+                    ),
+                    "candidate": None,
+                    "model_name": None,
+                    "weight": None,
+                    "disagreement_threshold": None,
+                    "uv_support_threshold": None,
+                    "uv_distance_threshold": None,
+                    "disagreement_band": None,
+                    "uv_distance_band": None,
+                    "year": None,
+                    "target_cmd": str(
+                        row.target_cmd
+                    ),
+                    "variable": "inference_rows",
+                    "quantile": None,
+                    "n_rows": int(
+                        row.n_rows
+                    ),
+                    "total_rows": n_prediction_available,
+                    "share_of_all": _share(
+                        int(row.n_rows),
+                        n_inference_all,
+                    ),
+                    "share_of_parent": _share(
+                        int(row.n_rows),
+                        n_prediction_available,
+                    ),
+                    "value": None,
+                    "target_hs4": str(
+                        row.target_hs4
+                    ),
+                    "first_year": int(
+                        row.first_year
+                    ),
+                    "last_year": int(
+                        row.last_year
+                    ),
+                    "n_years": int(
+                        row.n_years
+                    ),
+                }
+            )
         # --------------------------------------------------------------
         # Canonical diagnostics view
         # --------------------------------------------------------------
@@ -566,8 +988,6 @@ def build_diagnostics(
             AND isfinite(prediction_transformed)
             """
         )
-
-        diagnostics_rows: list[dict[str, Any]] = []
 
         n_all_rows = int(
             con.execute(
@@ -2127,6 +2547,10 @@ def build_diagnostics(
             "first_training_year",
             "last_training_year",
             "training_year_coverage",
+            "target_hs4",
+            "first_year",
+            "last_year",
+            "n_years",
         )
 
         for column in optional_columns:
@@ -2147,6 +2571,7 @@ def build_diagnostics(
                 "uv_distance_band",
                 "year",
                 "target_cmd",
+                "target_hs4",
                 "variable",
                 "quantile",
                 "n_rows",
@@ -2160,6 +2585,9 @@ def build_diagnostics(
                 "first_training_year",
                 "last_training_year",
                 "training_year_coverage",
+                "first_year",
+                "last_year",
+                "n_years",
             ]
         ]
 

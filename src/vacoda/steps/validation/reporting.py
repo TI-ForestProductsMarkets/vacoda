@@ -3,10 +3,10 @@ vacoda.steps.validation.reporting
 
 Create the VACODA Validation model-development report.
 
-The report follows the canonical bilateral Validation methodology:
+The report follows the Validation methodology:
 
 1. structural integrity of the Validation input;
-2. selected canonical bilateral quantity methodology;
+2. selected trade bilateral quantity methodology;
 3. source-reporter diagnostics, shown descriptively only;
 4. HS × year unit-value reference evidence;
 5. configured model-training population;
@@ -36,7 +36,7 @@ import pandas as pd
 
 from vacoda.config.paths import get_figure_dir
 from vacoda.config.steps.validation import ValidationConfig
-from vacoda.utils.display import get_symbols, get_table_figure_layout
+from vacoda.utils.display import get_symbols, get_table_figure_layout, get_table_pair
 from vacoda.utils.markdown import insert_markdown_toc, markdown_image
 from vacoda.utils.sql import sql_literal
 from vacoda.visualization.relationships import plot_figure_pair
@@ -75,6 +75,244 @@ def _format_percent(
         return "NA"
 
     return f"{100.0 * float(value):.{digits}f}%"
+
+
+def _plot_inference_residual_quantiles(
+    *,
+    diagnostics: pd.DataFrame,
+    output_path: Path,
+) -> None:
+    """Plot signed and absolute production-inference residual quantiles."""
+
+    frame = _require_diagnostic_scope(
+        diagnostics,
+        "inference_residual_distribution",
+    ).copy()
+
+    frame["quantile"] = pd.to_numeric(
+        frame["quantile"],
+        errors="coerce",
+    )
+
+    frame["value"] = pd.to_numeric(
+        frame["value"],
+        errors="coerce",
+    )
+
+    frame = frame.dropna(
+        subset=[
+            "quantile",
+            "value",
+            "variable",
+        ]
+    )
+
+    signed = frame[
+        frame["variable"].eq(
+            "signed_log_residual"
+        )
+    ].sort_values(
+        "quantile"
+    )
+
+    absolute = frame[
+        frame["variable"].eq(
+            "absolute_log_residual"
+        )
+    ].sort_values(
+        "quantile"
+    )
+
+    if signed.empty or absolute.empty:
+        raise RuntimeError(
+            "Inference residual-quantile diagnostics are incomplete."
+        )
+
+    figure, axis = plt.subplots(
+        figsize=(10, 6)
+    )
+
+    axis.plot(
+        100.0 * signed["quantile"],
+        signed["value"],
+        marker="o",
+       label=r"Signed residual $r_i$"
+    )
+
+    axis.plot(
+        100.0 * absolute["quantile"],
+        absolute["value"],
+        marker="o",
+        label=r"Absolute residual $|r_i|$"    
+        )
+
+    axis.axhline(
+        0.0,
+        linestyle="--",
+        linewidth=1.0,
+    )
+
+    axis.set_title(
+        "Observed trade quantity versus model prediction"
+    )
+
+    axis.set_xlabel(
+        "Residual quantile (%)"
+    )
+
+    axis.set_ylabel(
+        "Log residual"
+    )
+
+    axis.set_xticks(
+        100.0
+        * sorted(
+            frame[
+                "quantile"
+            ].dropna().unique()
+        )
+    )
+
+    axis.grid(
+        axis="y",
+        linestyle="--",
+        alpha=0.5,
+    )
+
+    axis.set_axisbelow(
+        True
+    )
+
+    axis.legend()
+
+    figure.tight_layout()
+
+    figure.savefig(
+        output_path,
+        dpi=180,
+        bbox_inches="tight",
+    )
+
+    plt.close(
+        figure
+    )
+
+
+def _plot_inference_residual_by_year(
+    *,
+    diagnostics: pd.DataFrame,
+    output_path: Path,
+) -> None:
+    """Plot production-inference residual magnitude by year."""
+
+    frame = _require_diagnostic_scope(
+        diagnostics,
+        "inference_residual_by_year",
+    ).copy()
+
+    frame["year"] = pd.to_numeric(
+        frame["year"],
+        errors="coerce",
+    )
+
+    frame["value"] = pd.to_numeric(
+        frame["value"],
+        errors="coerce",
+    )
+
+    frame = frame.dropna(
+        subset=[
+            "year",
+            "value",
+            "variable",
+        ]
+    )
+
+    mean_frame = frame[
+        frame["variable"].eq(
+            "mean_absolute_log_residual"
+        )
+    ].sort_values(
+        "year"
+    )
+
+    median_frame = frame[
+        frame["variable"].eq(
+            "median_absolute_log_residual"
+        )
+    ].sort_values(
+        "year"
+    )
+
+    if mean_frame.empty or median_frame.empty:
+        raise RuntimeError(
+            "Inference residual-by-year diagnostics are incomplete."
+        )
+
+    figure, axis = plt.subplots(
+        figsize=(10, 5.5)
+    )
+
+    axis.plot(
+        mean_frame["year"],
+        mean_frame["value"],
+        marker="o",
+        label=r"Mean $|r_i|$",
+    )
+
+    axis.plot(
+        median_frame["year"],
+        median_frame["value"],
+        marker="o",
+        label=r"Median $|r_i|$",
+    )
+
+    axis.set_title(
+        "Observed trade quantity versus model prediction by year"
+    )
+
+    axis.set_xlabel(
+        "Year"
+    )
+
+    axis.set_ylabel(
+        "Absolute log residual"
+    )
+
+    axis.set_xticks(
+        sorted(
+            frame[
+                "year"
+            ]
+            .dropna()
+            .astype(int)
+            .unique()
+        )
+    )
+
+    axis.grid(
+        axis="y",
+        linestyle="--",
+        alpha=0.5,
+    )
+
+    axis.set_axisbelow(
+        True
+    )
+
+    axis.legend()
+
+    figure.tight_layout()
+
+    figure.savefig(
+        output_path,
+        dpi=180,
+        bbox_inches="tight",
+    )
+
+    plt.close(
+        figure
+    )
 
 
 def _plot_weighted_ensemble_curves(
@@ -1347,7 +1585,7 @@ def _plot_source_quantity_availability(
         "Source-reporter quantity availability"
     )
     axis.set_ylabel(
-        "Share of canonical bilateral rows (%)"
+        "Share of Validation bilateral rows (%)"
     )
     axis.grid(
         axis="y",
@@ -1461,7 +1699,7 @@ def _plot_training_population_funnel(
     )
 
     labels = {
-        "all_rows": "All canonical rows",
+        "all_rows": "All validation rows",
         "training_eligible": "Usable quantity + value",
         "support": "HS×year support threshold",
         "positive_uv_mad": "Positive UV MAD",
@@ -1503,7 +1741,7 @@ def _plot_training_population_funnel(
         "Configured model-training population"
     )
     axis.set_xlabel(
-        "Number of canonical bilateral observations"
+        "Number of validation bilateral observations"
     )
     axis.grid(
         axis="x",
@@ -1775,6 +2013,15 @@ def _build_validation_figure_paths(
             figure_dir
             / f"{prefix}weighted_ensemble_curves.png"
         ),
+        "inference_residual_quantiles": (
+            figure_dir
+            / f"{prefix}inference_residual_quantiles.png"
+        ),
+
+        "inference_residual_by_year": (
+            figure_dir
+            / f"{prefix}inference_residual_by_year.png"
+        ),
     }
 
 
@@ -1796,10 +2043,7 @@ def build_validation_report(
     """
     Create the VACODA Validation Markdown model-development report.
 
-    The report documents the canonical bilateral quantity methodology,
-    descriptive source-reporter diagnostics, the configured HS × year UV
-    training-sample rule, training coverage, and expanding-window model
-    evaluation.  Production inference remains a later Validation stage.
+    The report documents the important diagnostics in the validation step.
     """
 
     prepared_input_path = Path(prepared_input_path)
@@ -1938,7 +2182,7 @@ def build_validation_report(
         structural_fields = (
             ("n_rows", "Rows"),
             ("n_duplicate_rows", "Duplicate rows"),
-            ("n_null_key_rows", "Null canonical-key rows"),
+            ("n_null_key_rows", "Null validation-key rows"),
             ("n_invalid_year_rows", "Invalid year rows"),
             ("n_invalid_hs_rows", "Invalid HS rows"),
             ("n_invalid_nominal_value_rows", "Invalid nominal-value rows"),
@@ -1979,7 +2223,7 @@ def build_validation_report(
         )
 
         # ============================================================== 
-        # Canonical quantity methodology
+        # Trade quantity methodology
         # ============================================================== 
         methodology = _require_diagnostic_scope(
             diagnostics,
@@ -1995,7 +2239,7 @@ def build_validation_report(
 
         if len(selected_candidates) != 1:
             raise RuntimeError(
-                "Validation report requires exactly one canonical "
+                "Validation report requires exactly one trade "
                 "quantity methodology."
             )
 
@@ -2067,7 +2311,7 @@ def build_validation_report(
         )
 
         funnel_labels = {
-            "all_rows": "All canonical rows",
+            "all_rows": "All validation rows",
             "training_eligible": "Technically usable quantity/value",
             "support": "HS×year UV support threshold satisfied",
             "positive_uv_mad": "Positive finite HS×year UV MAD",
@@ -2718,6 +2962,535 @@ def build_validation_report(
             "Best ensemble MAE"
         )
 
+
+        # ==============================================================
+        # Production inference diagnostics
+        # ==============================================================
+
+        inference_population = _require_diagnostic_scope(
+            diagnostics,
+            "inference_population",
+        ).copy()
+
+        population_labels = {
+            "all_rows": "All Validation rows",
+            "model_input_valid": "Rows with valid model inputs",
+            "prediction_available": "Rows with model prediction",
+            "observed_quantity_available": "Rows with observed trade quantity",
+            "missing_quantity": "Rows with missing observed trade quantity",
+            "residual_evaluable": (
+                "Rows with observed trade quantity and model prediction"
+            ),
+        }
+
+        inference_population_display = (
+            inference_population[
+                [
+                    "criterion",
+                    "n_rows",
+                    "share_of_all",
+                ]
+            ]
+            .copy()
+        )
+
+        inference_population_display[
+            "Population"
+        ] = (
+            inference_population_display[
+                "criterion"
+            ]
+            .map(population_labels)
+            .fillna(
+                inference_population_display[
+                    "criterion"
+                ]
+            )
+        )
+
+        inference_population_display[
+            "Rows"
+        ] = (
+            inference_population_display[
+                "n_rows"
+            ].map(
+                _format_integer
+            )
+        )
+
+        inference_population_display[
+            "Share of Validation population"
+        ] = (
+            inference_population_display[
+                "share_of_all"
+            ].map(
+                _format_percent
+            )
+        )
+
+        inference_population_display = (
+            inference_population_display[
+                [
+                    "Population",
+                    "Rows",
+                    "Share of Validation population",
+                ]
+            ]
+        )
+
+
+        # --------------------------------------------------------------
+        # Joint HS6 / HS4 support
+        # --------------------------------------------------------------
+
+        inference_support = _require_diagnostic_scope(
+            diagnostics,
+            "inference_support",
+        ).copy()
+
+        support_labels = {
+            "hs6_seen_hs4_seen": (
+                "HS6 and HS4 both represented in fitting"
+            ),
+            "hs6_unseen_hs4_seen": (
+                "HS6 unseen; HS4 represented in fitting"
+            ),
+            "hs6_unseen_hs4_unseen": (
+                "Neither HS6 nor HS4 represented in fitting"
+            ),
+            "hs6_seen_hs4_unseen": (
+                "HS6 represented; HS4 unseen"
+            ),
+        }
+
+        inference_support_display = (
+            inference_support[
+                [
+                    "criterion",
+                    "n_rows",
+                    "share_of_parent",
+                ]
+            ]
+            .copy()
+        )
+
+        inference_support_display[
+            "Support state"
+        ] = (
+            inference_support_display[
+                "criterion"
+            ]
+            .map(support_labels)
+            .fillna(
+                inference_support_display[
+                    "criterion"
+                ]
+            )
+        )
+
+        inference_support_display[
+            "Rows"
+        ] = (
+            inference_support_display[
+                "n_rows"
+            ].map(
+                _format_integer
+            )
+        )
+
+        inference_support_display[
+            "Share of predicted rows"
+        ] = (
+            inference_support_display[
+                "share_of_parent"
+            ].map(
+                lambda value: (
+                    _format_percent(
+                        value,
+                        digits=4,
+                    )
+                )
+            )
+        )
+
+        inference_support_display = (
+            inference_support_display[
+                [
+                    "Support state",
+                    "Rows",
+                    "Share of predicted rows",
+                ]
+            ]
+        )
+
+
+        # --------------------------------------------------------------
+        # Exporter / importer support
+        # --------------------------------------------------------------
+
+        inference_categorical_support = (
+            _require_diagnostic_scope(
+                diagnostics,
+                "inference_categorical_support",
+            )
+            .copy()
+        )
+
+        inference_categorical_support_display = (
+            inference_categorical_support[
+                [
+                    "variable",
+                    "criterion",
+                    "n_rows",
+                    "share_of_parent",
+                ]
+            ]
+            .copy()
+        )
+
+        inference_categorical_support_display[
+            "Feature"
+        ] = (
+            inference_categorical_support_display[
+                "variable"
+            ]
+            .replace(
+                {
+                    "exporter_seen": "Exporter",
+                    "importer_seen": "Importer",
+                }
+            )
+        )
+
+        inference_categorical_support_display[
+            "Support"
+        ] = (
+            inference_categorical_support_display[
+                "criterion"
+            ]
+            .replace(
+                {
+                    "seen": "Seen",
+                    "unseen": "Unseen",
+                }
+            )
+        )
+
+        inference_categorical_support_display[
+            "Rows"
+        ] = (
+            inference_categorical_support_display[
+                "n_rows"
+            ].map(
+                _format_integer
+            )
+        )
+
+        inference_categorical_support_display[
+            "Share"
+        ] = (
+            inference_categorical_support_display[
+                "share_of_parent"
+            ].map(
+                _format_percent
+            )
+        )
+
+        inference_categorical_support_display = (
+            inference_categorical_support_display[
+                [
+                    "Feature",
+                    "Support",
+                    "Rows",
+                    "Share",
+                ]
+            ]
+        )
+
+
+        # --------------------------------------------------------------
+        # Residual quantiles
+        # --------------------------------------------------------------
+
+        inference_residual_distribution = (
+            _require_diagnostic_scope(
+                diagnostics,
+                "inference_residual_distribution",
+            )
+            .copy()
+        )
+
+        inference_residual_distribution[
+            "quantile"
+        ] = pd.to_numeric(
+            inference_residual_distribution[
+                "quantile"
+            ],
+            errors="coerce",
+        )
+
+        inference_residual_distribution[
+            "value"
+        ] = pd.to_numeric(
+            inference_residual_distribution[
+                "value"
+            ],
+            errors="coerce",
+        )
+
+        signed_residuals = (
+            inference_residual_distribution[
+                inference_residual_distribution[
+                    "variable"
+                ].eq(
+                    "signed_log_residual"
+                )
+            ]
+            .copy()
+        )
+
+        absolute_residuals = (
+            inference_residual_distribution[
+                inference_residual_distribution[
+                    "variable"
+                ].eq(
+                    "absolute_log_residual"
+                )
+            ]
+            .copy()
+        )
+
+        residual_quantiles = (
+            signed_residuals[
+                [
+                    "quantile",
+                    "value",
+                ]
+            ]
+            .rename(
+                columns={
+                    "value": (
+                        "Signed log residual"
+                    )
+                }
+            )
+            .merge(
+                absolute_residuals[
+                    [
+                        "quantile",
+                        "value",
+                    ]
+                ].rename(
+                    columns={
+                        "value": (
+                            "Absolute log residual"
+                        )
+                    }
+                ),
+                on="quantile",
+                how="outer",
+            )
+            .sort_values(
+                "quantile"
+            )
+        )
+
+        residual_quantiles[
+            "Quantile"
+        ] = (
+            residual_quantiles[
+                "quantile"
+            ]
+            .map(
+                lambda value: (
+                    f"{100.0 * float(value):.0f}%"
+                )
+            )
+        )
+
+        inference_residual_display = pd.DataFrame(
+            {
+                "Quantile": residual_quantiles[
+                    "quantile"
+                ].map(
+                    lambda value: _format_percent(
+                        value,
+                        digits=0,
+                    )
+                ),
+
+                r"Signed residual \(r_i\)": (
+                    residual_quantiles[
+                        "signed_log_residual"
+                    ]
+                ),
+
+                r"Absolute residual \(|r_i|\)": (
+                    residual_quantiles[
+                        "absolute_log_residual"
+                    ]
+                ),
+            }
+        )
+
+
+        # --------------------------------------------------------------
+        # Residuals by year
+        # --------------------------------------------------------------
+
+        inference_residual_by_year = (
+            _require_diagnostic_scope(
+                diagnostics,
+                "inference_residual_by_year",
+            )
+            .copy()
+        )
+
+        inference_residual_year_pivot = (
+            inference_residual_by_year
+            .pivot_table(
+                index=[
+                    "year",
+                    "n_rows",
+                ],
+                columns="variable",
+                values="value",
+                aggfunc="first",
+            )
+            .reset_index()
+        )
+
+        for column in (
+            "mean_absolute_log_residual",
+            "median_absolute_log_residual",
+        ):
+
+            if column not in (
+                inference_residual_year_pivot.columns
+            ):
+                inference_residual_year_pivot[
+                    column
+                ] = math.nan
+
+        inference_residual_by_year_display = pd.DataFrame(
+            {
+                "Year": (
+                    inference_residual_year_pivot[
+                        "year"
+                    ].astype(int)
+                ),
+
+                "Rows": (
+                    inference_residual_year_pivot[
+                        "n_rows"
+                    ].map(
+                        _format_integer
+                    )
+                ),
+
+                r"Mean absolute residual $\overline{|r_i|}$": (
+                    inference_residual_year_pivot[
+                        "mean_absolute_log_residual"
+                    ]
+                ),
+
+                r"Median absolute residual $\widetilde{|r_i|}$": (
+                    inference_residual_year_pivot[
+                        "median_absolute_log_residual"
+                    ]
+                ),
+            }
+        )
+
+
+        # --------------------------------------------------------------
+        # HS6 codes unseen by the fitted model
+        # --------------------------------------------------------------
+
+        inference_unseen_product = _scope_frame(
+            diagnostics,
+            "inference_unseen_product",
+        ).copy()
+
+        if inference_unseen_product.empty:
+
+            inference_unseen_product_display = (
+                pd.DataFrame(
+                    columns=[
+                        "HS6",
+                        "HS4",
+                        "HS4 support",
+                        "Rows",
+                        "First year",
+                        "Last year",
+                        "Years",
+                    ]
+                )
+            )
+
+        else:
+
+            inference_unseen_product_display = (
+                pd.DataFrame(
+                    {
+                        "HS6": (
+                            inference_unseen_product[
+                                "target_cmd"
+                            ].astype(str)
+                        ),
+
+                        "HS4": (
+                            inference_unseen_product[
+                                "target_hs4"
+                            ].astype(str)
+                        ),
+
+                        "HS4 support": (
+                            inference_unseen_product[
+                                "criterion"
+                            ].replace(
+                                {
+                                    "hs4_seen": "Seen",
+                                    "hs4_unseen": "Unseen",
+                                }
+                            )
+                        ),
+
+                        "Rows": (
+                            inference_unseen_product[
+                                "n_rows"
+                            ].map(
+                                _format_integer
+                            )
+                        ),
+
+                        "First year": (
+                            inference_unseen_product[
+                                "first_year"
+                            ].map(
+                                _format_integer
+                            )
+                        ),
+
+                        "Last year": (
+                            inference_unseen_product[
+                                "last_year"
+                            ].map(
+                                _format_integer
+                            )
+                        ),
+
+                        "Years represented": (
+                            inference_unseen_product[
+                                "n_years"
+                            ].map(
+                                _format_integer
+                            )
+                        ),
+                    }
+                )
+            )
+
         # ============================================================== 
         # Figures
         # ============================================================== 
@@ -2799,6 +3572,20 @@ def build_validation_report(
             diagnostics=diagnostics,
             output_path=figure_paths[
                 "model_performance_by_year"
+            ],
+        )
+
+        _plot_inference_residual_quantiles(
+            diagnostics=diagnostics,
+            output_path=figure_paths[
+                "inference_residual_quantiles"
+            ],
+        )
+
+        _plot_inference_residual_by_year(
+            diagnostics=diagnostics,
+            output_path=figure_paths[
+                "inference_residual_by_year"
             ],
         )
 
@@ -2944,17 +3731,17 @@ def build_validation_report(
             "",
             _markdown_table(structural_summary),
             "",
-            "## 2. Canonical bilateral quantity methodology",
+            "## 2. Trade bilateral quantity methodology",
             "",
             (
-                "The quantity-selection stage has fixed one canonical bilateral "
+                "The quantity-selection stage has fixed one trade bilateral "
                 "quantity methodology for downstream Validation. The current "
                 f"methodology is `{selected_candidate_label}`."
             ),
             "",
             (
                 "All subsequent unit-value, training-sample, and model-evaluation "
-                "diagnostics refer to this canonical selected quantity rather than "
+                "diagnostics refer to this selected trade quantity rather than "
                 "treating exporter or importer quantities as separate truth labels."
             ),
             "",
@@ -3008,7 +3795,7 @@ def build_validation_report(
             "## 4. HS × year unit-value evidence",
             "",
             (
-                "For technically usable canonical bilateral observations, Validation "
+                "For technically usable trade bilateral observations, Validation "
                 "forms a robust HS × focal-year unit-value reference in log space. "
                 "The configured reference window pools the focal year with preceding "
                 "years only; the reference centre is the median log unit value and "
@@ -3037,7 +3824,7 @@ def build_validation_report(
             "### 4.2. HS × year reference support",
             "",
             (
-                "Reference support is the number of canonical eligible observations "
+                "Reference support is the number of trade-eligible observations "
                 "contributing to each HS × year unit-value reference."
             ),
             "",
@@ -3069,10 +3856,10 @@ def build_validation_report(
                 ),
             ),
             "",
-            "### 4.4. Canonical unit-value distance",
+            "### 4.4. Trade unit-value distance",
             "",
             (
-                "For each technically eligible canonical observation, Validation "
+                "For each technically eligible trade observation, Validation "
                 "measures the absolute log-distance between its implied unit value "
                 "and the corresponding HS × year reference."
             ),
@@ -3080,7 +3867,7 @@ def build_validation_report(
             get_table_figure_layout(
                 uv_distance_display,
                 markdown_image(
-                    "Canonical unit-value distance distribution",
+                    "Trade unit-value distance distribution",
                     figure_paths["training_uv_distance_distribution"],
                     document_path=report_path,
                     #width=800,
@@ -3110,7 +3897,7 @@ def build_validation_report(
             "## 5. Training sample selection and coverage",
             "",
             (
-                "The model-training sample is defined only from canonical bilateral "
+                "The model-training sample is defined only from trade bilateral "
                 "unit-value evidence. Reporter-side quantity agreement is not part "
                 "of this rule."
             ),
@@ -3225,7 +4012,7 @@ def build_validation_report(
                 "accuracy but also on whether candidate models make different "
                 "out-of-fold errors. The table below reports the Pearson "
                 "correlation between signed log-scale residuals for identical "
-                "held-out canonical observations."
+                "held-out trade observations."
             ),
             "",
             (
@@ -3327,7 +4114,7 @@ def build_validation_report(
             "## 7. Current methodological status",
             "",
             (
-                f"- Canonical bilateral quantity methodology: **{selected_candidate_label}**."
+                f"- Trade bilateral quantity methodology: **{selected_candidate_label}**."
             ),
             (
                 "- Training sample: fixed by HS×year support, positive MAD, and "
@@ -3340,18 +4127,117 @@ def build_validation_report(
             (
                 f"- Model validation strategy: `{validation_strategy}`."
             ),
+            "",
+            "## 8. Production inference",
+            "",
             (
-                "- Production inference remains a subsequent Validation stage."
+                "The selected production model is applied to the complete "
+                "trade population. This stage produces model evidence only; it "
+                "does not yet decide whether an observed quantity should be preserved, "
+                "replaced, imputed, or left unresolved."
             ),
             "",
-            "## 8. Inference",
+
+            "### 8.1. Inference population and prediction coverage",
             "",
             (
-                "Production inference is not yet reported by the current Validation "
-                "workflow. This section is reserved for the final selected model, "
-                "the canonical bilateral rows requiring reconstruction, prediction "
-                "coverage, post-inference unit-value plausibility, and the completed "
-                "quantity output."
+                "Rows can receive a model prediction only when all required numeric "
+                "predictors are usable. Rows without usable model inputs remain in the "
+                "Validation population but have no production-model quantity estimate."
+            ),
+            "",
+            _markdown_table(
+                inference_population_display
+            ),
+            "",
+
+            "### 8.2. Categorical support",
+            "",
+            (
+                "The fitted model learned separate categorical representations for "
+                "exporter, importer, HS6 product, and HS4 product group. Support is "
+                "therefore assessed independently for each feature: a row may contain "
+                "a known exporter and importer while its HS6 or HS4 product code was "
+                "never present in the production-fitting population."
+            ),
+            "",
+            (
+                "An unseen category is mapped to the model's reserved unknown-category "
+                "ID. For products, an unseen HS6 can still retain broader product "
+                "information when its HS4 group was seen during fitting."
+            ),
+            "",
+            get_table_pair(
+                inference_support_display,
+                inference_categorical_support_display,
+            ),
+            "",
+
+            "### 8.3. Products unseen during production fitting",
+            "",
+            (
+                "The following table lists HS6 products occurring in inferable "
+                "Validation rows that were not represented among the observations "
+                "used to fit the production model. These rows can still receive a "
+                "numerical prediction through the model's unknown-category handling, "
+                "but their support status must be retained for later Validation "
+                "decision rules."
+            ),
+            "",
+            _markdown_table(
+                inference_unseen_product_display
+            ),
+            "",
+
+            "### 8.4. Observed-versus-model residual distribution",
+            "",
+            (
+                "For every row with a positive observed trade quantity and an "
+                "available model prediction:"
+            ),
+            "",
+            r"$$r_i = \log\left(Q_i^{\mathrm{obs}}\right) - \log\left(\hat{Q}_i\right)$$",
+            "",
+            r"$$|r_i| = \left|\log\left(Q_i^{\mathrm{obs}}\right) - \log\left(\hat{Q}_i\right)\right|$$",
+            "",
+            (
+                "No preserve/replace threshold is imposed at this stage."
+            ),
+            "",
+            get_table_figure_layout(
+                inference_residual_display,
+                markdown_image(
+                    "Distribution of observed-versus-model log residuals",
+                    figure_paths[
+                        "inference_residual_quantiles"
+                    ],
+                    document_path=report_path,
+                    width=850,
+                )
+            ),
+            "",
+            _markdown_table(
+                inference_residual_display
+            ),
+            "",
+            "",
+            "### 8.5. Residual evidence by year",
+            "",
+            (
+                "Year-level summaries show whether disagreement between the observed "
+                "trade quantity and the fitted-model reference changes materially "
+                "over time."
+            ),
+            get_table_figure_layout(
+                inference_residual_by_year_display,
+                markdown_image(
+                    "Absolute log residual by year",
+                    figure_paths[
+                        "inference_residual_by_year"
+                    ],
+                    document_path=report_path,
+                    width=850,
+                )
             ),
             "",
         ]
