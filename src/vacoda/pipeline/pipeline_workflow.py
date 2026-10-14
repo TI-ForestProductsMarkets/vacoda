@@ -858,7 +858,7 @@ def _build_validation_plan(
     )
 
     audit_path = cfg.product_path(
-        "consistency_audit"
+        "inference_audit"
     )
 
     return StepPlan(

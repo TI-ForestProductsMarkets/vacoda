@@ -26,7 +26,7 @@ from vacoda.steps.validation.model_selection import select_validation_model
 from vacoda.steps.validation.model_fitting import fit_selected_validation_model
 from vacoda.steps.validation.inference import run_validation_inference
 from vacoda.steps.validation.diagnostics import  build_diagnostics
-# from vacoda.steps.validation.consistency import  audit_cross_variable_consistency
+from vacoda.steps.validation.audit_inference import audit_validation_inference
 # from vacoda.steps.validation.finalize import build_validated_trade
 # from vacoda.steps.validation.release import build_release_dataset
 from vacoda.steps.validation.reporting import build_validation_report
@@ -47,10 +47,11 @@ REQUIRED_PRODUCTS = (
     "prepared_input",
     "structural_audit",
     "training_sample",
+    "model_predictions",
+    "selected_model",
+    "fitted_model",
+    "inference_audit",
     "diagnostics",
-    "consistency_audit",
-    "validated_trade",
-    "release",
 )
 
 
@@ -62,7 +63,7 @@ WORKFLOW_STEPS = [
     "Select Validation Model",
     "Fit Selected Validation Model",
     "Run Validation inference",
-    # "Audit cross-variable consistency",
+    "Audit cross-variable consistency",
     # "Build VACODA release dataset",
     "Build Diagnostics",
     "Write Validation decision report",
@@ -364,16 +365,41 @@ def run_validation_workflow(
             producer_product="Validation inference",
         )
 
-
         # ==================================================================
-        # Step 8 — Build diagnostics
+        # Step 8 — Audit Validation inference
         # ==================================================================
 
-        diagnostic_result = run_step(
+        inference_audit_result = run_step(
             logger=logger,
             step_number=8,
             total_steps=TOTAL_WORKFLOW_STEPS,
             title=WORKFLOW_STEPS[7],
+            runner=lambda: audit_validation_inference(
+                cfg=cfg,
+                inference_path=inference_path,
+                run_id=run_id,
+                force=force,
+                logger=logger,
+            ),
+        )
+
+        inference_audit_path = require_artifact(
+            result=inference_audit_result,
+            path_key="inference_audit_path",
+            consumer_step=WORKFLOW_STEPS[8],
+            producer_product="Validation inference audit",
+        )
+
+
+        # ==================================================================
+        # Step 9 — Build diagnostics
+        # ==================================================================
+
+        diagnostic_result = run_step(
+            logger=logger,
+            step_number=9,
+            total_steps=TOTAL_WORKFLOW_STEPS,
+            title=WORKFLOW_STEPS[8],
             runner=lambda: build_diagnostics(
                 cfg=cfg,
                 input_path=training_sample_path,
@@ -390,19 +416,19 @@ def run_validation_workflow(
         diagnostics_path = require_artifact(
             result=diagnostic_result,
             path_key="diagnostics_path",
-            consumer_step=WORKFLOW_STEPS[7],
+            consumer_step=WORKFLOW_STEPS[8],
             producer_product="quantity-model diagnostics",
         )
 
         # ==================================================================
-        # Step 9 — Build Validation report
+        # Step 10 — Build Validation report
         # ==================================================================
 
         report_result = run_step(
             logger=logger,
-            step_number=9,
+            step_number=10,
             total_steps=TOTAL_WORKFLOW_STEPS,
-            title=WORKFLOW_STEPS[8],
+            title=WORKFLOW_STEPS[9],
             runner=lambda: build_validation_report(
                 cfg=cfg,
                 prepared_input_path=prepared_path,
@@ -546,20 +572,19 @@ def run_validation_workflow(
 
     #     # Canonical primary output and audit.
     #     "output_path": release_path,
-    #     "audit_path": consistency_audit_path,
-
+          "audit_path": inference_audit_path,
     #     # Explicit Validation products.
          "prepared_input_path": prepared_path,
          "structural_audit_path": structural_result["structural_audit_path"],
 
         "diagnostics_path": diagnostics_path,
+        "inference_audit_path": inference_audit_path,
 
         "report_path": report_result.get(
             "report_path"
         ),
 
         "workflow_duration_seconds": workflow_elapsed,
-    #     "consistency_audit_path": consistency_audit_path,
     #     "validated_trade_path": validated_trade_path,
     #     "release_path": release_path,
     #     "report_path": report_path,
@@ -569,7 +594,6 @@ def run_validation_workflow(
 
     #     # Final Validation outcome.
     #     "structural_audit_passed": structural_passed,
-    #     "consistency_audit_passed": consistency_passed,
     #     "decision": decision,
 
     #     "workflow_duration_seconds": workflow_elapsed,

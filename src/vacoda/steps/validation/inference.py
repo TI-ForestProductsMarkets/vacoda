@@ -68,9 +68,6 @@ from vacoda.utils.display import (
 )
 
 
-INFERENCE_CACHE_VERSION = 1
-
-
 # ======================================================================
 # Helpers
 # ======================================================================
@@ -172,6 +169,7 @@ def _inference_output_path(
         cfg.output_dir()
         / "model"
         / checkpoint_group
+        / "inference"
         / (
             f"target_"
             f"{cfg.scope.target_hs.lower()}"
@@ -998,11 +996,15 @@ def _build_residual_evidence(
         )
     )
 
-    valid_for_log = (
+    observed_valid_for_log = (
         available
         & (
             observed > 0
         )
+    )
+
+    residual_available = (
+        observed_valid_for_log
         & prediction_available
     )
 
@@ -1015,15 +1017,15 @@ def _build_residual_evidence(
     )
 
     residual[
-        valid_for_log
+        residual_available
     ] = (
         np.log(
             observed[
-                valid_for_log
+                residual_available
             ]
         )
         - prediction_log_quantity[
-            valid_for_log
+            residual_available
         ]
     )
 
@@ -1038,7 +1040,7 @@ def _build_residual_evidence(
             ),
 
             "observed_quantity_valid_for_log": (
-                valid_for_log
+                observed_valid_for_log
             ),
 
             "quantity_log_residual": (
@@ -1067,10 +1069,6 @@ def _inference_semantic_payload(
     return {
         "artifact": (
             "validation_inference"
-        ),
-
-        "cache_version": (
-            INFERENCE_CACHE_VERSION
         ),
 
         "scope": {
@@ -1152,6 +1150,16 @@ def _inference_semantic_payload(
             ),
         },
 
+        "output_contract": {
+            "row_key": list(MODEL_ROW_KEY),
+            "retained_numeric_features": list(
+                cfg.model.features.numeric.keys()
+            ),
+            "target_column": cfg.model.target.column,
+            "categorical_support_features": list(
+                cfg.model.features.categorical
+            ),
+        },
         "features": {
             "numeric": {
                 name: asdict(
@@ -1709,14 +1717,14 @@ def run_validation_inference(
 
     # ------------------------------------------------------------------
     # Assemble inference artifact
-    # ------------------------------------------------------------------
 
     output_columns = (
         _ordered_unique(
             [
                 *MODEL_ROW_KEY,
                 "target_hs4",
-                target_column,
+                *cfg.model.features.numeric.keys(),
+                cfg.model.target.column,
                 "training_selected",
             ]
         )

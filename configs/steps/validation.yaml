@@ -33,13 +33,13 @@ validation:
       enable: true
       filename: "audits/target_{target_hs_lower}_structural_audit.parquet"
 
-    quantity_selection:
-      enable: true
-      filename: "quantity/comtrade_target_{target_hs_lower}_quantity_selection.parquet"
+    # quantity_selection:
+    #   enable: true
+    #   filename: "quantity/comtrade_target_{target_hs_lower}_quantity_selection.parquet"
 
-    quantity_selection_audit:
-      enable: true
-      filename: "audits/target_{target_hs_lower}_quantity_selection_audit.parquet"
+    # quantity_selection_audit:
+    #   enable: true
+    #   filename: "audits/target_{target_hs_lower}_quantity_selection_audit.parquet"
       
     training_sample:
       enable: true
@@ -56,18 +56,18 @@ validation:
     fitted_model:
       enable: true
       filename: "model/target_{target_hs_lower}_fitted_model.parquet"
-      
+    
+    # validated_trade:
+    #   enable: true
+    #   filename: "comtrade_target_{target_hs_lower}_validated.parquet"
+    
+    inference_audit:
+      enable: true
+      filename: "audits/target_{target_hs_lower}_inference_audit.parquet"
+
     diagnostics:
       enable: true
       filename: "diagnostics/target_{target_hs_lower}_diagnostics.parquet"
-
-    validated_trade:
-      enable: true
-      filename: "comtrade_target_{target_hs_lower}_validated.parquet"
-    
-    consistency_audit:
-      enable: true
-      filename: "target_{target_hs_lower}_consistency_audit.parquet"
 
     release:
       enable: true

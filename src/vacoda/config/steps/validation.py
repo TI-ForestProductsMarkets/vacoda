@@ -264,15 +264,12 @@ class ValidationProductConfig:
 class ValidationProductsConfig:
     prepared_input: ValidationProductConfig
     structural_audit: ValidationProductConfig
-    quantity_selection: ValidationProductConfig
-    quantity_selection_audit: ValidationProductConfig
     training_sample: ValidationProductConfig
     model_predictions: ValidationProductConfig
     selected_model:ValidationProductConfig
     fitted_model:ValidationProductConfig
+    inference_audit:ValidationProductConfig
     diagnostics: ValidationProductConfig
-    validated_trade: ValidationProductConfig
-    consistency_audit: ValidationProductConfig
     release: ValidationProductConfig
 
     @classmethod
@@ -296,15 +293,12 @@ class ValidationProductsConfig:
         return cls(
             prepared_input=product("prepared_input"),
             structural_audit=product("structural_audit"),
-            quantity_selection=product("quantity_selection"),
-            quantity_selection_audit=product("quantity_selection_audit"),
             training_sample=product("training_sample"),
             model_predictions=product("model_predictions"),
             selected_model=product("selected_model"),
             fitted_model=product("fitted_model"),
+            inference_audit=product("inference_audit"),
             diagnostics=product("diagnostics"),
-            validated_trade=product("validated_trade"),
-            consistency_audit=product("consistency_audit"),
             release=product("release"),
         )
 
@@ -1720,15 +1714,12 @@ class ValidationConfig:
         products = {
             "prepared_input": self.products.prepared_input,
             "structural_audit": self.products.structural_audit,
-            "quantity_selection": self.products.quantity_selection,
-            "quantity_selection_audit": self.products.quantity_selection_audit,
             "training_sample": self.products.training_sample,
             "model_predictions": self.products.model_predictions,
             "selected_model": self.products.selected_model,
             "fitted_model": self.products.fitted_model,
+            "inference_audit": self.products.inference_audit,
             "diagnostics": self.products.diagnostics,
-            "validated_trade": self.products.validated_trade,
-            "consistency_audit": self.products.consistency_audit,
             "release": self.products.release,
         }
 
@@ -1748,15 +1739,12 @@ class ValidationConfig:
             for name in (
                 "prepared_input",
                 "structural_audit",
-                "quantity_selection",
-                "quantity_selection_audit",
                 "training_sample",
                 "model_predictions",
                 "selected_model",
                 "fitted_model",
+                "inference_audit",
                 "diagnostics",
-                "validated_trade",
-                "consistency_audit",
                 "release",
             )
         }
@@ -1765,15 +1753,12 @@ class ValidationConfig:
         return {
             "prepared_input": self.products.prepared_input.enable,
             "structural_audit": self.products.structural_audit.enable,
-            "quantity_selection": self.products.quantity_selection.enable,
-            "quantity_selection_audit": self.products.quantity_selection_audit.enable,
             "training_sample": self.products.training_sample.enable,
             "model_predictions": self.products.model_predictions.enable,
             "selected_model": self.products.selected_model.enable,
             "fitted_model": self.products.fitted_model.enable,
+            "inference_audit": self.products.inference_audit.enable,
             "diagnostics": self.products.diagnostics.enable,
-            "validated_trade": self.products.validated_trade.enable,
-            "consistency_audit": self.products.consistency_audit.enable,
             "release": self.products.release.enable,
         }
 
