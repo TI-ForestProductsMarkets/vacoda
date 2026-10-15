@@ -729,6 +729,16 @@ def audit_validation_inference(
                     )
                         AS n_hs4_unseen_rows,
 
+                    COUNT(DISTINCT target_cmd) FILTER (
+                        WHERE hs6_seen IS FALSE
+                    )
+                        AS n_hs6_unseen_codes,
+
+                    COUNT(DISTINCT target_hs4) FILTER (
+                        WHERE hs4_seen IS FALSE
+                    )
+                        AS n_hs4_unseen_codes,
+                        
                     COUNT(*) FILTER (
                         WHERE training_selected
                     )
@@ -821,6 +831,8 @@ def audit_validation_inference(
             n_residual_rows,
             n_hs6_unseen_rows,
             n_hs4_unseen_rows,
+            n_hs6_unseen_codes,
+            n_hs4_unseen_codes,
             n_training_selected_rows,
             median_abs_log_residual,
             mean_abs_log_residual,
@@ -902,6 +914,10 @@ def audit_validation_inference(
                 n_hs6_unseen_rows,
             "n_hs4_unseen_rows":
                 n_hs4_unseen_rows,
+            "n_hs6_unseen_codes":
+                n_hs6_unseen_codes,
+            "n_hs4_unseen_codes":
+                n_hs4_unseen_codes,
             "n_training_selected_rows":
                 n_training_selected_rows,
             "n_duplicate_keys":
@@ -1169,6 +1185,16 @@ def audit_validation_inference(
         logger.info(
             "  Residual rows: %s",
             f"{counts['n_residual_rows']:,}",
+        )
+
+        logger.info(
+            "  Rows with unseen HS6: %s",
+            f"{counts['n_hs6_unseen_rows']:,}",
+        )
+
+        logger.info(
+            "  Distinct unseen HS6 codes: %s",
+            f"{counts['n_hs6_unseen_codes']:,}",
         )
 
         logger.info(

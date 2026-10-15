@@ -182,6 +182,7 @@ def build_diagnostics(
     model_predictions_path: Path,
     selected_model_path: Path,
     inference_path: Path,
+    inference_audit_path: Path,
     run_id: str,
     force: bool = False,
     logger,
@@ -202,6 +203,8 @@ def build_diagnostics(
     model_predictions_path = Path(model_predictions_path)
     selected_model_path = Path(selected_model_path)
     inference_path = Path(inference_path)
+    inference_audit_path = Path(inference_audit_path)
+
 
     if not input_path.is_file():
         raise FileNotFoundError(
@@ -230,6 +233,11 @@ def build_diagnostics(
         raise FileNotFoundError(
             "Validation inference artifact not found: "
             f"{inference_path}"
+        )
+    if not inference_audit_path.is_file():
+        raise FileNotFoundError(
+            "Validation inference-audit artifact not found: "
+            f"{inference_audit_path}"
         )
     
     training_definition = training_definition_name(
@@ -371,8 +379,16 @@ def build_diagnostics(
             model_predictions_path,
             hash_file=True,
         ),
+        "selected_model": file_fingerprint(
+            selected_model_path,
+            hash_file=True,
+        ),
         "inference": file_fingerprint(
             inference_path,
+            hash_file=True,
+        ),
+        "inference_audit": file_fingerprint(
+            inference_audit_path,
             hash_file=True,
         ),
     }
@@ -459,9 +475,87 @@ def build_diagnostics(
         input_sql = sql_literal(input_path)
         predictions_sql = sql_literal(model_predictions_path)
         inference_sql = sql_literal(inference_path)
+        inference_audit_sql = sql_literal(inference_audit_path)
 
         diagnostics_rows: list[dict[str, Any]] = []
 
+        # --------------------------------------------------------------
+        # Require passing inference audit
+        # --------------------------------------------------------------
+
+        inference_audit = con.execute(
+            f"""
+            SELECT
+                audit_passed,
+                n_duplicate_keys,
+                n_prediction_availability_mismatches,
+                n_prediction_inverse_transform_mismatches,
+                n_residual_formula_mismatches,
+                n_unit_value_identity_mismatches
+
+            FROM read_parquet(
+                {inference_audit_sql}
+            )
+
+            LIMIT 1
+            """
+        ).fetchone()
+
+        if inference_audit is None:
+            raise RuntimeError(
+                "Validation inference audit is empty."
+            )
+
+        (
+            inference_audit_passed,
+            n_duplicate_keys,
+            n_prediction_availability_mismatches,
+            n_prediction_inverse_transform_mismatches,
+            n_residual_formula_mismatches,
+            n_unit_value_identity_mismatches,
+        ) = inference_audit
+
+        if not bool(inference_audit_passed):
+            raise RuntimeError(
+                "Validation diagnostics require a passing "
+                "Validation inference audit."
+            )
+
+        for criterion, n_rows in (
+            (
+                "duplicate_bilateral_keys",
+                int(n_duplicate_keys),
+            ),
+            (
+                "prediction_availability_mismatches",
+                int(n_prediction_availability_mismatches),
+            ),
+            (
+                "prediction_inverse_transform_mismatches",
+                int(n_prediction_inverse_transform_mismatches),
+            ),
+            (
+                "residual_formula_mismatches",
+                int(n_residual_formula_mismatches),
+            ),
+            (
+                "unit_value_identity_mismatches",
+                int(n_unit_value_identity_mismatches),
+            ),
+        ):
+            _append_metric(
+                diagnostics_rows,
+                scope="inference_audit",
+                criterion=criterion,
+                n_rows=n_rows,
+            )
+
+        _append_metric(
+            diagnostics_rows,
+            scope="inference_audit",
+            criterion="audit_passed",
+            value=1.0,
+        )
         # --------------------------------------------------------------
         # Inference View
         # --------------------------------------------------------------
@@ -528,6 +622,7 @@ def build_diagnostics(
 
                 COUNT(*) FILTER (
                     WHERE observed_quantity_valid_for_log
+                    AND model_prediction_available
                 ) AS n_residual_evaluable
 
             FROM validation_inference
@@ -676,6 +771,7 @@ def build_diagnostics(
                 FROM validation_inference
 
                 WHERE observed_quantity_valid_for_log
+                AND model_prediction_available
                 AND quantity_abs_log_residual IS NOT NULL
                 AND isfinite(
                     quantity_abs_log_residual
@@ -710,6 +806,7 @@ def build_diagnostics(
                 FROM validation_inference
 
                 WHERE observed_quantity_valid_for_log
+                AND model_prediction_available
                 AND quantity_log_residual IS NOT NULL
                 AND isfinite(
                     quantity_log_residual
@@ -746,6 +843,7 @@ def build_diagnostics(
             FROM validation_inference
 
             WHERE observed_quantity_valid_for_log
+            AND model_prediction_available
             AND quantity_log_residual IS NOT NULL
             AND isfinite(
                 quantity_log_residual
@@ -2633,15 +2731,30 @@ def build_diagnostics(
 
     logger.info("  All Validation rows: %s", f"{n_all_rows:,}")
     logger.info(
-        "  Canonical training-eligible rows: %s",
+        "  All training-eligible rows: %s",
         f"{n_training_eligible:,}",
     )
     logger.info(
         "  Final selected training rows: %s",
         f"{n_training_selected:,}",
     )
+
     logger.info("  Diagnostics rows: %s", f"{len(diagnostics):,}")
     logger.info("  Output: %s", output_path)
+    logger.info(
+        "  Selected model: %s",
+        selected_model_path,
+    )
+
+    logger.info(
+        "  Inference: %s",
+        inference_path,
+    )
+
+    logger.info(
+        "  Inference audit: %s",
+        inference_audit_path,
+    )
     logger.info(
         "%s CHECK — Validation diagnostics built.",
         get_symbols("check"),

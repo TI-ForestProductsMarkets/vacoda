@@ -407,6 +407,7 @@ def run_validation_workflow(
                 model_predictions_path=model_predictions_path,
                 selected_model_path=selected_model_path,
                 inference_path=inference_path,
+                inference_audit_path=inference_audit_path,
                 run_id=run_id,
                 force=force,
                 logger=logger,
@@ -572,7 +573,6 @@ def run_validation_workflow(
 
     #     # Canonical primary output and audit.
     #     "output_path": release_path,
-          "audit_path": inference_audit_path,
     #     # Explicit Validation products.
          "prepared_input_path": prepared_path,
          "structural_audit_path": structural_result["structural_audit_path"],
