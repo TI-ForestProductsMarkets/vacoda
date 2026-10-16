@@ -2251,6 +2251,80 @@ def build_validation_report(
             selected_candidate
         )
 
+        # ==============================================================
+        # Production model
+        # ==============================================================
+        production_model_selection = _require_diagnostic_scope(
+            diagnostics,
+            "production_model_selection",
+        )
+
+        if len(production_model_selection) != 1:
+            raise RuntimeError(
+                "Validation diagnostics must contain exactly one "
+                "production-model selection row."
+            )
+
+        production_model_row = (
+            production_model_selection.iloc[0]
+        )
+
+        selected_production_model = str(
+            production_model_row["model_name"]
+        )
+
+        selected_production_model_type = str(
+            production_model_row["model_type"]
+        )
+
+        production_selection_metric = str(
+            production_model_row["criterion"]
+        )
+
+        production_selection_direction = str(
+            production_model_row["variable"]
+        )
+
+        production_selection_value = float(
+            production_model_row["value"]
+        )
+
+        production_model_selection_display = pd.DataFrame(
+            [
+                {
+                    "Item": "Selected model",
+                    "Result": _model_plot_label(
+                        selected_production_model
+                    ),
+                },
+                {
+                    "Item": "Model definition",
+                    "Result": _model_definition(
+                        selected_production_model
+                    ),
+                },
+                {
+                    "Item": "Model type",
+                    "Result": selected_production_model_type,
+                },
+                {
+                    "Item": "Selection metric",
+                    "Result": production_selection_metric,
+                },
+                {
+                    "Item": "Selection direction",
+                    "Result": production_selection_direction,
+                },
+                {
+                    "Item": "OOF selection value",
+                    "Result": _format_number(
+                        production_selection_value,
+                        digits=6,
+                    ),
+                },
+            ]
+        )
+
         # ============================================================== 
         # Source diagnostics
         # ============================================================== 
@@ -2963,6 +3037,79 @@ def build_validation_report(
             "Best ensemble MAE"
         )
 
+        # --------------------------------------------------------------
+        # Inference audit
+        # --------------------------------------------------------------
+
+        inference_audit = _require_diagnostic_scope(
+            diagnostics,
+            "inference_audit",
+        ).copy()
+
+        inference_audit_labels = {
+            "duplicate_bilateral_keys": (
+                "Duplicate bilateral keys"
+            ),
+            "prediction_availability_mismatches": (
+                "Prediction-availability mismatches"
+            ),
+            "prediction_inverse_transform_mismatches": (
+                "Prediction inverse-transform mismatches"
+            ),
+            "residual_formula_mismatches": (
+                "Residual formula mismatches"
+            ),
+            "unit_value_identity_mismatches": (
+                "Unit-value identity mismatches"
+            ),
+        }
+
+        inference_audit_checks = inference_audit[
+            inference_audit["criterion"].isin(
+                inference_audit_labels
+            )
+        ].copy()
+
+        inference_audit_display = pd.DataFrame(
+            {
+                "Check": (
+                    inference_audit_checks[
+                        "criterion"
+                    ]
+                    .map(
+                        inference_audit_labels
+                    )
+                ),
+                "Result": (
+                    inference_audit_checks[
+                        "n_rows"
+                    ]
+                    .map(
+                        _format_integer
+                    )
+                ),
+            }
+        )
+
+        inference_audit_passed_rows = inference_audit[
+            inference_audit["criterion"].eq(
+                "audit_passed"
+            )
+        ]
+
+        if inference_audit_passed_rows.empty:
+            raise RuntimeError(
+                "Validation diagnostics do not contain "
+                "the inference-audit PASS result."
+            )
+
+        inference_audit_passed = bool(
+            float(
+                inference_audit_passed_rows.iloc[0][
+                    "value"
+                ]
+            )
+        )
 
         # ==============================================================
         # Production inference diagnostics
@@ -4120,6 +4267,25 @@ def build_validation_report(
                 width=850,
             ),
             "",
+            "### 6.6. Production model selection",
+            "",
+            (
+                "The production model is selected from the evaluated candidate "
+                "models using the configured out-of-fold selection criterion."
+            ),
+            "",
+            _markdown_table(
+                production_model_selection_display
+            ),
+            "",
+            (
+                f"The selected production model is "
+                f"**{_model_plot_label(selected_production_model)}**, "
+                f"with {production_selection_metric} = "
+                f"{production_selection_value:.6f}."
+            ),
+            "",
+            "",
             "## 7. Current methodological status",
             "",
             (
@@ -4146,8 +4312,26 @@ def build_validation_report(
                 "replaced, imputed, or left unresolved."
             ),
             "",
-
-            "### 8.1. Inference population and prediction coverage",
+            "### 8.1. Inference audit",
+            "",
+            (
+                "Before production-inference evidence is used downstream, "
+                "the inference artifact is checked for bilateral-key integrity, "
+                "prediction-availability consistency, prediction inverse-transform "
+                "consistency, residual identities, and the value–quantity "
+                "unit-value identity."
+            ),
+            "",
+            _markdown_table(
+                inference_audit_display
+            ),
+            "",
+            (
+                "Inference audit status: "
+                f"**{'PASS' if inference_audit_passed else 'FAIL'}**."
+            ),
+            "",
+            "### 8.2. Inference population and prediction coverage",
             "",
             (
                 "Rows can receive a model prediction only when all required numeric "
@@ -4160,7 +4344,7 @@ def build_validation_report(
             ),
             "",
 
-            "### 8.2. Categorical support",
+            "### 8.3. Categorical support",
             "",
             (
                 "The fitted model learned separate categorical representations for "
@@ -4182,7 +4366,7 @@ def build_validation_report(
             ),
             "",
 
-            "### 8.3. Products unseen during production fitting",
+            "### 8.4. Products unseen during production fitting",
             "",
             (
                 "The following table lists HS6 products occurring in inferable "
@@ -4198,12 +4382,19 @@ def build_validation_report(
             ),
             "",
 
-            "### 8.4. Observed-versus-model residual distribution",
+            "### 8.5. Observed-versus-model residual distribution",
             "",
             (
-                "For every row with a positive observed trade quantity and an "
+                "- For every row with a positive observed trade quantity and an "
                 "available model prediction:"
             ),
+            (
+                "- These production-inference residuals are descriptive evidence from "
+                "the final model fitted on the selected training population. They are "
+                "not an additional out-of-fold validation score; unbiased held-out "
+                "model comparison is reported in Section 6."
+            ),
+            "",
             "",
             r"$$r_i = \log\left(Q_i^{\mathrm{obs}}\right) - \log\left(\hat{Q}_i\right)$$",
             "",
@@ -4226,7 +4417,7 @@ def build_validation_report(
             ),
             "",
             "",
-            "### 8.5. Residual evidence by year",
+            "### 8.6. Residual evidence by year",
             "",
             (
                 "Year-level summaries show whether disagreement between the observed "
@@ -4267,15 +4458,16 @@ def build_validation_report(
         latest_report_path: Path | None = None
 
         if cfg.artifacts.write_latest:
-            latest_path.parent.mkdir(
+            latest_report_path = latest_path
+            
+            latest_report_path.parent.mkdir(
                 parents=True,
                 exist_ok=True,
             )
             shutil.copyfile(
                 report_path,
-                latest_path,
+                latest_report_path,
             )
-            latest_report_path = latest_path
 
         logger.info(
             "%s Validation model-development report created.",

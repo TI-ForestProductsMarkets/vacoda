@@ -137,6 +137,7 @@ def _append_metric(
     quantile: float | None = None,
     candidate: str | None = None,
     model_name: str | None = None,
+    model_type: str | None = None,
     weight: float | None = None,
     uv_support_threshold: float | None = None,
     uv_distance_threshold: float | None = None,
@@ -150,6 +151,7 @@ def _append_metric(
             "criterion": criterion,
             "candidate": candidate,
             "model_name": model_name,
+            "model_type": model_type,
             "weight":weight,
             "disagreement_threshold": None,
             "uv_support_threshold": uv_support_threshold,
@@ -475,9 +477,67 @@ def build_diagnostics(
         input_sql = sql_literal(input_path)
         predictions_sql = sql_literal(model_predictions_path)
         inference_sql = sql_literal(inference_path)
+        selected_model_sql = sql_literal(selected_model_path)
         inference_audit_sql = sql_literal(inference_audit_path)
 
         diagnostics_rows: list[dict[str, Any]] = []
+
+
+        # --------------------------------------------------------------
+        # Production-model selection
+        # --------------------------------------------------------------
+
+        selected_model_rows = con.execute(
+            f"""
+            SELECT
+                model_name,
+                model_type,
+                selection_metric,
+                selection_direction,
+                selection_value
+
+            FROM read_parquet(
+                {selected_model_sql}
+            )
+            """
+        ).fetchall()
+
+        if len(selected_model_rows) != 1:
+            raise RuntimeError(
+                "Validation selected-model artifact must contain "
+                "exactly one row; "
+                f"found {len(selected_model_rows):,}."
+            )
+
+        (
+            selected_model_name,
+            selected_model_type,
+            selection_metric,
+            selection_direction,
+            selection_value,
+        ) = selected_model_rows[0]
+
+        if (
+            selected_model_name is None
+            or selected_model_type is None
+            or selection_metric is None
+            or selection_direction is None
+            or selection_value is None
+        ):
+            raise RuntimeError(
+                "Validation selected-model artifact contains "
+                "missing selection fields."
+            )
+
+        _append_metric(
+            diagnostics_rows,
+            scope="production_model_selection",
+            criterion=str(selection_metric),
+            variable=str(selection_direction),
+            value=float(selection_value),
+            model_name=str(selected_model_name),
+            model_type=str(selected_model_type),
+        )
 
         # --------------------------------------------------------------
         # Require passing inference audit
@@ -2624,6 +2684,7 @@ def build_diagnostics(
         optional_columns = (
             "candidate",
             "model_name",
+            "model_type",
             "weight",
             "disagreement_threshold",
             "uv_support_threshold",
@@ -2661,6 +2722,7 @@ def build_diagnostics(
                 "criterion",
                 "candidate",
                 "model_name",
+                "model_type",
                 "weight",
                 "disagreement_threshold",
                 "uv_support_threshold",
