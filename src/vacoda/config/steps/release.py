@@ -169,6 +169,7 @@ class ReleaseProductConfig:
 
 @dataclass(frozen=True)
 class ReleaseProductsConfig:
+    prepare_input: ReleaseProductConfig
     release: ReleaseProductConfig
     release_audit: ReleaseProductConfig
     diagnostics: ReleaseProductConfig
@@ -181,6 +182,7 @@ class ReleaseProductsConfig:
                 require_dict(cfg.get(name), key=key), key=key
             )
         result = cls(
+            prepare_input=product("prepare_input"),
             release=product("release"),
             release_audit=product("release_audit"),
             diagnostics=product("diagnostics"),
@@ -349,6 +351,7 @@ class ReleaseConfig:
 
     def product_path(self, product_name: str, *, release_id: str | None = None) -> Path:
         products = {
+            "prepare_input": self.products.prepare_input,
             "release": self.products.release,
             "release_audit": self.products.release_audit,
             "diagnostics": self.products.diagnostics,
@@ -374,6 +377,7 @@ class ReleaseConfig:
 
     def enabled_products(self) -> dict[str, bool]:
         return {
+            "prepare_input": self.products.prepare_input.enable,
             "release": self.products.release.enable,
             "release_audit": self.products.release_audit.enable,
             "diagnostics": self.products.diagnostics.enable,

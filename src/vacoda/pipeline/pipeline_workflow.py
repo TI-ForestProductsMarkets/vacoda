@@ -33,6 +33,8 @@ from vacoda.steps.cif_fob.workflow import run_cif_fob_workflow
 from vacoda.steps.trade_sync.workflow import run_trade_sync_workflow
 from vacoda.steps.value.workflow import run_value_workflow
 from vacoda.steps.validation.workflow import run_validation_workflow
+from vacoda.config.steps.release import ReleaseConfig
+from vacoda.steps.release.workflow import run_release_workflow
 
 from vacoda.config.pipeline import PipelineConfig
 
@@ -448,6 +450,41 @@ def _run_validation_step(
         run_id=run_id,
         logger=get_logger("PIPELINE.VALIDATION"),
         force=force,
+    )
+
+def _run_release_step(
+    *,
+    config_path: Path,
+    pipeline_cfg: PipelineConfig,
+    run_id: str,
+    force: bool = False,
+) -> dict[str, Any]:
+    cfg = ReleaseConfig.from_yaml(
+        config_path,
+        scope=pipeline_cfg.scope,
+        engine=pipeline_cfg.engine,
+    )
+
+    validation_cfg = ValidationConfig.from_yaml(
+        pipeline_cfg.steps["validation"].config,
+        scope=pipeline_cfg.scope,
+        engine=pipeline_cfg.engine,
+    )
+
+    prepared_path = validation_cfg.product_path("prepared_input")
+    inference_path = validation_cfg.product_path("inference")
+
+    training_definition = inference_path.parent.parent.name
+    release_id = f"{training_definition}__{run_id}"
+
+    return run_release_workflow(
+        cfg=cfg,
+        run_id=run_id,
+        release_id=release_id,
+        logger=get_logger("PIPELINE.RELEASE"),
+        force=force,
+        prepared_input_path=prepared_path,
+        inference_input_path=inference_path,
     )
 
 def _build_ingestion_plan(
@@ -881,6 +918,68 @@ def _build_validation_plan(
         ),
     )
 
+def _build_release_plan(
+    *,
+    step_name: str,
+    config_path: Path,
+    pipeline_cfg: PipelineConfig,
+) -> StepPlan:
+    cfg = ReleaseConfig.from_yaml(
+        config_path,
+        scope=pipeline_cfg.scope,
+        engine=pipeline_cfg.engine,
+    )
+
+    validation_cfg = ValidationConfig.from_yaml(
+        pipeline_cfg.steps["validation"].config,
+        scope=pipeline_cfg.scope,
+        engine=pipeline_cfg.engine,
+    )
+
+    prepared_path = validation_cfg.product_path("prepared_input")
+    inference_path = validation_cfg.product_path("inference")
+
+    release_source_dir = Path(
+        run_release_workflow.__code__.co_filename
+    ).parent
+
+    implementation_fp = source_files_fingerprint(
+        paths=list(release_source_dir.rglob("*.py")),
+        label="release_implementation",
+    )
+
+    input_fp = {
+        "prepared_input": file_list_fingerprint(
+            paths=[prepared_path],
+            label="release_prepared_input",
+        ),
+        "inference_input": file_list_fingerprint(
+            paths=[inference_path],
+            label="release_inference_input",
+        ),
+        "implementation": implementation_fp,
+    }
+
+    return StepPlan(
+        step_name=step_name,
+        config_path=config_path,
+        config_fingerprint=_step_config_fingerprint(
+            config_path=config_path,
+            resolved_config=cfg,
+            pipeline_cfg=pipeline_cfg,
+            include_scope=True,
+        ),
+        input_fingerprint=input_fp,
+        output_path=cfg.product_path("release"),
+        audit_path=cfg.product_path("release_audit"),
+        runner=lambda run_id, force: _run_release_step(
+            config_path=config_path,
+            pipeline_cfg=pipeline_cfg,
+            run_id=run_id,
+            force=force,
+        ),
+    )
+
 def _step_config_fingerprint(
     *,
     config_path: Path,
@@ -1061,6 +1160,13 @@ def _build_step_plan(
             config_path=config_path,
             pipeline_cfg=pipeline_cfg,
         )
+    if step_name == "release":
+        return _build_release_plan(
+            step_name=step_name,
+            config_path=config_path,
+            pipeline_cfg=pipeline_cfg,
+        )
+    
     raise NotImplementedError(
         f"No pipeline plan implemented for step {step_name!r}."
     )

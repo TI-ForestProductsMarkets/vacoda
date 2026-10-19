@@ -26,6 +26,11 @@ release:
   # Validation Prepared and Inference artifact paths are supplied by
   # the master pipeline; do not construct them here.
   products:
+
+    prepare_input:
+      enable: true
+      filename: "prepared/comtrade_target_{target_hs_lower}_prepared.parquet"
+      
     release:
       enable: true
       filename: "vacoda_target_{target_hs_lower}_dataset.parquet"

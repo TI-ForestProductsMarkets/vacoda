@@ -16,10 +16,13 @@ from time import perf_counter
 from typing import Any
 
 from vacoda.config.steps.release import ReleaseConfig
+from vacoda.config.steps.validation import ValidationConfig
+
 from vacoda.utils.artifacts import require_artifact, require_enabled_products
 from vacoda.utils.display import get_symbols
 from vacoda.utils.runtime import run_step, separator, timed_workflow
 
+from vacoda.steps.release.prepare_input import prepare_release_input
 from vacoda.steps.release.release_data import build_release_candidates
 from vacoda.steps.release.audit_release import audit_release_candidates
 from vacoda.steps.release.publish import publish_release_datasets
@@ -28,12 +31,14 @@ from vacoda.steps.release.reporting import build_release_report
 
 
 REQUIRED_PRODUCTS = (
+    "prepare_input",
     "release",
     "release_audit",
     "diagnostics",
 )
 
 WORKFLOW_STEPS = [
+    "Prepare Input for Release",
     "Build Release datasets",
     "Audit Release datasets",
     "Publish Release datasets",
@@ -116,14 +121,31 @@ def run_release_workflow(
             " ".join(f"{name}={enabled}" for name, enabled in enabled_products.items()),
         )
 
+
         # ==================================================================
-        # Step 1 — Build both candidate datasets (staging only)
+        # Step 1 — Prepare input for Release (staging only)
         # ==================================================================
         build_result = run_step(
             logger=logger,
             step_number=1,
             total_steps=TOTAL_WORKFLOW_STEPS,
             title=WORKFLOW_STEPS[0],
+            runner=lambda: prepare_release_input(
+                cfg=cfg,
+                validation_cfg=validation_cfg,
+                run_id=run_id,
+                logger=logger,
+            ),
+        )
+
+        # ==================================================================
+        # Step 2 — Build both candidate datasets (staging only)
+        # ==================================================================
+        build_result = run_step(
+            logger=logger,
+            step_number=2,
+            total_steps=TOTAL_WORKFLOW_STEPS,
+            title=WORKFLOW_STEPS[1],
             runner=lambda: build_release_candidates(
                 cfg=cfg,
                 prepared_input_path=prepared_path,
@@ -148,13 +170,13 @@ def run_release_workflow(
         )
 
         # ==================================================================
-        # Step 2 — Audit candidates (must pass before publication)
+        # Step 3 — Audit candidates (must pass before publication)
         # ==================================================================
         audit_result = run_step(
             logger=logger,
-            step_number=2,
+            step_number=3,
             total_steps=TOTAL_WORKFLOW_STEPS,
-            title=WORKFLOW_STEPS[1],
+            title=WORKFLOW_STEPS[2],
             runner=lambda: audit_release_candidates(
                 cfg=cfg,
                 prepared_input_path=prepared_path,
@@ -176,13 +198,13 @@ def run_release_workflow(
             raise RuntimeError("Release candidate audit did not pass; publication blocked.")
 
         # ==================================================================
-        # Step 3 — Publish ONLY the audited candidates and their metadata
+        # Step 4 — Publish ONLY the audited candidates and their metadata
         # ==================================================================
         publish_result = run_step(
             logger=logger,
-            step_number=3,
+            step_number=4,
             total_steps=TOTAL_WORKFLOW_STEPS,
-            title=WORKFLOW_STEPS[2],
+            title=WORKFLOW_STEPS[3],
             runner=lambda: publish_release_datasets(
                 cfg=cfg,
                 candidate_standard_path=candidate_standard_path,
@@ -210,13 +232,13 @@ def run_release_workflow(
         )
 
         # ==================================================================
-        # Step 4 — Diagnostics (informational; never authorizes publication)
+        # Step 5 — Diagnostics (informational; never authorizes publication)
         # ==================================================================
         diagnostics_result = run_step(
             logger=logger,
-            step_number=4,
+            step_number=5,
             total_steps=TOTAL_WORKFLOW_STEPS,
-            title=WORKFLOW_STEPS[3],
+            title=WORKFLOW_STEPS[4],
             runner=lambda: build_release_diagnostics(
                 cfg=cfg,
                 standard_path=published_standard_path,
@@ -236,13 +258,13 @@ def run_release_workflow(
         )
 
         # ==================================================================
-        # Step 5 — Write Release report (descriptive, not approval authority)
+        # Step 6 — Write Release report (descriptive, not approval authority)
         # ==================================================================
         report_result = run_step(
             logger=logger,
-            step_number=5,
+            step_number=6,
             total_steps=TOTAL_WORKFLOW_STEPS,
-            title=WORKFLOW_STEPS[4],
+            title=WORKFLOW_STEPS[5],
             runner=lambda: build_release_report(
                 cfg=cfg,
                 standard_path=published_standard_path,
