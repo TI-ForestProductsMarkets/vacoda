@@ -191,6 +191,7 @@ def audit_validation_inference(
             "importer_seen",
             "hs6_seen",
             "hs4_seen",
+            "manual_review_required",
 
             "validation_model_name",
             "validation_model_type",
@@ -573,6 +574,12 @@ def audit_validation_inference(
                     )
                         AS n_hs6_seen_hs4_unseen,
 
+                    COUNT(*) FILTER (
+                        WHERE manual_review_required IS DISTINCT FROM (
+                            hs6_seen IS FALSE AND hs4_seen IS FALSE
+                        )
+                    ) AS n_manual_review_rule_mismatches,
+                        
                     -- --------------------------------------------------
                     -- Model metadata
                     -- --------------------------------------------------
@@ -740,6 +747,14 @@ def audit_validation_inference(
                         AS n_hs4_unseen_codes,
                         
                     COUNT(*) FILTER (
+                        WHERE manual_review_required IS TRUE
+                    ) AS n_manual_review_rows,
+
+                    COUNT(DISTINCT target_cmd) FILTER (
+                        WHERE manual_review_required IS TRUE
+                    ) AS n_manual_review_hs6_codes,
+
+                    COUNT(*) FILTER (
                         WHERE training_selected
                     )
                         AS n_training_selected_rows,
@@ -811,6 +826,7 @@ def audit_validation_inference(
             n_missing_support_flags_valid_input,
             n_support_flags_on_invalid_input,
             n_hs6_seen_hs4_unseen,
+            n_manual_review_rule_mismatches,
 
             n_missing_model_metadata,
             n_distinct_model_names,
@@ -833,6 +849,8 @@ def audit_validation_inference(
             n_hs4_unseen_rows,
             n_hs6_unseen_codes,
             n_hs4_unseen_codes,
+            n_manual_review_rows,
+            n_manual_review_hs6_codes,
             n_training_selected_rows,
             median_abs_log_residual,
             mean_abs_log_residual,
@@ -922,6 +940,14 @@ def audit_validation_inference(
                 n_training_selected_rows,
             "n_duplicate_keys":
                 n_duplicate_keys,
+            "n_manual_review_rule_mismatches":
+                n_manual_review_rule_mismatches,
+
+            "n_manual_review_rows":
+                n_manual_review_rows,
+
+            "n_manual_review_hs6_codes":
+                n_manual_review_hs6_codes,
         }
 
         counts = {
@@ -1074,6 +1100,8 @@ def audit_validation_inference(
                 counts[
                     "n_unit_value_identity_mismatches"
                 ] == 0,
+            "manual_review_flag_consistent":
+                counts["n_manual_review_rule_mismatches"] == 0,
         }
 
         audit_passed = all(
@@ -1208,6 +1236,16 @@ def audit_validation_inference(
         )
 
         logger.info(
+            "  Manual review rows: %s (HS6 codes: %s)",
+            f"{counts['n_manual_review_rows']:,}",
+            f"{counts['n_manual_review_hs6_codes']:,}",
+        )
+
+        logger.info(
+            "  Manual review rule mismatches: %s",
+            f"{counts['n_manual_review_rule_mismatches']:,}",
+        )
+        logger.info(
             "  Duplicate bilateral keys: %s",
             f"{counts['n_duplicate_keys']:,}",
         )
@@ -1272,6 +1310,10 @@ def audit_validation_inference(
             "n_unit_value_identity_mismatches": counts[
                 "n_unit_value_identity_mismatches"
             ],
+        
+            "n_manual_review_rows": counts["n_manual_review_rows"],
+            "n_manual_review_hs6_codes": counts["n_manual_review_hs6_codes"],
+            "n_manual_review_rule_mismatches": counts["n_manual_review_rule_mismatches"],
         }
 
     finally:

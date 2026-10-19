@@ -854,7 +854,7 @@ def _build_validation_plan(
     }
 
     output_path = cfg.product_path(
-        "release"
+        "inference"
     )
 
     audit_path = cfg.product_path(

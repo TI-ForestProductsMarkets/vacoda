@@ -1,5 +1,5 @@
 # configs/steps/validation.yaml
-# Final VACODA validation, quality-control, and release configuration.
+# Final VACODA validation, quality-control configuration.
 
 validation:
 
@@ -57,10 +57,10 @@ validation:
       enable: true
       filename: "model/target_{target_hs_lower}_fitted_model.parquet"
     
-    # validated_trade:
-    #   enable: true
-    #   filename: "comtrade_target_{target_hs_lower}_validated.parquet"
-    
+    inference:
+      enable: true
+      filename: "model/target_{target_hs_lower}_inference.parquet"
+
     inference_audit:
       enable: true
       filename: "audits/target_{target_hs_lower}_inference_audit.parquet"
@@ -68,11 +68,7 @@ validation:
     diagnostics:
       enable: true
       filename: "diagnostics/target_{target_hs_lower}_diagnostics.parquet"
-
-    release:
-      enable: true
-      filename: "vacoda_target_{target_hs_lower}_trade.parquet"
-
+      
   # --------------------------------------------------------------
   # Model development
   # --------------------------------------------------------------
@@ -370,27 +366,27 @@ validation:
     selection:
       enabled: false
 
-  # --------------------------------------------------------------------
-  # Release
-  # --------------------------------------------------------------------
-  release:
+  # # --------------------------------------------------------------------
+  # # Release
+  # # --------------------------------------------------------------------
+  # release:
 
-    columns:
-      year: "year"
-      reporter: "exporter_iso"
-      partner: "importer_iso"
-      flow: "flow_code"
-      hs_code: "target_cmd"
-      quantity_kg: "quantity_kg"
-      trade_value_usd: "trade_value_reconciled"
-      trade_value_constant_usd: "trade_value_reconciled_constant_usd"
+  #   columns:
+  #     year: "year"
+  #     reporter: "exporter_iso"
+  #     partner: "importer_iso"
+  #     flow: "flow_code"
+  #     hs_code: "target_cmd"
+  #     quantity_kg: "quantity_kg"
+  #     trade_value_usd: "trade_value_reconciled"
+  #     trade_value_constant_usd: "trade_value_reconciled_constant_usd"
 
-    sort_by:
-      - year
-      - reporter
-      - partner
-      - flow
-      - hs_code
+  #   sort_by:
+  #     - year
+  #     - reporter
+  #     - partner
+  #     - flow
+  #     - hs_code
 
   # --------------------------------------------------------------------
   # Decision

@@ -148,33 +148,18 @@ def _read_fitted_model_metadata(
     }
 
 
-def _inference_output_path(
-    *,
-    cfg: ValidationConfig,
-) -> Path:
-    """
-    Return the Validation inference artifact path.
+def _inference_output_path(*, cfg: ValidationConfig) -> Path:
+    """Return the configured inference path for this training definition."""
 
-    This intentionally does not require a new YAML product yet.
-    It lives under the current training-definition model directory.
-    """
+    checkpoint_group = training_definition_name(cfg=cfg)
 
-    checkpoint_group = (
-        training_definition_name(
-            cfg=cfg
-        )
-    )
+    base_path = cfg.product_path("inference")
 
     return (
-        cfg.output_dir()
-        / "model"
+        base_path.parent
         / checkpoint_group
         / "inference"
-        / (
-            f"target_"
-            f"{cfg.scope.target_hs.lower()}"
-            "_inference.parquet"
-        )
+        / base_path.name
     )
 
 

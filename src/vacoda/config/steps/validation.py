@@ -268,9 +268,9 @@ class ValidationProductsConfig:
     model_predictions: ValidationProductConfig
     selected_model:ValidationProductConfig
     fitted_model:ValidationProductConfig
+    inference:ValidationProductConfig
     inference_audit:ValidationProductConfig
     diagnostics: ValidationProductConfig
-    release: ValidationProductConfig
 
     @classmethod
     def from_dict(
@@ -297,9 +297,9 @@ class ValidationProductsConfig:
             model_predictions=product("model_predictions"),
             selected_model=product("selected_model"),
             fitted_model=product("fitted_model"),
+            inference=product("inference"),
             inference_audit=product("inference_audit"),
             diagnostics=product("diagnostics"),
-            release=product("release"),
         )
 
 # ---------------------------------------------------------------------
@@ -1045,107 +1045,6 @@ class ValidationMethodConfig:
 
 
 # ---------------------------------------------------------------------
-# Release
-# ---------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class ValidationReleaseColumnsConfig:
-    year: str
-    reporter: str
-    partner: str
-    flow: str
-    hs_code: str
-    quantity_kg: str
-    trade_value_usd: str
-    trade_value_constant_usd: str
-
-    @classmethod
-    def from_dict(
-        cls,
-        cfg: dict[str, Any],
-    ) -> "ValidationReleaseColumnsConfig":
-        return cls(
-            year=require_str(
-                cfg.get("year"),
-                key="validation.release.columns.year",
-            ),
-            reporter=require_str(
-                cfg.get("reporter"),
-                key="validation.release.columns.reporter",
-            ),
-            partner=require_str(
-                cfg.get("partner"),
-                key="validation.release.columns.partner",
-            ),
-            flow=require_str(
-                cfg.get("flow"),
-                key="validation.release.columns.flow",
-            ),
-            hs_code=require_str(
-                cfg.get("hs_code"),
-                key="validation.release.columns.hs_code",
-            ),
-            quantity_kg=require_str(
-                cfg.get("quantity_kg"),
-                key="validation.release.columns.quantity_kg",
-            ),
-            trade_value_usd=require_str(
-                cfg.get("trade_value_usd"),
-                key=(
-                    "validation.release.columns."
-                    "trade_value_usd"
-                ),
-            ),
-            trade_value_constant_usd=require_str(
-                cfg.get("trade_value_constant_usd"),
-                key=(
-                    "validation.release.columns."
-                    "trade_value_constant_usd"
-                ),
-            ),
-        )
-
-    def mapping(self) -> dict[str, str]:
-        return {
-            "year": self.year,
-            "reporter": self.reporter,
-            "partner": self.partner,
-            "flow": self.flow,
-            "hs_code": self.hs_code,
-            "quantity_kg": self.quantity_kg,
-            "trade_value_usd": self.trade_value_usd,
-            "trade_value_constant_usd": (
-                self.trade_value_constant_usd
-            ),
-        }
-
-
-@dataclass(frozen=True)
-class ValidationReleaseConfig:
-    columns: ValidationReleaseColumnsConfig
-    sort_by: tuple[str, ...]
-
-    @classmethod
-    def from_dict(
-        cls,
-        cfg: dict[str, Any],
-    ) -> "ValidationReleaseConfig":
-        return cls(
-            columns=ValidationReleaseColumnsConfig.from_dict(
-                require_dict(
-                    cfg.get("columns"),
-                    key="validation.release.columns",
-                )
-            ),
-            sort_by=_require_str_list(
-                cfg.get("sort_by"),
-                key="validation.release.sort_by",
-            ),
-        )
-
-
-# ---------------------------------------------------------------------
 # Diagnostics
 # ---------------------------------------------------------------------
 
@@ -1587,7 +1486,6 @@ class ValidationConfig:
     model: ValidationModelConfig
     method: ValidationMethodConfig
     diagnostics: ValidationDiagnosticsConfig
-    release: ValidationReleaseConfig
     decision: ValidationDecisionConfig
     logging: ValidationLoggingConfig
     artifacts: ValidationArtifactsConfig
@@ -1676,12 +1574,6 @@ class ValidationConfig:
                     key="validation.diagnostics",
                 )
             ),
-            release=ValidationReleaseConfig.from_dict(
-                require_dict(
-                    rendered.get("release"),
-                    key="validation.release",
-                )
-            ),
             decision=ValidationDecisionConfig.from_dict(
                 require_dict(
                     rendered.get("decision"),
@@ -1718,9 +1610,9 @@ class ValidationConfig:
             "model_predictions": self.products.model_predictions,
             "selected_model": self.products.selected_model,
             "fitted_model": self.products.fitted_model,
+            "inference": self.products.inference,
             "inference_audit": self.products.inference_audit,
             "diagnostics": self.products.diagnostics,
-            "release": self.products.release,
         }
 
         if product_name not in products:
@@ -1743,9 +1635,9 @@ class ValidationConfig:
                 "model_predictions",
                 "selected_model",
                 "fitted_model",
+                "inference",
                 "inference_audit",
                 "diagnostics",
-                "release",
             )
         }
 
@@ -1757,9 +1649,9 @@ class ValidationConfig:
             "model_predictions": self.products.model_predictions.enable,
             "selected_model": self.products.selected_model.enable,
             "fitted_model": self.products.fitted_model.enable,
+            "inference": self.products.inference.enable,
             "inference_audit": self.products.inference_audit.enable,
             "diagnostics": self.products.diagnostics.enable,
-            "release": self.products.release.enable,
         }
 
     def log_path(self) -> Path:

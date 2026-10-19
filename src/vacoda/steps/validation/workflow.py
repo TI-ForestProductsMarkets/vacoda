@@ -1,11 +1,11 @@
 """
 vacoda.steps.validation.workflow
 
-Orchestrate final VACODA validation, quality control, and release.
+Orchestrate VACODA Validation, including structural audits,
+model development, inference, diagnostics, and reporting.
 
-This module intentionally contains orchestration only. The validation,
-statistical, imputation, and release logic belongs in the individual
-Validation step modules.
+The workflow exposes ready_for_release to the master pipeline.
+Publication is handled by the separate Release module.
 """
 
 from __future__ import annotations
@@ -27,8 +27,6 @@ from vacoda.steps.validation.model_fitting import fit_selected_validation_model
 from vacoda.steps.validation.inference import run_validation_inference
 from vacoda.steps.validation.diagnostics import  build_diagnostics
 from vacoda.steps.validation.audit_inference import audit_validation_inference
-# from vacoda.steps.validation.finalize import build_validated_trade
-# from vacoda.steps.validation.release import build_release_dataset
 from vacoda.steps.validation.reporting import build_validation_report
 
 from vacoda.utils.artifacts import (
@@ -50,6 +48,7 @@ REQUIRED_PRODUCTS = (
     "model_predictions",
     "selected_model",
     "fitted_model",
+    "inference",
     "inference_audit",
     "diagnostics",
 )
@@ -64,7 +63,6 @@ WORKFLOW_STEPS = [
     "Fit Selected Validation Model",
     "Run Validation inference",
     "Audit cross-variable consistency",
-    # "Build VACODA release dataset",
     "Build Diagnostics",
     "Write Validation decision report",
 ]
@@ -442,68 +440,43 @@ def run_validation_workflow(
         )
 
 
-    #     # ==================================================================
-    #     # Step 8 — Build final VACODA release
-    #     # ==================================================================
+        # ==============================================================
+        # Final Validation readiness
+        # ==============================================================
 
-    #     release_result = run_step(
-    #         logger=logger,
-    #         step_number=8,
-    #         total_steps=TOTAL_WORKFLOW_STEPS,
-    #         title=WORKFLOW_STEPS[7],
-    #         runner=lambda: build_release_dataset(
-    #             cfg=cfg,
-    #             input_path=validated_trade_path,
-    #             run_id=run_id,
-    #             force=force,
-    #             logger=logger,
-    #         ),
-    #     )
+        structural_passed = (
+            structural_result.get("audit_passed") is True
+        )
 
-    #     release_path = require_artifact(
-    #         result=release_result,
-    #         path_key="release_path",
-    #         consumer_step=WORKFLOW_STEPS[8],
-    #         producer_product="VACODA release dataset",
-    #     )
+        inference_passed = (
+            inference_audit_result.get("audit_passed") is True
+        )
 
+        report_path = require_artifact(
+            result=report_result,
+            path_key="report_path",
+            consumer_step="VACODA Release",
+            producer_product="Validation report",
+        )
 
-    #     report_path = require_result_path(
-    #         report_result,
-    #         "Validation reporting result did not contain "
-    #         "an expected report path.",
-    #         "report_path",
-    #         "output_path",
-    #     )
+        ready_for_release = (
+            structural_passed
+            and inference_passed
+            and diagnostics_path.is_file()
+            and report_path.is_file()
+        )
 
-    #     if not report_path.is_file():
-    #         raise FileNotFoundError(
-    #             f"Validation decision report not found: {report_path}"
-    #         )
+        if not ready_for_release:
+            raise RuntimeError(
+                "Validation is not ready for Release: "
+                f"structural_passed={structural_passed}, "
+                f"inference_passed={inference_passed}"
+            )
 
-    #     # ==================================================================
-    #     # Final release decision
-    #     # ==================================================================
-
-    #     release_output_valid = bool(
-    #         release_path.is_file()
-    #         and release_path.stat().st_size > 0
-    #     )
-
-    #     decision = report_result.get("decision")
-
-    #     ready_for_release = bool(
-    #         structural_passed
-    #         and consistency_passed
-    #         and release_output_valid
-    #         and decision == "APPROVED"
-    #     )
-
-    #     if not ready_for_release:
-    #         raise RuntimeError(
-    #             "Validation finished without an approved, usable "
-    #             "VACODA release dataset."
-    #         )
+        logger.info(
+            "Validation ready for Release: %s",
+            ready_for_release,
+        )
 
         workflow_elapsed = perf_counter() - workflow_start
 
@@ -514,87 +487,53 @@ def run_validation_workflow(
             get_symbols("success"),
         )
         logger.info("Run ID: %s", run_id)
-    #     logger.info(
-    #         "Validated trade: %s",
-    #         validated_trade_path,
-    #     )
-    #     logger.info(
-    #         "Release dataset: %s",
-    #         release_path,
-    #     )
-        # logger.info(
-        #     "Structural audit passed: %s",
-        #     structural_passed,
-        # )
-    #     logger.info(
-    #         "Consistency audit passed: %s",
-    #         consistency_passed,
-    #     )
-    #     logger.info(
-    #         "Provenance: %s",
-    #         provenance_path,
-    #     )
-    #     logger.info(
-    #         "Decision report: %s",
-    #         report_path,
-    #     )
+ 
+        logger.info(
+            "Decision report: %s",
+            report_path,
+        )
 
-    #     latest_report_path = report_result.get(
-    #         "latest_report_path"
-    #     )
+        latest_report_path = report_result.get(
+            "latest_report_path"
+        )
 
-    #     if latest_report_path is not None:
-    #         logger.info(
-    #             "Latest decision report: %s",
-    #             latest_report_path,
-    #         )
+        if latest_report_path is not None:
+            logger.info(
+                "Latest decision report: %s",
+                latest_report_path,
+            )
 
-    #     logger.info(
-    #         "Decision: %s",
-    #         decision,
-    #     )
-    #     logger.info(
-    #         "Ready for release: %s",
-    #         ready_for_release,
-    #     )
-    #     logger.info(
-    #         "Workflow duration: %.2fs",
-    #         workflow_elapsed,
-    #     )
+        logger.info(
+            "Decision: %s",
+            ready_for_release,
+        )
+        logger.info(
+            "Ready for release: %s",
+            ready_for_release,
+        )
+        logger.info(
+            "Workflow duration: %.2fs",
+            workflow_elapsed,
+        )
 
         separator(logger)
+
 
     return {
         "status": "completed",
         "run_id": run_id,
+        "ready_for_release": ready_for_release,
 
-    #     # Master-pipeline readiness contract.
-    #     "ready_for_release": ready_for_release,
-
-    #     # Canonical primary output and audit.
-    #     "output_path": release_path,
-    #     # Explicit Validation products.
-         "prepared_input_path": prepared_path,
-         "structural_audit_path": structural_result["structural_audit_path"],
-
-        "diagnostics_path": diagnostics_path,
+        "output_path": inference_path,
+        "inference_path": inference_path,
+        "prepared_input_path": prepared_path,
+        "structural_audit_path": structural_audit_path,
         "inference_audit_path": inference_audit_path,
+        "diagnostics_path": diagnostics_path,
+        "report_path": report_path,
 
-        "report_path": report_result.get(
-            "report_path"
-        ),
+        "structural_audit_passed": structural_passed,
+        "inference_audit_passed": inference_passed,
 
         "workflow_duration_seconds": workflow_elapsed,
-    #     "validated_trade_path": validated_trade_path,
-    #     "release_path": release_path,
-    #     "report_path": report_path,
-    #     "latest_report_path": report_result.get(
-    #         "latest_report_path"
-    #     ),
-
-    #     # Final Validation outcome.
-    #     "structural_audit_passed": structural_passed,
-    #     "decision": decision,
-
-    #     "workflow_duration_seconds": workflow_elapsed,
-     }
+    }
