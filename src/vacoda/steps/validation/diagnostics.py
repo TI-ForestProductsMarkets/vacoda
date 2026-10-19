@@ -599,6 +599,45 @@ def build_diagnostics(
             """
         )
 
+
+
+        # --------------------------------------------------------------
+        # Production model identity
+        # --------------------------------------------------------------
+
+        production_models = con.execute(
+            """
+            SELECT DISTINCT
+                validation_model_name,
+                validation_model_type
+            FROM validation_inference
+            """
+        ).fetchall()
+
+        if len(production_models) != 1:
+            raise RuntimeError(
+                "Validation inference must identify exactly "
+                "one production model."
+            )
+
+        production_model_name, production_model_type = (
+            production_models[0]
+        )
+
+        if not production_model_name or not production_model_type:
+            raise RuntimeError(
+                "Validation inference is missing production model identity."
+            )
+
+        _append_metric(
+            diagnostics_rows,
+            scope="inference_model",
+            criterion="production_model",
+            model_name=str(production_model_name),
+            variable=str(production_model_type),
+        )
+
+
         inference_counts = con.execute(
             """
             SELECT
@@ -1958,6 +1997,54 @@ def build_diagnostics(
                     value=float(value),
                     n_rows=int(row.n_rows),
                 )
+
+
+        # ==============================================================
+        # Out-of-fold residual distribution
+        # ==============================================================
+
+        oof_residual_quantiles = con.execute(
+            """
+            SELECT
+                model_name,
+                COUNT(*) AS n_rows,
+                QUANTILE_CONT(
+                    log_error,
+                    ?
+                ) AS signed_log_error,
+                QUANTILE_CONT(
+                    absolute_log_error,
+                    ?
+                ) AS absolute_log_error
+            FROM validation_model_predictions
+            GROUP BY model_name
+            """
+            ,
+            [
+                list(DIAGNOSTIC_QUANTILES),
+                list(DIAGNOSTIC_QUANTILES),
+            ],
+        ).fetchdf()
+
+        for row in oof_residual_quantiles.itertuples(index=False):
+            for variable, values in (
+                ("signed_log_error", row.signed_log_error),
+                ("absolute_log_error", row.absolute_log_error),
+            ):
+                for quantile, value in zip(
+                    DIAGNOSTIC_QUANTILES,
+                    values,
+                ):
+                    _append_metric(
+                        diagnostics_rows,
+                        scope="model_oof_residual_distribution",
+                        criterion="out_of_fold",
+                        model_name=str(row.model_name),
+                        variable=variable,
+                        quantile=float(quantile),
+                        value=float(value),
+                        n_rows=int(row.n_rows),
+                    )
 
 
         # ==================================================================

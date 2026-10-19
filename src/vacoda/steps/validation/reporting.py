@@ -76,6 +76,69 @@ def _format_percent(
     return f"{100.0 * float(value):.{digits}f}%"
 
 
+def _plot_oof_residual_quantiles(
+    *,
+    diagnostics: pd.DataFrame,
+    output_path: Path,
+) -> None:
+    """Plot absolute OOF log-error quantiles for candidate models."""
+
+    frame = _require_diagnostic_scope(
+        diagnostics,
+        "model_oof_residual_distribution",
+    ).copy()
+
+    frame = frame.loc[
+        frame["variable"].eq("absolute_log_error")
+    ].copy()
+
+    frame["quantile"] = pd.to_numeric(
+        frame["quantile"], errors="coerce"
+    )
+    frame["value"] = pd.to_numeric(
+        frame["value"], errors="coerce"
+    )
+
+    frame = frame.dropna(
+        subset=["model_name", "quantile", "value"]
+    )
+
+    if frame.empty:
+        raise RuntimeError(
+            "OOF absolute log-error quantiles are unavailable."
+        )
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    for model_name, group in frame.groupby("model_name"):
+        group = group.sort_values("quantile")
+
+        ax.plot(
+            100.0 * group["quantile"],
+            group["value"],
+            marker="o",
+            label=_model_plot_label(str(model_name)),
+        )
+
+    ax.set_title("Out-of-fold absolute log-error distribution")
+    ax.set_xlabel("Quantile (%)")
+    ax.set_ylabel("Absolute log error")
+    ax.set_xticks(
+        sorted(100.0 * frame["quantile"].unique())
+    )
+    ax.grid(axis="y", linestyle="--", alpha=0.5)
+    ax.legend()
+    fig.tight_layout()
+
+    fig.savefig(
+        output_path,
+        dpi=180,
+        bbox_inches="tight",
+    )
+    plt.close(fig)
+
+
+
 def _plot_inference_residual_quantiles(
     *,
     diagnostics: pd.DataFrame,
@@ -1958,6 +2021,11 @@ def _build_validation_figure_paths(
     prefix = f"target_{target_hs}_validation_"
 
     return {
+
+        "model_oof_residual_quantiles": (
+            figure_dir / f"{prefix}model_oof_residual_quantiles.png"
+        ),
+
         "training_coverage_by_product": (
             figure_dir / f"{prefix}training_coverage_by_product.png"
         ),
@@ -2714,6 +2782,111 @@ def build_validation_report(
                 "RMSE log": model_pivot["rmse_log"],
             }
         ).sort_values("MAE log")
+
+
+        # --------------------------------------------------------------
+        # Out-of-fold residual distribution
+        # --------------------------------------------------------------
+
+        oof_residuals = _require_diagnostic_scope(
+            diagnostics,
+            "model_oof_residual_distribution",
+        )
+
+        # Absolute log errors for every candidate model.
+        oof_absolute = oof_residuals.loc[
+            oof_residuals["variable"].eq("absolute_log_error")
+        ].copy()
+
+        oof_absolute["quantile"] = pd.to_numeric(
+            oof_absolute["quantile"],
+            errors="coerce",
+        )
+
+        oof_absolute_pivot = oof_absolute.pivot_table(
+            index="model_name",
+            columns="quantile",
+            values="value",
+            aggfunc="first",
+        )
+
+        oof_residual_display = pd.DataFrame(
+            {
+                "Model": [
+                    _model_plot_label(name)
+                    for name in oof_absolute_pivot.index
+                ],
+                **{
+                    f"P{100 * q:g}": oof_absolute_pivot[q].values
+                    for q in sorted(oof_absolute_pivot.columns)
+                },
+            }
+        )
+
+
+        # --------------------------------------------------------------
+        # Multiplicative interpretation of selected model OOF errors
+        # --------------------------------------------------------------
+
+        inference_model = _require_diagnostic_scope(
+            diagnostics,
+            "inference_model",
+        )
+
+        selected_names = (
+            inference_model["model_name"]
+            .dropna()
+            .astype(str)
+            .unique()
+        )
+
+        if len(selected_names) != 1:
+            raise RuntimeError(
+                "Could not identify one selected production model."
+            )
+
+        selected_model_name = selected_names[0]
+
+        selected_oof = oof_absolute.loc[
+            oof_absolute["model_name"].eq(selected_model_name)
+        ].copy()
+
+        selected_oof["value"] = pd.to_numeric(
+            selected_oof["value"],
+            errors="coerce",
+        )
+
+        selected_oof = selected_oof.loc[
+            selected_oof["quantile"].isin(
+                [0.25, 0.50, 0.75, 0.90, 0.95, 0.99]
+            )
+        ].sort_values("quantile")
+
+        if len(selected_oof) != 6:
+            raise RuntimeError(
+                "Selected model OOF quantiles are incomplete."
+            )
+
+        oof_interpretation_display = pd.DataFrame(
+            [
+                {
+                    "Quantile": f"P{100 * float(row.quantile):g}",
+                    "Absolute log error": _format_number(
+                        row.value, digits=4
+                    ),
+                    "Multiplicative factor": (
+                        f"{math.exp(float(row.value)):.2f}×"
+                    ),
+                    "Interpretation": (
+                        f"{100 * float(row.quantile):g}% of held-out "
+                        "predictions differ by no more than "
+                        f"{math.exp(float(row.value)):.2f}×"
+                    ),
+                }
+                for row in selected_oof.itertuples(index=False)
+            ]
+        )
+
 
         # --------------------------------------------------------------
         # Residual-correlation diagnostic
@@ -3591,6 +3764,14 @@ def build_validation_report(
             ],
         )
 
+
+        _plot_oof_residual_quantiles(
+            diagnostics=diagnostics,
+            output_path=figure_paths[
+                "model_oof_residual_quantiles"
+            ],
+        )
+
         _plot_inference_residual_quantiles(
             diagnostics=diagnostics,
             output_path=figure_paths[
@@ -4014,7 +4195,40 @@ def build_validation_report(
             ),
             "",
 
-            "### 6.3. Residual correlation between candidate models",
+
+            "### 6.3. Out-of-fold residual distribution",
+            "",
+            (
+                "The table and figure show the distribution of absolute "
+                "out-of-fold log errors for each candidate model, calculated "
+                "from predictions on held-out validation observations."
+            ),
+            "",
+            _markdown_table(oof_residual_display),
+            "",
+            markdown_image(
+                "Out-of-fold absolute log-error quantiles by model",
+                figure_paths["model_oof_residual_quantiles"],
+                document_path=report_path,
+                width=850,
+            ),
+            "",
+            (
+                "**Multiplicative interpretation — selected model**"
+            ),
+            "",
+            (
+                "The multiplicative factor is calculated as exp(absolute log "
+                "error). A factor of 2× means that the predicted and "
+                "Trade-Sync quantities differ by a factor of two, "
+                "regardless of direction."
+            ),
+            "",
+            _markdown_table(oof_interpretation_display),
+            "",
+
+
+            "### 6.4. Residual correlation between candidate models",
             "",
             (
                 "Ensemble usefulness depends not only on standalone predictive "
@@ -4050,7 +4264,7 @@ def build_validation_report(
             ),
             "",
 
-            "### 6.4. Ensemble-pair diagnostic",
+            "### 6.5. Ensemble-pair diagnostic",
             "",
             (
                 "Residual diversity must be interpreted together with standalone "
@@ -4079,7 +4293,7 @@ def build_validation_report(
             ),
             "",
 
-            "### 6.5. Weighted ensemble performance",
+            "### 6.6. Weighted ensemble performance",
             "",
             (
                 "The candidate pairs above are evaluated as weighted "
