@@ -54,7 +54,7 @@ def validate_paths_config(cfg: dict[str, Any]) -> None:
         config_name=PATHS_CONFIG_NAME,
     )
 
-    for key in ("root", "raw", "external", "interim", "processed", "references"):
+    for key in ("root", "raw", "external", "interim", "processed", "references", "release"):
         get_required_value(data_cfg, (key,), config_name=f"{PATHS_CONFIG_NAME}: data")
 
     for key in ("root", "figures", "logs", "reports", "manifests"):
@@ -142,6 +142,18 @@ def get_repo_references_dir(cfg: dict[str, Any] | None = None) -> Path:
     )
     return require_path(repo_cfg["references"], key="repo.references")
 
+
+def get_data_release_dir(cfg: dict[str, Any] | None = None) -> Path:
+    """Return data release directory from paths.yaml data block."""
+    if cfg is None:
+        cfg = load_paths_config()
+
+    data_cfg = get_required_block(
+        cfg,
+        "data",
+        config_name=PATHS_CONFIG_NAME,
+    )
+    return require_path(data_cfg["release"], key="data.release")
 
 def get_repo_geography_dir(cfg: dict[str, Any] | None = None) -> Path:
     """Return repository geography directory from paths.yaml repo block."""

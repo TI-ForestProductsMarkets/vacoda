@@ -1,0 +1,109 @@
+# configs/steps/release.yaml
+# VACODA Release: publish standard and enriched datasets after audit.
+# Scope and engine are inherited from configs/pipeline.yaml.
+
+release:
+
+  # --------------------------------------------------------------------
+  # Input / Output
+  # --------------------------------------------------------------------
+  input:
+    stage: "processed"
+    subdir: "validation/target_{target_hs_lower}"
+    format: "parquet"
+
+    prepared:
+      filename: "prepared/comtrade_target_{target_hs_lower}_prepared.parquet"
+
+    inference:
+      filename: "target_{target_hs_lower}_inference.parquet"
+
+  output:
+    stage: "release"
+    subdir: "target_{target_hs_lower}"
+    format: "parquet"
+
+  # Validation Prepared and Inference artifact paths are supplied by
+  # the master pipeline; do not construct them here.
+  products:
+    release:
+      enable: true
+      filename: "vacoda_target_{target_hs_lower}_dataset.parquet"
+
+    release_audit:
+      enable: true
+      filename: "audits/target_{target_hs_lower}_release_audit.parquet"
+
+    diagnostics:
+      enable: true
+      filename: "diagnostics/target_{target_hs_lower}_diagnostics.parquet"
+
+  # Enriched inherits standard in this exact order and appends extras.
+  schema:
+    standard:
+      - year
+      - exporter_iso
+      - importer_iso
+      - target_cmd
+      - trade_value_reconciled
+      - trade_synced_quantity_kg
+      - model_prediction_quantity_kg
+      - model_prediction_available
+      - manual_review_required
+
+    enriched_additional:
+      # Original bilateral evidence
+      - export_value_fob
+      - import_value_cif
+      - import_value_fob_corrected
+      - export_synchronized_quantity_kg
+      - import_synchronized_quantity_kg
+      - export_synchronized_quantity_source
+      - import_synchronized_quantity_source
+      - pair_uses_estimated_weight
+      - pair_uses_weight_proxy
+
+      # Reconciliation and value provenance
+      - trade_value_reconciled_constant_usd
+      - cif_fob_factor_applied
+      - cif_fob_factor_applied_source
+      - reconciliation_status
+      - reconciliation_method_applied
+      - trade_synced_quantity_method
+      - trade_synced_quantity_status
+      - quantity_availability_case
+
+      # Unit-value evidence (four fields calculated by release_data.py)
+      - product_year_median_unit_value
+      - product_year_log_unit_value_mad
+      - unit_value_reference_observations
+      - trade_sync_uv_usd_per_kg
+      - model_uv_usd_per_kg
+      - trade_sync_uv_mad_distance
+      - model_uv_mad_distance
+
+      # Validation/model evidence
+      - training_selected
+      - model_input_valid
+      - quantity_log_residual
+      - quantity_abs_log_residual
+      - exporter_seen
+      - importer_seen
+      - hs6_seen
+      - hs4_seen
+      - validation_model_name
+      - validation_model_type
+
+  logging:
+    level: "DEBUG"
+    subdir: "release"
+    file: "LOG_RELEASE_TARGET_{target_hs_lower}.log"
+    timestamp: true
+
+  artifacts:
+    enable: true
+    kind: "reports"
+    subdir: "release/target_{target_hs_lower}"
+    filename: "target_{target_hs_lower}_release_decision_report"
+    timestamp: true
+    write_latest: true

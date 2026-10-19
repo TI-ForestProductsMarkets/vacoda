@@ -10,7 +10,8 @@ data:
   interim: "{data.root}/interim"
   processed: "{data.root}/processed"
   references: "{data.root}/references"
-
+  release: "{data.root}/release"
+  
 output:
   root: "{storage_root}/output"
   figures: "{output.root}/figures"

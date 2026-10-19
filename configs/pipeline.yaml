@@ -18,6 +18,7 @@ pipeline:
     - "trade_sync"
     - "value"
     - "validation"
+    - "release"
 
   # Stop immediately if a step fails or reports ready_for_next_step=false.
   fail_fast: true
@@ -91,7 +92,13 @@ steps:
       - "completed"
     required_ready_flag: "ready_for_release"
 
-
+  release:
+    enabled: true
+    config: "configs/steps/release.yaml"
+    expected_status:
+      - "completed"
+    required_ready_flag: "release_completed"
+    
 checkpoint:
   enabled: true
   kind: "manifests"

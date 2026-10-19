@@ -1,5 +1,5 @@
 # configs/steps/validation.yaml
-# Final VACODA validation, quality-control configuration.
+# VACODA validation, quality-control configuration.
 
 validation:
 
@@ -366,31 +366,6 @@ validation:
     selection:
       enabled: false
 
-  # # --------------------------------------------------------------------
-  # # Release
-  # # --------------------------------------------------------------------
-  # release:
-
-  #   columns:
-  #     year: "year"
-  #     reporter: "exporter_iso"
-  #     partner: "importer_iso"
-  #     flow: "flow_code"
-  #     hs_code: "target_cmd"
-  #     quantity_kg: "quantity_kg"
-  #     trade_value_usd: "trade_value_reconciled"
-  #     trade_value_constant_usd: "trade_value_reconciled_constant_usd"
-
-  #   sort_by:
-  #     - year
-  #     - reporter
-  #     - partner
-  #     - flow
-  #     - hs_code
-
-  # --------------------------------------------------------------------
-  # Decision
-  # --------------------------------------------------------------------
 
   decision:
 
