@@ -479,12 +479,11 @@ def _run_release_step(
 
     return run_release_workflow(
         cfg=cfg,
+        validation_cfg=validation_cfg,
         run_id=run_id,
         release_id=release_id,
         logger=get_logger("PIPELINE.RELEASE"),
         force=force,
-        prepared_input_path=prepared_path,
-        inference_input_path=inference_path,
     )
 
 def _build_ingestion_plan(

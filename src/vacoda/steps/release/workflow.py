@@ -52,13 +52,11 @@ TOTAL_WORKFLOW_STEPS = len(WORKFLOW_STEPS)
 def run_release_workflow(
     *,
     cfg: ReleaseConfig,
+    validation_cfg: ValidationConfig,
     run_id: str,
     release_id: str,
     logger,
     force: bool = False,
-    prepared_input_path: Path | None = None,
-    inference_input_path: Path | None = None,
-    training_definition: str | None = None,
 ) -> dict[str, Any]:
     """Release a validated canonical population as standard/enriched datasets.
 
@@ -69,30 +67,6 @@ def run_release_workflow(
     release_id identifies an immutable configuration-specific publication
     directory; the master pipeline must choose and supply that identity.
     """
-    prepared_path = (
-        Path(prepared_input_path)
-        if prepared_input_path is not None
-        else cfg.prepared_input_path()
-    )
-
-    if inference_input_path is not None:
-        inference_path = Path(inference_input_path)
-    elif training_definition is not None:
-        inference_path = cfg.inference_input_path(
-            training_definition=training_definition
-        )
-    else:
-        raise ValueError(
-            "Release requires inference_input_path or training_definition."
-        )
-
-    for label, path in (
-        ("Validation Prepared", prepared_path),
-        ("Validation Inference", inference_path),
-    ):
-        if not path.is_file():
-            raise FileNotFoundError(f"{label} parquet not found: {path}")
-
     enabled_products = cfg.enabled_products()
     require_enabled_products(
         workflow_name="Release",
@@ -112,8 +86,6 @@ def run_release_workflow(
         logger.info("Release identity: %s", release_id)
         logger.info("Target HS: %s", cfg.scope.target_hs)
         logger.info("Year range: %s-%s", cfg.scope.min_year, cfg.scope.max_year)
-        logger.info("Prepared input: %s", prepared_path)
-        logger.info("Inference input: %s", inference_path)
         logger.info("Staging directory: %s", staging_dir)
         logger.info("Publication directory: %s", standard_path.parent)
         logger.info(
@@ -123,9 +95,9 @@ def run_release_workflow(
 
 
         # ==================================================================
-        # Step 1 — Prepare input for Release (staging only)
+        # Step 1 — Prepare input for Release
         # ==================================================================
-        build_result = run_step(
+        prepare_result = run_step(
             logger=logger,
             step_number=1,
             total_steps=TOTAL_WORKFLOW_STEPS,
@@ -136,6 +108,20 @@ def run_release_workflow(
                 run_id=run_id,
                 logger=logger,
             ),
+        )
+
+        prepared_path = require_artifact(
+            result=prepare_result,
+            path_key="prepared_input_path",
+            consumer_step=WORKFLOW_STEPS[1],
+            producer_product="Validation Prepared input",
+        )
+
+        inference_path = require_artifact(
+            result=prepare_result,
+            path_key="inference_input_path",
+            consumer_step=WORKFLOW_STEPS[1],
+            producer_product="Validation Inference input",
         )
 
         # ==================================================================
