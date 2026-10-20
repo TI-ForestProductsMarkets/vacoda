@@ -20,11 +20,206 @@ _STAGE_ORDER = (
 
 
 def _sidecar_paths(main_path: Path) -> dict[str, Path]:
-    stem = main_path.stem
+    names = (
+        "journey",
+        "availability",
+        "review",
+        "missing_reasons",
+        "distributions",
+        "annual_trade",
+        "country_trade",
+        "product_trade",
+        "feature_distributions",
+    )
     return {
-        name: main_path.with_name(f"{stem}_{name}.parquet")
-        for name in ("journey", "availability", "review", "missing_reasons", "distributions")
+        name: main_path.with_name(f"{main_path.stem}_{name}.parquet")
+        for name in names
     }
+
+
+def _build_exploration_sidecars(
+    con: duckdb.DuckDBPyConnection,
+    sidecar_paths: dict[str, Path],
+) -> dict[str, Path]:
+    """Aggregate the published enriched dataset for Release exploration."""
+    temps = {}
+    valid_value = """
+        trade_value_reconciled_constant_usd > 0
+        AND isfinite(trade_value_reconciled_constant_usd)
+    """
+    valid_quantity = """
+        trade_synced_quantity_kg > 0
+        AND isfinite(trade_synced_quantity_kg)
+    """
+    valid_prediction = """
+        model_prediction_quantity_kg > 0
+        AND isfinite(model_prediction_quantity_kg)
+    """
+
+    # 1. Annual trade population and constant-price values.
+    annual_sql = f"""
+        SELECT
+            year,
+            COUNT(*) AS rows,
+            COUNT(*) FILTER (WHERE {valid_value}) AS usable_value_rows,
+            COUNT(*) FILTER (WHERE {valid_quantity}) AS usable_quantity_rows,
+            COUNT(*) FILTER (WHERE {valid_prediction}) AS prediction_rows,
+            SUM(trade_value_reconciled_constant_usd)
+                FILTER (WHERE {valid_value})
+                AS total_trade_value_constant_usd,
+            MEDIAN(trade_value_reconciled_constant_usd)
+                FILTER (WHERE {valid_value})
+                AS median_trade_value_constant_usd,
+            MEDIAN(trade_synced_quantity_kg)
+                FILTER (WHERE {valid_quantity})
+                AS median_trade_synced_quantity_kg,
+            MEDIAN(model_prediction_quantity_kg)
+                FILTER (WHERE {valid_prediction})
+                AS median_model_prediction_quantity_kg
+        FROM enriched_release
+        GROUP BY year
+        ORDER BY year
+    """
+    temps["annual_trade"] = _write_frame(
+        con, annual_sql, sidecar_paths["annual_trade"]
+    )
+
+    # 2. Country totals, separately for exporters and importers.
+    country_sql = f"""
+        WITH country_totals AS (
+            SELECT
+                'exporter' AS role,
+                exporter_iso AS iso3,
+                COUNT(*) AS rows,
+                SUM(trade_value_reconciled_constant_usd)
+                    AS total_trade_value_constant_usd
+            FROM enriched_release
+            WHERE {valid_value}
+            GROUP BY exporter_iso
+
+            UNION ALL
+
+            SELECT
+                'importer' AS role,
+                importer_iso AS iso3,
+                COUNT(*) AS rows,
+                SUM(trade_value_reconciled_constant_usd)
+                    AS total_trade_value_constant_usd
+            FROM enriched_release
+            WHERE {valid_value}
+            GROUP BY importer_iso
+        )
+        SELECT
+            role,
+            iso3,
+            rows,
+            total_trade_value_constant_usd,
+            100.0 * total_trade_value_constant_usd
+                / NULLIF(
+                    SUM(total_trade_value_constant_usd)
+                        OVER (PARTITION BY role),
+                    0
+                ) AS share_of_total_value_pct
+        FROM country_totals
+        ORDER BY role, total_trade_value_constant_usd DESC
+    """
+    temps["country_trade"] = _write_frame(
+        con, country_sql, sidecar_paths["country_trade"]
+    )
+
+    # 3. HS2 chapter and HS6 product composition.
+    product_sql = f"""
+        WITH product_totals AS (
+            SELECT
+                'hs2' AS level,
+                SUBSTR(CAST(target_cmd AS VARCHAR), 1, 2)
+                    AS product_code,
+                COUNT(*) AS rows,
+                SUM(trade_value_reconciled_constant_usd)
+                    AS total_trade_value_constant_usd
+            FROM enriched_release
+            WHERE {valid_value}
+            GROUP BY 2
+
+            UNION ALL
+
+            SELECT
+                'hs6' AS level,
+                CAST(target_cmd AS VARCHAR) AS product_code,
+                COUNT(*) AS rows,
+                SUM(trade_value_reconciled_constant_usd)
+                    AS total_trade_value_constant_usd
+            FROM enriched_release
+            WHERE {valid_value}
+            GROUP BY 2
+        )
+        SELECT
+            level,
+            product_code,
+            rows,
+            total_trade_value_constant_usd,
+            100.0 * total_trade_value_constant_usd
+                / NULLIF(
+                    SUM(total_trade_value_constant_usd)
+                        OVER (PARTITION BY level),
+                    0
+                ) AS share_of_total_value_pct
+        FROM product_totals
+        ORDER BY level, total_trade_value_constant_usd DESC
+    """
+    temps["product_trade"] = _write_frame(
+        con, product_sql, sidecar_paths["product_trade"]
+    )
+
+    # 4. Distribution quantiles across published observations.
+    measures = (
+        "trade_value_reconciled_constant_usd",
+        "trade_synced_quantity_kg",
+        "model_prediction_quantity_kg",
+        "trade_sync_uv_usd_per_kg",
+        "model_uv_usd_per_kg",
+        "quantity_abs_log_residual",
+    )
+    available_columns = {
+        row[0] for row in con.execute(
+            "DESCRIBE SELECT * FROM enriched_release"
+        ).fetchall()
+    }
+    missing_columns = set(measures) - available_columns
+    if missing_columns:
+        raise RuntimeError(
+            f"Release exploration missing columns: {sorted(missing_columns)}"
+        )
+
+    distribution_queries = []
+    for measure in measures:
+        value = f"TRY_CAST({measure} AS DOUBLE)"
+        comparison = ">=" if measure == "quantity_abs_log_residual" else ">"
+        condition = f"{value} {comparison} 0 AND isfinite({value})"
+        distribution_queries.append(f"""
+            SELECT
+                '{measure}' AS measure,
+                COUNT(*) AS usable_rows,
+                MIN({value}) AS minimum,
+                quantile_cont({value}, 0.01) AS p01,
+                quantile_cont({value}, 0.05) AS p05,
+                quantile_cont({value}, 0.10) AS p10,
+                quantile_cont({value}, 0.25) AS p25,
+                quantile_cont({value}, 0.50) AS p50,
+                quantile_cont({value}, 0.75) AS p75,
+                quantile_cont({value}, 0.90) AS p90,
+                quantile_cont({value}, 0.95) AS p95,
+                quantile_cont({value}, 0.99) AS p99,
+                MAX({value}) AS maximum
+            FROM enriched_release
+            WHERE {condition}
+        """)
+
+    distribution_sql = " UNION ALL ".join(distribution_queries)
+    temps["feature_distributions"] = _write_frame(
+        con, distribution_sql, sidecar_paths["feature_distributions"]
+    )
+    return temps
 
 
 def _schema(con: duckdb.DuckDBPyConnection, path: Path) -> set[str]:
@@ -232,8 +427,16 @@ def _build_sidecars(
         """)
     if not dist:
         raise RuntimeError("Release enriched has no distribution fields")
+
     temps["distributions"] = _write_frame(
         con, " UNION ALL ".join(dist), sidecar_paths["distributions"]
+    )
+
+    temps.update(
+        _build_exploration_sidecars(
+            con=con,
+            sidecar_paths=sidecar_paths,
+        )
     )
     return temps
 
@@ -453,6 +656,10 @@ def build_release_diagnostics(
             "diagnostics_path": output_path,
             "journey_path": sidecar_paths["journey"],
             "availability_path": sidecar_paths["availability"],
+            "annual_trade_path": sidecar_paths["annual_trade"],
+            "country_trade_path": sidecar_paths["country_trade"],
+            "product_trade_path": sidecar_paths["product_trade"],
+            "feature_distributions_path": sidecar_paths["feature_distributions"],
             "review_path": sidecar_paths["review"],
             "missing_reasons_path": sidecar_paths["missing_reasons"],
             "distributions_path": sidecar_paths["distributions"],

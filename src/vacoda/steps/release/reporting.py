@@ -23,7 +23,17 @@ from vacoda.utils.markdown import insert_markdown_toc, markdown_image
 from vacoda.utils.sql import sql_literal
 
 
-SIDECARS = ("journey", "availability", "review", "missing_reasons", "distributions")
+SIDECARS = (
+    "journey",
+    "availability",
+    "review",
+    "missing_reasons",
+    "distributions",
+    "annual_trade",
+    "country_trade",
+    "product_trade",
+    "feature_distributions",
+)
 STAGE_LABELS = {
     "hs_sync": "HS Sync", "quantity": "Quantity", "cif_fob": "CIF/FOB",
     "trade_sync": "Trade Sync", "value": "Value", "validation_prepared": "Validation prepared",
@@ -126,6 +136,55 @@ def _plot_annual_coverage(annual: list[dict[str, Any]], path: Path) -> None:
     _save(fig, path)
 
 
+def _plot_annual_trade(rows: list[dict[str, Any]], path: Path) -> None:
+    data = sorted(rows, key=lambda r: r["year"])
+    years = [int(r["year"]) for r in data]
+    values = [
+        float(r["total_trade_value_constant_usd"] or 0) / 1e9
+        for r in data
+    ]
+    fig, ax = plt.subplots(figsize=(9, 4.5))
+    ax.plot(years, values, marker="o", linewidth=2)
+    ax.set(xlabel="Year", ylabel="Published trade value (constant USD billions)")
+    ax.set_xticks(years)
+    ax.grid(axis="y", alpha=0.25)
+    _save(fig, path)
+
+
+def _plot_country_trade(rows: list[dict[str, Any]], path: Path) -> None:
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5.5))
+    for ax, role in zip(axes, ("exporter", "importer")):
+        data = sorted(
+            (r for r in rows if r["role"] == role),
+            key=lambda r: r["total_trade_value_constant_usd"],
+            reverse=True,
+        )[:10]
+        names = [r["iso3"] or "Unknown" for r in data][::-1]
+        shares = [float(r["share_of_total_value_pct"]) for r in data][::-1]
+        ax.barh(names, shares)
+        ax.set_title(f"Leading {role}s")
+        ax.set_xlabel("Share of published trade value (%)")
+        ax.grid(axis="x", alpha=0.2)
+        ax.set_axisbelow(True)
+    _save(fig, path)
+
+
+def _plot_product_trade(rows: list[dict[str, Any]], path: Path) -> None:
+    data = sorted(
+        (r for r in rows if r["level"] == "hs2"),
+        key=lambda r: r["total_trade_value_constant_usd"],
+        reverse=True,
+    )[:10]
+    names = [str(r["product_code"]) for r in data][::-1]
+    shares = [float(r["share_of_total_value_pct"]) for r in data][::-1]
+    fig, ax = plt.subplots(figsize=(9, 5))
+    ax.barh(names, shares)
+    ax.set(xlabel="Share of published trade value (%)", ylabel="HS2 chapter")
+    ax.grid(axis="x", alpha=0.2)
+    ax.set_axisbelow(True)
+    _save(fig, path)
+
+
 def _plot_residual_profile(distributions: list[dict[str, Any]], path: Path) -> bool:
     match = next((r for r in distributions if r["period_type"] == "all_years"
                   and r["field"] == "quantity_abs_log_residual"), None)
@@ -191,6 +250,9 @@ def build_release_report(
         "journey": figure_dir / f"{release_id}_processing_journey.png",
         "annual_coverage": figure_dir / f"{release_id}_annual_coverage.png",
         "residual_profile": figure_dir / f"{release_id}_residual_profile.png",
+        "annual_trade": figure_dir / f"{release_id}_annual_trade.png",
+        "country_trade": figure_dir / f"{release_id}_country_trade.png",
+        "product_trade": figure_dir / f"{release_id}_product_trade.png",
     }
     con = duckdb.connect()
     try:
@@ -223,6 +285,10 @@ def build_release_report(
         review = sorted(sidecars["review"], key=lambda r: (-r["review_rows"], r["target_cmd"]))
         reasons = sorted(sidecars["missing_reasons"], key=lambda r: (-r["rows"], r["reason"]))
         dist = [r for r in sidecars["distributions"] if r["period_type"] == "all_years"]
+        annual_trade = sorted(sidecars["annual_trade"], key=lambda r: r["year"])
+        country_trade = sidecars["country_trade"]
+        product_trade = sidecars["product_trade"]
+        feature_distributions = sidecars["feature_distributions"]
         lookup = {(r["stage"], r["field"]): r for r in availability}
         final_specs = (
             ("Reconciled value", "trade_value_reconciled"),
@@ -244,7 +310,14 @@ def build_release_report(
         _plot_journey(journey, figure_paths["journey"])
         _plot_annual_coverage(annual, figure_paths["annual_coverage"])
         residual_figure = _plot_residual_profile(sidecars["distributions"], figure_paths["residual_profile"])
+        _plot_annual_trade(annual_trade, figure_paths["annual_trade"])
+        _plot_country_trade(country_trade, figure_paths["country_trade"])
+        _plot_product_trade(product_trade, figure_paths["product_trade"])
+
         n_checks = len(checks)
+        
+        decision = "PUBLISHED — AUDIT PASSED"
+
         lines: list[str] = [
             "# VACODA Release Report",
             "",
@@ -315,12 +388,57 @@ def build_release_report(
             lines.extend([markdown_image("Absolute log residual profile (P05–P95)",
                                          figure_paths["residual_profile"], document_path=report_path), ""])
         lines.extend([
-            "## 4. Statistical Profile", "",
-            *_table(["Measure", "Usable", "P05", "Median", "P95"], [
-                (FIELD_LABELS.get(r["field"], r["field"].replace("_", " ")),
-                 _fmt(r["usable_rows"]), _fmt(r["p05"]), _fmt(r["median"]), _fmt(r["p95"]))
-                for r in dist
-            ]), "",
+            "## 4. Exploring the Published Data", "",
+            "### 4.1 Trade evolution", "",
+            markdown_image(
+                "Annual trade value in constant USD",
+                figure_paths["annual_trade"],
+                document_path=report_path,
+            ), "",
+            *_table(
+                ["Year", "Observations", "Trade value (USD bn)"],
+                [
+                    (
+                        _fmt(r["year"], year=True),
+                        _fmt(r["rows"]),
+                        _fmt(float(r["total_trade_value_constant_usd"] or 0) / 1e9),
+                    )
+                    for r in annual_trade
+                ],
+            ), "",
+            "_Annual totals reflect the published product and country coverage; "
+            "changes are not necessarily changes in total world trade._", "",
+
+            "### 4.2 Leading exporters and importers", "",
+            markdown_image(
+                "Leading exporters and importers",
+                figure_paths["country_trade"],
+                document_path=report_path,
+            ), "",
+
+            "### 4.3 Product composition", "",
+            markdown_image(
+                "Leading HS2 chapters by constant-USD trade value",
+                figure_paths["product_trade"],
+                document_path=report_path,
+            ), "",
+
+            "### 4.4 Feature distributions", "",
+            *_table(
+                ["Measure", "Usable", "P05", "Median", "P95", "P99"],
+                [
+                    (
+                        FIELD_LABELS.get(r["measure"], r["measure"]),
+                        _fmt(r["usable_rows"]),
+                        _fmt(r["p05"]),
+                        _fmt(r["p50"]),
+                        _fmt(r["p95"]),
+                        _fmt(r["p99"]),
+                    )
+                    for r in feature_distributions
+                ],
+              ), 
+              "",
             "_Quantiles for different measures need not refer to the same observations._", "",
             "## 5. Publication and Integrity", "",
             "### 5.1 Published products", "",
@@ -382,7 +500,8 @@ def build_release_report(
                              if key != "residual_profile" or residual_figure],
             "figures": {key: path for key, path in figure_paths.items()
                         if key != "residual_profile" or residual_figure},
-            "decision": "PUBLISHED — AUDIT PASSED", "audit_passed": True,
+            "decision": decision, 
+            "audit_passed": True,
             "n_rows": int(overall["standard_rows"]),
             "n_manual_review_rows": int(overall["manual_review_rows"]),
             "n_failed_audit_checks": 0,
