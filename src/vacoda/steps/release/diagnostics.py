@@ -1,18 +1,241 @@
 """Descriptive diagnostics for published VACODA Release datasets.
-
 Step 4 of Release. These summaries are informational only and never
 authorize publication or change the published datasets.
 """
 from __future__ import annotations
-
 from pathlib import Path
 from time import perf_counter
-from typing import Any
-
+from typing import Any, Mapping
 import duckdb
-
 from vacoda.config.steps.release import ReleaseConfig
 from vacoda.utils.sql import sql_literal
+
+# Sidecars are intentionally separate from the original overall/year table so
+# existing report consumers remain compatible. No per-run counts are embedded.
+
+_STAGE_ORDER = (
+    "hs_sync", "quantity", "cif_fob", "trade_sync", "value",
+    "validation_prepared", "validation_inference", "release_enriched",
+)
+
+
+def _sidecar_paths(main_path: Path) -> dict[str, Path]:
+    stem = main_path.stem
+    return {
+        name: main_path.with_name(f"{stem}_{name}.parquet")
+        for name in ("journey", "availability", "review", "missing_reasons", "distributions")
+    }
+
+
+def _schema(con: duckdb.DuckDBPyConnection, path: Path) -> set[str]:
+    return {
+        row[0]
+        for row in con.execute(
+            f"DESCRIBE SELECT * FROM read_parquet({sql_literal(path)})"
+        ).fetchall()
+    }
+
+
+def _write_frame(con, sql: str, destination: Path) -> Path:
+    temporary = destination.with_name(destination.name + ".tmp")
+    temporary.unlink(missing_ok=True)
+    con.execute(
+        f"COPY ({sql}) TO {sql_literal(temporary)} "
+        "(FORMAT PARQUET, COMPRESSION ZSTD)"
+    )
+    return temporary
+
+
+def _build_sidecars(
+    con: duckdb.DuckDBPyConnection,
+    *,
+    output_path: Path,
+    sidecar_paths: dict[str, Path],
+    source_paths: Mapping[str, Path],
+    enriched_path: Path,
+) -> dict[str, Path]:
+    """Return temporary paths; caller promotes only after every query succeeds.
+    Optional source_paths keys:
+      hs_sync, quantity, cif_fob, trade_sync, value,
+      validation_prepared, validation_inference.
+    These are actual source artifacts, not file paths reconstructed here.
+    Missing optional stages are omitted and explicitly reported by stage_status.
+    """
+    unknown = set(source_paths) - set(_STAGE_ORDER)
+    if unknown:
+        raise ValueError(f"Unknown release diagnostic source stage(s): {sorted(unknown)}")
+    for stage, path in source_paths.items():
+        if not path.is_file() or path.stat().st_size == 0:
+            raise FileNotFoundError(f"{stage} source missing or empty: {path}")
+    sources = dict(source_paths)
+    sources["release_enriched"] = enriched_path
+    temps: dict[str, Path] = {}
+    # 1. Real stage row counts, including the observation-grain boundary.
+    # A stage may be absent if the workflow has not supplied that artifact.
+    journey_selects = []
+    for ordinal, stage in enumerate(_STAGE_ORDER):
+        path = sources.get(stage)
+        if path is None:
+            journey_selects.append(
+                f"SELECT {ordinal} AS stage_order, '{stage}' AS stage, "
+                "CAST(NULL AS BIGINT) AS rows, 'not_provided' AS stage_status"
+            )
+        else:
+            journey_selects.append(
+                f"SELECT {ordinal} AS stage_order, '{stage}' AS stage, "
+                f"COUNT(*) AS rows, 'read' AS stage_status "
+                f"FROM read_parquet({sql_literal(path)})"
+            )
+    temps["journey"] = _write_frame(
+        con, " UNION ALL ".join(journey_selects), sidecar_paths["journey"]
+    )
+    # 2. Availability: shared definition means positive finite quantity/value,
+    # but 'prediction available' flag can differ from published non-null output.
+    # Optional fields are omitted rather than confused with zero counts.
+    specs = {
+        "quantity": ("synchronized_quantity_kg",),
+        "cif_fob": ("export_value_fob", "import_value_fob_corrected"),
+        "trade_sync": ("trade_value_reconciled", "trade_synced_quantity_kg"),
+        "value": ("trade_value_reconciled", "trade_value_reconciled_constant_usd"),
+        "validation_prepared": ("trade_value_reconciled_constant_usd", "trade_synced_quantity_kg"),
+        "validation_inference": ("model_prediction_quantity_kg",),
+        "release_enriched": (
+            "trade_value_reconciled", "trade_value_reconciled_constant_usd",
+            "trade_synced_quantity_kg", "model_prediction_quantity_kg",
+        ),
+    }
+    selects = []
+    for stage, fields in specs.items():
+        path = sources.get(stage)
+        if path is None:
+            continue
+        columns = _schema(con, path)
+        for field in fields:
+            if field not in columns:
+                continue
+            check = f"TRY_CAST({field} AS DOUBLE)"
+            usable = f"({check} > 0 AND isfinite({check}))"
+            selects.append(f"""
+                SELECT '{stage}' AS stage, '{field}' AS field,
+                       COUNT(*) AS total_rows,
+                       COUNT(*) FILTER (WHERE {field} IS NULL) AS missing,
+                       COUNT(*) FILTER (WHERE {field} IS NOT NULL
+                          AND NOT {usable}) AS nonpositive_or_invalid,
+                       COUNT(*) FILTER (WHERE {usable}) AS usable,
+                       ROUND(100.0 * COUNT(*) FILTER (WHERE {usable}) /
+                             NULLIF(COUNT(*), 0), 3) AS coverage_pct
+                FROM read_parquet({sql_literal(path)})
+            """)
+    if not selects:
+        raise RuntimeError("No source fields available for Release coverage diagnostics")
+    temps["availability"] = _write_frame(
+        con, " UNION ALL ".join(selects), sidecar_paths["availability"]
+    )
+    # 3. Unseen-category review records: discover codes and years from the
+    # published enriched dataset. NULL seen-flags stay distinct from FALSE.
+    ecols = _schema(con, enriched_path)
+    review_required = {
+        "target_cmd", "year", "manual_review_required", "hs6_seen",
+        "hs4_seen", "model_prediction_quantity_kg",
+    }
+    missing = review_required - ecols
+    if missing:
+        raise RuntimeError(f"Release enriched missing review fields: {sorted(missing)}")
+    temps["review"] = _write_frame(con, """
+        SELECT CAST(target_cmd AS VARCHAR) AS target_cmd,
+               MIN(year) AS first_year, MAX(year) AS last_year,
+               COUNT(*) AS review_rows,
+               COUNT(*) FILTER (WHERE model_prediction_quantity_kg IS NOT NULL)
+                   AS raw_prediction_rows,
+               COUNT(*) FILTER (WHERE hs6_seen IS FALSE) AS hs6_unseen_rows,
+               COUNT(*) FILTER (WHERE hs4_seen IS FALSE) AS hs4_unseen_rows
+        FROM enriched_release
+        WHERE manual_review_required IS TRUE
+        GROUP BY 1 ORDER BY review_rows DESC, target_cmd
+    """, sidecar_paths["review"])
+    # 4. Explanations: derive cases from source-side CIF/FOB values if supplied.
+    # This classifies every missing reconciled value by available side evidence.
+    # Counts are not the same thing as proof of source causation. Expose
+    # 'source_not_provided' explicitly rather than inventing a reason.
+    cif_path = source_paths.get("cif_fob")
+    cols = _schema(con, cif_path) if cif_path is not None else set()
+    if {"export_value_fob", "import_value_fob_corrected"}.issubset(cols):
+        # Key join assures that status is attributed to the SAME bilateral row.
+        keys = {"year", "exporter_iso", "importer_iso", "target_cmd"}
+        if not keys.issubset(cols) or not keys.issubset(ecols):
+            raise RuntimeError("CIF/FOB and Release need bilateral identity columns")
+        path_sql = sql_literal(cif_path)
+        factor_col = "estimated_cif_fob_factor" if "estimated_cif_fob_factor" in cols else None
+        # Factor explanation is not inferred from an arbitrarily named column.
+        factor_case = (
+            f"WHEN c.{factor_col} IS NULL THEN 'no_estimated_factor' "
+            if factor_col else ""
+        )
+        reasons_query = f"""
+            WITH missing AS (
+                SELECT e.year, e.exporter_iso, e.importer_iso, e.target_cmd,
+                       c.export_value_fob, c.import_value_fob_corrected
+                FROM enriched_release e
+                JOIN read_parquet({path_sql}) c
+                  USING (year, exporter_iso, importer_iso, target_cmd)
+                WHERE e.trade_value_reconciled IS NULL
+            ), grouped AS (
+                SELECT CASE
+                  WHEN export_value_fob IS NULL AND
+                       import_value_fob_corrected IS NULL
+                    THEN 'export_missing_and_import_corrected_missing'
+                  WHEN export_value_fob IS NULL
+                    THEN 'export_missing_import_corrected_present'
+                  WHEN export_value_fob <= 0
+                    THEN 'export_nonpositive'
+                  ELSE 'other_missing_reconciled_value' END AS reason,
+                  COUNT(*) AS rows FROM missing GROUP BY 1
+            ) SELECT reason, rows FROM grouped
+        """
+        # Use LEFT JOIN with missing-side checks in the notebook for exact
+        # attribution if source artifacts have changed between runs.
+    else:
+        reasons_query = """
+            SELECT 'source_not_provided' AS reason, COUNT(*) AS rows
+            FROM enriched_release
+            WHERE trade_value_reconciled IS NULL
+        """
+    temps["missing_reasons"] = _write_frame(
+        con, reasons_query, sidecar_paths["missing_reasons"]
+    )
+    # 5. Compact long-form quantiles for plots; positive finite values only.
+    distribution_fields = (
+        "trade_value_reconciled_constant_usd", "trade_synced_quantity_kg",
+        "model_prediction_quantity_kg", "trade_sync_uv_usd_per_kg",
+        "model_uv_usd_per_kg", "quantity_abs_log_residual",
+    )
+    dist = []
+    for field in distribution_fields:
+        if field not in ecols:
+            continue
+        value = f"TRY_CAST({field} AS DOUBLE)"
+        dist.append(f"""
+            SELECT '{field}' AS field, CASE WHEN GROUPING(year)=1
+                  THEN 'all_years' ELSE 'year' END AS period_type,
+                   CASE WHEN GROUPING(year)=1 THEN NULL ELSE year END AS year,
+                   COUNT(*) AS usable_rows,
+                   MIN({value}) AS minimum,
+                   quantile_cont({value}, 0.05) AS p05,
+                   quantile_cont({value}, 0.25) AS p25,
+                   MEDIAN({value}) AS median,
+                   quantile_cont({value}, 0.75) AS p75,
+                   quantile_cont({value}, 0.95) AS p95,
+                   MAX({value}) AS maximum
+            FROM enriched_release
+            WHERE {value} > 0 AND isfinite({value})
+            GROUP BY GROUPING SETS ((year), ())
+        """)
+    if not dist:
+        raise RuntimeError("Release enriched has no distribution fields")
+    temps["distributions"] = _write_frame(
+        con, " UNION ALL ".join(dist), sidecar_paths["distributions"]
+    )
+    return temps
 
 
 def build_release_diagnostics(
@@ -23,11 +246,11 @@ def build_release_diagnostics(
     audit_path: Path,
     run_id: str,
     release_id: str,
-    force: bool = False,
     logger,
+    source_paths: Mapping[str, Path] | None = None,
+    force: bool = False,
 ) -> dict[str, Any]:
-    """Write one Parquet table with overall and per-year Release summaries.
-
+    """Write Release summaries and compact lineage/availability sidecar Parquets.
     The audit is a provenance input, not an approval decision at this stage:
     approval was enforced earlier by the Release workflow and publisher.
     """
@@ -36,7 +259,8 @@ def build_release_diagnostics(
     enriched_path = Path(enriched_path)
     audit_path = Path(audit_path)
     output_path = cfg.product_path("diagnostics", release_id=release_id)
-
+    sidecar_paths = _sidecar_paths(output_path)
+    source_paths = {k: Path(v) for k, v in (source_paths or {}).items()}
     expected_standard = cfg.product_path("release", release_id=release_id)
     expected_enriched = cfg.enriched_path(release_id=release_id)
     expected_audit = cfg.product_path("release_audit", release_id=release_id)
@@ -44,7 +268,6 @@ def build_release_diagnostics(
             or enriched_path != expected_enriched
             or audit_path != expected_audit):
         raise ValueError("Release diagnostics input paths do not match release identity.")
-
     for label, path in (
         ("standard dataset", standard_path),
         ("enriched dataset", enriched_path),
@@ -52,22 +275,18 @@ def build_release_diagnostics(
     ):
         if not path.is_file() or path.stat().st_size == 0:
             raise FileNotFoundError(f"Release {label} missing or empty: {path}")
-
     if output_path.exists() and not force:
         raise FileExistsError(
             f"Release diagnostics already exist (force required): {output_path}"
         )
     output_path.parent.mkdir(parents=True, exist_ok=True)
-
     standard_sql = sql_literal(standard_path)
     enriched_sql = sql_literal(enriched_path)
     audit_sql = sql_literal(audit_path)
-
     con = duckdb.connect()
     temporary_path = output_path.with_name(output_path.name + ".tmp")
     try:
         con.execute(f"PRAGMA threads={int(cfg.engine.threads)}")
-
         # Only read the published artifacts; do not materialize the full dataset
         # into pandas, and do not assign publication permissions here.
         audit_row = con.execute(f"""
@@ -76,7 +295,6 @@ def build_release_diagnostics(
         """).fetchall()
         if len(audit_row) != 1 or audit_row[0] != (run_id, release_id, True):
             raise RuntimeError("Release audit identity/status does not match.")
-
         con.execute(f"""
             CREATE TEMP VIEW standard_release AS
             SELECT * FROM read_parquet({standard_sql})
@@ -85,7 +303,6 @@ def build_release_diagnostics(
             CREATE TEMP VIEW enriched_release AS
             SELECT * FROM read_parquet({enriched_sql})
         """)
-
         # Two aggregate sets permit descriptive cross-product comparisons
         # without joining millions of underlying bilateral observations.
         query = """
@@ -190,14 +407,12 @@ def build_release_diagnostics(
             ORDER BY CASE WHEN s.period_type = 'all_years' THEN 1 ELSE 0 END,
                      s.year
         """
-
         # Create a temporary Parquet before promoting the diagnostics artifact.
         temporary_path.unlink(missing_ok=True)
         con.execute(
             f"COPY ({query}) TO {sql_literal(temporary_path)} "
             "(FORMAT PARQUET, COMPRESSION ZSTD)"
         )
-
         summary = con.execute(f"""
             SELECT standard_rows, enriched_rows, manual_review_rows,
                    manual_review_hs6_codes, standard_prediction_rows,
@@ -209,10 +424,14 @@ def build_release_diagnostics(
             raise RuntimeError("Release diagnostics missing all-years summary.")
         (n_standard, n_enriched, n_review, n_review_codes,
          n_standard_prediction, n_raw_prediction) = summary[0]
-
         if not n_standard or not n_enriched:
             raise RuntimeError("Published Release dataset is empty.")
-
+        sidecar_temp = _build_sidecars(
+            con, output_path=output_path, sidecar_paths=sidecar_paths,
+            source_paths=source_paths, enriched_path=enriched_path,
+        )
+        for key, path in sidecar_paths.items():
+            sidecar_temp[key].replace(path)
         temporary_path.replace(output_path)
         logger.info("Release diagnostics: %s", output_path)
         logger.info(
@@ -226,13 +445,17 @@ def build_release_diagnostics(
             "  Predictions: standard=%s enriched raw=%s",
             f"{n_standard_prediction:,}", f"{n_raw_prediction:,}"
         )
-
         return {
             "status": "completed",
             "run_id": run_id,
             "release_id": release_id,
             "output_path": output_path,
             "diagnostics_path": output_path,
+            "journey_path": sidecar_paths["journey"],
+            "availability_path": sidecar_paths["availability"],
+            "review_path": sidecar_paths["review"],
+            "missing_reasons_path": sidecar_paths["missing_reasons"],
+            "distributions_path": sidecar_paths["distributions"],
             "n_rows": int(n_standard),
             "n_manual_review_rows": int(n_review),
             "n_manual_review_hs6_codes": int(n_review_codes),

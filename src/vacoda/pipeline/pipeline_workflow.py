@@ -471,6 +471,30 @@ def _run_release_step(
         engine=pipeline_cfg.engine,
     )
 
+    upstream_configs = {
+        "hs_sync": HsSyncConfig,
+        "quantity": QuantityConfig,
+        "cif_fob": CifFobConfig,
+        "trade_sync": TradeSyncConfig,
+        "value": ValueConfig,
+    }
+
+    upstream_cfgs = {
+        name: config_class.from_yaml(
+            pipeline_cfg.steps[name].config,
+            scope=pipeline_cfg.scope,
+            engine=pipeline_cfg.engine,
+        )
+        for name, config_class in upstream_configs.items()
+    }
+
+    source_paths = {
+        "hs_sync": upstream_cfgs["hs_sync"].apply_output_path(),
+        "quantity": upstream_cfgs["quantity"].product_path("synchronized_quantity"),
+        "cif_fob": upstream_cfgs["cif_fob"].product_path("corrected_trade"),
+        "trade_sync": upstream_cfgs["trade_sync"].product_path("reconciled_trade"),
+        "value": upstream_cfgs["value"].product_path("deflated_trade"),
+    }
     prepared_path = validation_cfg.product_path("prepared_input")
     inference_path = validation_cfg.product_path("inference")
 
@@ -480,6 +504,7 @@ def _run_release_step(
     return run_release_workflow(
         cfg=cfg,
         validation_cfg=validation_cfg,
+        source_paths=source_paths, 
         run_id=run_id,
         release_id=release_id,
         logger=get_logger("PIPELINE.RELEASE"),
@@ -947,6 +972,30 @@ def _build_release_plan(
         label="release_implementation",
     )
 
+    upstream_configs = {
+        "hs_sync": HsSyncConfig,
+        "quantity": QuantityConfig,
+        "cif_fob": CifFobConfig,
+        "trade_sync": TradeSyncConfig,
+        "value": ValueConfig,
+    }
+
+    upstream_cfgs = {
+        name: config_class.from_yaml(
+            pipeline_cfg.steps[name].config,
+            scope=pipeline_cfg.scope,
+            engine=pipeline_cfg.engine,
+        )
+        for name, config_class in upstream_configs.items()
+    }
+
+    source_paths = {
+        "hs_sync": upstream_cfgs["hs_sync"].apply_output_path(),
+        "quantity": upstream_cfgs["quantity"].product_path("synchronized_quantity"),
+        "cif_fob": upstream_cfgs["cif_fob"].product_path("corrected_trade"),
+        "trade_sync": upstream_cfgs["trade_sync"].product_path("reconciled_trade"),
+        "value": upstream_cfgs["value"].product_path("deflated_trade"),
+    }
     input_fp = {
         "prepared_input": file_list_fingerprint(
             paths=[prepared_path],
@@ -957,6 +1006,10 @@ def _build_release_plan(
             label="release_inference_input",
         ),
         "implementation": implementation_fp,
+        "upstream_diagnostics_inputs": file_list_fingerprint(
+            paths=list(source_paths.values()),
+            label="release_upstream_diagnostics_inputs",
+        ),
     }
 
     return StepPlan(
