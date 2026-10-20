@@ -667,6 +667,22 @@ def _markdown_table(
     )
 
 
+def _metric_summary(
+    diagnostics: pd.DataFrame,
+    scope: str,
+    group_column: str,
+) -> pd.DataFrame:
+    frame = _require_diagnostic_scope(diagnostics, scope)
+    values = frame.pivot_table(
+        index=group_column,
+        columns="variable",
+        values="value",
+        aggfunc="first",
+    ).reset_index()
+    counts = frame.drop_duplicates(group_column)[[group_column, "n_rows"]]
+    return values.merge(counts, on=group_column, validate="one_to_one")
+
+
 
 def _scope_frame(
     diagnostics: pd.DataFrame,
@@ -2542,7 +2558,7 @@ def build_validation_report(
             .sum()
         )
 
-        product_display = (
+        training_product_display = (
             training_by_product
             .sort_values(
                 ["n_rows", "target_cmd"],
@@ -2552,24 +2568,24 @@ def build_validation_report(
             .copy()
         )
 
-        product_display = pd.DataFrame(
+        training_product_display = pd.DataFrame(
             {
-                "HS product": product_display["target_cmd"].astype(str),
+                "HS product": training_product_display["target_cmd"].astype(str),
                 "Training rows": [
                     _format_integer(value)
-                    for value in product_display["n_rows"]
+                    for value in training_product_display["n_rows"]
                 ],
                 "Technically eligible rows": [
                     _format_integer(value)
-                    for value in product_display["eligible_rows"]
+                    for value in training_product_display["eligible_rows"]
                 ],
                 "Training share": [
                     _format_percent(value)
-                    for value in product_display["share_of_all"]
+                    for value in training_product_display["share_of_all"]
                 ],
                 "Training-year coverage": [
                     _format_percent(value)
-                    for value in product_display[
+                    for value in training_product_display[
                         "training_year_coverage"
                     ]
                 ],
@@ -3653,19 +3669,39 @@ def build_validation_report(
             product_counts, on="target_cmd", validate="one_to_one"
         )
         product_metrics["target_cmd"] = product_metrics["target_cmd"].astype(str)
+        supported = product_metrics[
+            product_metrics["training_rows"] > 0
+        ].copy()
 
-        product_display = product_metrics.copy()
-        product_display["Median factor"] = product_display["median_absolute"].map(
+        worst_supported = (
+            supported[supported["n_rows"] >= 30]
+            .sort_values(
+                ["share_over_10x", "n_rows"],
+                ascending=[False, False],
+            )
+            .head(15)
+        )
+
+        unsupported = product_metrics[
+            product_metrics["training_rows"] == 0
+        ].copy()
+
+        product_metrics_selected = pd.concat(
+            [unsupported, worst_supported],
+            ignore_index=True,
+        )
+        inference_product_display = product_metrics.copy()
+        inference_product_display["Median factor"] = inference_product_display["median_absolute"].map(
             lambda value: f"{math.exp(value):.2f}×"
         )
-        product_display["Median bias"] = product_display["median_signed"].map(
+        inference_product_display["Median bias"] = inference_product_display["median_signed"].map(
             lambda value: f"{value:+.3f}"
         )
         for column in ("share_over_2x", "share_over_5x", "share_over_10x"):
-            product_display[column] = product_display[column].map(
+            inference_product_display[column] = inference_product_display[column].map(
                 lambda value: f"{100 * value:.1f}%"
             )
-        product_display = product_display.rename(columns={
+        inference_product_display = inference_product_display.rename(columns={
             "target_cmd": "HS6",
             "n_rows": "Comparable rows",
             "training_rows": "Training rows",
@@ -3673,7 +3709,7 @@ def build_validation_report(
             "share_over_5x": ">5×",
             "share_over_10x": ">10×",
         })
-        product_display = product_display[
+        inference_product_display = inference_product_display[
             ["HS6", "Comparable rows", "Training rows",
              "Median bias", "Median factor", ">2×", ">5×", ">10×"]
         ]
@@ -3995,6 +4031,64 @@ def build_validation_report(
                 "Model performance by validation year"
             )
 
+
+        coherence = _metric_summary(
+            diagnostics, "inference_uv_coherence", "criterion"
+        ).set_index("criterion")
+
+        coherence_display = pd.DataFrame({
+            "Measure": [
+                "Comparable rows",
+                "Median absolute log quantity discrepancy",
+                "Quantity discrepancy >5×",
+                "Quantity discrepancy >10×",
+                "Median UV distance before",
+                "Median UV distance after",
+                "UV moved closer to reference",
+                "UV moved farther from reference",
+                "Outside 2.5 MAD before",
+                "Outside 2.5 MAD after",
+            ],
+            **{
+                label: [
+                    _format_integer(coherence.loc[group, "n_rows"]),
+                    _format_number(coherence.loc[group, "median_absolute_residual"], digits=3),
+                    _format_percent(coherence.loc[group, "share_discrepancy_over_5x"]),
+                    _format_percent(coherence.loc[group, "share_discrepancy_over_10x"]),
+                    _format_number(coherence.loc[group, "median_uv_distance_before"], digits=3),
+                    _format_number(coherence.loc[group, "median_uv_distance_after"], digits=3),
+                    _format_percent(coherence.loc[group, "share_uv_improved"]),
+                    _format_percent(coherence.loc[group, "share_uv_worsened"]),
+                    _format_percent(coherence.loc[group, "share_before_above_2p5_mad"]),
+                    _format_percent(coherence.loc[group, "share_after_above_2p5_mad"]),
+                ]
+                for label, group in (
+                    ("Training-selected", "selected"),
+                    ("Excluded", "excluded"),
+                )
+            },
+        })
+
+        oof_hs4 = _metric_summary(
+            diagnostics, "model_oof_by_hs4", "target_cmd"
+        )
+        oof_hs4 = oof_hs4[oof_hs4["n_rows"] >= 100].copy()
+        oof_hs4 = oof_hs4.nlargest(12, "mae_log")
+
+        oof_hs4_display = pd.DataFrame({
+            "HS4": oof_hs4["target_cmd"].astype(str),
+            "Held-out rows": oof_hs4["n_rows"].map(_format_integer),
+            "MAE log": oof_hs4["mae_log"].map(
+                lambda x: f"{x:.3f}"
+            ),
+            "Median discrepancy": oof_hs4["median_absolute_log_error"].map(
+                lambda x: f"{math.exp(x):.2f}×"
+            ),
+            ">5×": oof_hs4["share_over_5x"].map(_format_percent),
+            ">10×": oof_hs4["share_over_10x"].map(_format_percent),
+        })
+
+
         lines = [
             (
                 "# VACODA Validation Model-Development Report — "
@@ -4281,7 +4375,7 @@ def build_validation_report(
             ),
             "",
             get_table_figure_layout(
-                product_display,
+                training_product_display,
                 markdown_image(
                     "Training-sample coverage across HS products",
                     figure_paths["training_coverage_by_product"],
@@ -4599,11 +4693,46 @@ def build_validation_report(
             "",
             "**HS6-level diagnostic summary**",
             "",
-            _markdown_table(product_display),
+            _markdown_table(inference_product_display),
             "",
             "_The figure includes only products with at least 30 comparable "
             "observations. The table retains all HS6 products, including "
             "unsupported categories._",
+            "",
+
+            "### 8.7. Training selection and UV coherence", 
+            "",
+            "Matched observations are compared against the same HS×year UV "
+            "reference before and after substituting model-predicted quantity. "
+            "The comparison is restricted to supported products with valid "
+            "reference evidence.", 
+            "",
+            _markdown_table(coherence_display), 
+            "",
+            "_Closer UV agreement demonstrates statistical coherence, not verified "
+            "quantity accuracy. Training-selected production observations may have "
+            "been used to fit the model._", 
+            "",
+
+            "### 8.8. Held-out performance by product family", "",
+            "The following HS4 families have the largest out-of-fold MAE among "
+            "groups with at least 100 held-out predictions. These evaluations "
+            "use temporally held-out training-eligible observations.", "",
+            _markdown_table(oof_hs4_display), 
+            "",
+            "## 9. Scientific interpretation",
+            "",
+            "- Validation distinguishes predictive accuracy, statistical unit-value "
+            "coherence, and reliability of reported trade quantities.",
+            "",
+            "- Expanding-window out-of-fold evaluation assesses predictive performance "
+            "on held-out training-eligible observations. Production comparisons "
+            "describe agreement with synchronized quantities and are not independent "
+            "accuracy estimates.",
+            "",
+            "- Changes in unit-value distance from an HS×year reference measure "
+            "statistical coherence, not necessarily corrections to erroneous data. "
+            "Predictions for products without training support require separate review.",
             "",
         ]
 

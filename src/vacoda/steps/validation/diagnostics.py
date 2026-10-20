@@ -363,6 +363,8 @@ def build_diagnostics(
                     DIAGNOSTIC_QUANTILES
                 ),
                 "product_residual_factors": (2.0, 5.0, 10.0),
+                "coherence_comparison_version": 1,
+                "oof_product_performance_version": 1,
             },
         }
     )
@@ -1123,6 +1125,87 @@ def build_diagnostics(
             FROM read_parquet({input_sql})
             """
         )
+
+
+
+        # Matched production-inference coherence, using the same HS×year reference.
+        con.execute("""
+            CREATE OR REPLACE TEMP VIEW validation_uv_coherence AS
+            SELECT
+                CASE WHEN b.training_selected THEN 'selected'
+                     ELSE 'excluded' END AS sample_group,
+                i.target_cmd,
+                i.year,
+                i.quantity_log_residual,
+                i.quantity_abs_log_residual,
+                ABS(LN(b.selected_unit_value) - b.hs_year_uv_reference_log) AS before_distance,
+                ABS(LN(b.selected_unit_value) + i.quantity_log_residual
+                    - b.hs_year_uv_reference_log) AS after_distance,
+                b.hs_year_uv_log_mad AS reference_mad
+            FROM validation_diagnostics_base b
+            INNER JOIN validation_inference i
+            USING (year, exporter_iso, importer_iso, target_cmd)
+            WHERE i.hs6_seen = TRUE
+              AND i.hs4_seen = TRUE
+              AND i.observed_quantity_valid_for_log
+              AND i.model_prediction_available
+              AND b.selected_unit_value > 0
+              AND isfinite(b.selected_unit_value)
+              AND b.hs_year_uv_reference_log IS NOT NULL
+              AND isfinite(b.hs_year_uv_reference_log)
+              AND b.hs_year_uv_log_mad > 0
+              AND isfinite(b.hs_year_uv_log_mad)
+              AND i.quantity_log_residual IS NOT NULL
+              AND isfinite(i.quantity_log_residual)
+        """)
+
+        coherence = con.execute("""
+            SELECT
+                sample_group,
+                COUNT(*) AS n_rows,
+                MEDIAN(quantity_log_residual) AS median_signed_residual,
+                MEDIAN(quantity_abs_log_residual) AS median_absolute_residual,
+                AVG(CASE WHEN quantity_abs_log_residual > LN(5)
+                    THEN 1.0 ELSE 0.0 END) AS share_discrepancy_over_5x,
+                AVG(CASE WHEN quantity_abs_log_residual > LN(10)
+                    THEN 1.0 ELSE 0.0 END) AS share_discrepancy_over_10x,
+                MEDIAN(before_distance) AS median_uv_distance_before,
+                MEDIAN(after_distance) AS median_uv_distance_after,
+                AVG(CASE WHEN after_distance < before_distance
+                    THEN 1.0 ELSE 0.0 END) AS share_uv_improved,
+                AVG(CASE WHEN after_distance > before_distance
+                    THEN 1.0 ELSE 0.0 END) AS share_uv_worsened,
+                AVG(CASE WHEN before_distance / reference_mad > 2.5
+                    THEN 1.0 ELSE 0.0 END) AS share_before_above_2p5_mad,
+                AVG(CASE WHEN after_distance / reference_mad > 2.5
+                    THEN 1.0 ELSE 0.0 END) AS share_after_above_2p5_mad
+            FROM validation_uv_coherence
+            GROUP BY sample_group
+        """).fetchdf()
+
+        coherence_metrics = (
+            "median_signed_residual",
+            "median_absolute_residual",
+            "share_discrepancy_over_5x",
+            "share_discrepancy_over_10x",
+            "median_uv_distance_before",
+            "median_uv_distance_after",
+            "share_uv_improved",
+            "share_uv_worsened",
+            "share_before_above_2p5_mad",
+            "share_after_above_2p5_mad",
+        )
+
+        for row in coherence.itertuples(index=False):
+            for metric in coherence_metrics:
+                _append_metric(
+                    diagnostics_rows,
+                    scope="inference_uv_coherence",
+                    criterion=str(row.sample_group),
+                    variable=metric,
+                    n_rows=int(row.n_rows),
+                    value=float(getattr(row, metric)),
+                )
 
         # --------------------------------------------------------------
         # Model predictions
@@ -2046,6 +2129,46 @@ def build_diagnostics(
                     n_rows=int(row.n_rows),
                 )
 
+
+        # Held-out performance by product family for the selected production model.
+        oof_products = con.execute("""
+            SELECT
+                SUBSTR(CAST(target_cmd AS VARCHAR), 1, 4) AS hs4,
+                COUNT(*) AS n_rows,
+                AVG(absolute_log_error) AS mae_log,
+                MEDIAN(absolute_log_error) AS median_absolute_log_error,
+                MEDIAN(-log_error) AS median_signed_log_residual,
+                AVG(CASE WHEN absolute_log_error > LN(5)
+                    THEN 1.0 ELSE 0.0 END) AS share_over_5x,
+                AVG(CASE WHEN absolute_log_error > LN(10)
+                    THEN 1.0 ELSE 0.0 END) AS share_over_10x
+            FROM validation_model_predictions
+            WHERE model_name = ?
+            GROUP BY hs4
+            ORDER BY hs4
+        """, [str(production_model_name)]).fetchdf()
+
+        if oof_products.empty:
+            raise RuntimeError("Selected model has no HS4 out-of-fold diagnostics.")
+
+        for row in oof_products.itertuples(index=False):
+            for metric in (
+                "mae_log",
+                "median_absolute_log_error",
+                "median_signed_log_residual",
+                "share_over_5x",
+                "share_over_10x",
+            ):
+                _append_metric(
+                    diagnostics_rows,
+                    scope="model_oof_by_hs4",
+                    criterion="out_of_fold",
+                    model_name=str(production_model_name),
+                    target_cmd=str(row.hs4),
+                    variable=metric,
+                    n_rows=int(row.n_rows),
+                    value=float(getattr(row, metric)),
+                )
 
         # ==============================================================
         # Out-of-fold residual distribution
