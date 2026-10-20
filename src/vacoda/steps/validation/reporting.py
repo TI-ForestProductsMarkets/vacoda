@@ -262,6 +262,38 @@ def _plot_inference_residual_quantiles(
     )
 
 
+def _plot_inference_product_bias(
+    *,
+    product_metrics: pd.DataFrame,
+    output_path: Path,
+) -> None:
+    """Show systematic quantity discrepancy by HS6, with sample size."""
+    data = product_metrics.dropna(
+        subset=["median_signed", "n_rows"]
+    ).copy()
+    data = data[data["n_rows"] >= 30].copy()
+    data["abs_bias"] = data["median_signed"].abs()
+    data = data.nlargest(20, "abs_bias").sort_values("median_signed")
+
+    if data.empty:
+        raise RuntimeError("No HS6 groups meet the plotting support threshold.")
+
+    fig, ax = plt.subplots(figsize=(10, 7))
+    labels = [
+        f"{row.target_cmd} (n={int(row.n_rows):,})"
+        for row in data.itertuples(index=False)
+    ]
+    ax.barh(labels, data["median_signed"])
+    ax.axvline(0, color="black", linewidth=1)
+    ax.set_xlabel("Median log(observed kg / predicted kg)")
+    ax.set_title("Largest systematic HS6 quantity discrepancies (n ≥ 30)")
+    ax.grid(axis="x", alpha=0.25)
+    ax.set_axisbelow(True)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=180, bbox_inches="tight")
+    plt.close(fig)
+
+
 def _plot_inference_residual_by_year(
     *,
     diagnostics: pd.DataFrame,
@@ -2091,6 +2123,9 @@ def _build_validation_figure_paths(
             figure_dir
             / f"{prefix}inference_residual_by_year.png"
         ),
+        "inference_product_bias": (
+            figure_dir / f"{prefix}inference_product_bias.png"
+        ),
     }
 
 
@@ -3596,6 +3631,58 @@ def build_validation_report(
         # HS6 codes unseen by the fitted model
         # --------------------------------------------------------------
 
+
+        product_scope = _scope_frame(
+            diagnostics, "inference_residual_by_product"
+        )
+        if product_scope.empty:
+            raise RuntimeError("HS6 model-behavior diagnostics are missing.")
+
+        product_metrics = product_scope.pivot_table(
+            index="target_cmd",
+            columns="variable",
+            values="value",
+            aggfunc="first",
+        ).reset_index()
+
+        product_counts = product_scope.drop_duplicates("target_cmd")[
+            ["target_cmd", "n_rows", "total_rows"]
+        ].rename(columns={"total_rows": "training_rows"})
+
+        product_metrics = product_metrics.merge(
+            product_counts, on="target_cmd", validate="one_to_one"
+        )
+        product_metrics["target_cmd"] = product_metrics["target_cmd"].astype(str)
+
+        product_display = product_metrics.copy()
+        product_display["Median factor"] = product_display["median_absolute"].map(
+            lambda value: f"{math.exp(value):.2f}×"
+        )
+        product_display["Median bias"] = product_display["median_signed"].map(
+            lambda value: f"{value:+.3f}"
+        )
+        for column in ("share_over_2x", "share_over_5x", "share_over_10x"):
+            product_display[column] = product_display[column].map(
+                lambda value: f"{100 * value:.1f}%"
+            )
+        product_display = product_display.rename(columns={
+            "target_cmd": "HS6",
+            "n_rows": "Comparable rows",
+            "training_rows": "Training rows",
+            "share_over_2x": ">2×",
+            "share_over_5x": ">5×",
+            "share_over_10x": ">10×",
+        })
+        product_display = product_display[
+            ["HS6", "Comparable rows", "Training rows",
+             "Median bias", "Median factor", ">2×", ">5×", ">10×"]
+        ]
+        product_metrics = product_metrics.sort_values(
+            ["share_over_10x", "n_rows"],
+            ascending=[False, False],
+        )
+
+
         inference_unseen_product = _scope_frame(
             diagnostics,
             "inference_unseen_product",
@@ -3680,6 +3767,38 @@ def build_validation_report(
                 )
             )
 
+        if not inference_unseen_product_display.empty:
+            unseen_metrics = product_metrics[
+                ["target_cmd", "median_signed", "median_absolute", "share_over_10x"]
+            ].rename(columns={
+                "target_cmd": "HS6",
+                "median_signed": "Median signed log residual",
+                "median_absolute": "Median absolute log residual",
+                "share_over_10x": "Share above 10x",
+            })
+            inference_unseen_product_display = inference_unseen_product_display.merge(
+                unseen_metrics, on="HS6", how="left", validate="one_to_one"
+            )
+            inference_unseen_product_display["Median kg discrepancy"] = (
+                inference_unseen_product_display["Median absolute log residual"]
+                .map(lambda x: f"{math.exp(x):.1f}×" if pd.notna(x) else "NA")
+            )
+            inference_unseen_product_display["Direction"] = (
+                inference_unseen_product_display["Median signed log residual"]
+                .map(lambda x: "Underpredicts kg" if x > 0
+                     else "Overpredicts kg" if x < 0 else "Neutral")
+            )
+            inference_unseen_product_display["Above 10×"] = (
+                inference_unseen_product_display["Share above 10x"]
+                .map(lambda x: f"{100*x:.1f}%" if pd.notna(x) else "NA")
+            )
+            inference_unseen_product_display = inference_unseen_product_display.drop(
+                columns=[
+                    "Median signed log residual",
+                    "Median absolute log residual",
+                    "Share above 10x",
+                ]
+            )
         # ============================================================== 
         # Figures
         # ============================================================== 
@@ -3805,6 +3924,11 @@ def build_validation_report(
             output_path=figure_paths[
                 "weighted_ensemble_curves"
             ],
+        )
+
+        _plot_inference_product_bias(
+            product_metrics=product_metrics,
+            output_path=figure_paths["inference_product_bias"],
         )
 
         # ============================================================== 
@@ -4458,6 +4582,28 @@ def build_validation_report(
                     width=850,
                 )
             ),
+            "",
+            "### 8.6. Model behavior by HS6",
+            "",
+            "Signed residuals reveal systematic quantity underprediction "
+            "(positive) and overprediction (negative). "
+            "Results compare production predictions with synchronized quantities; "
+            "they are not held-out accuracy estimates.",
+            "",
+            markdown_image(
+                "HS6 systematic quantity discrepancy",
+                figure_paths["inference_product_bias"],
+                document_path=report_path,
+                width=850,
+            ),
+            "",
+            "**HS6-level diagnostic summary**",
+            "",
+            _markdown_table(product_display),
+            "",
+            "_The figure includes only products with at least 30 comparable "
+            "observations. The table retains all HS6 products, including "
+            "unsupported categories._",
             "",
         ]
 

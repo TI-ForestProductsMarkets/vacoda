@@ -362,6 +362,7 @@ def build_diagnostics(
                 "quantiles": list(
                     DIAGNOSTIC_QUANTILES
                 ),
+                "product_residual_factors": (2.0, 5.0, 10.0),
             },
         }
     )
@@ -893,6 +894,53 @@ def build_diagnostics(
             """
         ).fetchdf()
 
+
+        # --------------------------------------------------------------
+        # Production model behavior by HS6
+        # --------------------------------------------------------------
+        product_residuals = con.execute("""
+            SELECT
+                target_cmd,
+                COUNT(*) AS n_rows,
+                COUNT(*) FILTER (WHERE training_selected) AS training_rows,
+                MEDIAN(quantity_log_residual) AS median_signed,
+                MEDIAN(quantity_abs_log_residual) AS median_absolute,
+                AVG(quantity_log_residual) AS mean_signed,
+                AVG(CASE WHEN quantity_abs_log_residual > LN(2.0) THEN 1.0 ELSE 0.0 END) AS share_over_2x,
+                AVG(CASE WHEN quantity_abs_log_residual > LN(5.0) THEN 1.0 ELSE 0.0 END) AS share_over_5x,
+                AVG(CASE WHEN quantity_abs_log_residual > LN(10.0) THEN 1.0 ELSE 0.0 END) AS share_over_10x
+            FROM validation_inference
+            WHERE observed_quantity_valid_for_log
+              AND model_prediction_available
+              AND quantity_log_residual IS NOT NULL
+              AND isfinite(quantity_log_residual)
+              AND quantity_abs_log_residual IS NOT NULL
+              AND isfinite(quantity_abs_log_residual)
+            GROUP BY target_cmd
+            ORDER BY target_cmd
+        """).fetchdf()
+
+        product_metrics = (
+            "median_signed",
+            "median_absolute",
+            "mean_signed",
+            "share_over_2x",
+            "share_over_5x",
+            "share_over_10x",
+        )
+
+        for row in product_residuals.itertuples(index=False):
+            for metric in product_metrics:
+                _append_metric(
+                    diagnostics_rows,
+                    scope="inference_residual_by_product",
+                    criterion="observed_quantity_vs_model",
+                    variable=metric,
+                    target_cmd=str(row.target_cmd),
+                    n_rows=int(row.n_rows),
+                    total_rows=int(row.training_rows),
+                    value=float(getattr(row, metric)),
+                )
 
         for row in residual_by_year.itertuples(index=False):
 
