@@ -12,7 +12,12 @@ from typing import Any
 from vacoda.config.steps.release import ReleaseConfig
 from vacoda.config.steps.validation import ValidationConfig
 from vacoda.steps.validation.training_sample import training_definition_name
-
+from vacoda.pipeline.checkpoint import (
+    file_fingerprint,
+    semantic_config_fingerprint,
+    load_checkpoint,
+    write_local_checkpoint,
+)
 
 def resolve_release_inputs(
     *,
@@ -54,6 +59,7 @@ def prepare_release_input(
     cfg: ReleaseConfig,
     validation_cfg: ValidationConfig,
     run_id: str,
+    checkpoint_dir: Path,
     logger,
 ) -> dict[str, Any]:
     """Resolve and verify the two Validation artifacts consumed by Release."""
@@ -61,9 +67,58 @@ def prepare_release_input(
     resolved = resolve_release_inputs(cfg=cfg, validation_cfg=validation_cfg)
     prepared_path = resolved["prepared_input_path"]
     inference_path = resolved["inference_input_path"]
+    checkpoint_path = checkpoint_dir / "prepare_input.json"
 
+    config_fp = semantic_config_fingerprint(
+        config={
+            "release_scope": cfg.scope,
+            "validation_training": validation_cfg.model.training_sample,
+            "prepared_filename": str(prepared_path),
+            "inference_filename": str(inference_path),
+        }
+    )
+
+    input_fp = {
+        "prepared": file_fingerprint(prepared_path, hash_file=True),
+        "inference": file_fingerprint(inference_path, hash_file=True),
+    }
+
+    checkpoint = load_checkpoint(checkpoint_path)
+
+    reusable = (
+        checkpoint is not None
+        and checkpoint.get("config") == config_fp
+        and checkpoint.get("input") == input_fp
+        and checkpoint.get("output") == input_fp["prepared"]
+    )
+
+    # Validate both inputs even when the checkpoint is reusable.
     _require_parquet("Validation Prepared", prepared_path)
     _require_parquet("Validation Inference", inference_path)
+
+    ## if the checkpoint is reusable, we can skip writing a new one and return the existing information.
+    if reusable:
+        logger.info("REUSE — Release input preparation checkpoint matches.")
+
+        return {
+            "status": "reused",
+            "run_id": run_id,
+            "prepared_input_path": prepared_path,
+            "inference_input_path": inference_path,
+            "training_definition": resolved["training_definition"],
+            "duration_seconds": perf_counter() - start,
+        }
+
+    logger.info("REBUILD — Release input verification checkpoint.")
+
+    write_local_checkpoint(
+        checkpoint_path=checkpoint_path,
+        step_name="prepare_input",
+        run_id=run_id,
+        config=config_fp,
+        input_fingerprint=input_fp,
+        output_path=prepared_path,
+    )
 
     logger.info("Release input preparation complete.")
     logger.info("  Training definition: %s", resolved["training_definition"])

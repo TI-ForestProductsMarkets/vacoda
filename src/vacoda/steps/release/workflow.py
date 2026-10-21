@@ -79,7 +79,8 @@ def run_release_workflow(
     standard_path = cfg.product_path("release", release_id=release_id)
     enriched_path = cfg.enriched_path(release_id=release_id)
     staging_dir = cfg.output_dir() / ".staging" / release_id
-
+    checkpoint_dir = standard_path.parent / "checkpoints"
+    
     workflow_start = perf_counter()
 
     with timed_workflow(logger, "Release"):
@@ -107,6 +108,7 @@ def run_release_workflow(
                 cfg=cfg,
                 validation_cfg=validation_cfg,
                 run_id=run_id,
+                checkpoint_dir=checkpoint_dir,
                 logger=logger,
             ),
         )
@@ -139,6 +141,7 @@ def run_release_workflow(
                 inference_input_path=inference_path,
                 staging_dir=staging_dir,
                 run_id=run_id,
+                checkpoint_dir=checkpoint_dir,
                 force=force,
                 logger=logger,
             ),
@@ -201,6 +204,7 @@ def run_release_workflow(
                 enriched_path=enriched_path,
                 run_id=run_id,
                 release_id=release_id,
+                checkpoint_dir=checkpoint_dir,
                 force=force,
                 logger=logger,
             ),
@@ -239,6 +243,7 @@ def run_release_workflow(
                     "validation_inference": inference_path,
                 },
                 force=force,
+                checkpoint_dir=checkpoint_dir,
                 logger=logger,
             ),
         )

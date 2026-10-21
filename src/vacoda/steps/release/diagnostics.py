@@ -9,6 +9,12 @@ from typing import Any, Mapping
 import duckdb
 from vacoda.config.steps.release import ReleaseConfig
 from vacoda.utils.sql import sql_literal
+from vacoda.pipeline.checkpoint import (
+    file_fingerprint,
+    semantic_config_fingerprint,
+    validate_local_checkpoint,
+    write_local_checkpoint,
+)
 
 # Sidecars are intentionally separate from the original overall/year table so
 # existing report consumers remain compatible. No per-run counts are embedded.
@@ -471,6 +477,7 @@ def build_release_diagnostics(
     audit_path: Path,
     run_id: str,
     release_id: str,
+    checkpoint_dir: Path,
     logger,
     source_paths: Mapping[str, Path] | None = None,
     force: bool = False,
@@ -486,6 +493,32 @@ def build_release_diagnostics(
     output_path = cfg.product_path("diagnostics", release_id=release_id)
     sidecar_paths = _sidecar_paths(output_path)
     source_paths = {k: Path(v) for k, v in (source_paths or {}).items()}
+
+    ## Local Checkpoints
+    checkpoint_path = checkpoint_dir / "diagnostics.json"
+
+    output_paths = {
+        "main": output_path,
+        **_sidecar_paths(output_path),
+    }
+
+    config_fp = semantic_config_fingerprint(
+        config={
+            "release_id": release_id,
+            "scope": cfg.scope,
+            "diagnostics_version": 1,
+        }
+    )
+
+    input_fp = {
+        "standard": file_fingerprint(standard_path),
+        "enriched": file_fingerprint(enriched_path),
+        "sources": {
+            name: file_fingerprint(path)
+            for name, path in sorted(source_paths.items())
+        },
+    }
+
     expected_standard = cfg.product_path("release", release_id=release_id)
     expected_enriched = cfg.enriched_path(release_id=release_id)
     expected_audit = cfg.product_path("release_audit", release_id=release_id)
@@ -500,10 +533,38 @@ def build_release_diagnostics(
     ):
         if not path.is_file() or path.stat().st_size == 0:
             raise FileNotFoundError(f"Release {label} missing or empty: {path}")
-    if output_path.exists() and not force:
-        raise FileExistsError(
-            f"Release diagnostics already exist (force required): {output_path}"
-        )
+
+
+    ## Checkpoint Validation
+    reusable, reason = validate_local_checkpoint(
+        checkpoint_path=checkpoint_path,
+        current_config=config_fp,
+        current_input=input_fp,
+        output_paths=output_paths,
+    )
+
+    if reusable and not force:
+        logger.info("REUSE — Release diagnostics checkpoint matches.")
+
+        return {
+            "status": "reused",
+            "run_id": run_id,
+            "release_id": release_id,
+            "output_path": output_path,
+            "diagnostics_path": output_path,
+            **{
+                f"{name}_path": path
+                for name, path in sidecar_paths.items()
+            },
+            "duration_seconds": perf_counter() - start,
+        }
+
+    logger.info(
+        "REBUILD — Release diagnostics: %s",
+        "forced" if force else reason,
+    )
+
+    
     output_path.parent.mkdir(parents=True, exist_ok=True)
     standard_sql = sql_literal(standard_path)
     enriched_sql = sql_literal(enriched_path)
@@ -518,7 +579,11 @@ def build_release_diagnostics(
             SELECT run_id, release_id, audit_passed
             FROM read_parquet({audit_sql})
         """).fetchall()
-        if len(audit_row) != 1 or audit_row[0] != (run_id, release_id, True):
+        if (
+            len(audit_row) != 1
+            or audit_row[0][1] != release_id
+            or audit_row[0][2] is not True
+        ):
             raise RuntimeError("Release audit identity/status does not match.")
         con.execute(f"""
             CREATE TEMP VIEW standard_release AS
@@ -655,9 +720,22 @@ def build_release_diagnostics(
             con, output_path=output_path, sidecar_paths=sidecar_paths,
             source_paths=source_paths, enriched_path=enriched_path,
         )
+
         for key, path in sidecar_paths.items():
             sidecar_temp[key].replace(path)
+
         temporary_path.replace(output_path)
+
+        # Write checkpoint only after all diagnostics outputs are finalized.
+        write_local_checkpoint(
+            checkpoint_path=checkpoint_path,
+            step_name="diagnostics",
+            run_id=run_id,
+            config=config_fp,
+            input_fingerprint=input_fp,
+            output_paths=output_paths,
+        )
+        
         logger.info("Release diagnostics: %s", output_path)
         logger.info(
             "  Records: standard=%s enriched=%s", f"{n_standard:,}", f"{n_enriched:,}"

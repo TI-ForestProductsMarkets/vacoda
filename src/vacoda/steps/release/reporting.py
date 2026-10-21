@@ -389,6 +389,28 @@ def build_release_report(
             "",
             "### 1.2 Annual population", 
             "",
+                "- Year: Calendar year associated with the bilateral trade observations.",
+            "",
+                "- Bilateral rows: Total number of published observations for the corresponding year. ",
+                "Each observation represents a unique combination of year, exporting country, importing country,"
+                " and product code (target_cmd). These counts describe the final bilateral population, not the "
+                "original source records. Number of bilateral trade observations in the Release dataset.",
+            "",
+                "- Quantity usable: Number of bilateral observations with a valid, positive synchronized trade quantity"
+                 " (trade_synced_quantity_kg). This quantity is derived from the Trade Sync reconciliation process and "
+                 "must not be interpreted as independently verified physical shipment weight."
+            "",
+                "- Value usable: Number of bilateral observations with a valid, positive reconciled trade value"
+                "Value usable: Number of bilateral observations with a valid, positive reconciled nominal trade value"
+                 " (trade_value_reconciled). This measure reflects the availability of reconciled monetary values, rather "
+                 "than the availability of inflation-adjusted values in constant USD."
+            "",
+                "- Raw predictions: Number of bilateral observations with a valid, positive model-predicted quantity"
+                "Number of bilateral observations for which the Validation model generated a quantity prediction "
+                "(model_prediction_quantity_kg in its unsuppressed form). This count includes predictions subsequently"
+                 " excluded from the standard Release dataset under the manual-review policy. Those predictions remain "
+                 "preserved in the enriched dataset."
+            "",
             *_table(["Year", "Bilateral rows", "Quantity usable", "Value usable", "Raw predictions"], [
                 (_fmt(r["year"], year=True), _fmt(r["standard_rows"]),
                  _fmt(r["synced_quantity_rows"]), _fmt(r["nominal_value_rows"]),

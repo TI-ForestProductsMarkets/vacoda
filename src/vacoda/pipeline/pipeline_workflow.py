@@ -453,6 +453,7 @@ def _run_release_step(
     )
 
     upstream_configs = {
+        "ingestion": IngestionConfig,
         "hs_sync": HsSyncConfig,
         "quantity": QuantityConfig,
         "cif_fob": CifFobConfig,
@@ -470,6 +471,7 @@ def _run_release_step(
     }
 
     source_paths = {
+        "ingestion": upstream_cfgs["ingestion"].output_path(),
         "hs_sync": upstream_cfgs["hs_sync"].apply_output_path(),
         "quantity": upstream_cfgs["quantity"].product_path("synchronized_quantity"),
         "cif_fob": upstream_cfgs["cif_fob"].product_path("corrected_trade"),
@@ -957,6 +959,7 @@ def _build_release_plan(
     )
 
     upstream_configs = {
+        "ingestion": IngestionConfig,
         "hs_sync": HsSyncConfig,
         "quantity": QuantityConfig,
         "cif_fob": CifFobConfig,
@@ -980,6 +983,7 @@ def _build_release_plan(
     )
 
     source_paths = {
+        "ingestion": upstream_cfgs["ingestion"].output_path(),
         "hs_sync": upstream_cfgs["hs_sync"].apply_output_path(),
         "quantity": upstream_cfgs["quantity"].product_path("synchronized_quantity"),
         "cif_fob": upstream_cfgs["cif_fob"].product_path("corrected_trade"),

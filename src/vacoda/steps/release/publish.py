@@ -18,7 +18,13 @@ from uuid import uuid4
 import duckdb
 
 from vacoda.config.steps.release import ReleaseConfig
-
+from vacoda.pipeline.checkpoint import (
+    file_content_fingerprint,
+    semantic_config_fingerprint,
+    load_checkpoint,
+    validate_local_checkpoint,
+    write_local_checkpoint,
+)
 
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -39,6 +45,69 @@ def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
+
+def _verify_existing_publication(
+    *,
+    cfg: ReleaseConfig,
+    standard_path: Path,
+    enriched_path: Path,
+    metadata_standard: Path,
+    metadata_enriched: Path,
+    audit_path: Path,
+    release_id: str,
+) -> None:
+    """Verify an immutable publication against its metadata and audit."""
+
+    products = (
+        (standard_path, metadata_standard, "standard", cfg.schema.standard),
+        (enriched_path, metadata_enriched, "enriched", cfg.schema.enriched),
+    )
+
+    original_run_ids = set()
+
+    for dataset_path, metadata_path, variant, expected_schema in products:
+        if not dataset_path.is_file() or not metadata_path.is_file():
+            raise RuntimeError(
+                f"Incomplete Release publication: {dataset_path}"
+            )
+
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        artifact = metadata["artifact"]
+        audit = metadata["audit"]
+
+        if metadata.get("release_id") != release_id:
+            raise RuntimeError("Published Release identity mismatch.")
+
+        if metadata.get("variant") != variant:
+            raise RuntimeError("Published Release variant mismatch.")
+
+        if artifact.get("file") != dataset_path.name:
+            raise RuntimeError("Published Release filename mismatch.")
+
+        if artifact.get("columns") != list(expected_schema):
+            raise RuntimeError("Published Release schema mismatch.")
+
+        if artifact.get("size_bytes") != dataset_path.stat().st_size:
+            raise RuntimeError("Published Release size mismatch.")
+
+        if artifact.get("sha256") != _sha256(dataset_path):
+            raise RuntimeError("Published Release checksum mismatch.")
+        
+        if audit.get("passed") is not True:
+            raise RuntimeError("Original publication was not audit-approved.")
+        
+        if audit.get("path") != str(audit_path):
+            raise RuntimeError("Published Release audit path mismatch.")
+
+        original_run_ids.add(metadata.get("run_id"))
+
+    if len(original_run_ids) != 1:
+        raise RuntimeError("Published datasets have different originating runs.")
+
+    original_run_id = original_run_ids.pop()
+
+    if not original_run_id:
+        raise RuntimeError("Published Release has no originating run ID.")
 
 
 def _audit_details(audit_path: Path, run_id: str, release_id: str) -> dict[str, Any]:
@@ -78,6 +147,7 @@ def publish_release_datasets(
     enriched_path: Path,
     run_id: str,
     release_id: str,
+    checkpoint_dir: Path,
     force: bool = False,
     logger,
 ) -> dict[str, Any]:
@@ -110,6 +180,107 @@ def publish_release_datasets(
     metadata_enriched = cfg.metadata_path(release_id=release_id, enriched=True)
     targets = (standard_path, enriched_path, metadata_standard, metadata_enriched)
     sources = (standard_candidate, enriched_candidate)
+
+    # ==============================================================
+    # LOCAL CHECKPOINT — IMMUTABLE PUBLICATION
+    # ==============================================================
+
+    checkpoint_path = checkpoint_dir / "publication.json"
+
+    config_fp = semantic_config_fingerprint(
+        config={
+            "release_id": release_id,
+            "scope": cfg.scope,
+            "standard_schema": tuple(cfg.schema.standard),
+            "enriched_schema": tuple(cfg.schema.enriched),
+        }
+    )
+
+    input_fp = {
+        "candidate_standard": file_content_fingerprint(standard_candidate),
+        "candidate_enriched": file_content_fingerprint(enriched_candidate),
+    }
+
+    output_paths = {
+        "standard": standard_path,
+        "enriched": enriched_path,
+        "standard_metadata": metadata_standard,
+        "enriched_metadata": metadata_enriched,
+    }
+
+    # Every execution requires a passing current audit.
+    _audit_details(audit_path, run_id, release_id)
+
+    if any(path.exists() for path in targets):
+        if not all(path.is_file() for path in targets):
+            raise RuntimeError(
+                "Release publication is incomplete; refusing reuse."
+            )
+
+        _verify_existing_publication(
+            cfg=cfg,
+            standard_path=standard_path,
+            enriched_path=enriched_path,
+            metadata_standard=metadata_standard,
+            metadata_enriched=metadata_enriched,
+            audit_path=audit_path,
+            release_id=release_id,
+        )
+
+        # Existing candidates must correspond exactly to the published datasets.
+        for candidate, published in (
+            (standard_candidate, standard_path),
+            (enriched_candidate, enriched_path),
+        ):
+            if not candidate.is_file() or _sha256(candidate) != _sha256(published):
+                raise RuntimeError(
+                    f"Release candidate differs from published dataset: {candidate}"
+                )
+
+        reusable, reason = validate_local_checkpoint(
+            checkpoint_path=checkpoint_path,
+            current_config=config_fp,
+            current_input=input_fp,
+            output_paths=output_paths,
+        )
+
+        if reusable:
+            logger.info("REUSE — Publication local checkpoint matches.")
+        else:
+            logger.info(
+                "REFRESH — Publication checkpoint: %s",
+                reason,
+            )
+
+            # Publication integrity and current audit were verified above.
+            # Refresh the checkpoint without modifying published artifacts.
+            write_local_checkpoint(
+                checkpoint_path=checkpoint_path,
+                step_name="publication",
+                run_id=run_id,
+                config=config_fp,
+                input_fingerprint=input_fp,
+                output_paths=output_paths,
+            )
+
+            logger.info("Created checkpoint for existing verified publication.")
+
+
+        logger.info("REUSE — Existing immutable Release publication verified.")
+
+        return {
+            "status": "reused",
+            "run_id": run_id,
+            "release_id": release_id,
+            "standard_path": standard_path,
+            "enriched_path": enriched_path,
+            "output_path": standard_path,
+            "standard_metadata_path": metadata_standard,
+            "enriched_metadata_path": metadata_enriched,
+            "audit_path": audit_path,
+            "publication_completed": True,
+            "duration_seconds": perf_counter() - start,
+        }
 
     for source in (*sources, audit_path):
         if not source.is_file() or source.stat().st_size <= 0:
@@ -191,6 +362,18 @@ def publish_release_datasets(
                 raise FileExistsError(f"Publication target unexpectedly exists: {destination}")
             os.replace(temporary, destination)
             committed.append(destination)
+
+        write_local_checkpoint(
+            checkpoint_path=checkpoint_path,
+            step_name="publication",
+            run_id=run_id,
+            config=config_fp,
+            input_fingerprint=input_fp,
+            output_paths=output_paths,
+        )
+
+        committed.append(checkpoint_path)
+
         logger.info("Published standard Release dataset: %s", standard_path)
         logger.info("Published enriched Release dataset: %s", enriched_path)
         logger.info("Publication audit: %s", audit_path)

@@ -587,19 +587,37 @@ def write_local_checkpoint(
     run_id: str,
     config: dict[str, Any],
     input_fingerprint: dict[str, Any],
-    output_path: Path,
+    output_path: Path | None = None,
+    output_paths: dict[str, Path] | None = None,
 ) -> None:
+    """Write a local checkpoint for one or multiple output artifacts."""
+
+    if (output_path is None) == (output_paths is None):
+        raise ValueError(
+            "Provide exactly one of output_path or output_paths."
+        )
+
     payload = {
         "schema_version": 1,
         "step_name": step_name,
         "run_id": run_id,
         "config": config,
         "input": input_fingerprint,
-        "output": file_fingerprint(
+    }
+
+    if output_path is not None:
+        payload["output"] = file_fingerprint(
             output_path,
             hash_file=True,
-        ),
-    }
+        )
+    else:
+        if not output_paths:
+            raise ValueError("output_paths cannot be empty.")
+
+        payload["outputs"] = {
+            name: file_fingerprint(path, hash_file=True)
+            for name, path in sorted(output_paths.items())
+        }
 
     checkpoint_path.parent.mkdir(
         parents=True,
@@ -613,14 +631,23 @@ def write_local_checkpoint(
         ),
         encoding="utf-8",
     )
-    
+
+
 def validate_local_checkpoint(
     *,
     checkpoint_path: Path,
     current_config: dict[str, Any],
     current_input: dict[str, Any],
-    output_path: Path,
+    output_path: Path | None = None,
+    output_paths: dict[str, Path] | None = None,
 ) -> tuple[bool, str]:
+    """Validate a local checkpoint for one or multiple output artifacts."""
+
+    if (output_path is None) == (output_paths is None):
+        raise ValueError(
+            "Provide exactly one of output_path or output_paths."
+        )
+
     checkpoint = load_checkpoint(checkpoint_path)
 
     if checkpoint is None:
@@ -632,16 +659,33 @@ def validate_local_checkpoint(
     if checkpoint.get("input") != current_input:
         return False, "input fingerprint changed"
 
-    if not output_path.is_file():
-        return False, "output missing"
+    if output_path is not None:
+        if not output_path.is_file():
+            return False, "output missing"
 
-    current_output = file_fingerprint(
-        output_path,
-        hash_file=True,
-    )
+        current_output = file_fingerprint(
+            output_path,
+            hash_file=True,
+        )
 
-    if checkpoint.get("output") != current_output:
-        return False, "output fingerprint changed"
+        if checkpoint.get("output") != current_output:
+            return False, "output fingerprint changed"
+
+    else:
+        if not output_paths:
+            raise ValueError("output_paths cannot be empty.")
+
+        for name, path in sorted(output_paths.items()):
+            if not path.is_file():
+                return False, f"output missing: {name}"
+
+        current_outputs = {
+            name: file_fingerprint(path, hash_file=True)
+            for name, path in sorted(output_paths.items())
+        }
+
+        if checkpoint.get("outputs") != current_outputs:
+            return False, "output fingerprints changed"
 
     return True, "local checkpoint matches"
 

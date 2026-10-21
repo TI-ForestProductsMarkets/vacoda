@@ -14,7 +14,12 @@ import duckdb
 
 from vacoda.config.steps.release import ReleaseConfig
 from vacoda.utils.sql import sql_literal
-
+from vacoda.pipeline.checkpoint import (
+    file_fingerprint,
+    semantic_config_fingerprint,
+    validate_local_checkpoint,
+    write_local_checkpoint,
+)
 
 KEY = ("year", "exporter_iso", "importer_iso", "target_cmd")
 PREPARED_EXTRA = {
@@ -78,6 +83,7 @@ def build_release_candidates(
     inference_input_path: Path,
     staging_dir: Path,
     run_id: str,
+    checkpoint_dir: Path,
     force: bool = False,
     logger,
 ) -> dict[str, Any]:
@@ -109,6 +115,61 @@ def build_release_candidates(
     enriched_path = standard_path.with_name(
         f"{standard_path.stem}_enriched{standard_path.suffix}"
     )
+
+    # ==============================================================
+    # LOCAL CHECKPOINT — RELEASE CANDIDATES
+    # ==============================================================
+
+    checkpoint_path = checkpoint_dir / "candidates.json"
+
+    config_fp = semantic_config_fingerprint(
+        config={
+            "schema_standard": standard_cols,
+            "schema_enriched": enriched_cols,
+            "candidate_filename": filename,
+            "candidate_builder_version": 1,
+        }
+    )
+
+    input_fp = {
+        "prepared": file_fingerprint(
+            prepared_path,
+            hash_file=True,
+        ),
+        "inference": file_fingerprint(
+            inference_path,
+            hash_file=True,
+        ),
+    }
+
+    output_paths = {
+        "standard": standard_path,
+        "enriched": enriched_path,
+    }
+
+    reusable, reason = validate_local_checkpoint(
+        checkpoint_path=checkpoint_path,
+        current_config=config_fp,
+        current_input=input_fp,
+        output_paths=output_paths,
+    )
+
+    if reusable and not force:
+        logger.info("REUSE — Release candidate checkpoint matches.")
+
+        return {
+            "status": "reused",
+            "run_id": run_id,
+            "candidate_standard_path": standard_path,
+            "candidate_enriched_path": enriched_path,
+            "duration_seconds": perf_counter() - start,
+        }
+
+    logger.info(
+        "REBUILD — Release candidates: %s",
+        "forced" if force else reason,
+    )
+
     for path in (standard_path, enriched_path):
         if path.exists() and not force:
             raise FileExistsError(f"Release candidate exists (force required): {path}")
@@ -241,8 +302,21 @@ def build_release_candidates(
                      (WHERE manual_review_required IS TRUE)
             FROM release_evidence
         """).fetchone()
-        logger.info(
-            "Release candidates built: rows=%s, manual-review=%s (%s HS6 codes)",
+
+        # ==============================================================
+        # WRITE LOCAL CHECKPOINT
+        # ==============================================================
+
+        write_local_checkpoint(
+            checkpoint_path=checkpoint_path,
+            step_name="release_candidates",
+            run_id=run_id,
+            config=config_fp,
+            input_fingerprint=input_fp,
+            output_paths=output_paths,
+        )
+
+        logger.info("Release candidates built: rows=%s, manual-review=%s (%s HS6 codes)",
             f"{prepared_rows:,}", f"{review_rows:,}", f"{review_codes:,}",
         )
         logger.info("  Candidate standard: %s", standard_path)
