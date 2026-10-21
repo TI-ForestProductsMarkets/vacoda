@@ -39,6 +39,37 @@ STAGE_LABELS = {
     "trade_sync": "Trade Sync", "value": "Value", "validation_prepared": "Validation prepared",
     "validation_inference": "Validation inference", "release_enriched": "Release",
 }
+STAGE_SUMMARIES = {
+    "ingestion": (
+        "Ingest and prepare the source trade observations."
+    ),
+    "hs_sync": (
+        "Harmonize product classifications into the target HS revision."
+    ),
+    "quantity": (
+        "Standardize and prepare quantity evidence from reporting countries."
+    ),
+    "cif_fob": (
+        "Account for the CIF/FOB distinction in bilateral trade values."
+    ),
+    "trade_sync": (
+        "Reconcile bilateral trade values and quantities using the "
+        "configured synchronization methodology."
+    ),
+    "value": (
+        "Prepare the reconciled trade values in constant USD."
+    ),
+    "validation_prepared": (
+        "Construct the UV-based training population and model inputs."
+    ),
+    "validation_inference": (
+        "Evaluate candidate models and infer an additional quantity feature."
+    ),
+    "release_enriched": (
+        "Publish synchronized and inferred quantities with provenance "
+        "and review information."
+    ),
+}
 FIELD_LABELS = {
     "trade_value_reconciled_constant_usd": "Trade value (constant USD)",
     "trade_synced_quantity_kg": "Synchronized quantity (kg)",
@@ -53,6 +84,7 @@ REASON_LABELS = {
     "export_missing_import_corrected_present": "Export missing; corrected import present (not necessarily usable)",
     "other_missing_reconciled_value": "Other missing-value cases",
     "source_not_provided": "CIF/FOB evidence not provided",
+    "source_row_not_matched": "No matching CIF/FOB source observation",
 }
 
 
@@ -239,7 +271,6 @@ def build_release_report(
     if not cfg.artifacts.enable:
         raise RuntimeError("Release reporting is required by the workflow")
     report_path = cfg.artifacts_path(run_id)
-    report_path = report_path.with_name(f"{report_path.stem}_{release_id}{report_path.suffix}")
     latest_path = cfg.artifacts_latest_path()
     if report_path.exists() and not force:
         raise FileExistsError(f"Release report already exists: {report_path}")
@@ -328,73 +359,118 @@ def build_release_report(
             f"**Years:** {cfg.scope.min_year}–{cfg.scope.max_year}  ",
             "**Generated (UTC):** "
             + datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "",
-            "__TOC__",
-            "## Data Journey",
-            "",
             f"**Published · Audit passed** | `{release_id}` | {cfg.scope.target_hs} | "
             f"{cfg.scope.min_year}–{cfg.scope.max_year}",
             f"Run `{run_id}` · Generated {datetime.now(timezone.utc).isoformat(timespec='seconds')} UTC",
-            "", "__TOC__", "",
-            "## 1. Data Journey", "",
-            "### 1.1 Processing populations", "",
-            *_table(["Stage", "Rows / groups", "Read status"], [
-                (STAGE_LABELS.get(r["stage"], r["stage"]),
-                 _fmt(r["rows"]), r["stage_status"]) for r in journey
-            ]), "",
-            markdown_image("Processing populations", figure_paths["journey"], document_path=report_path), "",
+            "", 
+            "__TOC__", 
+            "",
+            "## 1. Data Journey", 
+            "",
+            "### 1.1 Processing populations", 
+            "",
+            *_table(
+                ["Stage", "Purpose", "Rows", "Source status"],
+                [
+                    (
+                        STAGE_LABELS.get(r["stage"], r["stage"]),
+                        STAGE_SUMMARIES.get(r["stage"], "Description unavailable"),
+                        _fmt(r["rows"]),
+                        r["stage_status"],
+                    )
+                    for r in journey
+                ],
+            ), 
+            "",
+            markdown_image("Processing populations", figure_paths["journey"], document_path=report_path), 
+            "",
             "_HS Sync and Quantity are source-row populations; CIF/FOB and subsequent stages are bilateral observations. "
-            "Filtering, aggregation and mirror pairing must not be interpreted as missing values._", "",
-            "### 1.2 Annual population", "",
+            "Filtering, aggregation and mirror pairing must not be interpreted as missing values._", 
+            "",
+            "### 1.2 Annual population", 
+            "",
             *_table(["Year", "Bilateral rows", "Quantity usable", "Value usable", "Raw predictions"], [
                 (_fmt(r["year"], year=True), _fmt(r["standard_rows"]),
                  _fmt(r["synced_quantity_rows"]), _fmt(r["nominal_value_rows"]),
                  _fmt(r["raw_model_prediction_rows"])) for r in annual
-            ]), "",
-            "## 2. Availability and Missingness", "",
-            "### 2.1 Final dataset coverage", "",
+            ]), 
+            "",
+            "## 2. Availability and Missingness", 
+            "",
+            "### 2.1 Final dataset coverage", 
+            "",
             *_table(["Measure", "Usable", "Missing", "Invalid", "Coverage"], [
                 (label, _fmt(r["usable"]), _fmt(r["missing"]),
                  _fmt(r["nonpositive_or_invalid"]), f'{r["coverage_pct"]:.2f}%')
                 for label, r in final_coverage
-            ]), "",
-            markdown_image("Annual data availability", figure_paths["annual_coverage"], document_path=report_path), "",
-            "### 2.2 Missing reconciled values", "",
+            ]), 
+            "",
+            markdown_image("Annual data availability", figure_paths["annual_coverage"], document_path=report_path), 
+            "",
+            "### 2.2 Missing reconciled values", 
+            "",
             *_table(["Observed CIF/FOB evidence", "Rows"], [
                 (REASON_LABELS.get(r["reason"], r["reason"].replace("_", " ")),
                  _fmt(r["rows"])) for r in reasons
-            ]), "",
-            "_Evidence categories describe observed values, not established causes of missing factors._", "",
-            "## 3. Model Predictions and Review", "",
-            "### 3.1 Training, inference and publication", "",
+            ]), 
+            "",
+            "_Evidence categories describe observed values, not established causes of missing factors._", 
+            "",
+            "## 3. Model Predictions and Review", 
+            "",
+            "### 3.1 Training, inference and publication", 
+            "",
             *_table(["Population", "Observations"], [
                 ("Training selected", _fmt(overall["training_selected_rows"])),
                 ("Raw model predictions", _fmt(overall["raw_model_prediction_rows"])),
                 ("Standard predictions retained", _fmt(overall["standard_prediction_rows"])),
                 ("Manual review", _fmt(overall["manual_review_rows"])),
                 ("Support not evaluated", _fmt(overall["support_not_evaluated_rows"])),
-            ]), "",
-            "### 3.2 HS6 requiring review", "",
+            ]), 
+            "",
+            "**Quantity publication policy:** The synchronized trade quantity "
+            "is preserved as `trade_synced_quantity_kg`. Validation adds "
+            "`model_prediction_quantity_kg` as a separate inferred feature; "
+            "it does not overwrite the synchronized quantity.",
+            "",
+            "The standard dataset withholds model predictions for observations "
+            "requiring manual review. The enriched dataset retains the raw "
+            "predictions together with model-support flags and reconciliation "
+            "provenance.",
+            "",
+            "**Model interpretation:** Predictions are learned from selected "
+            "synchronized trade observations, not independently verified "
+            "shipment weights. Detailed training rules, out-of-fold evaluation "
+            "and UV-coherence diagnostics are documented in Validation.",
+            "",
+            "### 3.2 HS6 requiring review", 
+            "",
             *_table(["HS6", "Rows", "First year", "Last year", "HS6 unseen", "HS4 unseen"], [
                 (r["target_cmd"], _fmt(r["review_rows"]),
                  _fmt(r["first_year"], year=True), _fmt(r["last_year"], year=True),
                  _fmt(r["hs6_unseen_rows"]), _fmt(r["hs4_unseen_rows"])) for r in review
-            ]), "",
+            ]), 
+            "",
             "_Review requires both model-support flags explicitly FALSE. Raw predictions remain in enriched; "
-            "standard predictions are withheld. HS-mapping provenance is not available in these diagnostics._", "",
-            "### 3.3 Prediction discrepancy", "",
-        ]
+            "standard predictions are withheld. HS-mapping provenance is not available in these diagnostics._", 
+            "",
+            "### 3.3 Prediction discrepancy", 
+            "",
+            ]
         if residual_figure:
             lines.extend([markdown_image("Absolute log residual profile (P05–P95)",
                                          figure_paths["residual_profile"], document_path=report_path), ""])
         lines.extend([
-            "## 4. Exploring the Published Data", "",
-            "### 4.1 Trade evolution", "",
+            "## 4. Exploring the Published Data", 
+            "",
+            "### 4.1 Trade evolution", 
+            "",
             markdown_image(
                 "Annual trade value in constant USD",
                 figure_paths["annual_trade"],
                 document_path=report_path,
-            ), "",
+            ), 
+            "",
             *_table(
                 ["Year", "Observations", "Trade value (USD bn)"],
                 [
@@ -405,25 +481,31 @@ def build_release_report(
                     )
                     for r in annual_trade
                 ],
-            ), "",
+            ), 
+            "",
             "_Annual totals reflect the published product and country coverage; "
-            "changes are not necessarily changes in total world trade._", "",
+            "changes are not necessarily changes in total world trade._", 
+            "",
 
-            "### 4.2 Leading exporters and importers", "",
+            "### 4.2 Leading exporters and importers", 
+            "",
             markdown_image(
                 "Leading exporters and importers",
                 figure_paths["country_trade"],
                 document_path=report_path,
-            ), "",
+            ), 
+            "",
 
-            "### 4.3 Product composition", "",
+            "### 4.3 Product composition", 
+            "",
             markdown_image(
                 "Leading HS2 chapters by constant-USD trade value",
                 figure_paths["product_trade"],
                 document_path=report_path,
-            ), "",
-
-            "### 4.4 Feature distributions", "",
+            ), 
+            "",
+            "### 4.4 Feature distributions", 
+            "",
             *_table(
                 ["Measure", "Usable", "P05", "Median", "P95", "P99"],
                 [
@@ -438,17 +520,23 @@ def build_release_report(
                     for r in feature_distributions
                 ],
               ), 
-              "",
-            "_Quantiles for different measures need not refer to the same observations._", "",
-            "## 5. Publication and Integrity", "",
-            "### 5.1 Published products", "",
+            "",
+            "_Quantiles for different measures need not refer to the same observations._", 
+            "",
+            "## 5. Publication and Integrity", 
+            "",
+            "### 5.1 Published products", 
+            "",
             *_table(["Product", "Rows", "Columns"], [
                 ("Standard", _fmt(overall["standard_rows"]), _fmt(len(cfg.schema.standard))),
                 ("Enriched", _fmt(overall["enriched_rows"]), _fmt(len(cfg.schema.enriched))),
-            ]), "",
+            ]), 
+            "",
             f"**Audit:** passed · {n_checks} checks · 0 failed. "
-            f"**Review predictions withheld from standard:** {_fmt(overall['manual_review_rows'])}.", "",
-            "### 5.2 Published artifacts", "",
+            f"**Review predictions withheld from standard:** {_fmt(overall['manual_review_rows'])}.",
+            "",
+            "### 5.2 Published artifacts", 
+            "",
             *_table(["Artifact", "Path"], [
                 ("Standard", f"`{standard_path}`"),
                 ("Enriched", f"`{enriched_path}`"),
@@ -457,16 +545,44 @@ def build_release_report(
                 ("Audit", f"`{audit_path}`"),
                 ("Diagnostics", f"`{diagnostics_path}`"),
                 ("Figures", f"`{figure_dir}`"),
-            ]), "",
-            "## Appendix — Technical Reference", "",
-            "### A. Audit checks", "",
+            ]), 
+            "",
+            "## 6. Interpretation and Limitations",
+            "",
+            "VACODA combines harmonized source trade observations, bilateral "
+            "reconciliation and model-based quantity inference into two "
+            "complementary published datasets.",
+            "",
+            "Trade-Sync quantities are reconciled estimates, while model "
+            "quantities provide additional statistical evidence. Neither "
+            "should be interpreted as independently verified shipment weights.",
+            "",
+            "Missing values remain missing when the relevant source evidence "
+            "or required model inputs are unavailable. Predictions for "
+            "unsupported product categories are retained for review only "
+            "in the enriched dataset.",
+            "",
+            "Detailed methodology, diagnostic figures and validation "
+            "results remain in the individual upstream module reports. "
+            "The Release audit establishes technical publication integrity, "
+            "not ground-truth accuracy.",
+            "",
+            "## Appendix — Technical Reference", 
+            "",
+            "### A. Audit checks", 
+            "",
             *_table(["Check", "Passed"], [
                 (name.replace("_", " "), _fmt(value)) for name, value in checks
-            ]), "",
-            "### B. Published schemas", "",
-            "**Standard:** " + ", ".join(f"`{name}`" for name in cfg.schema.standard), "",
-            "**Enriched additions:** " + ", ".join(f"`{name}`" for name in cfg.schema.enriched_additional), "",
-            "_Release diagnostics describe the published data; the upstream Release audit authorized publication._", "",
+            ]), 
+            "",
+            "### B. Published schemas", 
+            "",
+            "**Standard:** " + ", ".join(f"`{name}`" for name in cfg.schema.standard), 
+            "",
+            "**Enriched additions:** " + ", ".join(f"`{name}`" for name in cfg.schema.enriched_additional), 
+            "",
+            "_Release diagnostics describe the published data; the upstream Release audit authorized publication._", 
+            "",
         ])
         missing_stages = [r["stage"] for r in journey if r["stage_status"] != "read"]
         if missing_stages:

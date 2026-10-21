@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from time import perf_counter
 from typing import Any, Callable
+from hashlib import sha256
 
 import pandas as pd
 
@@ -37,6 +38,7 @@ from vacoda.config.steps.release import ReleaseConfig
 from vacoda.steps.release.workflow import run_release_workflow
 
 from vacoda.config.pipeline import PipelineConfig
+from vacoda.pipeline.publication_identity import release_identity
 
 ## 
 from vacoda.config.paths import resolve_log_path
@@ -79,6 +81,30 @@ class StepDecision:
     action: str  # "run" or "skip"
     reason: str
 
+def _global_step_checkpoint_path(
+    *,
+    checkpoint_dir: Path,
+    step_name: str,
+    plan: StepPlan,
+) -> Path:
+    if step_name != "release":
+        return checkpoint_path(
+            checkpoint_dir=checkpoint_dir,
+            step_name=step_name,
+        )
+
+    publication_dir = plan.output_path.parent.resolve()
+
+    identity_hash = sha256(
+        str(publication_dir).encode("utf-8")
+    ).hexdigest()[:16]
+
+    return (
+        checkpoint_dir
+        / "release"
+        / f"{identity_hash}.json"
+    )
+
 def _run_ingestion_step(
     *,
     config_path: Path,
@@ -116,9 +142,10 @@ def _build_step_decisions(
             pipeline_cfg=cfg,
         )
 
-        step_checkpoint_path = checkpoint_path(
+        step_checkpoint_path = _global_step_checkpoint_path(
             checkpoint_dir=checkpoint_dir,
             step_name=step_name,
+            plan=plan,
         )
 
         action = "run"
@@ -144,9 +171,26 @@ def _build_step_decisions(
                     current_input=plan.input_fingerprint,
                 )
 
+                if reusable and step_name == "release":
+                    if not _release_publication_complete(plan):
+                        reusable = False
+                        checkpoint_reason = "Release publication is incomplete"
+
+                if reusable and step_name == "release":
+                    stored_path = checkpoint.get("output", {}).get("path")
+
+                    if (
+                        not stored_path
+                        or Path(stored_path).resolve()
+                        != plan.output_path.resolve()
+                    ):
+                        reusable = False
+                        checkpoint_reason = "Release output identity changed"
+
                 if reusable:
                     output_path = checkpoint.get("output", {}).get("path")
                     audit_path = checkpoint.get("audit", {}).get("path")
+
 
                     if isinstance(output_path, str) and output_path:
                         plan = StepPlan(
@@ -200,93 +244,30 @@ def _build_step_decisions(
 
     return decisions
 
-def _build_step_decisions_deprecated(
-    *,
-    cfg: PipelineConfig,
-    checkpoint_dir: Path,
-    logger: Any,) -> list[StepDecision]:
-    decisions: list[StepDecision] = []
+def _release_publication_complete(plan: StepPlan) -> bool:
+    publication_dir = plan.output_path.parent
 
-    for step_name, step_cfg in cfg.enabled_steps():
-        plan = _build_step_plan(
-                        step_name=step_name,
-                        config_path=step_cfg.config,
-                        pipeline_cfg=cfg,
-                    )
+    standard_path = plan.output_path
 
-        step_checkpoint_path = checkpoint_path(
-            checkpoint_dir=checkpoint_dir,
-            step_name=step_name,
-        )
+    enriched_path = standard_path.with_name(
+        f"{standard_path.stem}_enriched{standard_path.suffix}"
+    )
 
-        action = "run"
-        reason = "no reusable checkpoint"
+    diagnostics_dir = publication_dir / "diagnostics"
 
-        if (
-            cfg.checkpoint.enabled
-            and cfg.checkpoint.reuse_successful_steps
-            and not cfg.pipeline.force_run_all
-        ):
-            checkpoint = load_checkpoint(step_checkpoint_path)
+    required = (
+        standard_path,
+        enriched_path,
+        standard_path.with_suffix(".metadata.json"),
+        enriched_path.with_suffix(".metadata.json"),
+        plan.audit_path,
+        diagnostics_dir / "target_h5_diagnostics.parquet",
+    )
 
-            if checkpoint is not None:
-                reusable, checkpoint_reason = validate_checkpoint(
-                    checkpoint=checkpoint,
-                    expected_status=step_cfg.expected_status,
-                    required_ready_flag=step_cfg.required_ready_flag,
-                    current_config=plan.config_fingerprint,
-                    current_input=plan.input_fingerprint,
-                )
-
-                if reusable:
-                    output_path = checkpoint.get("output", {}).get("path")
-                    audit_path = checkpoint.get("audit", {}).get("path")
-
-                    if isinstance(output_path, str) and output_path:
-                        plan = StepPlan(
-                            step_name=plan.step_name,
-                            config_path=plan.config_path,
-                            config_fingerprint=plan.config_fingerprint,
-                            input_fingerprint=plan.input_fingerprint,
-                            output_path=Path(output_path),
-                            audit_path=(
-                                Path(audit_path)
-                                if isinstance(audit_path, str) and audit_path
-                                else plan.audit_path
-                            ),
-                            runner=plan.runner,
-                        )
-
-                    action = "skip"
-                    reason = "valid checkpoint exists"
-                else:
-                    action = "run"
-                    reason = f"checkpoint not reusable: {checkpoint_reason}"
-
-        elif cfg.pipeline.force_run_all:
-            action = "run"
-            reason = "pipeline.force_run_all=true"
-
-        elif not cfg.checkpoint.enabled:
-            action = "run"
-            reason = "checkpointing disabled"
-
-        elif not cfg.checkpoint.reuse_successful_steps:
-            action = "run"
-            reason = "checkpoint reuse disabled"
-
-        decisions.append(
-            StepDecision(
-                step_name=step_name,
-                step_config=step_cfg,
-                plan=plan,
-                checkpoint_path=step_checkpoint_path,
-                action=action,
-                reason=reason,
-            )
-        )
-
-    return decisions
+    return all(
+        path.is_file() and path.stat().st_size > 0
+        for path in required
+    )
 
 def _confirm_pipeline_run(
     *,
@@ -498,8 +479,11 @@ def _run_release_step(
     prepared_path = validation_cfg.product_path("prepared_input")
     inference_path = validation_cfg.product_path("inference")
 
-    training_definition = inference_path.parent.parent.name
-    release_id = f"{training_definition}__{run_id}"
+    release_id = release_identity(
+        cif_fob_cfg=upstream_cfgs["cif_fob"],
+        trade_sync_cfg=upstream_cfgs["trade_sync"],
+        validation_cfg=validation_cfg,
+    )
 
     return run_release_workflow(
         cfg=cfg,
@@ -988,6 +972,12 @@ def _build_release_plan(
         )
         for name, config_class in upstream_configs.items()
     }
+    
+    release_id = release_identity(
+        cif_fob_cfg=upstream_cfgs["cif_fob"],
+        trade_sync_cfg=upstream_cfgs["trade_sync"],
+        validation_cfg=validation_cfg,
+    )
 
     source_paths = {
         "hs_sync": upstream_cfgs["hs_sync"].apply_output_path(),
@@ -1022,8 +1012,8 @@ def _build_release_plan(
             include_scope=True,
         ),
         input_fingerprint=input_fp,
-        output_path=cfg.product_path("release"),
-        audit_path=cfg.product_path("release_audit"),
+        output_path=cfg.product_path("release", release_id=release_id),
+        audit_path=cfg.product_path("release_audit", release_id=release_id),
         runner=lambda run_id, force: _run_release_step(
             config_path=config_path,
             pipeline_cfg=pipeline_cfg,

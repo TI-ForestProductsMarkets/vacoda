@@ -14,10 +14,16 @@ from vacoda.utils.sql import sql_literal
 # existing report consumers remain compatible. No per-run counts are embedded.
 
 _STAGE_ORDER = (
-    "hs_sync", "quantity", "cif_fob", "trade_sync", "value",
-    "validation_prepared", "validation_inference", "release_enriched",
+    "ingestion",
+    "hs_sync",
+    "quantity",
+    "cif_fob",
+    "trade_sync",
+    "value",
+    "validation_prepared",
+    "validation_inference",
+    "release_enriched",
 )
-
 
 def _sidecar_paths(main_path: Path) -> dict[str, Path]:
     names = (
@@ -251,7 +257,7 @@ def _build_sidecars(
 ) -> dict[str, Path]:
     """Return temporary paths; caller promotes only after every query succeeds.
     Optional source_paths keys:
-      hs_sync, quantity, cif_fob, trade_sync, value,
+      ingestion, hs_sync, quantity, cif_fob, trade_sync, value,
       validation_prepared, validation_inference.
     These are actual source artifacts, not file paths reconstructed here.
     Missing optional stages are omitted and explicitly reported by stage_status.
@@ -368,24 +374,39 @@ def _build_sidecars(
         )
         reasons_query = f"""
             WITH missing AS (
-                SELECT e.year, e.exporter_iso, e.importer_iso, e.target_cmd,
-                       c.export_value_fob, c.import_value_fob_corrected
+                SELECT
+                    e.year,
+                    e.exporter_iso,
+                    e.importer_iso,
+                    e.target_cmd,
+                    c.year AS matched_source_year,
+                    c.export_value_fob,
+                    c.import_value_fob_corrected
                 FROM enriched_release e
-                JOIN read_parquet({path_sql}) c
-                  USING (year, exporter_iso, importer_iso, target_cmd)
+                LEFT JOIN read_parquet({path_sql}) c
+                USING (year, exporter_iso, importer_iso, target_cmd)
                 WHERE e.trade_value_reconciled IS NULL
-            ), grouped AS (
-                SELECT CASE
-                  WHEN export_value_fob IS NULL AND
-                       import_value_fob_corrected IS NULL
-                    THEN 'export_missing_and_import_corrected_missing'
-                  WHEN export_value_fob IS NULL
-                    THEN 'export_missing_import_corrected_present'
-                  WHEN export_value_fob <= 0
-                    THEN 'export_nonpositive'
-                  ELSE 'other_missing_reconciled_value' END AS reason,
-                  COUNT(*) AS rows FROM missing GROUP BY 1
-            ) SELECT reason, rows FROM grouped
+            ),
+            grouped AS (
+                SELECT
+                    CASE
+                        WHEN matched_source_year IS NULL
+                            THEN 'source_row_not_matched'
+                        WHEN export_value_fob IS NULL
+                            AND import_value_fob_corrected IS NULL
+                            THEN 'export_missing_and_import_corrected_missing'
+                        WHEN export_value_fob IS NULL
+                            THEN 'export_missing_import_corrected_present'
+                        WHEN export_value_fob <= 0
+                            THEN 'export_nonpositive'
+                        ELSE 'other_missing_reconciled_value'
+                    END AS reason,
+                    COUNT(*) AS rows
+                FROM missing
+                GROUP BY 1
+            )
+            SELECT reason, rows
+            FROM grouped
         """
         # Use LEFT JOIN with missing-side checks in the notebook for exact
         # attribution if source artifacts have changed between runs.
@@ -422,7 +443,8 @@ def _build_sidecars(
                    quantile_cont({value}, 0.95) AS p95,
                    MAX({value}) AS maximum
             FROM enriched_release
-            WHERE {value} > 0 AND isfinite({value})
+            WHERE {value} {">=" if field == "quantity_abs_log_residual" else ">"} 0
+                AND isfinite({value})
             GROUP BY GROUPING SETS ((year), ())
         """)
     if not dist:

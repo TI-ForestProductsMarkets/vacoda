@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-
+import re   
 from vacoda.config.base import (
     get_step_config_path,
     load_yaml_config,
@@ -360,9 +360,25 @@ class ReleaseConfig:
             raise KeyError(f"Unknown Release product: {product_name!r}")
         base = self.output_dir()
         if release_id is not None:
-            if not release_id or Path(release_id).name != release_id or release_id in {".", ".."} or "\\" in release_id:
-                raise ValueError("release_id must be one safe directory name.")
-            base = base / release_id
+            if "\\" in release_id:
+                raise ValueError("Backslashes are not allowed in release_id.")
+
+            relative = Path(release_id)
+
+            if (
+                relative.is_absolute()
+                or not relative.parts
+                or any(
+                    not re.fullmatch(r"[a-z0-9][a-z0-9_.-]*", part)
+                    or part in {".", ".."}
+                    for part in relative.parts
+                )
+            ):
+                raise ValueError(
+                    "release_id must be a safe relative directory path."
+                )
+
+            base = base / relative
         return base / products[product_name].filename
 
     def enriched_path(self, *, release_id: str | None = None) -> Path:

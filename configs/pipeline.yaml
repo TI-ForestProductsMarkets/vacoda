@@ -93,7 +93,7 @@ steps:
     required_ready_flag: "ready_for_release"
 
   release:
-    enabled: false
+    enabled: true
     config: "configs/steps/release.yaml"
     expected_status:
       - "completed"
