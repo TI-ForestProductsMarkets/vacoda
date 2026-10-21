@@ -142,6 +142,20 @@ def _build_exploration_sidecars(
     # 3. HS2 chapter and HS6 product composition.
     product_sql = f"""
         WITH product_totals AS (
+
+            SELECT
+                'hs4' AS level,
+                SUBSTR(CAST(target_cmd AS VARCHAR), 1, 4) AS product_code,
+                COUNT(*) AS rows,
+                SUM(trade_value_reconciled_constant_usd)
+                    AS total_trade_value_constant_usd
+            FROM enriched_release
+            WHERE trade_value_reconciled_constant_usd > 0
+            AND isfinite(trade_value_reconciled_constant_usd)
+            GROUP BY 2
+
+            UNION ALL
+            
             SELECT
                 'hs2' AS level,
                 SUBSTR(CAST(target_cmd AS VARCHAR), 1, 2)

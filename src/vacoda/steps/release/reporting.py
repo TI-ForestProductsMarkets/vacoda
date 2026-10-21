@@ -21,7 +21,7 @@ from vacoda.config.steps.release import ReleaseConfig
 from vacoda.utils.display import get_symbols
 from vacoda.utils.markdown import insert_markdown_toc, markdown_image
 from vacoda.utils.sql import sql_literal
-
+from vacoda.visualization.relationships import plot_figure_pair
 
 SIDECARS = (
     "journey",
@@ -53,8 +53,7 @@ STAGE_SUMMARIES = {
         "Account for the CIF/FOB distinction in bilateral trade values."
     ),
     "trade_sync": (
-        "Reconcile bilateral trade values and quantities using the "
-        "configured synchronization methodology."
+        "Reconcile bilateral trade values and quantities."
     ),
     "value": (
         "Prepare the reconciled trade values in constant USD."
@@ -66,8 +65,7 @@ STAGE_SUMMARIES = {
         "Evaluate candidate models and infer an additional quantity feature."
     ),
     "release_enriched": (
-        "Publish synchronized and inferred quantities with provenance "
-        "and review information."
+        "Publish synchronized and inferred data."
     ),
 }
 FIELD_LABELS = {
@@ -154,9 +152,9 @@ def _plot_annual_coverage(annual: list[dict[str, Any]], path: Path) -> None:
     years = [int(r["year"]) for r in rows]
     fig, ax = plt.subplots(figsize=(9, 4.2))
     for key, label in (
-        ("synced_quantity_rows", "Synchronized quantity"),
+        ("synced_quantity_rows", "Synchronized trade quantity"),
         ("nominal_value_rows", "Reconciled trade value"),
-        ("raw_model_prediction_rows", "Raw model prediction"),
+        ("raw_model_prediction_rows", "Model predictions"),
     ):
         ax.plot(years, [100 * r[key] / r["standard_rows"] for r in rows], marker="o", label=label)
     ax.set_ylabel("Coverage (% of annual Release rows)")
@@ -206,7 +204,7 @@ def _plot_product_trade(rows: list[dict[str, Any]], path: Path) -> None:
         (r for r in rows if r["level"] == "hs2"),
         key=lambda r: r["total_trade_value_constant_usd"],
         reverse=True,
-    )[:10]
+    )
     names = [str(r["product_code"]) for r in data][::-1]
     shares = [float(r["share_of_total_value_pct"]) for r in data][::-1]
     fig, ax = plt.subplots(figsize=(9, 5))
@@ -216,6 +214,93 @@ def _plot_product_trade(rows: list[dict[str, Any]], path: Path) -> None:
     ax.set_axisbelow(True)
     _save(fig, path)
 
+def _plot_hs4_trade(
+    rows: list[dict[str, Any]],
+    path: Path,
+) -> list[Path]:
+    data = sorted(
+        (r for r in rows if r["level"] == "hs4"),
+        key=lambda r: r["total_trade_value_constant_usd"],
+        reverse=True,
+    )
+
+    if not data:
+        raise RuntimeError("No HS4 product composition data available.")
+
+    batch_size = 25
+    paths = []
+
+    for start in range(0, len(data), batch_size):
+        batch = data[start:start + batch_size]
+
+        names = [str(r["product_code"]) for r in batch][::-1]
+        shares = [float(r["share_of_total_value_pct"]) for r in batch][::-1]
+
+        part = start // batch_size + 1
+        part_path = path.with_name(f"{path.stem}_part{part}{path.suffix}")
+
+        fig, ax = plt.subplots(figsize=(8, 10))
+
+        ax.barh(names, shares, height=0.75)
+
+        ax.tick_params(axis="y", labelsize=13)
+        ax.tick_params(axis="x", labelsize=12)
+
+        ax.set_xlabel(
+            "Share of published trade value (%)",
+            fontsize=13,
+        )
+        ax.set_ylabel(
+            "HS4 product group",
+            fontsize=13,
+        )
+
+        ax.set_title(
+            f"HS4 product groups — ranks {start + 1}–{start + len(batch)}",
+            fontsize=14,
+        )
+
+        ax.set_xlim(0, max(shares) * 1.08)
+        ax.grid(axis="x", alpha=0.2)
+        ax.set_axisbelow(True)
+
+        part_path.parent.mkdir(parents=True, exist_ok=True)
+
+        fig.tight_layout()
+        fig.savefig(
+            part_path,
+            format="svg",
+            bbox_inches="tight",
+        )
+        plt.close(fig)
+
+        paths.append(part_path)
+
+    return paths
+
+
+def _plot_hs4_trade_deprecated(rows: list[dict[str, Any]], path: Path) -> None:
+    data = sorted(
+        (r for r in rows if r["level"] == "hs4"),
+        key=lambda r: r["total_trade_value_constant_usd"],
+        reverse=True,
+    )
+
+    if not data:
+        raise RuntimeError("No HS4 product composition data available.")
+
+    names = [str(r["product_code"]) for r in data][::-1]
+    shares = [float(r["share_of_total_value_pct"]) for r in data][::-1]
+
+    fig, ax = plt.subplots(figsize=(15, 6))
+    ax.barh(names, shares)
+    ax.set(
+        xlabel="Share of published trade value (%)",
+        ylabel="HS4 product group",
+    )
+    ax.grid(axis="x", alpha=0.2)
+    ax.set_axisbelow(True)
+    _save(fig, path)
 
 def _plot_residual_profile(distributions: list[dict[str, Any]], path: Path) -> bool:
     match = next((r for r in distributions if r["period_type"] == "all_years"
@@ -223,7 +308,7 @@ def _plot_residual_profile(distributions: list[dict[str, Any]], path: Path) -> b
     if not match or not match["usable_rows"]:
         return False
     vals = [float(match[key]) for key in ("p05", "p25", "median", "p75", "p95")]
-    fig, ax = plt.subplots(figsize=(8, 2.8))
+    fig, ax = plt.subplots(figsize=(6, 3))
     ax.hlines(0, vals[0], vals[-1], linewidth=2)
     ax.hlines(0, vals[1], vals[3], linewidth=9)
     ax.plot(vals[2], 0, "o", markersize=9, label="Median")
@@ -284,6 +369,7 @@ def build_release_report(
         "annual_trade": figure_dir / f"{release_id}_annual_trade.png",
         "country_trade": figure_dir / f"{release_id}_country_trade.png",
         "product_trade": figure_dir / f"{release_id}_product_trade.png",
+        "product_trade_hs4": figure_dir / f"{release_id}_product_trade_hs4.svg",
     }
     con = duckdb.connect()
     try:
@@ -322,9 +408,9 @@ def build_release_report(
         feature_distributions = sidecars["feature_distributions"]
         lookup = {(r["stage"], r["field"]): r for r in availability}
         final_specs = (
-            ("Reconciled value", "trade_value_reconciled"),
-            ("Synchronized quantity", "trade_synced_quantity_kg"),
-            ("Raw model prediction", "model_prediction_quantity_kg"),
+            ("Reconciled trade value", "trade_value_reconciled"),
+            ("Synchronized trade quantity", "trade_synced_quantity_kg"),
+            ("Model prediction", "model_prediction_quantity_kg"),
         )
         final_coverage = []
         for label, field in final_specs:
@@ -344,6 +430,10 @@ def build_release_report(
         _plot_annual_trade(annual_trade, figure_paths["annual_trade"])
         _plot_country_trade(country_trade, figure_paths["country_trade"])
         _plot_product_trade(product_trade, figure_paths["product_trade"])
+        hs4_figure_paths = _plot_hs4_trade(
+                            product_trade,
+                            figure_paths["product_trade_hs4"],
+                        )
 
         n_checks = len(checks)
         
@@ -387,35 +477,47 @@ def build_release_report(
             "_HS Sync and Quantity are source-row populations; CIF/FOB and subsequent stages are bilateral observations. "
             "Filtering, aggregation and mirror pairing must not be interpreted as missing values._", 
             "",
-            "### 1.2 Annual population", 
+            "### 1.2 Annual population",
             "",
-                "- Year: Calendar year associated with the bilateral trade observations.",
+            "**Column definitions**",
             "",
-                "- Bilateral rows: Total number of published observations for the corresponding year. ",
-                "Each observation represents a unique combination of year, exporting country, importing country,"
-                " and product code (target_cmd). These counts describe the final bilateral population, not the "
-                "original source records. Number of bilateral trade observations in the Release dataset.",
+            "- **Year:** Calendar year associated with the bilateral trade observations.",
             "",
-                "- Quantity usable: Number of bilateral observations with a valid, positive synchronized trade quantity"
-                 " (trade_synced_quantity_kg). This quantity is derived from the Trade Sync reconciliation process and "
-                 "must not be interpreted as independently verified physical shipment weight."
+            "- **Bilateral rows:** Total number of published observations for the corresponding year. "
+            "Each observation represents a unique combination of year, exporting country, importing country, "
+            "and product code (`target_cmd`). These counts describe the final bilateral population, "
+            "not the original source records.",
             "",
-                "- Value usable: Number of bilateral observations with a valid, positive reconciled trade value"
-                "Value usable: Number of bilateral observations with a valid, positive reconciled nominal trade value"
-                 " (trade_value_reconciled). This measure reflects the availability of reconciled monetary values, rather "
-                 "than the availability of inflation-adjusted values in constant USD."
+            "- **Synchronized trade quantity:** Number of bilateral observations with an available synchronized trade quantity "
+            "(`trade_synced_quantity_kg`). This quantity is derived from Trade Sync reconciliation and "
+            "must not be interpreted as independently verified physical shipment weight.",
             "",
-                "- Raw predictions: Number of bilateral observations with a valid, positive model-predicted quantity"
-                "Number of bilateral observations for which the Validation model generated a quantity prediction "
-                "(model_prediction_quantity_kg in its unsuppressed form). This count includes predictions subsequently"
-                 " excluded from the standard Release dataset under the manual-review policy. Those predictions remain "
-                 "preserved in the enriched dataset."
+            "- **Reconciled trade value:** Number of bilateral observations with an available reconciled nominal trade value "
+            "(`trade_value_reconciled`). This measures the availability of reconciled monetary values, "
+            "not inflation-adjusted values in constant USD.",
             "",
-            *_table(["Year", "Bilateral rows", "Quantity usable", "Value usable", "Raw predictions"], [
-                (_fmt(r["year"], year=True), _fmt(r["standard_rows"]),
-                 _fmt(r["synced_quantity_rows"]), _fmt(r["nominal_value_rows"]),
-                 _fmt(r["raw_model_prediction_rows"])) for r in annual
-            ]), 
+            "- **Model predictions:** Number of bilateral observations for which Validation generated a raw "
+            "model-predicted quantity (`model_prediction_quantity_kg` in its unsuppressed form). "
+            "This includes predictions subsequently excluded from the standard Release dataset under "
+            "the manual-review policy; those predictions remain in the enriched dataset.",
+            "",
+            "**Important:** These columns describe overlapping populations and must not be added together. "
+            "Neither synchronized quantities nor model predictions represent independently verified physical weights.",
+            "",
+            *_table(
+                ["Year", "Bilateral rows", "Synchronized trade quantity", "Reconciled trade value", "Model predictions"],
+                [
+                    (
+                        _fmt(r["year"], year=True),
+                        _fmt(r["standard_rows"]),
+                        _fmt(r["synced_quantity_rows"]),
+                        _fmt(r["nominal_value_rows"]),
+                        _fmt(r["raw_model_prediction_rows"]),
+                    )
+                    for r in annual
+                ],
+            ),
+            "",
             "",
             "## 2. Availability and Missingness", 
             "",
@@ -429,7 +531,7 @@ def build_release_report(
             "",
             markdown_image("Annual data availability", figure_paths["annual_coverage"], document_path=report_path), 
             "",
-            "### 2.2 Missing reconciled values", 
+            "### 2.2 Missing reconciled trade values", 
             "",
             *_table(["Observed CIF/FOB evidence", "Rows"], [
                 (REASON_LABELS.get(r["reason"], r["reason"].replace("_", " ")),
@@ -444,7 +546,7 @@ def build_release_report(
             "",
             *_table(["Population", "Observations"], [
                 ("Training selected", _fmt(overall["training_selected_rows"])),
-                ("Raw model predictions", _fmt(overall["raw_model_prediction_rows"])),
+                ("Model predictions", _fmt(overall["raw_model_prediction_rows"])),
                 ("Standard predictions retained", _fmt(overall["standard_prediction_rows"])),
                 ("Manual review", _fmt(overall["manual_review_rows"])),
                 ("Support not evaluated", _fmt(overall["support_not_evaluated_rows"])),
@@ -453,7 +555,7 @@ def build_release_report(
             "**Quantity publication policy:** The synchronized trade quantity "
             "is preserved as `trade_synced_quantity_kg`. Validation adds "
             "`model_prediction_quantity_kg` as a separate inferred feature; "
-            "it does not overwrite the synchronized quantity.",
+            "it does not overwrite the synchronized trade quantity.",
             "",
             "The standard dataset withholds model predictions for observations "
             "requiring manual review. The enriched dataset retains the raw "
@@ -478,6 +580,8 @@ def build_release_report(
             "",
             "### 3.3 Prediction discrepancy", 
             "",
+            "- The plot shows the distribution of absolute logarithmic discrepancies between synchronized trade quantities "
+            "and model-predicted quantities across observations where both are available; it is not restricted to training data, but covers all comparable observations in the Release dataset."
             ]
         if residual_figure:
             lines.extend([markdown_image("Absolute log residual profile (P05–P95)",
@@ -517,14 +621,48 @@ def build_release_report(
                 document_path=report_path,
             ), 
             "",
-
-            "### 4.3 Product composition", 
+            "### 4.3 Product composition",
+            "",
+            "The following figures summarize the distribution of published trade value "
+            "across product classifications. HS2 represents broad chapters, while HS4 "
+            "provides a more detailed breakdown into product groups.",
+            "",
+            "**Leading HS2 chapters**",
             "",
             markdown_image(
-                "Leading HS2 chapters by constant-USD trade value",
+                "Top 10 HS2 chapters by constant-USD trade value",
                 figure_paths["product_trade"],
                 document_path=report_path,
-            ), 
+            ),
+            "",
+            "**Leading HS4 product groups**",
+            "",
+            *[
+                plot_figure_pair(
+                    markdown_image(
+                        f"HS4 product groups — Part {i + 1}",
+                        hs4_figure_paths[i],
+                        document_path=report_path,
+                    ),
+                    markdown_image(
+                        f"HS4 product groups — Part {i + 2}",
+                        hs4_figure_paths[i + 1],
+                        document_path=report_path,
+                    ),
+                )
+                for i in range(0, len(hs4_figure_paths) - 1, 2)
+            ],
+            *(
+                [
+                    markdown_image(
+                        "HS4 product groups — Final part",
+                        hs4_figure_paths[-1],
+                        document_path=report_path,
+                    )
+                ]
+                if len(hs4_figure_paths) % 2 else []
+            ),
+            "",
             "",
             "### 4.4 Feature distributions", 
             "",
