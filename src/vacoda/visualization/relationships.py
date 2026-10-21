@@ -971,6 +971,26 @@ def plot_temporal_validation_metric(
 
     return fig, ax, grouped
 
+def plot_figure_row(*figures: str) -> str:
+    """Arrange 1–4 figures horizontally in an HTML table."""
+    if not 1 <= len(figures) <= 4:
+        raise ValueError("Expected between 1 and 4 figures.")
+
+    width = 100 / len(figures)
+
+    cells = [
+        f'<td style="width:{width}%; vertical-align:top; padding:4px;">'
+        f'{figure}</td>'
+        for figure in figures
+    ]
+
+    return "\n".join([
+        '<table style="width:100%; border-collapse:collapse; table-layout:fixed;">',
+        "<tr>",
+        *cells,
+        "</tr>",
+        "</table>",
+    ])
 
 def plot_rmse_vs_mae_tradeoff(
     summary: pd.DataFrame,

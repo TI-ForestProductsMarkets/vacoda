@@ -21,7 +21,7 @@ from vacoda.config.steps.release import ReleaseConfig
 from vacoda.utils.display import get_symbols
 from vacoda.utils.markdown import insert_markdown_toc, markdown_image
 from vacoda.utils.sql import sql_literal
-from vacoda.visualization.relationships import plot_figure_pair
+from vacoda.visualization.relationships import plot_figure_pair, plot_figure_row
 
 SIDECARS = (
     "journey",
@@ -627,7 +627,7 @@ def build_release_report(
             "across product classifications. HS2 represents broad chapters, while HS4 "
             "provides a more detailed breakdown into product groups.",
             "",
-            "**Leading HS2 chapters**",
+            "**All HS2 product groups**",
             "",
             markdown_image(
                 "Top 10 HS2 chapters by constant-USD trade value",
@@ -635,23 +635,22 @@ def build_release_report(
                 document_path=report_path,
             ),
             "",
-            "**Leading HS4 product groups**",
+            "**All HS4 product groups**",
             "",
             *[
-                plot_figure_pair(
-                    markdown_image(
-                        f"HS4 product groups — Part {i + 1}",
-                        hs4_figure_paths[i],
-                        document_path=report_path,
-                    ),
-                    markdown_image(
-                        f"HS4 product groups — Part {i + 2}",
-                        hs4_figure_paths[i + 1],
-                        document_path=report_path,
-                    ),
+                plot_figure_row(
+                    *[
+                        markdown_image(
+                            f"HS4 product groups — Part {j + 1}",
+                            hs4_figure_paths[j],
+                            document_path=report_path,
+                        )
+                        for j in range(i, min(i + 4, len(hs4_figure_paths)))
+                    ]
                 )
-                for i in range(0, len(hs4_figure_paths) - 1, 2)
+                for i in range(0, len(hs4_figure_paths), 4)
             ],
+            "",
             *(
                 [
                     markdown_image(
@@ -735,11 +734,25 @@ def build_release_report(
                 (name.replace("_", " "), _fmt(value)) for name, value in checks
             ]), 
             "",
-            "### B. Published schemas", 
+            "### B. Published schemas",
             "",
-            "**Standard:** " + ", ".join(f"`{name}`" for name in cfg.schema.standard), 
+            f"**Standard dataset ({len(cfg.schema.standard)} columns)**",
             "",
-            "**Enriched additions:** " + ", ".join(f"`{name}`" for name in cfg.schema.enriched_additional), 
+            *[
+                f"{i}. `{name}`"
+                for i, name in enumerate(cfg.schema.standard, start=1)
+            ],
+            "",
+            f"**Enriched dataset — additional columns ({len(cfg.schema.enriched_additional)} columns)**",
+            "",
+            *[
+                f"{i}. `{name}`"
+                for i, name in enumerate(cfg.schema.enriched_additional, start=1)
+            ],
+            "",
+            f"The enriched dataset contains all {len(cfg.schema.standard)} standard columns "
+            f"plus {len(cfg.schema.enriched_additional)} additional columns "
+            f"({len(cfg.schema.enriched)} columns in total).",
             "",
             "_Release diagnostics describe the published data; the upstream Release audit authorized publication._", 
             "",
