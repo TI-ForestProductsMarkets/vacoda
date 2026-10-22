@@ -15,6 +15,7 @@ from vacoda.pipeline.checkpoint import (
     validate_local_checkpoint,
     write_local_checkpoint,
 )
+from vacoda.steps.release.release_data import PUBLIC_COLUMN_NAMES
 
 # Sidecars are intentionally separate from the original overall/year table so
 # existing report consumers remain compatible. No per-run counts are embedded.
@@ -256,6 +257,16 @@ def _schema(con: duckdb.DuckDBPyConnection, path: Path) -> set[str]:
         ).fetchall()
     }
 
+def _release_view_sql(path: Path, columns: set[str]) -> str:
+    aliases = [
+        f'"{public}" AS "{internal}"'
+        for internal, public in PUBLIC_COLUMN_NAMES.items()
+        if public in columns and internal != public
+    ]
+
+    select = "*, " + ", ".join(aliases) if aliases else "*"
+
+    return f"SELECT {select} FROM read_parquet({sql_literal(path)})"
 
 def _write_frame(con, sql: str, destination: Path) -> Path:
     temporary = destination.with_name(destination.name + ".tmp")
@@ -330,7 +341,13 @@ def _build_sidecars(
         path = sources.get(stage)
         if path is None:
             continue
-        columns = _schema(con, path)
+        columns = (
+                {row[0] for row in con.execute(
+                    "DESCRIBE SELECT * FROM enriched_release"
+                ).fetchall()}
+                if stage == "release_enriched"
+                else _schema(con, path)
+            )
         for field in fields:
             if field not in columns:
                 continue
@@ -345,7 +362,7 @@ def _build_sidecars(
                        COUNT(*) FILTER (WHERE {usable}) AS usable,
                        ROUND(100.0 * COUNT(*) FILTER (WHERE {usable}) /
                              NULLIF(COUNT(*), 0), 3) AS coverage_pct
-                FROM read_parquet({sql_literal(path)})
+                FROM {"enriched_release" if stage == "release_enriched" else f"read_parquet({sql_literal(path)})"}
             """)
     if not selects:
         raise RuntimeError("No source fields available for Release coverage diagnostics")
@@ -354,7 +371,12 @@ def _build_sidecars(
     )
     # 3. Unseen-category review records: discover codes and years from the
     # published enriched dataset. NULL seen-flags stay distinct from FALSE.
-    ecols = _schema(con, enriched_path)
+    ecols = {
+            row[0]
+            for row in con.execute(
+                "DESCRIBE SELECT * FROM enriched_release"
+            ).fetchall()
+        }
     review_required = {
         "target_cmd", "year", "manual_review_required", "hs6_seen",
         "hs4_seen", "model_prediction_quantity_kg",
@@ -520,7 +542,10 @@ def build_release_diagnostics(
         config={
             "release_id": release_id,
             "scope": cfg.scope,
-            "diagnostics_version": 1,
+            "code_fingerprint": file_fingerprint(
+                Path(__file__),
+                hash_file=True,
+            ),
         }
     )
 
@@ -599,14 +624,15 @@ def build_release_diagnostics(
             or audit_row[0][2] is not True
         ):
             raise RuntimeError("Release audit identity/status does not match.")
-        con.execute(f"""
-            CREATE TEMP VIEW standard_release AS
-            SELECT * FROM read_parquet({standard_sql})
-        """)
-        con.execute(f"""
-            CREATE TEMP VIEW enriched_release AS
-            SELECT * FROM read_parquet({enriched_sql})
-        """)
+        con.execute(
+            "CREATE TEMP VIEW standard_release AS "
+            + _release_view_sql(standard_path, _schema(con, standard_path))
+        )
+
+        con.execute(
+            "CREATE TEMP VIEW enriched_release AS "
+            + _release_view_sql(enriched_path, _schema(con, enriched_path))
+        )
         # Two aggregate sets permit descriptive cross-product comparisons
         # without joining millions of underlying bilateral observations.
         query = """

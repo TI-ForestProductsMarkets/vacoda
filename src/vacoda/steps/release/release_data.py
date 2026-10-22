@@ -12,6 +12,7 @@ from typing import Any
 
 import duckdb
 
+from vacoda.steps.release.data_dictionary import write_data_dictionary
 from vacoda.config.steps.release import ReleaseConfig
 from vacoda.utils.sql import sql_literal
 from vacoda.pipeline.checkpoint import (
@@ -42,6 +43,38 @@ INFERENCE_EXTRA = {
 DERIVED = {
     "trade_sync_uv_usd_per_kg", "model_uv_usd_per_kg",
     "trade_sync_uv_mad_distance", "model_uv_mad_distance",
+}
+PUBLIC_COLUMN_NAMES = {
+    "target_cmd": "hs6",
+    "trade_value_reconciled": "trade_value_usd",
+    "trade_synced_quantity_kg": "trade_quantity_kg",
+    "model_prediction_quantity_kg": "predicted_quantity_kg",
+    "model_prediction_available": "prediction_available",
+
+    "import_value_fob_corrected": "import_value_fob",
+    "export_synchronized_quantity_kg": "export_quantity_kg",
+    "import_synchronized_quantity_kg": "import_quantity_kg",
+    "export_synchronized_quantity_source": "export_quantity_source",
+    "import_synchronized_quantity_source": "import_quantity_source",
+    "pair_uses_estimated_weight": "uses_estimated_weight",
+    "pair_uses_weight_proxy": "uses_weight_proxy",
+    "trade_value_reconciled_constant_usd": "trade_value_constant_usd",
+    "cif_fob_factor_applied": "cif_fob_factor",
+    "cif_fob_factor_applied_source": "cif_fob_factor_source",
+    "reconciliation_method_applied": "reconciliation_method",
+    "trade_synced_quantity_method": "quantity_sync_method",
+    "trade_synced_quantity_status": "quantity_sync_status",
+    "quantity_availability_case": "quantity_availability",
+
+    "product_year_median_unit_value": "reference_uv",
+    "product_year_log_unit_value_mad": "reference_log_uv_mad",
+    "unit_value_reference_observations": "reference_observations",
+
+    "trade_sync_uv_usd_per_kg": "trade_uv_usd_per_kg",
+    "trade_sync_uv_mad_distance": "trade_uv_mad_distance",
+
+    "validation_model_name": "model_name",
+    "validation_model_type": "model_type",
 }
 PREPARED_FIELDS = {
     "trade_value_reconciled", "trade_synced_quantity_kg", *PREPARED_EXTRA,
@@ -97,6 +130,9 @@ def build_release_candidates(
     prepared_path = Path(prepared_input_path)
     inference_path = Path(inference_input_path)
     staging_dir = Path(staging_dir)
+    dictionary_standard_path = staging_dir / "data_dictionary_standard.md"
+    dictionary_enriched_path = staging_dir / "data_dictionary_enriched.md"
+
     for label, path in (("prepared", prepared_path), ("inference", inference_path)):
         if not path.is_file():
             raise FileNotFoundError(f"Validation {label} input not found: {path}")
@@ -122,12 +158,24 @@ def build_release_candidates(
 
     checkpoint_path = checkpoint_dir / "candidates.json"
 
+    code_fp = {
+        "release_data": file_fingerprint(
+            Path(__file__),
+            hash_file=True,
+        ),
+        "data_dictionary": file_fingerprint(
+            Path(__file__).with_name("data_dictionary.py"),
+            hash_file=True,
+        ),
+    }
+
     config_fp = semantic_config_fingerprint(
         config={
             "schema_standard": standard_cols,
             "schema_enriched": enriched_cols,
             "candidate_filename": filename,
-            "candidate_builder_version": 1,
+            "public_column_names": PUBLIC_COLUMN_NAMES,
+            "code_fingerprint": code_fp,
         }
     )
 
@@ -145,6 +193,8 @@ def build_release_candidates(
     output_paths = {
         "standard": standard_path,
         "enriched": enriched_path,
+        "dictionary_standard": dictionary_standard_path,
+        "dictionary_enriched": dictionary_enriched_path,
     }
 
     reusable, reason = validate_local_checkpoint(
@@ -170,9 +220,6 @@ def build_release_candidates(
         "forced" if force else reason,
     )
 
-    for path in (standard_path, enriched_path):
-        if path.exists() and not force:
-            raise FileExistsError(f"Release candidate exists (force required): {path}")
     staging_dir.mkdir(parents=True, exist_ok=True)
     con = duckdb.connect()
     try:
@@ -264,13 +311,29 @@ def build_release_candidates(
         if preview_count != prepared_rows:
             raise RuntimeError("Candidate population does not match Prepared input")
 
+        def published_column(column: str, expression: str | None = None) -> str:
+            source = expression if expression is not None else f'"{column}"'
+            public_name = PUBLIC_COLUMN_NAMES.get(column, column)
+            return f'{source} AS "{public_name}"'
+
         select_standard = ", ".join(
-            ('CASE WHEN manual_review_required IS TRUE THEN NULL '
-             'ELSE model_prediction_quantity_kg END AS model_prediction_quantity_kg')
-            if col == "model_prediction_quantity_kg" else f'"{col}"'
+            published_column(
+                col,
+                (
+                    'CASE WHEN manual_review_required IS TRUE THEN NULL '
+                    'ELSE model_prediction_quantity_kg END'
+                )
+                if col == "model_prediction_quantity_kg"
+                else None,
+            )
             for col in standard_cols
         )
-        select_enriched = ", ".join(f'"{col}"' for col in enriched_cols)
+
+        select_enriched = ", ".join(
+            published_column(col)
+            for col in enriched_cols
+        )
+
         temporary = []
         try:
             for path, sql in (
@@ -302,6 +365,27 @@ def build_release_candidates(
                      (WHERE manual_review_required IS TRUE)
             FROM release_evidence
         """).fetchone()
+
+        ## ============================================================
+        # WRITE DATA DICTIONARY
+        ## ============================================================
+
+        write_data_dictionary(
+            columns=standard_cols,
+            public_names=PUBLIC_COLUMN_NAMES,
+            output_path=dictionary_standard_path,
+            title="VACODA — Standard Data Dictionary",
+        )
+
+        write_data_dictionary(
+            columns=enriched_cols,
+            public_names=PUBLIC_COLUMN_NAMES,
+            output_path=dictionary_enriched_path,
+            title="VACODA — Enriched Data Dictionary",
+        )
+
+        logger.info("  Standard data dictionary: %s", dictionary_standard_path)
+        logger.info("  Enriched data dictionary: %s", dictionary_enriched_path)
 
         # ==============================================================
         # WRITE LOCAL CHECKPOINT

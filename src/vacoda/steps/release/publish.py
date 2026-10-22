@@ -17,6 +17,7 @@ from uuid import uuid4
 
 import duckdb
 
+from vacoda.steps.release.release_data import PUBLIC_COLUMN_NAMES
 from vacoda.config.steps.release import ReleaseConfig
 from vacoda.pipeline.checkpoint import (
     file_content_fingerprint,
@@ -25,6 +26,12 @@ from vacoda.pipeline.checkpoint import (
     validate_local_checkpoint,
     write_local_checkpoint,
 )
+
+def _published_schema(columns) -> list[str]:
+    return [
+        PUBLIC_COLUMN_NAMES.get(column, column)
+        for column in columns
+    ]
 
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -55,6 +62,8 @@ def _verify_existing_publication(
     metadata_enriched: Path,
     audit_path: Path,
     release_id: str,
+    dictionary_standard: Path,  
+    dictionary_enriched: Path,
 ) -> None:
     """Verify an immutable publication against its metadata and audit."""
 
@@ -64,6 +73,25 @@ def _verify_existing_publication(
     )
 
     original_run_ids = set()
+
+    for metadata_path, dictionary_path in (
+        (metadata_standard, dictionary_standard),
+        (metadata_enriched, dictionary_enriched),
+    ):
+        if not dictionary_path.is_file():
+            raise RuntimeError(f"Published data dictionary missing: {dictionary_path}")
+
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        info = metadata["data_dictionary"]
+
+        if info["file"] != dictionary_path.name:
+            raise RuntimeError("Published dictionary filename mismatch.")
+
+        if info["size_bytes"] != dictionary_path.stat().st_size:
+            raise RuntimeError("Published dictionary size mismatch.")
+
+        if info["sha256"] != _sha256(dictionary_path):
+            raise RuntimeError("Published dictionary checksum mismatch.")
 
     for dataset_path, metadata_path, variant, expected_schema in products:
         if not dataset_path.is_file() or not metadata_path.is_file():
@@ -84,7 +112,7 @@ def _verify_existing_publication(
         if artifact.get("file") != dataset_path.name:
             raise RuntimeError("Published Release filename mismatch.")
 
-        if artifact.get("columns") != list(expected_schema):
+        if artifact.get("columns") != _published_schema(expected_schema):
             raise RuntimeError("Published Release schema mismatch.")
 
         if artifact.get("size_bytes") != dataset_path.stat().st_size:
@@ -163,13 +191,23 @@ def publish_release_datasets(
     standard_path = Path(standard_path)
     enriched_path = Path(enriched_path)
 
+    staging_dir = cfg.output_dir() / ".staging" / release_id
+
+    metadata_standard = cfg.metadata_path(release_id=release_id)
+    metadata_enriched = cfg.metadata_path(release_id=release_id, enriched=True)
+
+    dictionary_standard_candidate = staging_dir / "data_dictionary_standard.md"
+    dictionary_enriched_candidate = staging_dir / "data_dictionary_enriched.md"
+
+    dictionary_standard = standard_path.parent / "data_dictionary_standard.md"
+    dictionary_enriched = standard_path.parent / "data_dictionary_enriched.md"
+
     expected_standard = cfg.product_path("release", release_id=release_id)
     expected_enriched = cfg.enriched_path(release_id=release_id)
     if standard_path != expected_standard or enriched_path != expected_enriched:
         raise ValueError("Published paths do not match Release configuration.")
     if audit_path != cfg.product_path("release_audit", release_id=release_id):
         raise ValueError("Audit path does not match the current Release identity.")
-    staging_dir = cfg.output_dir() / ".staging" / release_id
     if (standard_candidate != staging_dir / cfg.products.release.filename
             or enriched_candidate != (staging_dir / cfg.products.release.filename).with_name(
                 f"{Path(cfg.products.release.filename).stem}_enriched"
@@ -178,7 +216,19 @@ def publish_release_datasets(
         raise ValueError("Release candidates are not from this release identity staging directory.")
     metadata_standard = cfg.metadata_path(release_id=release_id)
     metadata_enriched = cfg.metadata_path(release_id=release_id, enriched=True)
-    targets = (standard_path, enriched_path, metadata_standard, metadata_enriched)
+    targets = (
+        standard_path,
+        enriched_path,
+        metadata_standard,
+        metadata_enriched,
+        dictionary_standard,
+        dictionary_enriched,
+    )
+
+    dictionaries = (
+        (dictionary_standard_candidate, dictionary_standard),
+        (dictionary_enriched_candidate, dictionary_enriched),
+    )
     sources = (standard_candidate, enriched_candidate)
 
     # ==============================================================
@@ -199,6 +249,8 @@ def publish_release_datasets(
     input_fp = {
         "candidate_standard": file_content_fingerprint(standard_candidate),
         "candidate_enriched": file_content_fingerprint(enriched_candidate),
+        "dictionary_standard": file_content_fingerprint(dictionary_standard_candidate),
+        "dictionary_enriched": file_content_fingerprint(dictionary_enriched_candidate),
     }
 
     output_paths = {
@@ -206,6 +258,8 @@ def publish_release_datasets(
         "enriched": enriched_path,
         "standard_metadata": metadata_standard,
         "enriched_metadata": metadata_enriched,
+        "dictionary_standard": dictionary_standard,
+        "dictionary_enriched": dictionary_enriched,
     }
 
     # Every execution requires a passing current audit.
@@ -225,6 +279,8 @@ def publish_release_datasets(
             metadata_enriched=metadata_enriched,
             audit_path=audit_path,
             release_id=release_id,
+            dictionary_standard=dictionary_standard,
+            dictionary_enriched=dictionary_enriched,
         )
 
         # Existing candidates must correspond exactly to the published datasets.
@@ -243,6 +299,12 @@ def publish_release_datasets(
             current_input=input_fp,
             output_paths=output_paths,
         )
+
+        for candidate, published in dictionaries:
+            if not candidate.is_file() or _sha256(candidate) != _sha256(published):
+                raise RuntimeError(
+                    f"Release dictionary differs from published dictionary: {candidate}"
+                )
 
         if reusable:
             logger.info("REUSE — Publication local checkpoint matches.")
@@ -277,6 +339,8 @@ def publish_release_datasets(
             "output_path": standard_path,
             "standard_metadata_path": metadata_standard,
             "enriched_metadata_path": metadata_enriched,
+            "standard_dictionary_path": dictionary_standard,
+            "enriched_dictionary_path": dictionary_enriched,
             "audit_path": audit_path,
             "publication_completed": True,
             "duration_seconds": perf_counter() - start,
@@ -307,11 +371,28 @@ def publish_release_datasets(
     output_dir.mkdir(parents=True, exist_ok=True)
     temp_paths: list[Path] = []
     committed: list[Path] = []
+
+    with duckdb.connect() as con:
+        for path, expected in (
+            (standard_candidate, _published_schema(cfg.schema.standard)),
+            (enriched_candidate, _published_schema(cfg.schema.enriched)),
+        ):
+            actual = [
+                row[0]
+                for row in con.execute(
+                    "DESCRIBE SELECT * FROM read_parquet(?)",
+                    [str(path)],
+                ).fetchall()
+            ]
+
+            if actual != expected:
+                raise RuntimeError(f"Release schema mismatch: {path}")
+
     try:
         candidate_info = []
         for source, destination, schema in (
-            (standard_candidate, standard_path, cfg.schema.standard),
-            (enriched_candidate, enriched_path, cfg.schema.enriched),
+            (standard_candidate, standard_path, _published_schema(cfg.schema.standard)),
+            (enriched_candidate, enriched_path, _published_schema(cfg.schema.enriched)),
         ):
             temporary = output_dir / f".{destination.name}.{uuid4().hex}.tmp"
             temp_paths.append(temporary)
@@ -329,6 +410,31 @@ def publish_release_datasets(
             })
 
         audit_hash = _sha256(audit_path)
+
+        dictionary_info = []
+
+        for source, destination in dictionaries:
+
+            if not source.is_file() or source.stat().st_size <= 0:
+                raise FileNotFoundError(f"Missing Release data dictionary: {source}")
+
+            temporary = output_dir / f".{destination.name}.{uuid4().hex}.tmp"
+            temp_paths.append(temporary)
+
+            with source.open("rb") as reader, temporary.open("xb") as writer:
+                shutil.copyfileobj(reader, writer, length=8 * 1024 * 1024)
+                writer.flush()
+                os.fsync(writer.fileno())
+
+            if _sha256(source) != _sha256(temporary):
+                raise RuntimeError(f"Dictionary changed during copy: {source}")
+
+            dictionary_info.append({
+                "file": destination.name,
+                "sha256": _sha256(temporary),
+                "size_bytes": temporary.stat().st_size,
+            })
+
         for info, metadata_path, kind in (
             (candidate_info[0], metadata_standard, "standard"),
             (candidate_info[1], metadata_enriched, "enriched"),
@@ -351,13 +457,22 @@ def publish_release_datasets(
                     "model_prediction_available": "original inference availability preserved",
                 },
                 "unit_value_reference_basis": "Must be verified against the Validation reference methodology",
+                "data_dictionary": dictionary_info[0 if kind == "standard" else 1],
             }
             _atomic_json(metadata_path, payload)
             committed.append(metadata_path)
 
         # Commit datasets after metadata sidecars are ready. If either commit
         # fails, remove only artifacts created in this attempt.
-        for temporary, destination in zip(temp_paths, (standard_path, enriched_path)):
+        for temporary, destination in zip(
+                temp_paths,
+                (
+                    standard_path,
+                    enriched_path,
+                    dictionary_standard,
+                    dictionary_enriched,
+                ),
+            ):
             if destination.exists():
                 raise FileExistsError(f"Publication target unexpectedly exists: {destination}")
             os.replace(temporary, destination)
@@ -376,6 +491,10 @@ def publish_release_datasets(
 
         logger.info("Published standard Release dataset: %s", standard_path)
         logger.info("Published enriched Release dataset: %s", enriched_path)
+        logger.info("Published standard Release metadata: %s", metadata_standard)
+        logger.info("Published enriched Release metadata: %s", metadata_enriched)
+        logger.info("Published standard Release data dictionary: %s", dictionary_standard)
+        logger.info("Published enriched Release data dictionary: %s", dictionary_enriched)
         logger.info("Publication audit: %s", audit_path)
         return {
             "status": "completed", "run_id": run_id, "release_id": release_id,
@@ -383,6 +502,8 @@ def publish_release_datasets(
             "output_path": standard_path,
             "standard_metadata_path": metadata_standard,
             "enriched_metadata_path": metadata_enriched,
+            "standard_dictionary_path": dictionary_standard,
+            "enriched_dictionary_path": dictionary_enriched,
             "audit_path": audit_path,
             "publication_completed": True,
             "duration_seconds": perf_counter() - start,

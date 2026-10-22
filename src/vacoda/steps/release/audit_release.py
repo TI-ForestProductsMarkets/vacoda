@@ -11,6 +11,7 @@ from typing import Any
 
 import duckdb
 
+from vacoda.steps.release.release_data import PUBLIC_COLUMN_NAMES
 from vacoda.config.steps.release import ReleaseConfig
 from vacoda.utils.sql import sql_literal
 
@@ -62,9 +63,13 @@ def audit_release_candidates(
         actual = {name: _schema(con, path) for name, path in paths.items()}
         expected_standard = tuple(cfg.schema.standard)
         expected_enriched = tuple(cfg.schema.enriched)
+
+        def public_schema(columns):
+            return tuple(PUBLIC_COLUMN_NAMES.get(c, c) for c in columns)
+
         schema_ok = {
-            "standard_schema_exact": actual["standard"] == expected_standard,
-            "enriched_schema_exact": actual["enriched"] == expected_enriched,
+            "standard_schema_exact": actual["standard"] == public_schema(expected_standard),
+            "enriched_schema_exact": actual["enriched"] == public_schema(expected_enriched),
         }
         needed = {
             "prepared": set(KEY) | {"trade_value_reconciled", "trade_synced_quantity_kg"},
@@ -77,14 +82,38 @@ def audit_release_candidates(
                                     "model_prediction_quantity_kg", "model_prediction_available",
                                     "manual_review_required", "hs6_seen", "hs4_seen"},
         }
-        missing = {name: sorted(fields - set(actual[name]))
-                   for name, fields in needed.items()}
+        missing = {
+            name: sorted(
+                PUBLIC_COLUMN_NAMES.get(field, field)
+                for field in fields
+                if (
+                    PUBLIC_COLUMN_NAMES.get(field, field)
+                    if name in ("standard", "enriched")
+                    else field
+                ) not in actual[name]
+            )
+            for name, fields in needed.items()
+        }
         if any(missing.values()):
             raise ValueError(f"Release audit missing essential fields: {missing}")
 
         for name, path in paths.items():
+            if name in ("standard", "enriched"):
+                aliases = ", ".join(
+                    f'"{public}" AS "{internal}"'
+                    for internal, public in PUBLIC_COLUMN_NAMES.items()
+                    if internal in needed[name] or internal in expected_enriched
+                    if public in actual[name]
+                )
+
+                select = f"*, {aliases}" if aliases else "*"
+
+            else:
+                select = "*"
+
             con.execute(
-                f"CREATE TEMP VIEW {name} AS SELECT * FROM read_parquet({sql_literal(path)})"
+                f"CREATE TEMP VIEW {name} AS "
+                f"SELECT {select} FROM read_parquet({sql_literal(path)})"
             )
 
         key_expr = ", ".join(KEY)

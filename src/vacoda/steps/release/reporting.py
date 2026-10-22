@@ -208,7 +208,9 @@ def _plot_product_trade(rows: list[dict[str, Any]], path: Path) -> None:
     names = [str(r["product_code"]) for r in data][::-1]
     shares = [float(r["share_of_total_value_pct"]) for r in data][::-1]
     fig, ax = plt.subplots(figsize=(9, 5))
-    ax.barh(names, shares)
+    positions = range(len(names))
+    ax.barh(positions, shares)
+    ax.set_yticks(list(positions), labels=names)
     ax.set(xlabel="Share of published trade value (%)", ylabel="HS2 chapter")
     ax.grid(axis="x", alpha=0.2)
     ax.set_axisbelow(True)
@@ -241,7 +243,9 @@ def _plot_hs4_trade(
 
         fig, ax = plt.subplots(figsize=(8, 10))
 
-        ax.barh(names, shares, height=0.75)
+        positions = range(len(names))
+        ax.barh(positions, shares, height=0.75)
+        ax.set_yticks(list(positions), labels=names)
 
         ax.tick_params(axis="y", labelsize=13)
         ax.tick_params(axis="x", labelsize=12)
@@ -277,30 +281,6 @@ def _plot_hs4_trade(
         paths.append(part_path)
 
     return paths
-
-
-def _plot_hs4_trade_deprecated(rows: list[dict[str, Any]], path: Path) -> None:
-    data = sorted(
-        (r for r in rows if r["level"] == "hs4"),
-        key=lambda r: r["total_trade_value_constant_usd"],
-        reverse=True,
-    )
-
-    if not data:
-        raise RuntimeError("No HS4 product composition data available.")
-
-    names = [str(r["product_code"]) for r in data][::-1]
-    shares = [float(r["share_of_total_value_pct"]) for r in data][::-1]
-
-    fig, ax = plt.subplots(figsize=(15, 6))
-    ax.barh(names, shares)
-    ax.set(
-        xlabel="Share of published trade value (%)",
-        ylabel="HS4 product group",
-    )
-    ax.grid(axis="x", alpha=0.2)
-    ax.set_axisbelow(True)
-    _save(fig, path)
 
 def _plot_residual_profile(distributions: list[dict[str, Any]], path: Path) -> bool:
     match = next((r for r in distributions if r["period_type"] == "all_years"
