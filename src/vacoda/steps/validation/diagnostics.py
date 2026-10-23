@@ -205,7 +205,6 @@ def build_diagnostics(
     inference_path = Path(inference_path)
     inference_audit_path = Path(inference_audit_path)
 
-
     if not input_path.is_file():
         raise FileNotFoundError(
             f"Validation diagnostics input not found: {input_path}"
@@ -293,7 +292,13 @@ def build_diagnostics(
         columns_cfg.quantity_relative_difference
     )
 
-    quantity_col = "trade_synced_quantity_kg"
+    quantity_col = str(cfg.model.target.column)
+
+
+    if str(cfg.diagnostics.columns.quantity) != quantity_col:
+        raise RuntimeError(
+            "Diagnostics quantity column differs from configured model target."
+        )
 
     min_reference_observations = int(
         training_cfg.min_hs_year_reference_observations
@@ -573,7 +578,7 @@ def build_diagnostics(
                 target_cmd,
                 target_hs4,
 
-                trade_synced_quantity_kg,
+                "{quantity_col}" AS observed_quantity_kg,
                 training_selected,
 
                 model_input_valid,
@@ -1068,7 +1073,7 @@ def build_diagnostics(
                 importer_iso,
                 "{product_col}" AS target_cmd,
 
-                "{quantity_col}" AS trade_synced_quantity_kg,
+                "{quantity_col}" AS observed_quantity_kg,
 
                 "{nominal_value_col}" AS trade_value_reconciled,
                 "{constant_value_col}" AS trade_value_reconciled_constant_usd,

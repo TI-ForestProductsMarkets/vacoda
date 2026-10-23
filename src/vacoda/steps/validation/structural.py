@@ -93,6 +93,9 @@ def audit_structural_integrity(
         cfg.method.structural
     )
 
+    target_col = str(cfg.method.target.column)
+    target_sql = _safe_identifier(target_col)
+
     required_fields = tuple(
         structural_cfg.required_fields
     )
@@ -142,6 +145,7 @@ def audit_structural_integrity(
                     require_positive_quantity
                 ),
             },
+            "target_column": target_col,
         }
     )
 
@@ -296,6 +300,11 @@ def audit_structural_integrity(
                 + ", ".join(missing_required_fields)
             )
 
+        if target_col not in source_columns:
+            raise RuntimeError(
+                f"Configured Validation target is missing: {target_col}"
+            )
+
         missing_key_fields = sorted(
             set(canonical_key) - source_columns
         )
@@ -386,39 +395,21 @@ def audit_structural_integrity(
                             OR trade_value_reconciled_constant_usd <= 0
                       )
                 ) AS n_invalid_constant_value_rows,
-
+   
                 COUNT(*) FILTER (
-                    WHERE quantity_simple_mean_kg IS NOT NULL
-                    AND (
-                        NOT isfinite(quantity_simple_mean_kg)
-                        OR quantity_simple_mean_kg <= 0
-                    )
-                ) AS n_invalid_simple_mean_rows,
-
-                COUNT(*) FILTER (
-                    WHERE trade_synced_quantity_kg IS NOT NULL
-                    AND (
-                        NOT isfinite(
-                            CAST(trade_synced_quantity_kg AS DOUBLE)
-                        )
-                        OR trade_synced_quantity_kg <= 0
-                    )
+                    WHERE {target_sql} IS NOT NULL
+                      AND (
+                          NOT isfinite(CAST({target_sql} AS DOUBLE))
+                          OR {target_sql} <= 0
+                      )
                 ) AS n_invalid_quantity_rows,
 
                 COUNT(*) FILTER (
-                    WHERE quantity_reliability_weighted_kg IS NOT NULL
-                    AND (
-                        NOT isfinite(quantity_reliability_weighted_kg)
-                        OR quantity_reliability_weighted_kg <= 0
-                    )
-                ) AS n_invalid_quantity_reliability_weighted_rows,
-
-                COUNT(*) FILTER (
-                    WHERE trade_synced_quantity_kg IS NULL
+                    WHERE {target_sql} IS NULL
                 ) AS n_missing_quantity_rows,
 
                 COUNT(*) FILTER (
-                    WHERE trade_synced_quantity_kg IS NOT NULL
+                    WHERE {target_sql} IS NOT NULL
                 ) AS n_available_quantity_rows
 
             FROM read_parquet({input_sql})
@@ -438,9 +429,7 @@ def audit_structural_integrity(
             n_invalid_hs_rows,
             n_invalid_nominal_value_rows,
             n_invalid_constant_value_rows,
-            n_invalid_simple_mean_rows,
             n_invalid_quantity_rows,
-            n_invalid_quantity_reliability_weighted_rows,
             n_missing_quantity_rows,
             n_available_quantity_rows,
         ) = stats
@@ -455,15 +444,10 @@ def audit_structural_integrity(
         n_invalid_constant_value_rows = int(
             n_invalid_constant_value_rows
         )
-        n_invalid_simple_mean_rows = int(
-            n_invalid_simple_mean_rows
-        )
         n_invalid_quantity_rows = int(
             n_invalid_quantity_rows
         )
-        n_invalid_quantity_reliability_weighted_rows = int(
-            n_invalid_quantity_reliability_weighted_rows
-        )
+
         n_missing_quantity_rows = int(
             n_missing_quantity_rows
         )
@@ -471,10 +455,10 @@ def audit_structural_integrity(
             n_available_quantity_rows
         )
 
-        quantity_candidates_numeric_valid = (
-            n_invalid_simple_mean_rows == 0
-            and n_invalid_quantity_rows == 0
-            and n_invalid_quantity_reliability_weighted_rows == 0
+        quantity_numeric_valid = (
+            n_invalid_quantity_rows == 0
+            if require_positive_quantity
+            else True
         )
         # --------------------------------------------------------------
         # Duplicate canonical keys
@@ -511,71 +495,6 @@ def audit_structural_integrity(
             duplicate_stats[1]
         )
 
-        # --------------------------------------------------------------
-        # Quantity method/status contract
-        # --------------------------------------------------------------
-
-        quantity_contract = con.execute(
-            f"""
-            SELECT
-                COUNT(*) FILTER (
-                    WHERE trade_synced_quantity_status
-                          NOT IN (
-                              'bilateral_synced',
-                              'unilateral_retained',
-                              'missing'
-                          )
-                       OR trade_synced_quantity_status IS NULL
-                ) AS n_invalid_quantity_status,
-
-                COUNT(*) FILTER (
-                    WHERE trade_synced_quantity_status
-                          = 'bilateral_synced'
-                      AND (
-                            trade_synced_quantity_kg IS NULL
-                            OR trade_synced_quantity_method
-                               NOT IN (
-                                   'unit_value_guided_export',
-                                   'unit_value_guided_import',
-                                   'unit_value_guided_mean',
-                                   'bilateral_mean_no_unit_value_reference'
-                               )
-                      )
-                ) AS n_invalid_bilateral_quantity_contract,
-
-                COUNT(*) FILTER (
-                    WHERE trade_synced_quantity_status
-                          = 'unilateral_retained'
-                      AND (
-                            trade_synced_quantity_kg IS NULL
-                            OR trade_synced_quantity_method
-                               NOT IN (
-                                   'export_quantity_retained',
-                                   'import_quantity_retained'
-                               )
-                      )
-                ) AS n_invalid_unilateral_quantity_contract,
-
-                COUNT(*) FILTER (
-                    WHERE trade_synced_quantity_status
-                          = 'missing'
-                      AND (
-                            trade_synced_quantity_kg IS NOT NULL
-                            OR trade_synced_quantity_method
-                               <> 'no_usable_quantity'
-                      )
-                ) AS n_invalid_missing_quantity_contract
-
-            FROM read_parquet({input_sql})
-            """
-        ).fetchone()
-
-        (
-            n_invalid_quantity_status,
-            n_invalid_bilateral_quantity_contract,
-            n_invalid_unilateral_quantity_contract,
-            n_invalid_missing_quantity_contract,
-        ) = map(int, quantity_contract)
 
         # --------------------------------------------------------------
         # Individual audit decisions
@@ -616,28 +535,6 @@ def audit_structural_integrity(
             else True
         )
 
-        quantity_numeric_valid = (
-            quantity_candidates_numeric_valid
-            if require_positive_quantity
-            else True
-        )
-
-        quantity_status_valid = (
-            n_invalid_quantity_status == 0
-        )
-
-        bilateral_quantity_contract_valid = (
-            n_invalid_bilateral_quantity_contract == 0
-        )
-
-        unilateral_quantity_contract_valid = (
-            n_invalid_unilateral_quantity_contract == 0
-        )
-
-        missing_quantity_contract_valid = (
-            n_invalid_missing_quantity_contract == 0
-        )
-
         audit_passed = bool(
             required_fields_present
             and has_rows
@@ -648,10 +545,6 @@ def audit_structural_integrity(
             and nominal_value_valid
             and constant_value_valid
             and quantity_numeric_valid
-            and quantity_status_valid
-            and bilateral_quantity_contract_valid
-            and unilateral_quantity_contract_valid
-            and missing_quantity_contract_valid
         )
 
         ready_for_diagnostics = audit_passed
@@ -718,49 +611,9 @@ def audit_structural_integrity(
                 n_missing_quantity_rows
             ),
 
-            "quantity_status_valid": (
-                quantity_status_valid
-            ),
-            "n_invalid_quantity_status": (
-                n_invalid_quantity_status
-            ),
-
-            "bilateral_quantity_contract_valid": (
-                bilateral_quantity_contract_valid
-            ),
-            "n_invalid_bilateral_quantity_contract": (
-                n_invalid_bilateral_quantity_contract
-            ),
-
-            "unilateral_quantity_contract_valid": (
-                unilateral_quantity_contract_valid
-            ),
-            "n_invalid_unilateral_quantity_contract": (
-                n_invalid_unilateral_quantity_contract
-            ),
-
-            "missing_quantity_contract_valid": (
-                missing_quantity_contract_valid
-            ),
-            "n_invalid_missing_quantity_contract": (
-                n_invalid_missing_quantity_contract
-            ),
-            "quantity_candidates_numeric_valid": (
-                quantity_candidates_numeric_valid
-            ),
-
-            "n_invalid_simple_mean_rows": (
-                n_invalid_simple_mean_rows
-            ),
-
             "n_invalid_quantity_rows": (
                 n_invalid_quantity_rows
             ),
-
-            "n_invalid_quantity_reliability_weighted_rows": (
-                n_invalid_quantity_reliability_weighted_rows
-            ),
-
             "duration_seconds": elapsed,
         }
 
@@ -841,9 +694,22 @@ def audit_structural_integrity(
         "  Missing synchronized quantities: %s",
         f"{n_missing_quantity_rows:,}",
     )
+
+    logger.info("  Quantity target: %s", target_col)
+
     logger.info(
-        "  Invalid simple-mean quantities: %s",
-        f"{n_invalid_simple_mean_rows:,}",
+        "  Available target quantities: %s",
+        f"{n_available_quantity_rows:,}",
+    )
+
+    logger.info(
+        "  Missing target quantities: %s",
+        f"{n_missing_quantity_rows:,}",
+    )
+
+    logger.info(
+        "  Invalid target quantities: %s",
+        f"{n_invalid_quantity_rows:,}",
     )
 
     logger.info(
@@ -851,19 +717,6 @@ def audit_structural_integrity(
         f"{n_invalid_quantity_rows:,}",
     )
 
-    logger.info(
-        "  Invalid reliability-weighted quantities: %s",
-        f"{n_invalid_quantity_reliability_weighted_rows:,}",
-    )
-    logger.info(
-        "  Invalid quantity contracts: %s",
-        f"{(
-            n_invalid_quantity_status
-            + n_invalid_bilateral_quantity_contract
-            + n_invalid_unilateral_quantity_contract
-            + n_invalid_missing_quantity_contract
-        ):,}",
-    )
     logger.info(
         "  Audit artifact: %s",
         output_path,

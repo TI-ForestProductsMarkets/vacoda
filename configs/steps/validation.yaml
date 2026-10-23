@@ -93,7 +93,7 @@ validation:
     # Prediction target
     # ------------------------------------------------------------
     target:
-      column: "trade_synced_quantity_kg"
+      column: "quantity_value_weighted_kg"
       transform: "log"
 
     # ------------------------------------------------------------
@@ -113,6 +113,7 @@ validation:
         - target_hs4
 
       exclude:
+        - quantity_value_weighted_kg
         - quantity_selected_kg
         - quantity_simple_mean_kg
         - trade_synced_quantity_kg
@@ -272,9 +273,7 @@ validation:
         - trade_value_reconciled
         - trade_value_reconciled_constant_usd
 
-        - trade_synced_quantity_kg
-        - trade_synced_quantity_method
-        - trade_synced_quantity_status
+        - quantity_value_weighted_kg
 
         - export_synchronized_quantity_kg
         - import_synchronized_quantity_kg
@@ -314,7 +313,7 @@ validation:
       year: "year"
       product: "target_cmd"
 
-      quantity: "trade_synced_quantity_kg"
+      quantity: "quantity_value_weighted_kg"
       nominal_value: "trade_value_reconciled"
       constant_value: "trade_value_reconciled_constant_usd"
 

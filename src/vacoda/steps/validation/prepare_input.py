@@ -64,6 +64,9 @@ def prepare_validation_input(
         cfg.method.structural.required_fields
     )
 
+    target_col = str(cfg.model.target.column)
+    target_sql = '"' + target_col.replace('"', '""') + '"'
+
     checkpoint_path = (
         cfg.output_dir()
         / "checkpoints"
@@ -76,6 +79,7 @@ def prepare_validation_input(
             "min_year": int(cfg.scope.min_year),
             "max_year": int(cfg.scope.max_year),
             "required_fields": list(required_fields),
+            "target_column": target_col,
         }
     )
 
@@ -166,6 +170,11 @@ def prepare_validation_input(
                 + ", ".join(missing_fields)
             )
 
+        if target_col not in source_columns:
+            raise ValueError(
+                f"Configured Validation target is missing: {target_col}"
+            )
+
         logger.info(
             "  Required Validation columns found: %s",
             len(required_fields),
@@ -186,8 +195,9 @@ def prepare_validation_input(
             [str(input_path)],
         ).fetchone()
 
+
         validation_stats = con.execute(
-            """
+            f"""
             SELECT
                 COUNT(*) FILTER (
                     WHERE trade_value_reconciled IS NOT NULL
@@ -198,24 +208,12 @@ def prepare_validation_input(
                 ) AS n_with_constant_value,
 
                 COUNT(*) FILTER (
-                    WHERE trade_synced_quantity_kg IS NOT NULL
-                ) AS n_with_trade_synced_quantity,
+                    WHERE {target_sql} IS NOT NULL
+                ) AS n_with_quantity,
 
                 COUNT(*) FILTER (
-                    WHERE trade_synced_quantity_kg IS NULL
-                ) AS n_without_trade_synced_quantity,
-
-                COUNT(*) FILTER (
-                    WHERE trade_synced_quantity_status = 'bilateral_synced'
-                ) AS n_bilateral_synced,
-
-                COUNT(*) FILTER (
-                    WHERE trade_synced_quantity_status = 'unilateral_retained'
-                ) AS n_unilateral_retained,
-
-                COUNT(*) FILTER (
-                    WHERE trade_synced_quantity_status = 'missing'
-                ) AS n_quantity_missing
+                    WHERE {target_sql} IS NULL
+                ) AS n_without_quantity
 
             FROM read_parquet(?)
             WHERE year BETWEEN ? AND ?
@@ -230,11 +228,8 @@ def prepare_validation_input(
         (
             n_with_nominal_value,
             n_with_constant_value,
-            n_with_trade_synced_quantity,
-            n_without_trade_synced_quantity,
-            n_bilateral_synced,
-            n_unilateral_retained,
-            n_quantity_missing,
+            n_with_quantity,
+            n_without_quantity,
         ) = map(int, validation_stats)
 
         source_rows = int(source_stats[0])
@@ -256,13 +251,17 @@ def prepare_validation_input(
             f"{n_with_constant_value:,}",
         )
         logger.info(
-            "  Rows with Trade-Synced quantity: %s",
-            f"{n_with_trade_synced_quantity:,}",
+            "  Rows with %s: %s",
+            target_col,
+            f"{n_with_quantity:,}",
         )
+
         logger.info(
-            "  Rows without Trade-Synced quantity: %s",
-            f"{n_without_trade_synced_quantity:,}",
+            "  Rows without %s: %s",
+            target_col,
+            f"{n_without_quantity:,}",
         )
+
         # --------------------------------------------------------------
         # Write prepared Validation input
         # --------------------------------------------------------------
@@ -403,9 +402,7 @@ def prepare_validation_input(
         
         "n_with_nominal_value": n_with_nominal_value,
         "n_with_constant_value": n_with_constant_value,
-        "n_with_trade_synced_quantity": n_with_trade_synced_quantity,
-        "n_without_trade_synced_quantity": n_without_trade_synced_quantity,
-        "n_bilateral_synced": n_bilateral_synced,
-        "n_unilateral_retained": n_unilateral_retained,
-        "n_quantity_missing": n_quantity_missing,
+        "quantity_target_column": target_col,
+        "n_with_quantity": n_with_quantity,
+        "n_without_quantity": n_without_quantity,
     }

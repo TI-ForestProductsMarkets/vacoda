@@ -1292,6 +1292,15 @@ def run_validation_inference(
         metadata=metadata,
     )
 
+    if bundle.get("target_column") != cfg.model.target.column:
+        raise RuntimeError(
+            "Fitted model target does not match Validation configuration."
+        )
+
+    if bundle.get("target_transform") != cfg.model.target.transform:
+        raise RuntimeError(
+            "Fitted model target transform does not match Validation configuration."
+        )
     _validate_bundle_feature_contract(
         bundle=bundle,
         cfg=cfg,
@@ -1625,6 +1634,13 @@ def run_validation_inference(
         )
     )
 
+    if target_transform != cfg.model.target.transform:
+        raise RuntimeError(
+            "Fitted model target transform differs from Validation configuration: "
+            f"bundle={target_transform!r}, "
+            f"config={cfg.model.target.transform!r}"
+        )
+    
     prediction_quantity_valid_rows = (
         _inverse_target_transform(
             prediction=prediction_valid_rows,

@@ -131,6 +131,9 @@ def audit_validation_inference(
         inference_path
     )
 
+    target_col = str(cfg.method.target.column)
+    target_sql = '"' + target_col.replace('"', '""') + '"'
+
     output_sql = sql_literal(
         output_path
     )
@@ -171,7 +174,7 @@ def audit_validation_inference(
             "target_hs4",
 
             "trade_value_reconciled_constant_usd",
-            "trade_synced_quantity_kg",
+            target_col,
 
             "training_selected",
 
@@ -321,10 +324,10 @@ def audit_validation_inference(
                         WHERE
                             observed_quantity_available
                             IS DISTINCT FROM (
-                                trade_synced_quantity_kg
+                                {target_sql}
                                     IS NOT NULL
                                 AND isfinite(
-                                    trade_synced_quantity_kg
+                                    {target_sql}
                                 )
                             )
                     )
@@ -334,12 +337,12 @@ def audit_validation_inference(
                         WHERE
                             observed_quantity_valid_for_log
                             IS DISTINCT FROM (
-                                trade_synced_quantity_kg
+                                {target_sql}
                                     IS NOT NULL
                                 AND isfinite(
-                                    trade_synced_quantity_kg
+                                    {target_sql}
                                 )
-                                AND trade_synced_quantity_kg
+                                AND {target_sql}
                                     > 0
                             )
                     )
@@ -347,22 +350,22 @@ def audit_validation_inference(
 
                     COUNT(*) FILTER (
                         WHERE
-                            trade_synced_quantity_kg
+                            {target_sql}
                                 IS NOT NULL
                             AND NOT isfinite(
-                                trade_synced_quantity_kg
+                                {target_sql}
                             )
                     )
                         AS n_nonfinite_observed_quantities,
 
                     COUNT(*) FILTER (
                         WHERE
-                            trade_synced_quantity_kg
+                            {target_sql}
                                 IS NOT NULL
                             AND isfinite(
-                                trade_synced_quantity_kg
+                                {target_sql}
                             )
-                            AND trade_synced_quantity_kg
+                            AND {target_sql}
                                 <= 0
                     )
                         AS n_nonpositive_observed_quantities,
@@ -480,7 +483,7 @@ def audit_validation_inference(
                                     quantity_log_residual
                                     - (
                                         LN(
-                                            trade_synced_quantity_kg
+                                            {target_sql}
                                         )
                                         - model_prediction_log_quantity
                                     )
@@ -668,7 +671,7 @@ def audit_validation_inference(
                                 (
                                     LN(
                                         trade_value_reconciled_constant_usd
-                                        / trade_synced_quantity_kg
+                                        / {target_sql}
                                     )
                                     -
                                     LN(

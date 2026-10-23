@@ -1418,6 +1418,18 @@ def _build_feature_frame(
     inside every leave-one-year-out training fold.
     """
 
+    target_col = cfg.model.target.column
+
+    feature_columns = (
+        list(cfg.model.features.numeric.keys())
+        + list(cfg.model.features.categorical)
+    )
+
+    if target_col in feature_columns:
+        raise RuntimeError(
+            f"Validation target {target_col!r} cannot also be a model feature."
+        )
+
     result = pd.DataFrame(
         index=frame.index
     )
