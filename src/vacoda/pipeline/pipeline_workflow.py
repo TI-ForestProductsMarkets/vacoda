@@ -37,6 +37,7 @@ from vacoda.steps.validation.workflow import run_validation_workflow
 from vacoda.config.steps.release import ReleaseConfig
 from vacoda.steps.release.workflow import run_release_workflow
 
+from vacoda.steps.validation.training_sample import training_definition_name
 from vacoda.config.pipeline import PipelineConfig
 from vacoda.pipeline.publication_identity import release_identity
 
@@ -976,11 +977,27 @@ def _build_release_plan(
         for name, config_class in upstream_configs.items()
     }
     
-    release_id = release_identity(
-        cif_fob_cfg=upstream_cfgs["cif_fob"],
-        trade_sync_cfg=upstream_cfgs["trade_sync"],
-        validation_cfg=validation_cfg,
-    )
+    try:
+        release_id = release_identity(
+            cif_fob_cfg=upstream_cfgs["cif_fob"],
+            trade_sync_cfg=upstream_cfgs["trade_sync"],
+            validation_cfg=validation_cfg,
+        )
+
+    except FileNotFoundError:
+        selected_base = validation_cfg.product_path("selected_model")
+
+        selected_path = (
+            selected_base.parent
+            / training_definition_name(cfg=validation_cfg)
+            / selected_base.name
+        )
+
+        if selected_path.is_file():
+            raise
+
+        # Preflight only: Validation has not produced its selection yet.
+        release_id = "pending_validation_model_selection"
 
     source_paths = {
         "ingestion": upstream_cfgs["ingestion"].output_path(),
@@ -1456,6 +1473,19 @@ def run_pipeline(
                 )
 
                 continue
+
+            if step_name == "release":
+                plan = _build_release_plan(
+                    step_name=step_name,
+                    config_path=step_cfg.config,
+                    pipeline_cfg=cfg,
+                )
+
+                step_checkpoint_path = _global_step_checkpoint_path(
+                    checkpoint_dir=checkpoint_dir,
+                    step_name=step_name,
+                    plan=plan,
+                )
 
             start = perf_counter()
 
