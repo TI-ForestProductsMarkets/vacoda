@@ -1,4 +1,5 @@
 from pathlib import Path
+from collections import Counter
 
 # Internal name: (unit, definition)
 VARIABLES = {
@@ -15,16 +16,17 @@ VARIABLES = {
     "export_value_fob": ("Nominal USD", "Exporter-reported trade value on a free-on-board basis."),
     "import_value_cif": ("Nominal USD", "Importer-reported trade value including cost, insurance, and freight."),
     "import_value_fob_corrected": ("Nominal USD", "Importer trade value converted to an estimated FOB-equivalent value."),
-    "export_synchronized_quantity_kg": ("kg", "Synchronized quantity from the export reporting side."),
-    "import_synchronized_quantity_kg": ("kg", "Synchronized quantity from the import reporting side."),
+    "export_synchronized_quantity_kg": ("kg", "Quantity reported from the export reporting side."),
+    "import_synchronized_quantity_kg": ("kg", "Quantity reported from the import reporting side."),
     "export_synchronized_quantity_source": ("Category", "Source or method used to obtain the export-side quantity."),
     "import_synchronized_quantity_source": ("Category", "Source or method used to obtain the import-side quantity."),
     "pair_uses_estimated_weight": ("Boolean", "Whether either reporting side uses an estimated weight."),
-    "pair_uses_weight_proxy": ("Boolean", "Whether either reporting side uses a weight proxy."),
-    "trade_value_reconciled_constant_usd": ("Constant USD", "Inflation-adjusted reconciled trade value; reference year must be documented."),
+    "trade_value_reconciled_constant_usd": ("Constant USD", "Inflation-adjusted reconciled trade value expressed in {reference_year} USD."),
     "cif_fob_factor_applied": ("Ratio", "Factor applied for CIF-to-FOB value adjustment."),
     "cif_fob_factor_applied_source": ("Category", "Source of the applied CIF-to-FOB adjustment factor."),
     "reconciliation_status": ("Category", "Status of the bilateral trade-value reconciliation."),
+    "exporter_adjusted_weight": ("Ratio","Adjusted reliability weight assigned to the exporter FOB value during bilateral reconciliation."),
+    "importer_adjusted_weight": ("Ratio","Adjusted reliability weight assigned to the importer FOB-equivalent value, including an implicit zero where applicable."),
     "reconciliation_method_applied": ("Category", "Method applied to reconcile exporter and importer trade values."),
     "trade_synced_quantity_method": ("Category", "Method used to obtain the final synchronized bilateral quantity."),
     "trade_synced_quantity_status": ("Category", "Status of bilateral quantity synchronization."),
@@ -50,6 +52,166 @@ VARIABLES = {
     "validation_model_type": ("Text", "Algorithm family of the selected Validation model."),
 }
 
+VARIABLE_GROUPS = {
+    "1. Basic trade information": (
+        "Identifies the trade observation and presents the final "
+        "reconciled value, synchronized quantity, and model prediction.",
+        [
+            "year",
+            "exporter_iso",
+            "importer_iso",
+            "target_cmd",
+            "trade_value_reconciled",
+            "trade_synced_quantity_kg",
+            "model_prediction_quantity_kg",
+            "model_prediction_available",
+            "manual_review_required",
+        ],
+    ),
+
+    "2. Exporter and importer evidence": (
+        "Describes the trade values and quantities reported by the two "
+        "countries, including their sources and estimation flags.",
+        [
+            "export_value_fob",
+            "import_value_cif",
+            "import_value_fob_corrected",
+            "export_synchronized_quantity_kg",
+            "import_synchronized_quantity_kg",
+            "export_synchronized_quantity_source",
+            "import_synchronized_quantity_source",
+            "pair_uses_estimated_weight",
+        ],
+    ),
+
+    "3. Value reconciliation": (
+        "Explains the monetary adjustments and the method used "
+        "to reconcile exporter and importer trade values.",
+        [
+            "trade_value_reconciled_constant_usd",
+            "cif_fob_factor_applied",
+            "cif_fob_factor_applied_source",
+            "exporter_adjusted_weight",
+            "importer_adjusted_weight",
+            "reconciliation_status",
+            "reconciliation_method_applied",
+        ],
+    ),
+
+    "4. Quantity synchronization": (
+        "Explains which reporting-side quantities were available "
+        "and how the final bilateral quantity was determined.",
+        [
+            "trade_synced_quantity_method",
+            "trade_synced_quantity_status",
+            "quantity_availability_case",
+        ],
+    ),
+
+    "5. Unit-value references and diagnostics": (
+        "Compares trade-derived and model-implied unit values with "
+        "the product reference distribution.",
+        [
+            "product_year_median_unit_value",
+            "product_year_log_unit_value_mad",
+            "unit_value_reference_observations",
+            "trade_sync_uv_usd_per_kg",
+            "model_uv_usd_per_kg",
+            "trade_sync_uv_mad_distance",
+            "model_uv_mad_distance",
+        ],
+    ),
+
+    "6. Model training and diagnostics": (
+        "Describes training eligibility, prediction inputs, "
+        "model errors, categorical support, and model identity.",
+        [
+            "training_selected",
+            "model_input_valid",
+            "quantity_log_residual",
+            "quantity_abs_log_residual",
+            "exporter_seen",
+            "importer_seen",
+            "hs6_seen",
+            "hs4_seen",
+            "validation_model_name",
+            "validation_model_type",
+        ],
+    ),
+}
+
+RECONCILIATION_CATEGORIES = {
+    "reconciliation_status": {
+        "bilateral_reconciled":
+            "Both reporting sides provide usable FOB-basis values; reliability-weighted reconciliation is applied.",
+        "bilateral_reconciled_import_implicit_zero":
+            "Exporter FOB value is usable; importer reports other imports that year but no value for this bilateral product. An implicit zero is used for the importer.",
+        "bilateral_reconciled_export_implicit_zero":
+            "Importer FOB-equivalent value is usable; exporter reports other exports that year but no value for this bilateral product. An implicit zero is used for the exporter.",
+        "export_only":
+            "Only the export-side FOB value is usable and is retained when unmatched flows are permitted.",
+        "import_only":
+            "Only the import-side FOB-equivalent value is usable and is retained when unmatched flows are permitted.",
+        "not_eligible":
+            "No eligible bilateral reconciliation or permitted unilateral retention is available.",
+    },
+    "reconciliation_method_applied": {
+        "reliability_weighted":
+            "Reports are combined using annual country-direction reliability weights, including the 0.10 importer-weight adjustment.",
+        "export_report_retained":
+            "The exporter FOB value is retained without bilateral averaging.",
+        "import_report_retained":
+            "The importer FOB-equivalent value is retained without bilateral averaging.",
+        "no_usable_fob_basis_value":
+            "No usable FOB-basis reconciliation result is available.",
+    },
+}
+
+CATEGORY_EXPLANATIONS = {
+    "2. Exporter and importer evidence": {
+        "title": "Quantity-source categories",
+        "applies_to": (
+            "export_synchronized_quantity_source",
+            "import_synchronized_quantity_source",
+        ),
+        "values": {
+            "quantity_alt_quantity_net_weight":
+                "All three reported kilogram candidates agree exactly.",
+
+            "quantity_alt_quantity":
+                "Reported primary and alternative kilogram quantities agree exactly.",
+
+            "quantity_net_weight":
+                "Reported primary quantity and net weight agree exactly.",
+
+            "alt_quantity_net_weight":
+                "Reported alternative quantity and net weight agree exactly.",
+
+            "quantity":
+                "Primary quantity selected by reported-source precedence "
+                "or estimated fallback.",
+
+            "alt_quantity":
+                "Alternative quantity selected by reported-source precedence "
+                "or estimated fallback.",
+
+            "net_weight":
+                "Net weight selected by reported-source precedence "
+                "or estimated fallback.",
+
+            "unavailable":
+                "No usable kilogram evidence was available.",
+        },
+        "note": (
+            "VACODA first prioritizes exact agreement among reported kilogram "
+            "candidates. If no exact agreement exists, reported values follow "
+            "the precedence quantity > alt_quantity > net_weight. Estimated "
+            "values are considered only when no reported kilogram candidate "
+            "is available, using the same precedence. Gross weight is excluded "
+            "from ordinary quantity synchronization."
+        ),
+    },
+}
 
 def write_data_dictionary(
     *,
@@ -57,11 +219,31 @@ def write_data_dictionary(
     public_names: dict[str, str],
     output_path: Path,
     title: str,
+    reference_year: int,
 ) -> Path:
     missing = set(columns) - VARIABLES.keys()
 
     if missing:
         raise ValueError(f"Missing variable definitions: {sorted(missing)}")
+
+    def make_table(fields):
+        lines = [
+            "| Variable | Unit / Type | Definition |",
+            "|---|---|---|",
+        ]
+
+        for column in fields:
+            name = public_names.get(column, column)
+            unit, definition = VARIABLES[column]
+            definition = definition.replace(
+                "{reference_year}",
+                str(reference_year),
+            )
+            lines.append(
+                f"| `{name}` | {unit} | {definition} |"
+            )
+
+        return lines
 
     lines = [
         f"# {title}",
@@ -71,17 +253,123 @@ def write_data_dictionary(
         "",
         f"**Variables: {len(columns)}**",
         "",
-        "| Variable | Unit / Type | Definition |",
-        "|---|---|---|",
     ]
 
-    for column in columns:
-        name = public_names.get(column, column)
-        unit, definition = VARIABLES[column]
+    standard_fields = set(
+        VARIABLE_GROUPS["1. Basic trade information"][1]
+    )
 
-        lines.append(
-            f"| `{name}` | {unit} | {definition} |"
+    if set(columns) == standard_fields:
+        # Standard dataset: one table with all 9 variables
+        lines.extend(make_table(columns))
+
+    else:
+        # Enriched dataset: all 43 variables in six categories
+        grouped_columns = [
+            column
+            for _, (_, fields) in VARIABLE_GROUPS.items()
+            for column in fields
+        ]
+
+        missing_from_groups = sorted(set(columns) - set(grouped_columns))
+        extra_in_groups = sorted(set(grouped_columns) - set(columns))
+        duplicates = sorted(
+            name for name, count in Counter(grouped_columns).items()
+            if count > 1
         )
+
+        if missing_from_groups or extra_in_groups or duplicates:
+            raise ValueError(
+                "Enriched dictionary schema mismatch:\n"
+                f"  Missing from groups: {missing_from_groups}\n"
+                f"  Extra in groups: {extra_in_groups}\n"
+                f"  Duplicate group entries: {duplicates}"
+            )
+
+
+        for heading, (description, fields) in VARIABLE_GROUPS.items():
+            lines.extend([
+                f"## {heading}",
+                "",
+                description,
+                "",
+                *make_table(fields),
+                "",
+            ])
+
+            explanation = CATEGORY_EXPLANATIONS.get(heading)
+
+            if explanation:
+                applies_to = ", ".join(
+                    f"`{public_names.get(name, name)}`"
+                    for name in explanation["applies_to"]
+                )
+
+                lines.extend([
+                    f"### {explanation['title']}",
+                    "",
+                    f"**Applies to:** {applies_to}",
+                    "",
+                    "| Stored value | Interpretation |",
+                    "|---|---|",
+                ])
+
+                for value, meaning in explanation["values"].items():
+                    lines.append(f"| `{value}` | {meaning} |")
+
+                lines.extend([
+                    "",
+                    f"**Selection methodology:** {explanation['note']}",
+                    "",
+                ])
+
+            for field in fields:
+                categories = RECONCILIATION_CATEGORIES.get(field)
+
+                if categories is None:
+                    continue
+
+                public_name = public_names.get(field, field)
+
+                lines.extend([
+                    f"### Values of `{public_name}`",
+                    "",
+                    "| Stored value | Interpretation |",
+                    "|---|---|",
+                ])
+
+                for value, meaning in categories.items():
+                    lines.append(f"| `{value}` | {meaning} |")
+
+                lines.append("")
+
+            if heading == "3. Value reconciliation":
+                lines.extend([
+                    "### Reliability-weighted reconciliation",
+                    "",
+                    "For eligible bilateral observations:",
+                    "",
+                    "`trade_value_usd = exporter_trade_weight × reconciliation_export_value "
+                    "+ importer_trade_weight × reconciliation_import_value`",
+                    "",
+                    "The weights depend on annual country-direction "
+                    "mean reporting deviations:",
+                    "",
+                    "`exporter_trade_weight = d_import / (d_export + d_import) - 0.10`",
+                    "",
+                    "`importer_trade_weight = d_export / (d_export + d_import) + 0.10`",
+                    "",
+                    "When both deviations are zero, the base weights "
+                    "are 0.5 each before adjustment.",
+                    "",
+                    "For implicit-zero observations, the absent report "
+                    "enters reconciliation as zero, while its original "
+                    "published evidence field remains missing.",
+                    "",
+                    "For unilaterally retained observations, "
+                    "bilateral weighting is not applied.",
+                    "",
+                ])
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")

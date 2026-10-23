@@ -265,7 +265,22 @@ def publish_release_datasets(
     # Every execution requires a passing current audit.
     _audit_details(audit_path, run_id, release_id)
 
-    if any(path.exists() for path in targets):
+    existing = any(path.exists() for path in targets)
+
+    if existing and not all(path.is_file() for path in targets):
+        raise RuntimeError("Existing publication is incomplete.")
+
+    same_publication = existing and all(
+        source.is_file()
+        and _sha256(source) == _sha256(destination)
+        for source, destination in (
+            (standard_candidate, standard_path),
+            (enriched_candidate, enriched_path),
+            *dictionaries,
+        )
+    )
+
+    if same_publication:
         if not all(path.is_file() for path in targets):
             raise RuntimeError(
                 "Release publication is incomplete; refusing reuse."
@@ -351,10 +366,10 @@ def publish_release_datasets(
             raise FileNotFoundError(f"Missing/empty Release publication input: {source}")
     if standard_candidate.resolve() == standard_path.resolve() or enriched_candidate.resolve() == enriched_path.resolve():
         raise ValueError("Candidate and published paths must differ.")
-    if any(path.exists() for path in targets):
-        raise FileExistsError(
-            "Release already has published artifacts. Publication is immutable; "
-            "use a new release_id instead of force=True."
+    if existing:
+        logger.info(
+            "REBUILD — Published Release differs from audited candidates. "
+            "Replacing outdated publication."
         )
     if standard_path.parent != enriched_path.parent or standard_path.parent != metadata_standard.parent:
         raise ValueError("Release artifacts must share a publication directory.")
@@ -364,13 +379,21 @@ def publish_release_datasets(
     audit_record = _audit_details(audit_path, run_id, release_id)
     # An audit is not valid for candidate files modified after it was written.
     audited_at = audit_path.stat().st_mtime_ns
-    if any(path.stat().st_mtime_ns > audited_at for path in sources):
+    if any(
+        path.stat().st_mtime_ns > audited_at
+        for path in (
+            *sources,
+            dictionary_standard_candidate,
+            dictionary_enriched_candidate,
+        )
+    ):
         raise RuntimeError("A Release candidate changed after the audit; rerun the audit.")
 
     output_dir = standard_path.parent
     output_dir.mkdir(parents=True, exist_ok=True)
     temp_paths: list[Path] = []
     committed: list[Path] = []
+    backups: dict[Path, Path] = {}
 
     with duckdb.connect() as con:
         for path, expected in (
@@ -435,6 +458,12 @@ def publish_release_datasets(
                 "size_bytes": temporary.stat().st_size,
             })
 
+        if existing:
+            for destination in targets:
+                backup = output_dir / f".{destination.name}.{uuid4().hex}.bak"
+                shutil.copy2(destination, backup)
+                backups[destination] = backup
+
         for info, metadata_path, kind in (
             (candidate_info[0], metadata_standard, "standard"),
             (candidate_info[1], metadata_enriched, "enriched"),
@@ -473,8 +502,6 @@ def publish_release_datasets(
                     dictionary_enriched,
                 ),
             ):
-            if destination.exists():
-                raise FileExistsError(f"Publication target unexpectedly exists: {destination}")
             os.replace(temporary, destination)
             committed.append(destination)
 
@@ -511,7 +538,15 @@ def publish_release_datasets(
     except Exception:
         for committed_path in reversed(committed):
             committed_path.unlink(missing_ok=True)
+
+        for destination, backup in backups.items():
+            os.replace(backup, destination)
+
         raise
+
     finally:
         for temporary in temp_paths:
             temporary.unlink(missing_ok=True)
+
+        for backup in backups.values():
+            backup.unlink(missing_ok=True)

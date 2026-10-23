@@ -66,12 +66,13 @@ release:
       - export_synchronized_quantity_source
       - import_synchronized_quantity_source
       - pair_uses_estimated_weight
-      - pair_uses_weight_proxy
 
       # Reconciliation and value provenance
       - trade_value_reconciled_constant_usd
       - cif_fob_factor_applied
       - cif_fob_factor_applied_source
+      - exporter_adjusted_weight
+      - importer_adjusted_weight
       - reconciliation_status
       - reconciliation_method_applied
       - trade_synced_quantity_method

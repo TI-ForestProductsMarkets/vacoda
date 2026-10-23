@@ -14,6 +14,7 @@ import duckdb
 
 from vacoda.steps.release.data_dictionary import write_data_dictionary
 from vacoda.config.steps.release import ReleaseConfig
+from vacoda.config.steps.value import ValueConfig
 from vacoda.utils.sql import sql_literal
 from vacoda.pipeline.checkpoint import (
     file_fingerprint,
@@ -33,7 +34,7 @@ PREPARED_EXTRA = {
     "reconciliation_method_applied", "trade_synced_quantity_method",
     "trade_synced_quantity_status", "quantity_availability_case",
     "product_year_median_unit_value", "product_year_log_unit_value_mad",
-    "unit_value_reference_observations",
+    "unit_value_reference_observations", "exporter_adjusted_weight", "importer_adjusted_weight",
 }
 INFERENCE_EXTRA = {
     "training_selected", "model_input_valid", "quantity_log_residual",
@@ -72,6 +73,9 @@ PUBLIC_COLUMN_NAMES = {
 
     "trade_sync_uv_usd_per_kg": "trade_uv_usd_per_kg",
     "trade_sync_uv_mad_distance": "trade_uv_mad_distance",
+
+    "exporter_adjusted_weight": "exporter_trade_weight",
+    "importer_adjusted_weight": "importer_trade_weight",
 
     "validation_model_name": "model_name",
     "validation_model_type": "model_type",
@@ -139,8 +143,20 @@ def build_release_candidates(
 
     standard_cols = tuple(cfg.schema.standard)
     enriched_cols = tuple(cfg.schema.enriched)
-    if len(standard_cols) != 9 or len(enriched_cols) != 43:
-        raise ValueError("Release schema must contain 9 standard and 43 enriched columns.")
+
+    if not standard_cols or not enriched_cols:
+        raise ValueError("Release schemas cannot be empty.")
+
+    if len(set(standard_cols)) != len(standard_cols):
+        raise ValueError("Standard Release schema contains duplicate columns.")
+
+    if len(set(enriched_cols)) != len(enriched_cols):
+        raise ValueError("Enriched Release schema contains duplicate columns.")
+
+    if not set(standard_cols).issubset(enriched_cols):
+        raise ValueError(
+            "Enriched Release schema must contain all Standard columns."
+        )
     available = set(KEY) | PREPARED_FIELDS | INFERENCE_FIELDS | DERIVED
     unknown = set(enriched_cols) - available
     if unknown:
@@ -366,6 +382,15 @@ def build_release_candidates(
             FROM release_evidence
         """).fetchone()
 
+
+        ## Reference year for inflation-adjusted trade value
+        value_cfg = ValueConfig.from_yaml(
+            scope=cfg.scope,
+            engine=cfg.engine,
+        )
+
+        reference_year = value_cfg.method.reference_year
+
         ## ============================================================
         # WRITE DATA DICTIONARY
         ## ============================================================
@@ -375,6 +400,7 @@ def build_release_candidates(
             public_names=PUBLIC_COLUMN_NAMES,
             output_path=dictionary_standard_path,
             title="VACODA — Standard Data Dictionary",
+            reference_year=reference_year,
         )
 
         write_data_dictionary(
@@ -382,6 +408,7 @@ def build_release_candidates(
             public_names=PUBLIC_COLUMN_NAMES,
             output_path=dictionary_enriched_path,
             title="VACODA — Enriched Data Dictionary",
+            reference_year=reference_year,
         )
 
         logger.info("  Standard data dictionary: %s", dictionary_standard_path)
