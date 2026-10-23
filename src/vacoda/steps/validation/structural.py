@@ -93,7 +93,7 @@ def audit_structural_integrity(
         cfg.method.structural
     )
 
-    target_col = str(cfg.method.target.column)
+    target_col = str(cfg.model.target.column)
     target_sql = _safe_identifier(target_col)
 
     required_fields = tuple(

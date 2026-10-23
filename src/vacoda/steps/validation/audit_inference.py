@@ -131,7 +131,7 @@ def audit_validation_inference(
         inference_path
     )
 
-    target_col = str(cfg.method.target.column)
+    target_col = str(cfg.model.target.column)
     target_sql = '"' + target_col.replace('"', '""') + '"'
 
     output_sql = sql_literal(

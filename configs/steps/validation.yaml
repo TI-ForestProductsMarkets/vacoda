@@ -168,7 +168,7 @@ validation:
           max_features: 0.8
 
       mlp:
-        enable: true
+        enable: false
         type: "mlp"
         parameters:
           activation: "relu"
