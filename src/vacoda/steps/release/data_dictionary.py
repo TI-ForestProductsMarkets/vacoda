@@ -23,7 +23,12 @@ VARIABLES = {
     "pair_uses_estimated_weight": ("Boolean", "Whether either reporting side uses an estimated weight."),
     "trade_value_reconciled_constant_usd": ("Constant USD", "Inflation-adjusted reconciled trade value expressed in {reference_year} USD."),
     "cif_fob_factor_applied": ("Ratio", "Factor applied for CIF-to-FOB value adjustment."),
-    "cif_fob_factor_applied_source": ("Category", "Source of the applied CIF-to-FOB adjustment factor."),
+    "cif_fob_factor_applied_source": (
+    "Category",
+    "Evidence used to estimate the CIF-to-FOB factor."
+    "<br>`Direct-Factor:` Directly reported CIF and FOB values."
+    "<br>`Mirror-Factor:` Supplementary bilateral observations with agreeing quantities; never used alone."
+    ),
     "reconciliation_status": ("Category", "Status of the bilateral trade-value reconciliation."),
     "exporter_adjusted_weight": ("Ratio","Adjusted reliability weight assigned to the exporter FOB value during bilateral reconciliation."),
     "importer_adjusted_weight": ("Ratio","Adjusted reliability weight assigned to the importer FOB-equivalent value, including an implicit zero where applicable."),
@@ -85,8 +90,7 @@ VARIABLE_GROUPS = {
     ),
 
     "3. Value reconciliation": (
-        "Explains the monetary adjustments and the method used "
-        "to reconcile exporter and importer trade values.",
+        "Monetary adjustments and bilateral reconciliation.",
         [
             "trade_value_reconciled_constant_usd",
             "cif_fob_factor_applied",
@@ -99,8 +103,7 @@ VARIABLE_GROUPS = {
     ),
 
     "4. Quantity synchronization": (
-        "Explains which reporting-side quantities were available "
-        "and how the final bilateral quantity was determined.",
+         "Reporting-side availability and bilateral quantity selection.",
         [
             "trade_synced_quantity_method",
             "trade_synced_quantity_status",
@@ -306,7 +309,7 @@ def write_data_dictionary(
                 )
 
                 lines.extend([
-                    f"### {explanation['title']}",
+                    f"#### {explanation['title']}",
                     "",
                     f"**Applies to:** {applies_to}",
                     "",
@@ -319,7 +322,13 @@ def write_data_dictionary(
 
                 lines.extend([
                     "",
-                    f"**Selection methodology:** {explanation['note']}",
+                    f"*Selection methodology:* {explanation['note']}",
+                    "",
+                ])
+
+            if heading == "3. Value reconciliation":
+                lines.extend([
+                    "### 3.1 Category definitions",
                     "",
                 ])
 
@@ -332,7 +341,7 @@ def write_data_dictionary(
                 public_name = public_names.get(field, field)
 
                 lines.extend([
-                    f"### Values of `{public_name}`",
+                    f"#### `{public_name}`",
                     "",
                     "| Stored value | Interpretation |",
                     "|---|---|",
@@ -345,7 +354,9 @@ def write_data_dictionary(
 
             if heading == "3. Value reconciliation":
                 lines.extend([
-                    "### Reliability-weighted reconciliation",
+                    "### 3.2 Calculation",
+                    "",
+                    "### Reliability-weighted calculation",
                     "",
                     "For eligible bilateral observations:",
                     "",
