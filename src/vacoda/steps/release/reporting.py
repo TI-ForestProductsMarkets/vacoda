@@ -152,7 +152,7 @@ def _plot_annual_coverage(annual: list[dict[str, Any]], path: Path) -> None:
     years = [int(r["year"]) for r in rows]
     fig, ax = plt.subplots(figsize=(9, 4.2))
     for key, label in (
-        ("synced_quantity_rows", "Synchronized trade quantity"),
+        ("synced_quantity_rows", "Reconciled trade quantity"),
         ("nominal_value_rows", "Reconciled trade value"),
         ("raw_model_prediction_rows", "Model predictions"),
     ):
@@ -305,6 +305,7 @@ def _plot_residual_profile(distributions: list[dict[str, Any]], path: Path) -> b
 def build_release_report(
     *,
     cfg: ReleaseConfig,
+    quantity_col: str,
     standard_path: Path,
     enriched_path: Path,
     audit_path: Path,
@@ -339,6 +340,11 @@ def build_release_report(
     latest_path = cfg.artifacts_latest_path()
     if report_path.exists() and not force:
         raise FileExistsError(f"Release report already exists: {report_path}")
+
+    field_labels = {
+        **FIELD_LABELS,
+        quantity_col: "Reconciled trade quantity (kg)",
+    }
 
     # Match Value reporting: central figure root / stage / target revision.
     figure_dir = get_figure_dir() / "release" / f"target_{cfg.scope.target_hs.lower()}"
@@ -389,7 +395,7 @@ def build_release_report(
         lookup = {(r["stage"], r["field"]): r for r in availability}
         final_specs = (
             ("Reconciled trade value", "trade_value_reconciled"),
-            ("Synchronized trade quantity", "trade_synced_quantity_kg"),
+            ("Synchronized trade quantity", quantity_col),
             ("Model prediction", "model_prediction_quantity_kg"),
         )
         final_coverage = []
@@ -468,10 +474,11 @@ def build_release_report(
             "and product code (`target_cmd`). These counts describe the final bilateral population, "
             "not the original source records.",
             "",
-            "- **Synchronized trade quantity:** Number of bilateral observations with an available synchronized trade quantity "
-            "(`trade_synced_quantity_kg`). This quantity is derived from Trade Sync reconciliation and "
-            "must not be interpreted as independently verified physical shipment weight.",
-            "",
+            "- **Reconciled trade quantity:** Number of bilateral observations with "
+            "an available reconciled quantity "
+            f"(published as `trade_quantity_kg`; upstream source: `{quantity_col}`). "
+            "This is a reconciliation-derived estimate, not an independently "
+            "verified physical shipment weight.",
             "- **Reconciled trade value:** Number of bilateral observations with an available reconciled nominal trade value "
             "(`trade_value_reconciled`). This measures the availability of reconciled monetary values, "
             "not inflation-adjusted values in constant USD.",
@@ -532,10 +539,10 @@ def build_release_report(
                 ("Support not evaluated", _fmt(overall["support_not_evaluated_rows"])),
             ]), 
             "",
-            "**Quantity publication policy:** The synchronized trade quantity "
-            "is preserved as `trade_synced_quantity_kg`. Validation adds "
-            "`model_prediction_quantity_kg` as a separate inferred feature; "
-            "it does not overwrite the synchronized trade quantity.",
+            "**Quantity publication policy:** The configured Validation quantity "
+            f"(`{quantity_col}`) is published as `trade_quantity_kg`. "
+            "Validation provides `model_prediction_quantity_kg` as an additional "
+            "model-based quantity estimate; it does not overwrite the reconciled quantity.",
             "",
             "The standard dataset withholds model predictions for observations "
             "requiring manual review. The enriched dataset retains the raw "
@@ -649,7 +656,7 @@ def build_release_report(
                 ["Measure", "Usable", "P05", "Median", "P95", "P99"],
                 [
                     (
-                        FIELD_LABELS.get(r["measure"], r["measure"]),
+                        field_labels.get(r["measure"], r["measure"]),
                         _fmt(r["usable_rows"]),
                         _fmt(r["p05"]),
                         _fmt(r["p50"]),

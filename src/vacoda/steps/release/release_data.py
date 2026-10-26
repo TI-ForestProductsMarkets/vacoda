@@ -48,7 +48,6 @@ DERIVED = {
 PUBLIC_COLUMN_NAMES = {
     "target_cmd": "hs6",
     "trade_value_reconciled": "trade_value_usd",
-    "trade_synced_quantity_kg": "trade_quantity_kg",
     "model_prediction_quantity_kg": "predicted_quantity_kg",
     "model_prediction_available": "prediction_available",
 
@@ -81,7 +80,7 @@ PUBLIC_COLUMN_NAMES = {
     "validation_model_type": "model_type",
 }
 PREPARED_FIELDS = {
-    "trade_value_reconciled", "trade_synced_quantity_kg", *PREPARED_EXTRA,
+    "trade_value_reconciled", *PREPARED_EXTRA,
 }
 INFERENCE_FIELDS = {
     "model_prediction_quantity_kg", "model_prediction_available",
@@ -116,6 +115,7 @@ def _check_keys(con: duckdb.DuckDBPyConnection, table: str) -> int:
 def build_release_candidates(
     *,
     cfg: ReleaseConfig,
+    quantity_col: str,
     prepared_input_path: Path,
     inference_input_path: Path,
     staging_dir: Path,
@@ -131,6 +131,13 @@ def build_release_candidates(
     release. Existing candidate paths require force=True to replace.
     """
     start = perf_counter()
+    prepared_fields = PREPARED_FIELDS | {quantity_col}
+    public_column_names = {
+        **PUBLIC_COLUMN_NAMES,
+        quantity_col: "trade_quantity_kg",
+    }
+    quantity_sql = '"' + quantity_col.replace('"', '""') + '"'
+
     prepared_path = Path(prepared_input_path)
     inference_path = Path(inference_input_path)
     staging_dir = Path(staging_dir)
@@ -157,7 +164,7 @@ def build_release_candidates(
         raise ValueError(
             "Enriched Release schema must contain all Standard columns."
         )
-    available = set(KEY) | PREPARED_FIELDS | INFERENCE_FIELDS | DERIVED
+    available = set(KEY) | prepared_fields | INFERENCE_FIELDS | DERIVED
     unknown = set(enriched_cols) - available
     if unknown:
         raise ValueError(f"Release schema has unmapped columns: {sorted(unknown)}")
@@ -187,6 +194,7 @@ def build_release_candidates(
 
     config_fp = semantic_config_fingerprint(
         config={
+            "quantity_column": quantity_col,
             "schema_standard": standard_cols,
             "schema_enriched": enriched_cols,
             "candidate_filename": filename,
@@ -242,8 +250,8 @@ def build_release_candidates(
         con.execute(f"PRAGMA threads={int(cfg.engine.threads)}")
         prepared_cols = _columns(con, prepared_path)
         inference_cols = _columns(con, inference_path)
-        required_prepared = set(KEY) | PREPARED_FIELDS
-        required_inference = set(KEY) | INFERENCE_FIELDS | {"trade_synced_quantity_kg"}
+        required_prepared = set(KEY) | prepared_fields
+        required_inference = set(KEY) | INFERENCE_FIELDS | {quantity_col}
         for label, missing in (
             ("prepared", required_prepared - prepared_cols),
             ("inference", required_inference - inference_cols),
@@ -269,8 +277,8 @@ def build_release_candidates(
             raise RuntimeError(f"Inference is missing {unmatched} Prepared keys")
         quantity_conflicts = con.execute(f"""
             SELECT COUNT(*) FROM p JOIN i ON {join_clause}
-            WHERE p.trade_synced_quantity_kg
-                  IS DISTINCT FROM i.trade_synced_quantity_kg
+            WHERE p.{quantity_sql}
+                  IS DISTINCT FROM i.{quantity_sql}
         """).fetchone()[0]
         if quantity_conflicts:
             raise RuntimeError(
@@ -289,7 +297,7 @@ def build_release_candidates(
         # All four UV diagnostics use nominal reconciled USD / kg. The
         # reference's value basis must be confirmed to match before publication.
         value = "p.trade_value_reconciled"
-        qsync = "p.trade_synced_quantity_kg"
+        qsync = f"p.{quantity_sql}"
         qmodel = "i.model_prediction_quantity_kg"
         median = "p.product_year_median_unit_value"
         mad = "p.product_year_log_unit_value_mad"
@@ -309,7 +317,7 @@ def build_release_candidates(
 
         expression = {
             **{key: f'p."{key}"' for key in KEY},
-            **{key: f'p."{key}"' for key in PREPARED_FIELDS},
+            **{key: f'p."{key}"' for key in prepared_fields},
             **{key: f'i."{key}"' for key in INFERENCE_FIELDS},
             "trade_sync_uv_usd_per_kg": uv_expression(qsync),
             "model_uv_usd_per_kg": uv_expression(qmodel),

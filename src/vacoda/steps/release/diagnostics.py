@@ -53,16 +53,18 @@ def _sidecar_paths(main_path: Path) -> dict[str, Path]:
 def _build_exploration_sidecars(
     con: duckdb.DuckDBPyConnection,
     sidecar_paths: dict[str, Path],
+    quantity_col: str,
 ) -> dict[str, Path]:
     """Aggregate the published enriched dataset for Release exploration."""
     temps = {}
+    quantity_sql = '"' + quantity_col.replace('"', '""') + '"'
     valid_value = """
         trade_value_reconciled_constant_usd > 0
         AND isfinite(trade_value_reconciled_constant_usd)
     """
-    valid_quantity = """
-        trade_synced_quantity_kg > 0
-        AND isfinite(trade_synced_quantity_kg)
+    valid_quantity = f"""
+        {quantity_sql} > 0
+        AND isfinite({quantity_sql})
     """
     valid_prediction = """
         model_prediction_quantity_kg > 0
@@ -83,7 +85,7 @@ def _build_exploration_sidecars(
             MEDIAN(trade_value_reconciled_constant_usd)
                 FILTER (WHERE {valid_value})
                 AS median_trade_value_constant_usd,
-            MEDIAN(trade_synced_quantity_kg)
+            MEDIAN({quantity_sql})
                 FILTER (WHERE {valid_quantity})
                 AS median_trade_synced_quantity_kg,
             MEDIAN(model_prediction_quantity_kg)
@@ -201,7 +203,7 @@ def _build_exploration_sidecars(
     # 4. Distribution quantiles across published observations.
     measures = (
         "trade_value_reconciled_constant_usd",
-        "trade_synced_quantity_kg",
+        quantity_col,
         "model_prediction_quantity_kg",
         "trade_sync_uv_usd_per_kg",
         "model_uv_usd_per_kg",
@@ -257,10 +259,14 @@ def _schema(con: duckdb.DuckDBPyConnection, path: Path) -> set[str]:
         ).fetchall()
     }
 
-def _release_view_sql(path: Path, columns: set[str]) -> str:
+def _release_view_sql(
+    path: Path,
+    columns: set[str],
+    public_column_names: dict[str, str],
+) -> str:
     aliases = [
         f'"{public}" AS "{internal}"'
-        for internal, public in PUBLIC_COLUMN_NAMES.items()
+        for internal, public in public_column_names.items()
         if public in columns and internal != public
     ]
 
@@ -285,6 +291,7 @@ def _build_sidecars(
     sidecar_paths: dict[str, Path],
     source_paths: Mapping[str, Path],
     enriched_path: Path,
+    quantity_col: str,
 ) -> dict[str, Path]:
     """Return temporary paths; caller promotes only after every query succeeds.
     Optional source_paths keys:
@@ -327,13 +334,15 @@ def _build_sidecars(
     specs = {
         "quantity": ("synchronized_quantity_kg",),
         "cif_fob": ("export_value_fob", "import_value_fob_corrected"),
-        "trade_sync": ("trade_value_reconciled", "trade_synced_quantity_kg"),
+        "trade_sync": ("trade_value_reconciled", quantity_col),
         "value": ("trade_value_reconciled", "trade_value_reconciled_constant_usd"),
-        "validation_prepared": ("trade_value_reconciled_constant_usd", "trade_synced_quantity_kg"),
+        "validation_prepared": ("trade_value_reconciled_constant_usd", quantity_col),
         "validation_inference": ("model_prediction_quantity_kg",),
         "release_enriched": (
-            "trade_value_reconciled", "trade_value_reconciled_constant_usd",
-            "trade_synced_quantity_kg", "model_prediction_quantity_kg",
+            "trade_value_reconciled", 
+            "trade_value_reconciled_constant_usd",
+            quantity_col, 
+            "model_prediction_quantity_kg",
         ),
     }
     selects = []
@@ -463,9 +472,12 @@ def _build_sidecars(
     )
     # 5. Compact long-form quantiles for plots; positive finite values only.
     distribution_fields = (
-        "trade_value_reconciled_constant_usd", "trade_synced_quantity_kg",
-        "model_prediction_quantity_kg", "trade_sync_uv_usd_per_kg",
-        "model_uv_usd_per_kg", "quantity_abs_log_residual",
+        "trade_value_reconciled_constant_usd", 
+        quantity_col,
+        "model_prediction_quantity_kg", 
+        "trade_sync_uv_usd_per_kg",
+        "model_uv_usd_per_kg", 
+        "quantity_abs_log_residual",
     )
     dist = []
     for field in distribution_fields:
@@ -500,6 +512,7 @@ def _build_sidecars(
         _build_exploration_sidecars(
             con=con,
             sidecar_paths=sidecar_paths,
+            quantity_col=quantity_col,
         )
     )
     return temps
@@ -508,6 +521,7 @@ def _build_sidecars(
 def build_release_diagnostics(
     *,
     cfg: ReleaseConfig,
+    quantity_col: str,
     standard_path: Path,
     enriched_path: Path,
     audit_path: Path,
@@ -523,6 +537,11 @@ def build_release_diagnostics(
     approval was enforced earlier by the Release workflow and publisher.
     """
     start = perf_counter()
+    public_column_names = {
+            **PUBLIC_COLUMN_NAMES,
+            quantity_col: "trade_quantity_kg",
+        }
+    
     standard_path = Path(standard_path)
     enriched_path = Path(enriched_path)
     audit_path = Path(audit_path)
@@ -530,6 +549,7 @@ def build_release_diagnostics(
     sidecar_paths = _sidecar_paths(output_path)
     source_paths = {k: Path(v) for k, v in (source_paths or {}).items()}
 
+    quantity_sql = '"' + quantity_col.replace('"', '""') + '"'
     ## Local Checkpoints
     checkpoint_path = checkpoint_dir / "diagnostics.json"
 
@@ -540,6 +560,7 @@ def build_release_diagnostics(
 
     config_fp = semantic_config_fingerprint(
         config={
+            "quantity_column": quantity_col,
             "release_id": release_id,
             "scope": cfg.scope,
             "code_fingerprint": file_fingerprint(
@@ -626,16 +647,24 @@ def build_release_diagnostics(
             raise RuntimeError("Release audit identity/status does not match.")
         con.execute(
             "CREATE TEMP VIEW standard_release AS "
-            + _release_view_sql(standard_path, _schema(con, standard_path))
+            + _release_view_sql(
+                standard_path,
+                _schema(con, standard_path),
+                public_column_names,
+            )
         )
 
         con.execute(
             "CREATE TEMP VIEW enriched_release AS "
-            + _release_view_sql(enriched_path, _schema(con, enriched_path))
+            + _release_view_sql(
+                enriched_path,
+                _schema(con, enriched_path),
+                public_column_names,
+            )
         )
         # Two aggregate sets permit descriptive cross-product comparisons
         # without joining millions of underlying bilateral observations.
-        query = """
+        query = f"""
             WITH s AS (
                 SELECT
                     CASE WHEN GROUPING(year) = 1 THEN 'all_years'
@@ -648,7 +677,7 @@ def build_release_diagnostics(
                         WHERE trade_value_reconciled IS NOT NULL
                     ) AS nominal_value_rows,
                     COUNT(*) FILTER (
-                        WHERE trade_synced_quantity_kg IS NOT NULL
+                        WHERE {quantity_sql} IS NOT NULL
                     ) AS synced_quantity_rows,
                     COUNT(*) FILTER (
                         WHERE model_prediction_available IS TRUE
@@ -663,7 +692,7 @@ def build_release_diagnostics(
                         WHERE manual_review_required IS TRUE
                     ) AS manual_review_hs6_codes,
                     MEDIAN(trade_value_reconciled) AS median_trade_value_usd,
-                    MEDIAN(trade_synced_quantity_kg) AS median_synced_quantity_kg,
+                    MEDIAN({quantity_sql}) AS median_synced_quantity_kg,
                     MEDIAN(model_prediction_quantity_kg) AS median_standard_prediction_kg
                 FROM standard_release
                 GROUP BY GROUPING SETS ((year), ())
@@ -757,8 +786,12 @@ def build_release_diagnostics(
         if not n_standard or not n_enriched:
             raise RuntimeError("Published Release dataset is empty.")
         sidecar_temp = _build_sidecars(
-            con, output_path=output_path, sidecar_paths=sidecar_paths,
-            source_paths=source_paths, enriched_path=enriched_path,
+            con,
+            output_path=output_path,
+            sidecar_paths=sidecar_paths,
+            source_paths=source_paths,
+            enriched_path=enriched_path,
+            quantity_col=quantity_col,
         )
 
         for key, path in sidecar_paths.items():

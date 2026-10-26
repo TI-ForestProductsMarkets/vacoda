@@ -69,6 +69,11 @@ def run_release_workflow(
     directory; the master pipeline must choose and supply that identity.
     """
     enabled_products = cfg.enabled_products()
+    quantity_col = str(validation_cfg.model.target.column)
+    if quantity_col not in cfg.schema.standard:
+        raise ValueError(
+            f"Release standard schema must include Validation target {quantity_col!r}."
+        )
     require_enabled_products(
         workflow_name="Release",
         enabled_products=enabled_products,
@@ -137,6 +142,7 @@ def run_release_workflow(
             title=WORKFLOW_STEPS[1],
             runner=lambda: build_release_candidates(
                 cfg=cfg,
+                quantity_col=quantity_col,
                 prepared_input_path=prepared_path,
                 inference_input_path=inference_path,
                 staging_dir=staging_dir,
@@ -169,6 +175,7 @@ def run_release_workflow(
             title=WORKFLOW_STEPS[2],
             runner=lambda: audit_release_candidates(
                 cfg=cfg,
+                quantity_col=quantity_col,
                 prepared_input_path=prepared_path,
                 inference_input_path=inference_path,
                 candidate_standard_path=candidate_standard_path,
@@ -232,6 +239,7 @@ def run_release_workflow(
             title=WORKFLOW_STEPS[4],
             runner=lambda: build_release_diagnostics(
                 cfg=cfg,
+                quantity_col=quantity_col,
                 standard_path=published_standard_path,
                 enriched_path=published_enriched_path,
                 audit_path=audit_path,
@@ -264,6 +272,7 @@ def run_release_workflow(
             title=WORKFLOW_STEPS[5],
             runner=lambda: build_release_report(
                 cfg=cfg,
+                quantity_col=quantity_col,
                 standard_path=published_standard_path,
                 enriched_path=published_enriched_path,
                 audit_path=audit_path,

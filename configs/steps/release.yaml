@@ -51,7 +51,7 @@ release:
       - importer_iso
       - target_cmd
       - trade_value_reconciled
-      - trade_synced_quantity_kg
+      - quantity_value_weighted_kg
       - model_prediction_quantity_kg
       - model_prediction_available
       - manual_review_required

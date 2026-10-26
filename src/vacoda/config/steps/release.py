@@ -208,7 +208,7 @@ class ReleaseSchemaConfig:
             raise ValueError("Release schemas overlap: " + ", ".join(sorted(overlap)))
         required = {
             "year", "exporter_iso", "importer_iso", "target_cmd",
-            "trade_value_reconciled", "trade_synced_quantity_kg",
+            "trade_value_reconciled",
             "model_prediction_quantity_kg", "model_prediction_available",
             "manual_review_required",
         }

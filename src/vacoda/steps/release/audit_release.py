@@ -27,6 +27,7 @@ def _schema(con: duckdb.DuckDBPyConnection, path: Path) -> tuple[str, ...]:
 def audit_release_candidates(
     *,
     cfg: ReleaseConfig,
+    quantity_col: str,
     prepared_input_path: Path,
     inference_input_path: Path,
     candidate_standard_path: Path,
@@ -72,13 +73,13 @@ def audit_release_candidates(
             "enriched_schema_exact": actual["enriched"] == public_schema(expected_enriched),
         }
         needed = {
-            "prepared": set(KEY) | {"trade_value_reconciled", "trade_synced_quantity_kg"},
+            "prepared": set(KEY) | {"trade_value_reconciled", quantity_col},
             "inference": set(KEY) | {"model_prediction_quantity_kg", "model_prediction_available",
                                      "manual_review_required", "hs6_seen", "hs4_seen"},
-            "standard": set(KEY) | {"trade_value_reconciled", "trade_synced_quantity_kg",
+            "standard": set(KEY) | {"trade_value_reconciled", quantity_col,
                                     "model_prediction_quantity_kg", "model_prediction_available",
                                     "manual_review_required"},
-            "enriched": set(KEY) | {"trade_value_reconciled", "trade_synced_quantity_kg",
+            "enriched": set(KEY) | {"trade_value_reconciled", quantity_col,
                                     "model_prediction_quantity_kg", "model_prediction_available",
                                     "manual_review_required", "hs6_seen", "hs4_seen"},
         }
@@ -179,7 +180,7 @@ def audit_release_candidates(
         metrics["prepared_standard_trade_mismatches"] = int(con.execute(f"""
             SELECT COUNT(*) FROM prepared p JOIN standard s ON {join_ps}
             WHERE p.trade_value_reconciled IS DISTINCT FROM s.trade_value_reconciled
-               OR p.trade_synced_quantity_kg IS DISTINCT FROM s.trade_synced_quantity_kg
+               OR p."{quantity_col}" IS DISTINCT FROM s."{quantity_col}"
         """).fetchone()[0])
         metrics["inference_standard_flag_mismatches"] = int(con.execute(f"""
             SELECT COUNT(*) FROM inference i JOIN standard s ON {join_si}
@@ -190,7 +191,7 @@ def audit_release_candidates(
         # All non-derived enriched evidence must match its original source.
         from vacoda.steps.release.release_data import PREPARED_FIELDS, INFERENCE_FIELDS, DERIVED
         prepared_extra = sorted((set(expected_enriched) & PREPARED_FIELDS)
-                                - {"trade_value_reconciled", "trade_synced_quantity_kg"})
+                                - {"trade_value_reconciled", quantity_col})
         inference_extra = sorted((set(expected_enriched) & INFERENCE_FIELDS)
                                  - {"model_prediction_quantity_kg", "model_prediction_available",
                                     "manual_review_required"})
