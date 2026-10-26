@@ -1,6 +1,8 @@
+
 """
-Train the VACODA Validation Random Forest on the original selected
-training population and infer quantities for Release manual-review rows.
+Train the VACODA Validation Random Forest on the selected training
+population and compare its predictions with the embedding model
+for Release manual-review observations.
 
 Experimental only: does not modify Validation or Release artifacts.
 """
@@ -35,6 +37,11 @@ from vacoda.utils.logger import (
 
 
 def main() -> None:
+
+    # ============================================================
+    # CONFIGURATION
+    # ============================================================
+
     pipeline_cfg = PipelineConfig.from_yaml()
 
     cfg = ValidationConfig.from_yaml(
@@ -61,53 +68,70 @@ def main() -> None:
         "/storage/vacoda/test/experiments/random_forest_review"
     )
 
-    pipeline_cfg = PipelineConfig.from_yaml()
-
-    cfg = ValidationConfig.from_yaml(
-        scope=pipeline_cfg.scope,
-        engine=pipeline_cfg.engine,
-    )
-
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_dir = output_dir / run_id
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     setup_logging(level=parse_log_level(cfg.logging.level))
     logger = get_logger("VALIDATION.RF.EXPERIMENT")
 
     start = perf_counter()
 
-    output_dir = output_dir / run_id
-    output_dir.mkdir(parents=True, exist_ok=True)
-
     model_configs = cfg.model.models.enabled()
 
     if "random_forest" not in model_configs:
-        raise RuntimeError("Random Forest is not enabled in Validation configuration.")
+        raise RuntimeError(
+            "Random Forest is not enabled in Validation configuration."
+        )
 
     model_cfg = model_configs["random_forest"]
 
     numeric_cols = list(cfg.model.features.numeric.keys())
     categorical_cols = list(cfg.model.features.categorical)
 
-    feature_cols = list(dict.fromkeys(numeric_cols + categorical_cols))
+    feature_cols = list(dict.fromkeys(
+        numeric_cols + categorical_cols
+    ))
 
-    target_col = cfg.model.target.column
+    target_col = str(cfg.model.target.column)
 
-    logger.info("Random Forest experiment")
+    if target_col in feature_cols:
+        raise RuntimeError(
+            f"Target {target_col!r} cannot also be a model feature."
+        )
+
+    keys = [
+        "year",
+        "exporter_iso",
+        "importer_iso",
+        "target_cmd",
+    ]
+
+    logger.info("Random Forest manual-review experiment")
     logger.info("Training source: %s", training_path)
     logger.info("Release source: %s", release_path)
+    logger.info("Target: %s", target_col)
     logger.info("Threads: %s", cfg.engine.threads)
 
+    # ============================================================
+    # LOAD TRAINING AND MANUAL-REVIEW DATA
+    # ============================================================
+
     con = duckdb.connect()
-    con.execute(f"PRAGMA threads={int(cfg.engine.threads)}")
 
     try:
+        con.execute(
+            f"PRAGMA threads={int(cfg.engine.threads)}"
+        )
+
         selected_cols = list(dict.fromkeys(
-            ["year", "exporter_iso", "importer_iso", "target_cmd"]
-            + feature_cols
-            + [target_col]
+            keys + feature_cols + [target_col]
         ))
 
-        columns_sql = ", ".join(f'"{col}"' for col in selected_cols)
+        columns_sql = ", ".join(
+            '"' + col.replace('"', '""') + '"'
+            for col in selected_cols
+        )
 
         train_df = con.execute(
             f"""
@@ -130,19 +154,80 @@ def main() -> None:
     finally:
         con.close()
 
-    logger.info("Training observations: %s", f"{len(train_df):,}")
-    logger.info("Manual-review observations: %s", len(review_df))
+    # ============================================================
+    # NORMALIZE RELEASE NAMES TO VALIDATION NAMES
+    # ============================================================
+
+    # The enriched Release publishes human-readable field names.
+    # Normalize once so the Validation feature builders can be reused.
+
+    review_df = review_df.rename(columns={
+        "hs6": "target_cmd",
+        "trade_quantity_kg": target_col,
+        "predicted_quantity_kg": "model_prediction_quantity_kg",
+        "trade_value_constant_usd": "trade_value_reconciled_constant_usd",
+    })
+
+    # Derive HS4 from the already configured HS6 product column.
+    if "target_hs4" in feature_cols and "target_hs4" not in review_df.columns:
+        review_df["target_hs4"] = (
+            review_df["target_cmd"].astype("string").str[:4]
+        )
+
+    required_review = set(keys + feature_cols) | {
+        "model_prediction_quantity_kg",
+        "hs6_seen",
+        "hs4_seen",
+        "manual_review_required",
+    }
+
+    missing = required_review - set(review_df.columns)
+
+    # The observed quantity is useful for comparison but is not
+    # required to generate Random Forest predictions.
+    if missing:
+        raise RuntimeError(
+            f"Release review dataset missing columns: {sorted(missing)}"
+        )
 
     if train_df.empty:
         raise RuntimeError("No selected training observations.")
 
-    if len(review_df) != 27:
-        raise RuntimeError(
-            f"Expected 27 manual-review rows; found {len(review_df)}."
-        )
+    if review_df.empty:
+        raise RuntimeError("No manual-review observations found.")
 
-    # Verify none of the review observations occur in the training population.
-    keys = ["year", "exporter_iso", "importer_iso", "target_cmd"]
+    logger.info(
+        "Training observations: %s",
+        f"{len(train_df):,}",
+    )
+
+    logger.info(
+        "Manual-review observations: %s",
+        f"{len(review_df):,}",
+    )
+
+    logger.info(
+        "Review population by HS6:\n%s",
+        review_df.groupby("target_cmd")
+        .agg(
+            rows=("year", "size"),
+            years=("year", "nunique"),
+        )
+        .sort_values("rows", ascending=False)
+        .to_string(),
+    )
+
+    logger.info(
+        "Review support flags:\n%s",
+        review_df.groupby(
+            ["hs6_seen", "hs4_seen"],
+            dropna=False,
+        ).size().to_string(),
+    )
+
+    # ============================================================
+    # VERIFY TRAINING / REVIEW SEPARATION
+    # ============================================================
 
     overlap = train_df[keys].merge(
         review_df[keys],
@@ -152,20 +237,45 @@ def main() -> None:
 
     if not overlap.empty:
         raise RuntimeError(
-            f"{len(overlap)} manual-review observations occur in training data."
+            f"{len(overlap)} manual-review observations "
+            "also occur in the training population."
         )
 
-    # Enriched Release may not explicitly publish the derived HS4 feature.
-    if "target_hs4" in feature_cols and "target_hs4" not in review_df.columns:
-        review_df["target_hs4"] = (
-            review_df["target_cmd"].astype("string").str[:4]
+    # HS4 is a derived categorical feature that may not be
+    # explicitly published in the enriched Release.
+
+    if (
+        "target_hs" in feature_cols
+        and "target_hs" not in review_df.columns
+    ):
+        review_df["target_hs"] = (
+            review_df["target_cmd"]
+            .astype("string")
+            .str[:6]
         )
 
-    # Use VACODA's own numeric transformations and categorical preparation.
-    x_train = _build_feature_frame(frame=train_df, cfg=cfg)
-    x_review = _build_feature_frame(frame=review_df, cfg=cfg)
+    # ============================================================
+    # BUILD FEATURES AND TARGET
+    # ============================================================
 
-    y_train = _build_target(frame=train_df, cfg=cfg)
+    x_train = _build_feature_frame(
+        frame=train_df,
+        cfg=cfg,
+    )
+
+    x_review = _build_feature_frame(
+        frame=review_df,
+        cfg=cfg,
+    )
+
+    y_train = _build_target(
+        frame=train_df,
+        cfg=cfg,
+    )
+
+    # ============================================================
+    # CATEGORICAL TARGET ENCODING
+    # ============================================================
 
     logger.info("Fitting categorical TargetEncoder...")
 
@@ -200,7 +310,10 @@ def main() -> None:
     logger.info("Training matrix: %s", X_train.shape)
     logger.info("Review matrix: %s", X_review.shape)
 
-    # Same estimator factory and configured parameters as Validation.
+    # ============================================================
+    # RANDOM FOREST
+    # ============================================================
+
     rf = _build_estimator(
         model_type=model_cfg.type,
         parameters=model_cfg.parameters,
@@ -211,6 +324,10 @@ def main() -> None:
     logger.info("Parameters: %s", rf.get_params())
 
     rf.fit(X_train, y_train)
+
+    # ============================================================
+    # PREDICTION
+    # ============================================================
 
     logger.info("Generating review predictions...")
 
@@ -225,28 +342,67 @@ def main() -> None:
         prediction_kg = prediction_transformed
 
     if not np.isfinite(prediction_kg).all():
-        raise RuntimeError("Random Forest generated invalid predictions.")
+        raise RuntimeError(
+            "Random Forest generated invalid predictions."
+        )
 
-    comparison = review_df[
-        [
-            "year",
-            "exporter_iso",
-            "importer_iso",
-            "target_cmd",
-            "trade_synced_quantity_kg",
-            "model_prediction_quantity_kg",
-        ]
-    ].copy()
+    # ============================================================
+    # COMPARE RANDOM FOREST WITH EMBEDDING MODEL
+    # ============================================================
+
+    comparison_cols = keys.copy()
+
+    if target_col in review_df.columns:
+        comparison_cols.append(target_col)
+
+    comparison_cols.append("model_prediction_quantity_kg")
+
+    comparison = review_df[comparison_cols].copy()
 
     comparison["random_forest_prediction_kg"] = prediction_kg
 
-    comparison["rf_to_mlp_ratio"] = (
-        comparison["random_forest_prediction_kg"]
-        / comparison["model_prediction_quantity_kg"]
+    embedding_prediction = pd.to_numeric(
+        comparison["model_prediction_quantity_kg"],
+        errors="coerce",
     )
 
-    prediction_path = output_dir / "manual_review_predictions.parquet"
-    comparison.to_parquet(prediction_path, index=False)
+    comparison["rf_to_mlp_ratio"] = (
+        comparison["random_forest_prediction_kg"]
+        / embedding_prediction.where(embedding_prediction > 0)
+    )
+
+    comparison["rf_vs_mlp_abs_log_difference"] = np.abs(
+        np.log(comparison["random_forest_prediction_kg"])
+        - np.log(embedding_prediction.where(embedding_prediction > 0))
+    )
+
+    logger.info(
+        "Comparable RF / embedding predictions: %s",
+        f"{comparison['rf_to_mlp_ratio'].notna().sum():,}",
+    )
+
+    logger.info(
+        "Median RF / embedding ratio: %s",
+        comparison["rf_to_mlp_ratio"].median(),
+    )
+
+    logger.info(
+        "Median absolute log disagreement: %s",
+        comparison["rf_vs_mlp_abs_log_difference"].median(),
+    )
+
+    # ============================================================
+    # SAVE EXPERIMENTAL OUTPUTS
+    # ============================================================
+
+    prediction_path = (
+        output_dir / "manual_review_predictions.parquet"
+    )
+
+    comparison.to_parquet(
+        prediction_path,
+        index=False,
+    )
 
     logger.info("Saving fitted Random Forest...")
 
@@ -258,9 +414,11 @@ def main() -> None:
             "encoder": encoder,
             "numeric_columns": numeric_cols,
             "categorical_columns": categorical_cols,
+            "target_column": target_col,
             "target_transform": cfg.model.target.transform,
             "training_path": str(training_path),
             "training_rows": len(train_df),
+            "review_rows": len(review_df),
         },
         model_path,
         compress=0,
@@ -269,7 +427,10 @@ def main() -> None:
     logger.info("Experiment completed.")
     logger.info("Predictions: %s", prediction_path)
     logger.info("Model: %s", model_path)
-    logger.info("Duration: %.2f seconds", perf_counter() - start)
+    logger.info(
+        "Duration: %.2f seconds",
+        perf_counter() - start,
+    )
 
 
 if __name__ == "__main__":
