@@ -24,15 +24,30 @@ VARIABLES = {
     "trade_value_reconciled_constant_usd": ("Constant USD", "Inflation-adjusted reconciled trade value expressed in {reference_year} USD."),
     "cif_fob_factor_applied": ("Ratio", "Factor applied for CIF-to-FOB value adjustment."),
     "cif_fob_factor_applied_source": (
-    "Category",
-    "Evidence used to estimate the CIF-to-FOB factor."
-    "<br>`Direct-Factor:` Directly reported CIF and FOB values."
-    "<br>`Mirror-Factor:` Supplementary bilateral observations with agreeing quantities; never used alone."
-    ),
-    "reconciliation_status": ("Category", "Status of the bilateral trade-value reconciliation."),
+                                        "Category",
+                                        "Evidence used to estimate the CIF-to-FOB factor."
+                                        "<br>**Direct-Factor:** Directly reported CIF and FOB values."
+                                        "<br>**Mirror-Factor:** Supplementary bilateral observations with agreeing quantities; never used alone."
+                                    ),
+    "reconciliation_status": ("Category", 
+                              "Status of the bilateral trade-value reconciliation."
+                               "<br>The categories are:"
+                            "<br>**bilateral_reconciled:** Both reporting sides provide usable FOB-basis values; reliability-weighted reconciliation is applied."
+                            "<br>**bilateral_reconciled_import_implicit_zero:** Exporter FOB value is usable; importer reports other imports that year but no value for this bilateral product. An implicit zero is used for the importer."
+                            "<br>**bilateral_reconciled_export_implicit_zero:** Importer FOB-equivalent value is usable; exporter reports other exports that year but no value for this bilateral product. An implicit zero is used for the exporter."
+                            "<br>**export_only:** Only the export-side FOB value is usable and is retained when unmatched flows are permitted."
+                            "<br>**import_only:** Only the import-side FOB-equivalent value is usable and is retained when unmatched flows are permitted."
+                            "<br>**not_eligible:** No eligible bilateral reconciliation or permitted unilateral retention is available.",
+                              ),
     "exporter_adjusted_weight": ("Ratio","Adjusted reliability weight assigned to the exporter FOB value during bilateral reconciliation."),
     "importer_adjusted_weight": ("Ratio","Adjusted reliability weight assigned to the importer FOB-equivalent value, including an implicit zero where applicable."),
-    "reconciliation_method_applied": ("Category", "Method applied to reconcile exporter and importer trade values."),
+    "reconciliation_method_applied": ("Category", 
+                                      "Method applied to reconcile exporter and importer trade values."
+                                     "<br>**reliability_weighted:** Reports are combined using annual country-direction reliability weights, including the 0.10 importer-weight adjustment."
+                                     "<br>**export_report_retained:** The exporter FOB value is retained without bilateral averaging."
+                                     "<br>**import_report_retained:** The importer FOB-equivalent value is retained without bilateral averaging."
+                                     "<br>**no_usable_fob_basis_value:** No usable FOB-basis reconciliation result is available."
+                                      ),
     "trade_synced_quantity_method": ("Category", "Method used to obtain the final synchronized bilateral quantity."),
     "trade_synced_quantity_status": ("Category", "Status of bilateral quantity synchronization."),
     "quantity_availability_case": ("Category", "Availability of usable export-side and import-side quantity evidence."),
@@ -323,12 +338,6 @@ def write_data_dictionary(
                 lines.extend([
                     "",
                     f"*Selection methodology:* {explanation['note']}",
-                    "",
-                ])
-
-            if heading == "3. Value reconciliation":
-                lines.extend([
-                    "### 3.1 Category definitions",
                     "",
                 ])
 
