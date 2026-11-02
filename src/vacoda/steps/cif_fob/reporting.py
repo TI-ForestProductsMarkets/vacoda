@@ -5347,6 +5347,123 @@ def _build_corrected_trade_section(
 # ======================================================================
 
 
+def _build_imputation_report_section(
+    *,
+    corrected_trade_result: dict[str, Any],
+    imputed_trade_result: dict[str, Any],
+    threads: int,
+) -> list[str]:
+    """Summarize final imputation without altering Step 7 model metrics."""
+    original_path = corrected_trade_result.get("corrected_trade_path")
+    final_path = imputed_trade_result.get("imputed_trade_path") or imputed_trade_result.get("output_path")
+    if not original_path or not final_path:
+        raise RuntimeError("Imputation reporting requires Step 7 and Step 8 artifact paths")
+    if not imputed_trade_result.get("audit_passed", False):
+        raise RuntimeError("Imputation audit did not pass; refusing final report")
+    original_path, final_path = Path(original_path), Path(final_path)
+    if not original_path.is_file() or not final_path.is_file():
+        raise FileNotFoundError("Step 7 or Step 8 corrected-trade artifact is missing")
+    audit_path = imputed_trade_result.get("imputation_audit_path") or imputed_trade_result.get("audit_path")
+    if not audit_path or not Path(audit_path).is_file():
+        raise RuntimeError("Step 8 imputation audit artifact is missing")
+    con = duckdb.connect()
+    try:
+        con.execute(f"SET threads = {int(threads)}")
+        con.execute(f"CREATE TEMP VIEW original AS SELECT * FROM read_parquet('{str(original_path).replace(chr(39), chr(39)*2)}')")
+        con.execute(f"CREATE TEMP VIEW final AS SELECT * FROM read_parquet('{str(final_path).replace(chr(39), chr(39)*2)}')")
+        required = {"year", "exporter_iso", "importer_iso", "target_cmd", "model_eligible", "factor_source",
+                    "imputation_method", "import_value_cif", "import_value_fob_corrected", "cif_fob_factor_applied", "cif_fob_correction_applied"}
+        available = {row[0] for row in con.execute("DESCRIBE final").fetchall()}
+        missing = required - available
+        if missing:
+            raise RuntimeError(f"Final imputation artifact missing fields: {sorted(missing)}")
+        row = con.execute("""
+            SELECT COUNT(*) AS n_rows,
+                   COUNT(DISTINCT (year, exporter_iso, importer_iso, target_cmd)) AS distinct_keys,
+                   COUNT(*) FILTER (WHERE factor_source = 'imputed') AS imputed_rows,
+                   COUNT(*) FILTER (
+                        WHERE factor_source = 'imputed'
+                        AND (
+                            imputation_method IS NULL
+                            OR cif_fob_factor_applied IS NULL
+                            OR cif_fob_factor_applied <= 0
+                            OR cif_fob_correction_applied IS DISTINCT FROM TRUE
+                            OR import_value_fob_corrected IS NULL
+                            OR import_value_fob_corrected <= 0
+                        )
+                    ) AS invalid_imputed,
+                   SUM(import_value_cif) FILTER (WHERE factor_source = 'imputed') AS imputed_cif,
+                   SUM(import_value_fob_corrected) FILTER (WHERE factor_source = 'imputed') AS imputed_fob,
+                   COUNT(*) FILTER (
+                        WHERE import_value_cif > 0
+                        AND (export_value_fob IS NULL OR export_value_fob <= 0)
+                        AND cif_fob_correction_applied IS DISTINCT FROM TRUE
+                    ) AS remaining_uncorrected_cif
+            FROM final
+        """).fetchone()
+        original_count = con.execute("SELECT COUNT(*) FROM original").fetchone()[0]
+        if row[0] != original_count or row[0] != row[1] or row[3]:
+            raise RuntimeError(f"Final imputation report integrity checks failed: {row}")
+        if row[2] != int(imputed_trade_result.get("imputed_rows", -1)):
+            raise RuntimeError("Reported imputation row count differs from Step 8 result")
+        # Count every original non-imputed row that changed, including original model output.
+        changed = con.execute("""
+            SELECT COUNT(*) FROM original o
+            JOIN final f USING (year, exporter_iso, importer_iso, target_cmd)
+            WHERE f.factor_source IS DISTINCT FROM 'imputed'
+              AND (o.factor_source IS DISTINCT FROM f.factor_source
+                OR o.cif_fob_factor_applied IS DISTINCT FROM f.cif_fob_factor_applied
+                OR o.import_value_fob_corrected IS DISTINCT FROM f.import_value_fob_corrected
+                OR o.cif_fob_correction_applied IS DISTINCT FROM f.cif_fob_correction_applied)
+        """).fetchone()[0]
+        if changed:
+            raise RuntimeError(f"Step 8 changed {changed} non-imputed observations")
+        method_df = con.execute("""
+            SELECT imputation_method AS "Method", COUNT(*) AS "Observations",
+                   SUM(import_value_cif) AS "CIF (USD)",
+                   SUM(import_value_fob_corrected) AS "FOB (USD)",
+                   MEDIAN(cif_fob_factor_applied) AS "Median factor"
+            FROM final WHERE factor_source = 'imputed'
+            GROUP BY 1 ORDER BY "Observations" DESC
+        """).df()
+        year_df = con.execute("""
+            SELECT year AS "Year", COUNT(*) AS "Observations",
+                   SUM(import_value_cif) AS "CIF (USD)",
+                   SUM(import_value_fob_corrected) AS "FOB (USD)"
+            FROM final WHERE factor_source = 'imputed'
+            GROUP BY 1 ORDER BY 1
+        """).df()
+    finally:
+        con.close()
+    imputed_cif = float(row[4] or 0)
+    imputed_fob = float(row[5] or 0)
+    reduction = 100 * (1 - imputed_fob / imputed_cif) if imputed_cif > 0 else None
+    fmt_money = lambda x: _fmt_float(x, 2)
+    return [
+        "## 13. Empirical imputation of missing CIF/FOB factors", "",
+        "This section describes Step 8, which recovers factors for observations not handled by the primary model. ",
+        "It is separate from primary-model holdout validation and does not report imputed factors as observed ground truth.", "",
+        f"- **Step 8 audit passed:** Yes",
+        f"- **Final bilateral rows:** {_fmt_int(row[0])}",
+        f"- **Imputed observations:** {_fmt_int(row[2])}",
+        f"- **Uncorrected positive-CIF observations remaining:** {_fmt_int(row[6])}",
+        f"- **CIF value of imputed observations (USD):** {fmt_money(imputed_cif)}",
+        f"- **Recovered FOB value (USD):** {fmt_money(imputed_fob)}",
+        f"- **CIF-to-FOB value adjustment (USD):** {fmt_money(imputed_cif - imputed_fob)}",
+        f"- **Aggregate reduction on imputed CIF:** {_fmt_percent_value(reduction) if reduction is not None else 'n/a'}", "",
+        "### 13.1 Imputation by empirical anchor", "",
+        _markdown_table(method_df, columns=["Method", "Observations", "CIF (USD)", "FOB (USD)", "Median factor"],
+                        formatters={"Observations": _fmt_int, "CIF (USD)": fmt_money, "FOB (USD)": fmt_money, "Median factor": lambda x: _fmt_float(x, 6)}), "",
+        "### 13.2 Imputation by year", "",
+        _markdown_table(year_df, columns=["Year", "Observations", "CIF (USD)", "FOB (USD)"],
+                        formatters={"Observations": _fmt_int, "CIF (USD)": fmt_money, "FOB (USD)": fmt_money}), "",
+        "### 13.3 Interpretation and limitations", "",
+        "The selected factors are empirical imputations, not additional model predictions or directly observed factors.",
+        "The annual-median fallback is a last resort; geographic aggregates and missing-data selection may differ from the direct-factor validation population.",
+        "The Step 7 model correction audit and temporal holdout metrics remain unchanged.", "",
+    ]
+
+
 def write_cif_fob_decision_report(
     *,
     cfg: CifFobConfig,
@@ -5356,7 +5473,8 @@ def write_cif_fob_decision_report(
     diagnostics_result: dict[str, Any] | None = None,
     training_evidence_audit_result: dict[str, Any] | None = None,
     corrected_trade_result: dict[str, Any],
-    logger,
+    imputed_trade_result: dict[str, Any] | None = None,
+    logger=None,
 ) -> dict[str, Any]:
     """
     Write the timestamped and latest CIF/FOB Markdown decision report.
@@ -7335,6 +7453,15 @@ def write_cif_fob_decision_report(
     insertion_index = lines.index(primary_validation_header)
     lines[insertion_index:insertion_index] = value_band_section
 
+
+    if imputed_trade_result is not None:
+        imputation_section = _build_imputation_report_section(
+            corrected_trade_result=corrected_trade_result,
+            imputed_trade_result=imputed_trade_result,
+            threads=cfg.engine.threads,
+        )
+        lines.extend(["", *imputation_section])
+        logger.info("REPORT — Added Step 8 imputation coverage and economic-impact section")
 
     ## Add a table of contents to the report
     insert_markdown_toc(

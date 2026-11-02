@@ -89,6 +89,9 @@ def audit_validation_inference(
     *,
     cfg: ValidationConfig,
     inference_path: Path,
+    primary_model_name: str,
+    fallback_model_name: str,
+    fallback_model_type: str,
     run_id: str,
     output_path: Path | None = None,
     force: bool = False,
@@ -103,6 +106,15 @@ def audit_validation_inference(
 
     A successful return implies ``audit_passed=True``.
     """
+
+    if fallback_model_type == "embedding_mlp":
+        raise RuntimeError(
+            "Fallback model must be non-embedding."
+        )
+
+    primary_name_sql = sql_literal(primary_model_name)
+    fallback_name_sql = sql_literal(fallback_model_name)
+    fallback_type_sql = sql_literal(fallback_model_type)
 
     inference_path = Path(
         inference_path
@@ -586,14 +598,13 @@ def audit_validation_inference(
                     -- --------------------------------------------------
                     -- Model metadata
                     -- --------------------------------------------------
-
                     COUNT(*) FILTER (
-                        WHERE validation_model_name
-                            IS NULL
-                           OR validation_model_type
-                            IS NULL
-                    )
-                        AS n_missing_model_metadata,
+                        WHERE model_input_valid
+                        AND (
+                            validation_model_name IS NULL
+                            OR validation_model_type IS NULL
+                        )
+                    ) AS n_missing_model_metadata,
 
                     COUNT(
                         DISTINCT validation_model_name
@@ -604,6 +615,36 @@ def audit_validation_inference(
                         DISTINCT validation_model_type
                     )
                         AS n_distinct_model_types,
+
+                    COUNT(*) FILTER (
+                        WHERE manual_review_required IS TRUE
+                        AND model_input_valid
+                        AND (
+                            NOT model_prediction_available
+                            OR validation_model_name
+                                IS DISTINCT FROM {fallback_name_sql}
+                            OR validation_model_type
+                                IS DISTINCT FROM {fallback_type_sql}
+                        )
+                    ) AS n_invalid_fallback_routing,
+
+                    COUNT(*) FILTER (
+                        WHERE manual_review_required IS FALSE
+                        AND model_input_valid
+                        AND (
+                            NOT model_prediction_available
+                            OR validation_model_name
+                                IS DISTINCT FROM {primary_name_sql}
+                        )
+                    ) AS n_invalid_primary_routing,
+
+                    COUNT(*) FILTER (
+                        WHERE NOT model_input_valid
+                        AND (
+                            validation_model_name IS NOT NULL
+                            OR validation_model_type IS NOT NULL
+                        )
+                    ) AS n_model_identity_on_invalid_input,
 
                     -- --------------------------------------------------
                     -- Training rows
@@ -835,6 +876,10 @@ def audit_validation_inference(
             n_distinct_model_names,
             n_distinct_model_types,
 
+            n_invalid_fallback_routing,
+            n_invalid_primary_routing,
+            n_model_identity_on_invalid_input,
+
             n_training_rows_invalid_observed_quantity,
             n_training_rows_invalid_model_input,
             n_training_rows_unseen_categories,
@@ -909,6 +954,9 @@ def audit_validation_inference(
                 n_distinct_model_names,
             "n_distinct_model_types":
                 n_distinct_model_types,
+            "n_invalid_fallback_routing": n_invalid_fallback_routing,
+            "n_invalid_primary_routing": n_invalid_primary_routing,
+            "n_model_identity_on_invalid_input": n_model_identity_on_invalid_input,
             "n_training_rows_invalid_observed_quantity":
                 n_training_rows_invalid_observed_quantity,
             "n_training_rows_invalid_model_input":
@@ -1074,15 +1122,14 @@ def audit_validation_inference(
                     "n_missing_model_metadata"
                 ] == 0,
 
-            "single_model_name":
-                counts[
-                    "n_distinct_model_names"
-                ] == 1,
+            "fallback_routing_valid":
+                counts["n_invalid_fallback_routing"] == 0,
 
-            "single_model_type":
-                counts[
-                    "n_distinct_model_types"
-                ] == 1,
+            "primary_routing_valid":
+                counts["n_invalid_primary_routing"] == 0,
+
+            "invalid_inputs_have_no_model_identity":
+                counts["n_model_identity_on_invalid_input"] == 0,
 
             "training_rows_have_valid_observed_quantity":
                 counts[

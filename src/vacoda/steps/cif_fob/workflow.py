@@ -1,6 +1,6 @@
 """
-vacoda.cif_fob.workflow
-
+vacoda.steps.cif_fob.workflow
+-------------------------
 Workflow orchestration for the CIF/FOB correction stage.
 
 Each processing function owns its own audits, readiness checks, and
@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from vacoda.steps.cif_fob.estimate_rates import estimate_cif_fob_rates
+from vacoda.steps.cif_fob.impute import impute_cif_fob_factors
 from vacoda.steps.cif_fob.mirror_pairs import build_mirror_pairs
 from vacoda.steps.cif_fob.prepare_input import prepare_cif_fob_input
 from vacoda.steps.cif_fob.reporting import write_cif_fob_decision_report
@@ -39,8 +40,9 @@ WORKFLOW_STEPS = [
     "Build CIF/FOB training features",
     "Audit CIF/FOB training evidence",
     "Estimate CIF/FOB correction rates",
-    "Build CIF/FOB diagnostics",
     "Apply CIF/FOB corrections to trade data",
+    "Impute missing CIF/FOB factors",
+    "Build CIF/FOB diagnostics",
     "Write CIF/FOB decision report",
 ]
 
@@ -53,6 +55,7 @@ REQUIRED_PRODUCTS = (
     "training_features",
     "training_evidence_audit",
     "estimated_rates",
+    "imputed_trade",
     "diagnostics",
     "corrected_trade",
 )
@@ -65,10 +68,9 @@ def get_enabled_products(cfg: CifFobConfig) -> dict[str, bool]:
         "mirror_pairs": cfg.products.mirror_pairs.enable,
         "training_sample": cfg.products.training_sample.enable,
         "training_features": cfg.products.training_features.enable,
-        "training_evidence_audit": (
-            cfg.products.training_evidence_audit.enable
-        ),
+        "training_evidence_audit": cfg.products.training_evidence_audit.enable,
         "estimated_rates": cfg.products.estimated_rates.enable,
+        "imputed_trade": cfg.products.imputed_trade.enable,
         "diagnostics": cfg.products.diagnostics.enable,
         "corrected_trade": cfg.products.corrected_trade.enable,
         "decision_report": cfg.artifacts.enable,
@@ -336,8 +338,58 @@ def run_cif_fob_workflow(
                         )
         )
 
+        #=================================================================
+        # STEP 7 — Apply CIF/FOB corrections to trade data
+        #=================================================================
+        estimated_rates_path = require_artifact(
+                    result=estimated_rates_result,
+                    path_key="estimated_rates_path",
+                    consumer_step="Trade-correction step",
+                    producer_product="estimated-rates Parquet",
+                )
+
+        corrected_trade_result = run_step(
+            logger=logger,
+            step_number=7,
+            total_steps=TOTAL_WORKFLOW_STEPS,
+            title=WORKFLOW_STEPS[6],
+            runner=lambda: apply_cif_fob_weights(
+                    cfg=cfg,
+                    estimated_rates_path=estimated_rates_path,
+                    force=force,
+                    logger=logger,
+                )
+        )
+
+        #=================================================================
+        # STEP 8 — Impute missing CIF/FOB factors
+        #=================================================================
+        corrected_trade_path = require_artifact(
+                    result=corrected_trade_result,
+                    path_key="corrected_trade_path",
+                    consumer_step="CIF/FOB imputation step",
+                    producer_product="corrected-trade Parquet",
+                )
+        imputed_trade_result = run_step(
+            logger=logger,
+            step_number=8,
+            total_steps=TOTAL_WORKFLOW_STEPS,
+            title=WORKFLOW_STEPS[7],
+            runner=lambda: impute_cif_fob_factors(
+                    cfg=cfg,
+                    corrected_trade_path=corrected_trade_path,
+                    estimated_rates_path=estimated_rates_path,
+                    mirror_pairs_path=mirror_pairs_path,
+                    maximum_factor=estimated_rates_result["maximum_factor"],
+                    run_id=run_id,
+                    force=force,
+                    logger=logger,
+                )
+        )
+
+
         # ==================================================================
-        # STEP 7 — Build CIF/FOB diagnostics
+        # STEP 9 — Build CIF/FOB diagnostics
         # ==================================================================
 
         estimated_rates_path = require_artifact(
@@ -349,9 +401,9 @@ def run_cif_fob_workflow(
 
         diagnostics_result = run_step(
                     logger=logger,
-                    step_number=7,
+                    step_number=9,
                     total_steps=TOTAL_WORKFLOW_STEPS,
-                    title=WORKFLOW_STEPS[6],
+                    title=WORKFLOW_STEPS[8],
                     runner=lambda: write_primary_holdout_diagnostics(
                                             cfg=cfg,
                                             estimated_rates_path=estimated_rates_path,
@@ -372,32 +424,8 @@ def run_cif_fob_workflow(
                     )                                            
 
 
-        #=================================================================
-        # STEP 8 — Apply CIF/FOB corrections to trade data
-        #=================================================================
-        estimated_rates_path = require_artifact(
-                    result=estimated_rates_result,
-                    path_key="estimated_rates_path",
-                    consumer_step="Trade-correction step",
-                    producer_product="estimated-rates Parquet",
-                )
-
-        corrected_trade_result = run_step(
-            logger=logger,
-            step_number=8,
-            total_steps=TOTAL_WORKFLOW_STEPS,
-            title=WORKFLOW_STEPS[7],
-            runner=lambda: apply_cif_fob_weights(
-                    cfg=cfg,
-                    estimated_rates_path=estimated_rates_path,
-                    force=force,
-                    logger=logger,
-                )
-        )
-
-
         # ==================================================================
-        # STEP 9 — Write human-readable decision report
+        # STEP 10 — Write human-readable decision report
         # ==================================================================
 
         require_artifact(
@@ -416,9 +444,9 @@ def run_cif_fob_workflow(
 
         report_result = run_step(
             logger=logger,
-            step_number=9,
+            step_number=10,
             total_steps=TOTAL_WORKFLOW_STEPS,
-            title=WORKFLOW_STEPS[8],
+            title=WORKFLOW_STEPS[9],
             runner=lambda: write_cif_fob_decision_report(
                     cfg=cfg,
                     run_id=run_id,
@@ -427,20 +455,21 @@ def run_cif_fob_workflow(
                     diagnostics_result=diagnostics_result,
                     training_evidence_audit_result=training_evidence_audit_result,
                     corrected_trade_result=corrected_trade_result,
+                    imputed_trade_result=imputed_trade_result,
                     logger=logger,
                 )
             )
 
 
-    final_parquet = corrected_trade_result.get(
-        "corrected_trade_path"
-    ) or corrected_trade_result.get(
+    final_parquet = imputed_trade_result.get(
+        "imputed_trade_path"
+    ) or imputed_trade_result.get(
         "output_path"
     )
 
-    final_audit = corrected_trade_result.get(
-        "corrected_trade_audit_path"
-    ) or corrected_trade_result.get(
+    final_audit = imputed_trade_result.get(
+        "imputation_audit_path"
+    ) or imputed_trade_result.get(
         "audit_path"
     )
 
@@ -455,11 +484,11 @@ def run_cif_fob_workflow(
         )
 
     ready_for_trade_sync = bool(
-            corrected_trade_result.get(
-                "ready_for_trade_sync",
-                False,
-            )
+        imputed_trade_result.get(
+            "ready_for_trade_sync",
+            False,
         )
+    )
     
     if ready_for_trade_sync:
         if final_parquet is None or not final_parquet.exists():

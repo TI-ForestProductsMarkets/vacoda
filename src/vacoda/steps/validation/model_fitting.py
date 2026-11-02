@@ -1623,6 +1623,7 @@ def fit_selected_validation_model(
     output_path: Path | None = None,
     force: bool = False,
     logger,
+    role: str = "primary",
 ) -> dict[str, Any]:
     """
     Fit the selected Validation model on all training-selected rows.
@@ -1630,6 +1631,9 @@ def fit_selected_validation_model(
     The resulting production bundle contains both the fitted estimator
     and the preprocessing state required by Build validated trade.
     """
+
+    if role not in {"primary", "fallback"}:
+        raise ValueError(f"Unsupported model-fitting role: {role!r}.")
 
     start = perf_counter()
 
@@ -1676,6 +1680,11 @@ def fit_selected_validation_model(
             "model_type"
         ]
     )
+
+    if role == "fallback" and selected_model_type == "embedding_mlp":
+        raise ValueError(
+            "Fallback selection must identify a non-embedding model."
+        )
 
     enabled_models = (
         cfg.model.models.enabled()
@@ -1730,11 +1739,11 @@ def fit_selected_validation_model(
         )
     )
 
-    output_path = (
-        base_output_path.parent
-        / checkpoint_group
-        / base_output_path.name
-    )
+    output_directory = base_output_path.parent / checkpoint_group
+    if role == "fallback":
+        output_directory = output_directory / "fallback"
+
+    output_path = output_directory / base_output_path.name
 
     bundle_path = (
         _production_bundle_path(

@@ -97,6 +97,18 @@ cif_fob:
       enable: true
       filename: "target_{target_hs_lower}_cif_fob_temporal_validation_folds.csv"
 
+    diagnostics:
+      enable: true
+      filename: "target_{target_hs_lower}_cif_fob_diagnostics.parquet"
+
+    corrected_trade:
+      enable: true
+      filename: "target_{target_hs_lower}_cif_fob_corrected.parquet"
+    
+    imputed_trade:
+      enable: true
+      filename: "comtrade_target_{target_hs_lower}_cif_fob_corrected.parquet"
+
     upper_tail_audit_summary:
       enable: true
       filename: "target_{target_hs_lower}_cif_fob_upper_tail_audit_summary.csv"
@@ -108,14 +120,6 @@ cif_fob:
     upper_tail_observations:
       enable: true
       filename: "target_{target_hs_lower}_cif_fob_upper_tail_observations.parquet"
-
-    diagnostics:
-      enable: true
-      filename: "target_{target_hs_lower}_cif_fob_diagnostics.parquet"
-
-    corrected_trade:
-      enable: true
-      filename: "comtrade_target_{target_hs_lower}_cif_fob_corrected.parquet"
 
   ### Decision report
   artifacts:
@@ -178,6 +182,9 @@ cif_fob:
     training:
       minimum_quantity_concordance: 0.90
       minimum_direct_value_coverage: 0.90
+
+    imputation:
+      minimum_mirror_concordance: 0.98
 
     estimation:
       minimum_evidence_value_usd: 0.0
@@ -337,7 +344,7 @@ cif_fob:
               method: "source_only"
 
           hist_gradient_boosting_weighted:
-            enabled: true
+            enabled: false
             estimator_type: hgb
             output_prefix: hgb_wgt
             type: "machine_learning"
@@ -429,7 +436,7 @@ cif_fob:
               method: "source_only"
 
           log_linear_regression:
-            enabled: true
+            enabled: false
             estimator_type: log_lin
             output_prefix: ols
             type: "statistical"

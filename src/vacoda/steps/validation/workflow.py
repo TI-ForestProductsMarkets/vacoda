@@ -61,6 +61,7 @@ WORKFLOW_STEPS = [
     "Train Validation Models",
     "Select Validation Model",
     "Fit Selected Validation Model",
+    "Fit Fallback Validation Model",
     "Run Validation inference",
     "Audit cross-variable consistency",
     "Build Diagnostics",
@@ -301,6 +302,13 @@ def run_validation_workflow(
             producer_product="selected Validation model",
         )
 
+        selected_fallback_model_path = require_artifact(
+            result=selected_model_result,
+            path_key="selected_fallback_model_path",
+            consumer_step=WORKFLOW_STEPS[6],
+            producer_product="selected fallback Validation model",
+        )
+
 
         # ==================================================================
         # Step 6 — Fit Selected Validation Model
@@ -335,21 +343,56 @@ def run_validation_workflow(
             producer_product="fitted Validation model bundle",
         )
 
-
         # ==================================================================
-        # Step 7 — Run Validation inference
+        # Step 7 — Fit Fallback Validation Model
         # ==================================================================
 
-        inference_result = run_step(
+        fallback_fitted_result = run_step(
             logger=logger,
             step_number=7,
             total_steps=TOTAL_WORKFLOW_STEPS,
             title=WORKFLOW_STEPS[6],
+            runner=lambda: fit_selected_validation_model(
+                cfg=cfg,
+                training_sample_path=training_sample_path,
+                selected_model_path=selected_fallback_model_path,
+                run_id=run_id,
+                role="fallback",
+                force=force,
+                logger=logger,
+            ),
+        )
+
+        fallback_fitted_model_path = require_artifact(
+            result=fallback_fitted_result,
+            path_key="fitted_model_path",
+            consumer_step=WORKFLOW_STEPS[7],
+            producer_product="fitted fallback Validation model",
+        )
+
+        fallback_model_bundle_path = require_artifact(
+            result=fallback_fitted_result,
+            path_key="model_bundle_path",
+            consumer_step=WORKFLOW_STEPS[7],
+            producer_product="fitted fallback Validation model bundle",
+        )
+
+        # ==================================================================
+        # Step 8 — Run Validation inference
+        # ==================================================================
+
+        inference_result = run_step(
+            logger=logger,
+            step_number=8,
+            total_steps=TOTAL_WORKFLOW_STEPS,
+            title=WORKFLOW_STEPS[7],
             runner=lambda: run_validation_inference(
                 cfg=cfg,
                 input_path=training_sample_path,
                 fitted_model_path=fitted_model_path,
                 model_bundle_path=model_bundle_path,
+                fallback_fitted_model_path=fallback_fitted_model_path,
+                fallback_model_bundle_path=fallback_model_bundle_path,
                 run_id=run_id,
                 force=force,
                 logger=logger,
@@ -359,22 +402,25 @@ def run_validation_workflow(
         inference_path = require_artifact(
             result=inference_result,
             path_key="inference_path",
-            consumer_step=WORKFLOW_STEPS[7],
+            consumer_step=WORKFLOW_STEPS[8],
             producer_product="Validation inference",
         )
 
         # ==================================================================
-        # Step 8 — Audit Validation inference
+        # Step 9 — Audit Validation inference
         # ==================================================================
 
         inference_audit_result = run_step(
             logger=logger,
-            step_number=8,
+            step_number=9,
             total_steps=TOTAL_WORKFLOW_STEPS,
-            title=WORKFLOW_STEPS[7],
+            title=WORKFLOW_STEPS[8],
             runner=lambda: audit_validation_inference(
                 cfg=cfg,
                 inference_path=inference_path,
+                primary_model_name=fitted_model_result["model_name"],
+                fallback_model_name=fallback_fitted_result["model_name"],
+                fallback_model_type=fallback_fitted_result["model_type"],
                 run_id=run_id,
                 force=force,
                 logger=logger,
@@ -384,20 +430,20 @@ def run_validation_workflow(
         inference_audit_path = require_artifact(
             result=inference_audit_result,
             path_key="inference_audit_path",
-            consumer_step=WORKFLOW_STEPS[8],
+            consumer_step=WORKFLOW_STEPS[9],
             producer_product="Validation inference audit",
         )
 
 
         # ==================================================================
-        # Step 9 — Build diagnostics
+        # Step 10 — Build diagnostics
         # ==================================================================
 
         diagnostic_result = run_step(
             logger=logger,
-            step_number=9,
+            step_number=10,
             total_steps=TOTAL_WORKFLOW_STEPS,
-            title=WORKFLOW_STEPS[8],
+            title=WORKFLOW_STEPS[10],
             runner=lambda: build_diagnostics(
                 cfg=cfg,
                 input_path=training_sample_path,
@@ -415,19 +461,19 @@ def run_validation_workflow(
         diagnostics_path = require_artifact(
             result=diagnostic_result,
             path_key="diagnostics_path",
-            consumer_step=WORKFLOW_STEPS[8],
+            consumer_step=WORKFLOW_STEPS[10],
             producer_product="quantity-model diagnostics",
         )
 
         # ==================================================================
-        # Step 10 — Build Validation report
+        # Step 11 — Build Validation report
         # ==================================================================
 
         report_result = run_step(
             logger=logger,
-            step_number=10,
+            step_number=11,
             total_steps=TOTAL_WORKFLOW_STEPS,
-            title=WORKFLOW_STEPS[9],
+            title=WORKFLOW_STEPS[11],
             runner=lambda: build_validation_report(
                 cfg=cfg,
                 prepared_input_path=prepared_path,
@@ -531,6 +577,9 @@ def run_validation_workflow(
         "inference_audit_path": inference_audit_path,
         "diagnostics_path": diagnostics_path,
         "report_path": report_path,
+        "selected_fallback_model_path": selected_fallback_model_path,
+        "fallback_fitted_model_path": fallback_fitted_model_path,
+        "fallback_model_bundle_path": fallback_model_bundle_path,
 
         "structural_audit_passed": structural_passed,
         "inference_audit_passed": inference_passed,

@@ -294,6 +294,7 @@ class CifFobProductsConfig:
     training_features: CifFobProductConfig
     training_evidence_audit: CifFobProductConfig
     estimated_rates: CifFobProductConfig
+    imputed_trade: CifFobProductConfig
     temporal_validation_summary: CifFobProductConfig
     temporal_validation_folds: CifFobProductConfig
     upper_tail_audit_summary: CifFobProductConfig
@@ -329,9 +330,9 @@ class CifFobProductsConfig:
                 require_dict(cfg.get("estimated_rates"), key="cif_fob.products.estimated_rates"),
                 key="cif_fob.products.estimated_rates",
             ),
-            corrected_trade=CifFobProductConfig.from_dict(
-                require_dict(cfg.get("corrected_trade"), key="cif_fob.products.corrected_trade"),
-                key="cif_fob.products.corrected_trade",
+            imputed_trade=CifFobProductConfig.from_dict(
+                require_dict(cfg.get("imputed_trade"), key="cif_fob.products.imputed_trade"),
+                key="cif_fob.products.imputed_trade",
             ),
             temporal_validation_summary=CifFobProductConfig.from_dict(
                 require_dict(cfg.get("temporal_validation_summary"), key="cif_fob.products.temporal_validation_summary"),
@@ -357,6 +358,10 @@ class CifFobProductsConfig:
                 require_dict(cfg.get("diagnostics"), key="cif_fob.products.diagnostics"),
                 key="cif_fob.products.diagnostics",
             ),
+            corrected_trade=CifFobProductConfig.from_dict(
+                require_dict(cfg.get("corrected_trade"), key="cif_fob.products.corrected_trade"),
+                key="cif_fob.products.corrected_trade",
+            ),
         )
 
 
@@ -380,6 +385,30 @@ class CifFobTrainingConfig:
                 min_value=0.0,
                 max_value=1.0,
             ),
+        )
+
+
+@dataclass(frozen=True)
+class CifFobImputationConfig:
+    minimum_mirror_concordance: float
+
+    @classmethod
+    def from_dict(
+        cls,
+        cfg: dict[str, Any],
+        *,
+        fallback_mirror_concordance: float,
+    ) -> "CifFobImputationConfig":
+        return cls(
+            minimum_mirror_concordance=require_float(
+                cfg.get(
+                    "minimum_mirror_concordance",
+                    fallback_mirror_concordance,
+                ),
+                key="cif_fob.method.imputation.minimum_mirror_concordance",
+                min_value=0.0,
+                max_value=1.0,
+            )
         )
 
 
@@ -2189,6 +2218,7 @@ class CifFobOutliersConfig:
 class CifFobMethodConfig:
     flow_keys: list[str]
     training: CifFobTrainingConfig
+    imputation: CifFobImputationConfig
     estimation: CifFobEstimationConfig
     predictors: CifFobPredictorsConfig
     outliers: CifFobOutliersConfig
@@ -2203,11 +2233,26 @@ class CifFobMethodConfig:
         if not isinstance(predictors_raw, dict):
             raise TypeError("cif_fob.method.predictors must be a dictionary")
 
+        training = CifFobTrainingConfig.from_dict(
+            require_dict(cfg.get("training"), key="cif_fob.method.training")
+        )
+
+        imputation_raw = cfg.get("imputation")
+        if imputation_raw is None:
+            imputation = CifFobImputationConfig.from_dict(
+                {},
+                fallback_mirror_concordance=training.minimum_quantity_concordance,
+            )
+        else:
+            imputation = CifFobImputationConfig.from_dict(
+                require_dict(imputation_raw, key="cif_fob.method.imputation"),
+                fallback_mirror_concordance=training.minimum_quantity_concordance,
+            )
+
         return cls(
             flow_keys=[require_str(item, key="cif_fob.method.flow_keys") for item in flow_keys_raw],
-            training=CifFobTrainingConfig.from_dict(
-                require_dict(cfg.get("training"), key="cif_fob.method.training")
-            ),
+            training=training,
+            imputation=imputation,
             estimation=CifFobEstimationConfig.from_dict(
                 require_dict(cfg.get("estimation"), key="cif_fob.method.estimation")
             ),
@@ -2414,6 +2459,7 @@ class CifFobConfig:
             "training_features": self.products.training_features,
             "training_evidence_audit": self.products.training_evidence_audit,
             "estimated_rates": self.products.estimated_rates,
+            "imputed_trade": self.products.imputed_trade,
             "temporal_validation_summary": self.products.temporal_validation_summary,
             "temporal_validation_folds": self.products.temporal_validation_folds,
             "upper_tail_audit_summary": self.products.upper_tail_audit_summary,
@@ -2436,6 +2482,7 @@ class CifFobConfig:
             "training_features": self.product_path("training_features"),
             "training_evidence_audit": self.product_path("training_evidence_audit"),
             "estimated_rates": self.product_path("estimated_rates"),
+            "imputed_trade": self.product_path("imputed_trade"),
             "temporal_validation_summary": self.product_path("temporal_validation_summary"),
             "temporal_validation_folds": self.product_path("temporal_validation_folds"),
             "upper_tail_audit_summary": self.product_path("upper_tail_audit_summary"),
@@ -2453,6 +2500,7 @@ class CifFobConfig:
             "training_features": self.products.training_features,
             "training_evidence_audit": self.products.training_evidence_audit,
             "estimated_rates": self.products.estimated_rates,
+            "imputed_trade": self.products.imputed_trade,
             "temporal_validation_summary": self.products.temporal_validation_summary,
             "temporal_validation_folds": self.products.temporal_validation_folds,
             "upper_tail_audit_summary": self.products.upper_tail_audit_summary,

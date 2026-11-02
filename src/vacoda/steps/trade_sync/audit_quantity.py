@@ -1406,6 +1406,56 @@ def audit_quantity_reconciliation(
             trade_value_mismatches == 0
         )
 
+
+        ## Temporary: Check that the bilateral population is preserved after reconciliation. This is a sanity check to ensure that no bilateral trade records are lost during the reconciliation process. If any records are unmatched, it indicates a potential issue in the reconciliation logic or data integrity.
+        diagnostic = con.execute(f"""
+            WITH compared AS (
+                SELECT
+                    original.trade_value_reconciled AS input_value,
+                    quantity.trade_value_reconciled AS output_value
+                FROM read_parquet({input_sql}) AS original
+                JOIN read_parquet({quantity_sql}) AS quantity
+                USING (year, exporter_iso, importer_iso, target_cmd)
+            ),
+            classified AS (
+                SELECT
+                    CASE
+                        WHEN input_value IS NULL
+                            AND output_value IS NOT NULL
+                            THEN 'input_null_output_present'
+
+                        WHEN input_value IS NOT NULL
+                            AND output_value IS NULL
+                            THEN 'input_present_output_null'
+
+                        WHEN input_value IS NOT NULL
+                            AND output_value IS NOT NULL
+                            AND ABS(input_value - output_value)
+                                > 1e-9 * GREATEST(ABS(input_value), 1.0)
+                            THEN 'different_numeric_values'
+
+                        ELSE 'unchanged'
+                    END AS mismatch_type,
+                    input_value,
+                    output_value
+                FROM compared
+            )
+            SELECT
+                mismatch_type,
+                COUNT(*) AS rows,
+                MIN(input_value) AS min_input,
+                MAX(input_value) AS max_input,
+                MIN(output_value) AS min_output,
+                MAX(output_value) AS max_output,
+                MEDIAN(ABS(input_value - output_value)) AS median_abs_difference
+            FROM classified
+            GROUP BY 1
+            ORDER BY rows DESC
+        """).df()
+
+        logger.info("Trade-value preservation diagnostic:\n%s", diagnostic.to_string(index=False))
+
+        
         # --------------------------------------------------------------
         # Join coverage against audited reconciled-trade input
         # --------------------------------------------------------------

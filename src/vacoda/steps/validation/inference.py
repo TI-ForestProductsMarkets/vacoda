@@ -45,6 +45,7 @@ from vacoda.pipeline.artifact_manifest import (
     write_manifest,
 )
 
+from vacoda.steps.validation import inference
 from vacoda.steps.validation.model_fitting import (
     _embedding_dimensions,
     _transform_embedding_features,
@@ -1047,6 +1048,8 @@ def _inference_semantic_payload(
     metadata: dict[str, Any],
     bundle: dict[str, Any],
     input_path: Path,
+    fallback_metadata: dict[str, Any],  
+    fallback_bundle: dict[str, Any],
     input_rows: int,
 ) -> dict[str, Any]:
     """Return semantic identity of the inference artifact."""
@@ -1126,6 +1129,17 @@ def _inference_semantic_payload(
             ),
         },
 
+        "fallback_model": {
+            "name": fallback_metadata["model_name"],
+            "type": fallback_metadata["model_type"],
+            "training_data_sha256": fallback_bundle.get(
+                "training_data_sha256"
+            ),
+            "parameters": json_safe(
+                fallback_bundle.get("parameters", {})
+            ),
+        },
+
         "target": {
             "column": (
                 cfg.model.target.column
@@ -1146,6 +1160,7 @@ def _inference_semantic_payload(
             ),
             "manual_review_flag": "manual_review_required",
             "manual_review_rule": "hs6_seen_false_and_hs4_seen_false",
+            "routing": "disjoint_primary_embedding_fallback_nonembedding_v1",
         },
         "features": {
             "numeric": {
@@ -1181,6 +1196,8 @@ def run_validation_inference(
     input_path: Path,
     fitted_model_path: Path,
     model_bundle_path: Path,
+    fallback_fitted_model_path: Path,
+    fallback_model_bundle_path: Path,
     run_id: str,
     output_path: Path | None = None,
     force: bool = False,
@@ -1194,18 +1211,19 @@ def run_validation_inference(
 
     start = perf_counter()
 
-    input_path = Path(
-        input_path
-    )
+    input_path = Path(input_path)
 
-    fitted_model_path = Path(
-        fitted_model_path
-    )
+    fitted_model_path = Path(fitted_model_path)
 
-    model_bundle_path = Path(
-        model_bundle_path
-    )
+    model_bundle_path = Path(model_bundle_path)
 
+    fallback_fitted_model_path = Path(fallback_fitted_model_path)
+    fallback_model_bundle_path = Path(fallback_model_bundle_path)
+
+    for path in (fallback_fitted_model_path, fallback_model_bundle_path):
+        if not path.is_file():
+            raise FileNotFoundError(f"Fallback model artifact not found: {path}")
+    
     if not input_path.is_file():
         raise FileNotFoundError(
             "Validation inference input not found: "
@@ -1311,6 +1329,36 @@ def run_validation_inference(
         ),
     )
 
+    ## Fallback model 
+    fallback_metadata = _read_fitted_model_metadata(
+        fitted_model_path=fallback_fitted_model_path
+    )
+
+    if fallback_metadata["model_type"] == "embedding_mlp":
+        raise RuntimeError("Fallback model must be non-embedding.")
+
+    fallback_bundle = _load_bundle(
+        model_bundle_path=fallback_model_bundle_path,
+        model_type=fallback_metadata["model_type"],
+    )
+
+    _validate_bundle_identity(
+        bundle=fallback_bundle,
+        metadata=fallback_metadata,
+    )
+
+    _validate_bundle_feature_contract(
+        bundle=fallback_bundle,
+        cfg=cfg,
+        model_type=fallback_metadata["model_type"],
+    )
+
+    if (
+        fallback_bundle.get("target_column") != cfg.model.target.column
+        or fallback_bundle.get("target_transform") != cfg.model.target.transform
+    ):
+        raise RuntimeError("Fallback model target configuration mismatch.")
+
     # ------------------------------------------------------------------
     # Resolve inference population size
     #
@@ -1373,14 +1421,14 @@ def run_validation_inference(
     # Semantic checkpoint — before loading/predicting full population
     # ------------------------------------------------------------------
 
-    semantic_payload = (
-        _inference_semantic_payload(
-            cfg=cfg,
-            metadata=metadata,
-            bundle=bundle,
-            input_path=input_path,
-            input_rows=input_rows,
-        )
+    semantic_payload = _inference_semantic_payload(
+        cfg=cfg,
+        metadata=metadata,
+        bundle=bundle,
+        fallback_metadata=fallback_metadata,
+        fallback_bundle=fallback_bundle,
+        input_path=input_path,
+        input_rows=input_rows,
     )
 
     manifest_path = (
@@ -1596,105 +1644,182 @@ def run_validation_inference(
     )
 
     # ------------------------------------------------------------------
-    # Model inference on usable rows only
+    # Disjoint primary / fallback inference
     # ------------------------------------------------------------------
 
-    model_type = (
-        metadata[
-            "model_type"
-        ]
+    if metadata["model_type"] != "embedding_mlp":
+        raise RuntimeError(
+            "Primary model must be an embedding MLP for this routing policy."
+        )
+
+    target_transform = bundle["target_transform"]
+
+    if target_transform != cfg.model.target.transform:
+        raise RuntimeError("Primary model target transform mismatch.")
+
+    # Determine categorical support from the PRIMARY model's
+    # fitted mappings, without executing its prediction network.
+    support_flags_valid_rows = _support_flags_from_mappings(
+        feature_frame=feature_frame,
+        categorical_columns=bundle["preprocessing"]["categorical_columns"],
+        categorical_mappings=bundle["preprocessing"]["categorical_mappings"],
     )
 
-    if model_type == "embedding_mlp":
+    if not {"hs6_seen", "hs4_seen"}.issubset(
+        support_flags_valid_rows.columns
+    ):
+        raise RuntimeError(
+            "Primary model is missing HS6/HS4 support information."
+        )
 
-        (
-            prediction_valid_rows,
-            support_flags_valid_rows,
-        ) = _predict_embedding_model(
-            feature_frame=feature_frame,
+    # Work with positions within the valid-input population.
+    fallback_valid_mask = (
+        support_flags_valid_rows["hs6_seen"].eq(False)
+        & support_flags_valid_rows["hs4_seen"].eq(False)
+    ).fillna(False).to_numpy(dtype=bool)
+
+    primary_valid_mask = ~fallback_valid_mask
+
+    if not np.all(primary_valid_mask ^ fallback_valid_mask):
+        raise RuntimeError("Primary/fallback partitions overlap.")
+
+    # Allocate full-population outputs.
+    prediction_model_space = np.full(
+        input_rows, np.nan, dtype=float
+    )
+
+    prediction_quantity = np.full(
+        input_rows, np.nan, dtype=float
+    )
+
+    prediction_model_names = np.full(
+        input_rows, None, dtype=object
+    )
+
+    prediction_model_types = np.full(
+        input_rows, None, dtype=object
+    )
+
+    valid_positions = model_input_valid.to_numpy(dtype=bool)
+    valid_indices = np.flatnonzero(valid_positions)
+
+    primary_indices = valid_indices[primary_valid_mask]
+    fallback_indices = valid_indices[fallback_valid_mask]
+
+    # --------------------------------------------------------------
+    # Primary: Embedding MLP ONLY on supported observations
+    # --------------------------------------------------------------
+
+    if len(primary_indices):
+        primary_features = feature_frame.iloc[
+            np.flatnonzero(primary_valid_mask)
+        ].reset_index(drop=True)
+
+        primary_log, _ = _predict_embedding_model(
+            feature_frame=primary_features,
             bundle=bundle,
             cfg=cfg,
             logger=logger,
         )
 
-    else:
-
-        (
-            prediction_valid_rows,
-            support_flags_valid_rows,
-        ) = _predict_sklearn_model(
-            feature_frame=feature_frame,
-            bundle=bundle,
-        )
-
-    target_transform = str(
-        bundle.get(
-            "target_transform",
-            cfg.model.target.transform,
-        )
-    )
-
-    if target_transform != cfg.model.target.transform:
-        raise RuntimeError(
-            "Fitted model target transform differs from Validation configuration: "
-            f"bundle={target_transform!r}, "
-            f"config={cfg.model.target.transform!r}"
-        )
-    
-    prediction_quantity_valid_rows = (
-        _inverse_target_transform(
-            prediction=prediction_valid_rows,
+        primary_quantity = _inverse_target_transform(
+            prediction=primary_log,
             target_transform=target_transform,
         )
-    )
 
-    # ------------------------------------------------------------------
-    # Expand prediction arrays back to the complete Validation population
-    # ------------------------------------------------------------------
+        prediction_model_space[primary_indices] = primary_log
+        prediction_quantity[primary_indices] = primary_quantity
 
-    prediction_model_space = np.full(
-        input_rows,
-        np.nan,
-        dtype=float,
-    )
+        prediction_model_names[primary_indices] = metadata["model_name"]
+        prediction_model_types[primary_indices] = metadata["model_type"]
 
-    prediction_quantity = np.full(
-        input_rows,
-        np.nan,
-        dtype=float,
-    )
+    # --------------------------------------------------------------
+    # Fallback: non-embedding model ONLY on unsupported HS rows
+    # --------------------------------------------------------------
 
-    valid_positions = (
-        model_input_valid
-        .to_numpy(
-            dtype=bool
+    if len(fallback_indices):
+        fallback_features = feature_frame.iloc[
+            np.flatnonzero(fallback_valid_mask)
+        ].reset_index(drop=True)
+
+        fallback_log, _ = _predict_sklearn_model(
+            feature_frame=fallback_features,
+            bundle=fallback_bundle,
         )
-    )
 
-    prediction_model_space[
-        valid_positions
-    ] = prediction_valid_rows
+        fallback_quantity = _inverse_target_transform(
+            prediction=fallback_log,
+            target_transform=fallback_bundle["target_transform"],
+        )
 
-    prediction_quantity[
-        valid_positions
-    ] = prediction_quantity_valid_rows
+        prediction_model_space[fallback_indices] = fallback_log
+        prediction_quantity[fallback_indices] = fallback_quantity
 
+        prediction_model_names[fallback_indices] = (
+            fallback_metadata["model_name"]
+        )
+        prediction_model_types[fallback_indices] = (
+            fallback_metadata["model_type"]
+        )
+
+    # Restore support flags to the complete population.
     support_flags = pd.DataFrame(
         pd.NA,
         index=frame.index,
-        columns=(
-            support_flags_valid_rows.columns
-        ),
+        columns=support_flags_valid_rows.columns,
         dtype="boolean",
     )
 
-    support_flags.loc[
-        model_input_valid,
-        :
-    ] = (
-        support_flags_valid_rows
-        .to_numpy()
+    support_flags.loc[model_input_valid, :] = (
+        support_flags_valid_rows.to_numpy()
     )
+
+    fallback_mask = np.zeros(input_rows, dtype=bool)
+    fallback_mask[fallback_indices] = True
+
+    # --------------------------------------------------------------
+    # Hard routing invariants
+    # --------------------------------------------------------------
+
+    if np.intersect1d(primary_indices, fallback_indices).size:
+        raise RuntimeError(
+            "Primary and fallback inference populations overlap."
+        )
+
+    if len(primary_indices) + len(fallback_indices) != int(
+        valid_positions.sum()
+    ):
+        raise RuntimeError(
+            "Inference routing does not cover all valid rows."
+        )
+
+    if not np.isfinite(
+        prediction_model_space[valid_positions]
+    ).all():
+        raise RuntimeError(
+            "Some valid-input observations have no prediction."
+        )
+
+    if not np.isnan(
+        prediction_model_space[~valid_positions]
+    ).all():
+        raise RuntimeError(
+            "Invalid-input observations received predictions."
+        )
+
+    logger.info(
+        "  Primary predictions (%s): %s",
+        metadata["model_name"],
+        f"{len(primary_indices):,}",
+    )
+
+    logger.info(
+        "  Fallback predictions (%s): %s",
+        fallback_metadata["model_name"],
+        f"{len(fallback_indices):,}",
+    )
+
+
     # ------------------------------------------------------------------
     # Observed-vs-model evidence
     # ------------------------------------------------------------------
@@ -1774,11 +1899,7 @@ def run_validation_inference(
             column
         ].to_numpy()
 
-    inference[
-        "validation_model_name"
-    ] = metadata[
-        "model_name"
-    ]
+    inference["validation_model_name"] = prediction_model_names
 
 
     # Manual review is required when neither the HS6 nor
@@ -1792,11 +1913,7 @@ def run_validation_inference(
     inference["manual_review_required"] = (inference["hs6_seen"].eq(False) & inference["hs4_seen"].eq(False)).astype("boolean")
 
 
-    inference[
-        "validation_model_type"
-    ] = metadata[
-        "model_type"
-    ]
+    inference["validation_model_type"] = prediction_model_types
 
     # ------------------------------------------------------------------
     # Basic inference diagnostics
