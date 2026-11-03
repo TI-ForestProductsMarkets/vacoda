@@ -126,68 +126,6 @@ def _corrected_trade_audit_path(
     )
 
 
-def _publish_trade_sync_handoff(
-    *,
-    cfg: CifFobConfig,
-    corrected_trade_path: Path,
-) -> Path:
-    """
-    Publish the successfully audited CIF/FOB corrected trade artifact
-    at the canonical path consumed by Trade Sync.
-    """
-    corrected_trade_path = Path(
-        corrected_trade_path
-    ).resolve()
-
-    if not corrected_trade_path.is_file():
-        raise FileNotFoundError(
-            "Cannot publish Trade Sync handoff because "
-            "the corrected CIF/FOB artifact does not exist: "
-            f"{corrected_trade_path}"
-        )
-
-    handoff_path = (
-        cfg.output_dir()
-        / cfg.product_path("corrected_trade").name
-    )
-
-    handoff_path.parent.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    relative_target = corrected_trade_path.relative_to(
-        handoff_path.parent.resolve()
-    )
-
-    temporary_path = handoff_path.with_name(
-        handoff_path.name + ".tmp"
-    )
-
-    temporary_path.unlink(
-        missing_ok=True
-    )
-
-    temporary_path.symlink_to(
-        relative_target
-    )
-
-    temporary_path.replace(
-        handoff_path
-    )
-
-    if (
-        not handoff_path.is_file()
-        or handoff_path.resolve()
-        != corrected_trade_path
-    ):
-        raise RuntimeError(
-            "Trade Sync handoff publication failed: "
-            f"{handoff_path} does not resolve to "
-            f"{corrected_trade_path}."
-        )
-
-    return handoff_path
 
 def _read_columns(con: duckdb.DuckDBPyConnection, path: Path) -> set[str]:
     rows = con.execute(
@@ -349,7 +287,7 @@ def _build_corrected_trade_audit_frame(
 
     rows.append(
         {
-            "check_name": "ready_for_trade_sync",
+            "check_name": "ready_for_impute",
             "status": (
                 "pass"
                 if n_failed == 0
@@ -401,7 +339,7 @@ def _write_corrected_trade_audit(
     failed = frame.loc[
         frame["status"].eq("fail")
         & frame["check_name"].ne(
-            "ready_for_trade_sync"
+            "ready_for_impute"
         )
     ]
 
@@ -779,7 +717,7 @@ def _inspect_existing_output(
         )
     )
 
-    ready_for_trade_sync = (
+    ready_for_impute = (
         audit_passed
         and audit["n_corrected_rows"] > 0
         and audit_file_result[
@@ -790,14 +728,12 @@ def _inspect_existing_output(
     return {
         "status": "reused",
         "audit_passed": audit_passed,
-        "ready_for_next_step": ready_for_trade_sync,
-        "ready_for_trade_sync": ready_for_trade_sync,
+        "ready_for_next_step": ready_for_impute,
+        "ready_for_impute": ready_for_impute,
         "output_path": output_path,
         "audit_path": audit_path,
         "corrected_trade_path": output_path,
         "corrected_trade_audit_path": audit_path,
-        "final_parquet": output_path,
-        "final_audit": audit_path,
         "n_failed_audit_rows": audit_file_result[
             "n_failed_audit_rows"
         ],
@@ -807,35 +743,6 @@ def _inspect_existing_output(
         **audit,
     }
 
-def _inspect_existing_output_deprecated(
-    *,
-    output_path: Path,
-    coverage_levels: tuple[float, ...],
-    threads: int,
-) -> dict[str, Any]:
-    """Audit and return a previously written corrected-trade artifact."""
-
-    audit = _audit_corrected_trade_output(
-        output_path=output_path,
-        expected_input_rows=None,
-        coverage_levels=coverage_levels,
-        threads=threads,
-    )
-
-    _validate_corrected_trade_audit(
-        audit
-    )
-
-    return {
-        "status": "reused",
-        "audit_passed": True,
-        "ready_for_trade_sync": (
-            audit["n_corrected_rows"] > 0
-        ),
-        "output_path": output_path,
-        "corrected_trade_path": output_path,
-        **audit,
-    }
 
 def _validate_corrected_trade_audit(
     audit: dict[str, Any],
@@ -1007,23 +914,6 @@ def apply_cif_fob_weights(
             )
         )
 
-        trade_sync_handoff_path = None
-
-        if result["ready_for_trade_sync"]:
-            trade_sync_handoff_path = (
-                _publish_trade_sync_handoff(
-                    cfg=cfg,
-                    corrected_trade_path=output_path,
-                )
-            )
-
-        result["trade_sync_handoff_path"] = (
-            trade_sync_handoff_path
-        )
-
-        if logger is not None:
-            logger.info("  Trade Sync handoff: %s", trade_sync_handoff_path,)
-
         return result
 
 
@@ -1183,7 +1073,7 @@ def apply_cif_fob_weights(
         )
     )
 
-    ready_for_trade_sync = (
+    ready_for_impute = (
         audit_passed
         and audit["n_corrected_rows"] > 0
         and audit_file_result[
@@ -1204,16 +1094,6 @@ def apply_cif_fob_weights(
                     audit["n_corrected_rows"]
                 ),
             },
-        )
-
-    trade_sync_handoff_path = None
-
-    if ready_for_trade_sync:
-        trade_sync_handoff_path = (
-            _publish_trade_sync_handoff(
-                cfg=cfg,
-                corrected_trade_path=output_path,
-            )
         )
 
     if logger is not None:
@@ -1254,11 +1134,6 @@ def apply_cif_fob_weights(
         )
 
         logger.info(
-            "  Trade Sync handoff: %s",
-            trade_sync_handoff_path,
-        )
-
-        logger.info(
             "  Failed audit rows: %s",
             audit_file_result[
                 "n_failed_audit_rows"
@@ -1270,22 +1145,16 @@ def apply_cif_fob_weights(
     return {
         "status": "completed",
         "audit_passed": audit_passed,
-        "ready_for_next_step": ready_for_trade_sync,
-        "ready_for_trade_sync": ready_for_trade_sync,
+        "ready_for_next_step": ready_for_impute,
+        "ready_for_impute": ready_for_impute,
         "output_path": output_path,
         "audit_path": audit_path,
-        "trade_sync_handoff_path": (
-            trade_sync_handoff_path
-        ),
-
         "manifest_path": manifest_path,
         "semantic_fingerprint": (
             manifest["semantic_fingerprint"]
         ),
         "corrected_trade_path": output_path,
         "corrected_trade_audit_path": audit_path,
-        "final_parquet": output_path,
-        "final_audit": audit_path,
         "n_failed_audit_rows": audit_file_result[
             "n_failed_audit_rows"
         ],

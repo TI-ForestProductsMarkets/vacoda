@@ -15,7 +15,7 @@ pipeline:
     - "hs_sync"
     - "quantity"
     - "cif_fob"
-  #  - "trade_sync"
+    - "trade_sync"
   #  - "value"
   #  - "validation"
   #  - "release"

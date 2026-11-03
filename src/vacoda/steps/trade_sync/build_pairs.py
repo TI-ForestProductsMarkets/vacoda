@@ -205,6 +205,7 @@ def build_trade_sync_pairs(
 
                 COUNT(*) FILTER (
                     WHERE trade_sync_has_both_reports
+                        AND cif_fob_unresolved IS FALSE
                 ) AS n_pair_eligible_rows,
 
                 COUNT(*) FILTER (
@@ -252,6 +253,7 @@ def build_trade_sync_pairs(
             FROM read_parquet({input_sql})
 
             WHERE trade_sync_has_both_reports
+                AND cif_fob_unresolved IS FALSE
         ),
 
         compared AS (
@@ -478,7 +480,13 @@ def build_trade_sync_pairs(
                         0.90
                     )
                     FROM read_parquet({output_sql})
-                ) AS p90_symmetric_relative_gap
+                ) AS p90_symmetric_relative_gap,
+
+                (
+                    SELECT COUNT(*)
+                    FROM read_parquet({output_sql})
+                    WHERE cif_fob_unresolved IS TRUE
+                ) AS n_unresolved_in_pairs,
 
             """
         ).fetchone()
@@ -504,6 +512,7 @@ def build_trade_sync_pairs(
             p90_absolute_log_gap,
             median_symmetric_relative_gap,
             p90_symmetric_relative_gap,
+            n_unresolved_in_pairs,
         ) = output_audit_row
 
         direction_total = (
@@ -552,6 +561,13 @@ def build_trade_sync_pairs(
                 f"output={int(n_output_rows):,}, "
                 f"eligible={int(n_pair_eligible_rows):,}."
             )
+
+        if n_unresolved_in_pairs:
+            raise RuntimeError(
+                "Unresolved CIF/FOB observations entered "
+                "Trade Sync bilateral paired analysis."
+            )
+
 
         if int(n_duplicate_keys) > 0:
             raise RuntimeError(

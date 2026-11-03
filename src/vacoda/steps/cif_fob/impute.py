@@ -4,6 +4,7 @@ vacoda.steps.cif_fob.impute
 Impute missing CIF/FOB factors for bilateral trade flows using observed direct evidence and eligible mirror pairs.
 """
 from __future__ import annotations
+import os
 
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,66 @@ KEY = ("year", "exporter_iso", "importer_iso", "target_cmd")
 
 def _sql_path(path: Path) -> str:
     return "'" + str(path).replace("'", "''") + "'"
+
+
+def _publish_trade_sync_handoff(
+    *,
+    cfg: CifFobConfig,
+    imputed_trade_path: Path,
+) -> Path:
+    """
+    Atomically publish the audited final CIF/FOB imputed
+    artifact at the canonical Trade Sync input path.
+    """
+    imputed_trade_path = Path(imputed_trade_path).resolve()
+
+    if not imputed_trade_path.is_file():
+        raise FileNotFoundError(
+            "Cannot publish Trade Sync handoff: "
+            f"final imputed artifact does not exist: {imputed_trade_path}"
+        )
+
+    # Stable downstream interface.
+    # This must match the configured Trade Sync input filename.
+    handoff_path = (
+        cfg.output_dir()
+        / (
+            "comtrade_"
+            + cfg.product_path("corrected_trade").name
+        )
+    )
+
+    handoff_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if handoff_path.resolve() == imputed_trade_path:
+        return handoff_path
+
+    relative_target = Path(
+        os.path.relpath(
+            imputed_trade_path,
+            start=handoff_path.parent.resolve(),
+        )
+    )
+
+    temporary_path = handoff_path.with_name(
+        handoff_path.name + ".tmp"
+    )
+
+    temporary_path.unlink(missing_ok=True)
+    temporary_path.symlink_to(relative_target)
+    temporary_path.replace(handoff_path)
+
+    if (
+        not handoff_path.is_file()
+        or handoff_path.resolve() != imputed_trade_path
+    ):
+        raise RuntimeError(
+            "Trade Sync handoff publication failed: "
+            f"{handoff_path} does not resolve to {imputed_trade_path}"
+        )
+
+    return handoff_path
+
 
 
 def _columns(con: duckdb.DuckDBPyConnection, relation: str) -> set[str]:
@@ -169,7 +230,6 @@ def _inspect_existing_imputation(*, output_path: Path, audit_path: Path, threads
         "ready_for_trade_sync": True,
         "output_path": output_path,
         "imputed_trade_path": output_path,
-        "corrected_trade_path": output_path,
         "audit_path": audit_path,
         "imputation_audit_path": audit_path,
         "total_rows": int(row[0]),
@@ -268,6 +328,7 @@ def impute_cif_fob_factors(
         current_input=input_fp,
         output_path=output_path,
     )
+
     if not force and reusable and audit_path.is_file():
         try:
             inspected = _inspect_existing_imputation(
@@ -276,18 +337,39 @@ def impute_cif_fob_factors(
                 threads=threads,
             )
         except RuntimeError:
-            logger.info("REBUILD — CIF/FOB imputation checkpoint failed output audit")
+            logger.info(
+                "REBUILD — CIF/FOB imputation checkpoint failed output audit"
+            )
         else:
+            trade_sync_handoff_path = _publish_trade_sync_handoff(
+                cfg=cfg,
+                imputed_trade_path=output_path,
+            )
+
+            inspected["trade_sync_handoff_path"] = (
+                trade_sync_handoff_path
+            )
+
             log_checkpoint_reuse(
-                logger, "CIF/FOB imputed trade", reason,
+                logger,
+                "CIF/FOB imputed trade",
+                reason,
                 cached_output_path=output_path,
             )
+
+            logger.info(
+                "  Trade Sync handoff: %s",
+                trade_sync_handoff_path,
+            )
+
             return inspected
     else:
         log_checkpoint_rebuild(
-            logger, "CIF/FOB imputed trade",
+            logger,
+            "CIF/FOB imputed trade",
             reason=reason if not force else "forced",
         )
+
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     audit_path.parent.mkdir(parents=True, exist_ok=True)
@@ -727,6 +809,8 @@ def impute_cif_fob_factors(
         }
 
         audit_passed = all(checks.values())
+        ready_for_trade_sync = audit_passed
+
         audit_values = {
             "run_id": run_id,
             "n_rows": int(stats[0]),
@@ -745,6 +829,7 @@ def impute_cif_fob_factors(
             "n_unresolved_no_quantity": int(n_no_quantity),
             "n_invalid_unresolved_classifications": int(n_invalid_classifications),
             "n_unresolved_flag_mismatch": int(n_unresolved_flag_mismatch),
+            "ready_for_trade_sync": ready_for_trade_sync,
         }
 
         columns_sql = []
@@ -813,6 +898,28 @@ def impute_cif_fob_factors(
             input_fingerprint=input_fp,
             output_path=output_path,
         )
+
+
+        # --------------------------------------------------------------
+        # Publish final audited CIF/FOB output for Trade Sync
+        # --------------------------------------------------------------
+
+        if not ready_for_trade_sync:
+            raise RuntimeError(
+                "Cannot publish CIF/FOB imputed trade: audit not passed."
+            )
+
+        trade_sync_handoff_path = _publish_trade_sync_handoff(
+            cfg=cfg,
+            imputed_trade_path=output_path,
+        )
+
+        logger.info(
+            "  Trade Sync handoff: %s",
+            trade_sync_handoff_path,
+        )
+
+            
         logger.info("  Imputed rows: %s", f"{n_targets:,}")
         logger.info("  Total output rows: %s", f"{stats[0]:,}")
         logger.info("  Audit passed: %s", audit_passed)
@@ -821,24 +928,25 @@ def impute_cif_fob_factors(
         logger.info("    Non-mass quantity: %s", f"{n_non_mass_quantity:,}")
         logger.info("    No quantity: %s", f"{n_no_quantity:,}")
         logger.info("    Flag mismatch: %s", f"{n_unresolved_flag_mismatch:,}")
-        logger.info("  Ready for Trade-sync: %s", audit_passed)
-        
+        logger.info("  Ready for Trade-sync: %s", ready_for_trade_sync)
+
         return {
             "status": "completed",
             "audit_passed": audit_passed,
-            "ready_for_trade_sync": audit_passed,
+            "ready_for_trade_sync": ready_for_trade_sync,
             "output_path": output_path,
-            "methods_summary_path": methods_path,
             "imputed_trade_path": output_path,
-            "corrected_trade_path": output_path,
+            "trade_sync_handoff_path": trade_sync_handoff_path,
             "audit_path": audit_path,
             "imputation_audit_path": audit_path,
-            "imputed_rows": n_targets,
-            "total_rows": stats[0],
+            "methods_summary_path": methods_path,
+            "imputed_rows": int(n_targets),
+            "total_rows": int(stats[0]),
             "unresolved_rows": int(n_unresolved),
             "unresolved_minimal_quantity": int(n_minimal_quantity),
             "unresolved_non_mass_quantity": int(n_non_mass_quantity),
             "unresolved_no_quantity": int(n_no_quantity),
         }
+
     finally:
         con.close()

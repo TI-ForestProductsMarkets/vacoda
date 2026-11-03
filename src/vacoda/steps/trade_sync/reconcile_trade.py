@@ -271,6 +271,8 @@ def reconcile_trade(
             "trade_sync_has_export_fob",
             "trade_sync_has_import_fob_equivalent",
             "trade_sync_availability",
+            "cif_fob_unresolved",
+            "cif_fob_unresolved_reason",
         }
 
         required_evidence_columns = {
@@ -552,9 +554,12 @@ def reconcile_trade(
                 *,
 
                 CASE
+                    -- Unresolved CIF/FOB observations remain in the
+                    -- dataset but must not receive reconciled values.
+                    WHEN cif_fob_unresolved IS TRUE THEN NULL
+
                     -- ----------------------------------------------
                     -- Bilateral evidence
-                    -- ----------------------------------------------
                     WHEN reliability_evidence_case IN (
                         'both_positive',
                         'export_positive_import_implicit_zero',

@@ -535,6 +535,7 @@ def audit_trade_reconciliation(
                 "Trade Sync output."
             )
 
+
         (
             n_output_rows,
             n_bilateral_positive_reconciled,
@@ -544,17 +545,17 @@ def audit_trade_reconciliation(
             n_import_only,
             n_not_eligible,
             n_invalid_reconciled_values,
-            n_missing_expected_reconciled_values,
-            n_unexpected_not_eligible_values,
             n_bilateral_formula_mismatches,
             n_export_only_formula_mismatches,
             n_import_only_formula_mismatches,
+            n_missing_expected_reconciled_values,
+            n_unexpected_not_eligible_values,
             n_duplicate_keys,
             n_missing_key_rows,
             total_reconciled_value,
             median_reconciled_value,
-            
         ) = output_audit_row
+
 
         n_output_rows = int(
             n_output_rows or 0
@@ -628,6 +629,64 @@ def audit_trade_reconciliation(
             ).fetchone()[0]
         )
 
+
+        # ==============================================================
+        # CIF/FOB UNRESOLVED OBSERVATION AUDIT
+        # ==============================================================
+
+        (
+            n_prepared_unresolved,
+            n_output_unresolved,
+            n_unresolved_provenance_mismatches,
+            n_unresolved_reconciliation_violations,
+        ) = con.execute(
+            f"""
+            SELECT
+                COUNT(*) FILTER (
+                    WHERE p.cif_fob_unresolved IS TRUE
+                ) AS n_prepared_unresolved,
+
+                COUNT(*) FILTER (
+                    WHERE r.cif_fob_unresolved IS TRUE
+                ) AS n_output_unresolved,
+
+                COUNT(*) FILTER (
+                    WHERE p.cif_fob_unresolved IS TRUE
+                    AND (
+                        r.year IS NULL
+                        OR r.cif_fob_unresolved IS DISTINCT FROM
+                            p.cif_fob_unresolved
+                        OR r.cif_fob_unresolved_reason IS DISTINCT FROM
+                            p.cif_fob_unresolved_reason
+                        OR r.export_has_non_mass_quantity IS DISTINCT FROM
+                            p.export_has_non_mass_quantity
+                        OR r.import_has_non_mass_quantity IS DISTINCT FROM
+                            p.import_has_non_mass_quantity
+                    )
+                ) AS n_provenance_mismatches,
+
+                COUNT(*) FILTER (
+                    WHERE r.cif_fob_unresolved IS TRUE
+                    AND (
+                        r.trade_value_reconciled IS NOT NULL
+                        OR r.reconciliation_export_value IS NOT NULL
+                        OR r.reconciliation_import_value IS NOT NULL
+                        OR r.reliability_evidence_case IS NOT NULL
+                        OR r.exporter_adjusted_weight IS NOT NULL
+                        OR r.importer_adjusted_weight IS NOT NULL
+                        OR r.reconciliation_status IS DISTINCT FROM 'not_eligible'
+                        OR r.reconciliation_method_applied
+                            IS DISTINCT FROM 'no_usable_fob_basis_value'
+                    )
+                ) AS n_reconciliation_violations
+
+            FROM read_parquet({prepared_sql}) p
+            FULL OUTER JOIN read_parquet({reconciled_sql}) r
+            USING (year, exporter_iso, importer_iso, target_cmd)
+            """
+        ).fetchone()
+
+
         status_total = (
             n_bilateral_positive_reconciled
             + n_import_implicit_zero_reconciled
@@ -683,11 +742,28 @@ def audit_trade_reconciliation(
             n_import_only_formula_mismatches == 0
         )
 
+        unresolved_population_preserved = (
+            n_prepared_unresolved == n_output_unresolved
+        )
+
+        unresolved_provenance_preserved = (
+            n_unresolved_provenance_mismatches == 0
+        )
+
+        unresolved_reconciliation_skipped = (
+            n_unresolved_reconciliation_violations == 0
+        )
+
+
+
         audit_passed = all(
             (
                 weights_complete,
                 weights_in_bounds,
                 weight_sums_valid,
+                unresolved_population_preserved,
+                unresolved_provenance_preserved,
+                unresolved_reconciliation_skipped,
                 row_count_preserved,
                 status_partition_valid,
                 bilateral_key_unique,
@@ -853,6 +929,27 @@ def audit_trade_reconciliation(
                     }
                         AS median_reconciled_value,
 
+                    {n_prepared_unresolved}
+                        AS n_prepared_unresolved,
+
+                    {n_output_unresolved}
+                        AS n_output_unresolved,
+
+                    {n_unresolved_provenance_mismatches}
+                        AS n_unresolved_provenance_mismatches,
+
+                    {n_unresolved_reconciliation_violations}
+                        AS n_unresolved_reconciliation_violations,
+
+                    {str(unresolved_population_preserved).upper()}
+                        AS unresolved_population_preserved,
+
+                    {str(unresolved_provenance_preserved).upper()}
+                        AS unresolved_provenance_preserved,
+
+                    {str(unresolved_reconciliation_skipped).upper()}
+                        AS unresolved_reconciliation_skipped,
+
                     {str(audit_passed).upper()}
                         AS audit_passed
 
@@ -913,6 +1010,19 @@ def audit_trade_reconciliation(
             f"{n_import_only_formula_mismatches:,}",
         )
         logger.info(
+            "  CIF/FOB unresolved observations preserved: %s / %s",
+            f"{n_output_unresolved:,}",
+            f"{n_prepared_unresolved:,}",
+        )
+        logger.info(
+            "  Unresolved provenance mismatches: %s",
+            f"{n_unresolved_provenance_mismatches:,}",
+        )
+        logger.info(
+            "  Unresolved reconciliation violations: %s",
+            f"{n_unresolved_reconciliation_violations:,}",
+        )
+        logger.info(
             "  Not eligible: %s",
             f"{n_not_eligible:,}",
         )
@@ -932,7 +1042,7 @@ def audit_trade_reconciliation(
             )
 
         logger.info(
-            "✍ WRITE — Trade Sync reconciliation audit: %s",
+            "WRITE — Trade Sync reconciliation audit: %s",
             audit_path,
         )
 
@@ -950,6 +1060,15 @@ def audit_trade_reconciliation(
                 ),
                 "weight_sums_valid": (
                     weight_sums_valid
+                ),
+                "unresolved_population_preserved": (
+                    unresolved_population_preserved
+                ),
+                "unresolved_provenance_preserved": (
+                    unresolved_provenance_preserved
+                ),
+                "unresolved_reconciliation_skipped": (
+                    unresolved_reconciliation_skipped
                 ),
                 "row_count_preserved": (
                     row_count_preserved

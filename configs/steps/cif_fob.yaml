@@ -107,7 +107,7 @@ cif_fob:
     
     imputed_trade:
       enable: true
-      filename: "comtrade_target_{target_hs_lower}_cif_fob_corrected.parquet"
+      filename: "target_{target_hs_lower}_cif_fob_imputed.parquet"
 
     upper_tail_audit_summary:
       enable: true

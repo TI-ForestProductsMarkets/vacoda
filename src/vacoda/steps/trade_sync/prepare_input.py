@@ -192,6 +192,12 @@ def prepare_trade_sync_input(
             "import_is_synchronized_quantity_estimated",
             "export_weight_is_proxy",
             "import_weight_is_proxy",
+            
+            # CIF/FOB unresolved-value classification and provenance.
+            "cif_fob_unresolved",
+            "cif_fob_unresolved_reason",
+            "export_has_non_mass_quantity",
+            "import_has_non_mass_quantity",
         }
 
         missing_columns = sorted(
@@ -468,6 +474,65 @@ def prepare_trade_sync_input(
             n_invalid_availability,
         ) = output_audit_row
 
+
+        # --------------------------------------------------------------
+        # CIF/FOB unresolved-value preservation audit
+        # --------------------------------------------------------------
+
+        unresolved_audit = con.execute(
+            f"""
+            SELECT
+                COUNT(*) FILTER (
+                    WHERE cif_fob_unresolved IS TRUE
+                ) AS n_unresolved,
+
+                COUNT(*) FILTER (
+                    WHERE cif_fob_unresolved IS TRUE
+                    AND cif_fob_unresolved_reason =
+                        'zero_value_minimal_quantity'
+                ) AS n_unresolved_minimal_quantity,
+
+                COUNT(*) FILTER (
+                    WHERE cif_fob_unresolved IS TRUE
+                    AND cif_fob_unresolved_reason =
+                        'zero_value_non_mass_quantity'
+                ) AS n_unresolved_non_mass_quantity,
+
+                COUNT(*) FILTER (
+                    WHERE cif_fob_unresolved IS TRUE
+                    AND cif_fob_unresolved_reason =
+                        'zero_value_no_quantity'
+                ) AS n_unresolved_no_quantity,
+
+                COUNT(*) FILTER (
+                    WHERE cif_fob_unresolved IS NULL
+                    OR (
+                        cif_fob_unresolved IS TRUE
+                        AND (
+                            cif_fob_unresolved_reason IS NULL
+                            OR trade_sync_has_usable_value IS TRUE
+                            OR trade_sync_availability <> 'neither'
+                        )
+                    )
+                    OR (
+                        cif_fob_unresolved IS FALSE
+                        AND cif_fob_unresolved_reason IS NOT NULL
+                    )
+                ) AS n_invalid_unresolved
+
+            FROM read_parquet({output_sql})
+            """
+        ).fetchone()
+
+        (
+            n_unresolved,
+            n_unresolved_minimal_quantity,
+            n_unresolved_non_mass_quantity,
+            n_unresolved_no_quantity,
+            n_invalid_unresolved,
+        ) = unresolved_audit
+
+
         categorized_rows = (
             int(n_both_reports)
             + int(n_corrected_importer_only)
@@ -542,6 +607,24 @@ def prepare_trade_sync_input(
                 "classifications."
             )
 
+        if (
+            n_unresolved
+            != n_unresolved_minimal_quantity
+            + n_unresolved_non_mass_quantity
+            + n_unresolved_no_quantity
+        ):
+            raise RuntimeError(
+                "Trade Sync unresolved-value reasons do not "
+                "partition the unresolved population."
+            )
+
+        if n_invalid_unresolved:
+            raise RuntimeError(
+                "Trade Sync prepared input contains "
+                f"{n_invalid_unresolved:,} invalid unresolved-value classifications."
+            )
+
+
         audit_passed = True
         ready_for_bilateral_pairs = True
         write_local_checkpoint(
@@ -606,6 +689,20 @@ def prepare_trade_sync_input(
             "  Usable-value coverage: %.4f%%",
             usable_value_coverage_percent,
         )
+        logger.info("  CIF/FOB unresolved: %s", f"{n_unresolved:,}")
+        logger.info(
+            "    Minimal quantity: %s",
+            f"{n_unresolved_minimal_quantity:,}",
+        )
+        logger.info(
+            "    Non-mass quantity: %s",
+            f"{n_unresolved_non_mass_quantity:,}",
+        )
+        logger.info(
+            "    No quantity: %s",
+            f"{n_unresolved_no_quantity:,}",
+        )
+
         logger.info("  Output: %s", output_path)
         logger.info(
             "  Step 1 audit passed: %s",

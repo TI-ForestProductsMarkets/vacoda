@@ -202,6 +202,11 @@ def audit_quantity_reconciliation(
             "mean_implied_unit_value",
             "mean_unit_value_log_distance",
 
+            "cif_fob_unresolved",
+            "cif_fob_unresolved_reason",
+            "export_has_non_mass_quantity",
+            "import_has_non_mass_quantity",
+
             "export_unit_value_log_distance",
             "import_unit_value_log_distance",
 
@@ -515,6 +520,7 @@ def audit_quantity_reconciliation(
                     'export_only',
                     'import_only'
                 )
+                  AND cif_fob_unresolved IS FALSE
                   AND trade_synced_quantity_kg IS NULL
                 """
             ).fetchone()[0]
@@ -560,6 +566,7 @@ def audit_quantity_reconciliation(
                     'export_only',
                     'import_only'
                 )
+                  AND cif_fob_unresolved IS FALSE
                   AND quantity_reconciled_kg IS NULL
                 """
             ).fetchone()[0]
@@ -604,7 +611,7 @@ def audit_quantity_reconciliation(
 
                 WHERE quantity_availability_case
                         = 'export_only'
-
+                  AND cif_fob_unresolved IS FALSE
                   AND (
                         quantity_reconciled_kg IS NULL
                         OR
@@ -645,6 +652,7 @@ def audit_quantity_reconciliation(
                 WHERE quantity_availability_case
                         = 'import_only'
 
+                  AND cif_fob_unresolved IS FALSE
                   AND (
                         quantity_reconciled_kg IS NULL
                         OR
@@ -682,6 +690,7 @@ def audit_quantity_reconciliation(
                 WHERE
                     (
                         quantity_availability_case = 'export_only'
+                        AND cif_fob_unresolved IS FALSE
                         AND (
                             trade_synced_quantity_kg IS NULL
                             OR ABS(
@@ -739,8 +748,10 @@ def audit_quantity_reconciliation(
                 FROM read_parquet({quantity_sql})
 
                 WHERE quantity_availability_case = 'both_quantity'
+                AND cif_fob_unresolved IS FALSE 
                 AND (
                         quantity_simple_mean_kg IS NULL
+
 
                         OR ABS(
                             quantity_simple_mean_kg
@@ -956,47 +967,68 @@ def audit_quantity_reconciliation(
 
                 FROM read_parquet({quantity_sql})
 
-                WHERE NOT (
-
+                WHERE NOT COALESCE(
                     (
-                        quantity_availability_case
-                            = 'both_quantity'
-
-                        AND quantity_reconciliation_method IN (
-                            'quantity_reliability_weighted',
-                            'bilateral_simple_mean_fallback'
+                        -- CIF/FOB unresolved observations are retained,
+                        -- but quantity reconciliation is skipped.
+                        (
+                            cif_fob_unresolved IS TRUE
+                            AND quantity_reconciliation_method
+                                = 'cif_fob_unresolved'
                         )
-                    )
 
-                    OR
+                        OR
 
-                    (
-                        quantity_availability_case
-                            = 'export_only'
+                        -- Normal reconciliation methods are valid
+                        -- only for resolved observations.
+                        (
+                            cif_fob_unresolved IS FALSE
 
-                        AND quantity_reconciliation_method
-                            = 'export_quantity_retained'
-                    )
+                            AND (
 
-                    OR
+                                (
+                                    quantity_availability_case
+                                        = 'both_quantity'
 
-                    (
-                        quantity_availability_case
-                            = 'import_only'
+                                    AND quantity_reconciliation_method IN (
+                                        'quantity_reliability_weighted',
+                                        'bilateral_simple_mean_fallback'
+                                    )
+                                )
 
-                        AND quantity_reconciliation_method
-                            = 'import_quantity_retained'
-                    )
+                                OR
 
-                    OR
+                                (
+                                    quantity_availability_case
+                                        = 'export_only'
 
-                    (
-                        quantity_availability_case
-                            = 'no_quantity'
+                                    AND quantity_reconciliation_method
+                                        = 'export_quantity_retained'
+                                )
 
-                        AND quantity_reconciliation_method
-                            = 'no_usable_quantity'
-                    )
+                                OR
+
+                                (
+                                    quantity_availability_case
+                                        = 'import_only'
+
+                                    AND quantity_reconciliation_method
+                                        = 'import_quantity_retained'
+                                )
+
+                                OR
+
+                                (
+                                    quantity_availability_case
+                                        = 'no_quantity'
+
+                                    AND quantity_reconciliation_method
+                                        = 'no_usable_quantity'
+                                )
+                            )
+                        )
+                    ),
+                    FALSE
                 )
                 """
             ).fetchone()[0]
@@ -1010,6 +1042,7 @@ def audit_quantity_reconciliation(
         # Trade-synced method / status combinations
         # --------------------------------------------------------------
 
+
         invalid_trade_synced_method_rows = int(
             con.execute(
                 f"""
@@ -1017,49 +1050,86 @@ def audit_quantity_reconciliation(
 
                 FROM read_parquet({quantity_sql})
 
-                WHERE NOT (
-
+                WHERE NOT COALESCE(
                     (
-                        quantity_availability_case = 'both_quantity'
-                        AND trade_synced_quantity_method IN (
-                            'unit_value_guided_export',
-                            'unit_value_guided_import',
-                            'unit_value_guided_mean',
-                            'bilateral_mean_no_unit_value_reference'
+                        -- CIF/FOB unresolved observations must
+                        -- remain explicitly marked as skipped.
+                        (
+                            cif_fob_unresolved IS TRUE
+
+                            AND trade_synced_quantity_method
+                                = 'cif_fob_unresolved'
+
+                            AND trade_synced_quantity_status
+                                = 'cif_fob_unresolved'
                         )
-                        AND trade_synced_quantity_status
-                            = 'bilateral_synced'
-                    )
 
-                    OR
+                        OR
 
-                    (
-                        quantity_availability_case = 'export_only'
-                        AND trade_synced_quantity_method
-                            = 'export_quantity_retained'
-                        AND trade_synced_quantity_status
-                            = 'unilateral_retained'
-                    )
+                        -- Normal quantity synchronization
+                        -- is allowed only for resolved observations.
+                        (
+                            cif_fob_unresolved IS FALSE
 
-                    OR
+                            AND (
 
-                    (
-                        quantity_availability_case = 'import_only'
-                        AND trade_synced_quantity_method
-                            = 'import_quantity_retained'
-                        AND trade_synced_quantity_status
-                            = 'unilateral_retained'
-                    )
+                                (
+                                    quantity_availability_case
+                                        = 'both_quantity'
 
-                    OR
+                                    AND trade_synced_quantity_method IN (
+                                        'unit_value_guided_export',
+                                        'unit_value_guided_import',
+                                        'unit_value_guided_mean',
+                                        'bilateral_mean_no_unit_value_reference'
+                                    )
 
-                    (
-                        quantity_availability_case = 'no_quantity'
-                        AND trade_synced_quantity_method
-                            = 'no_usable_quantity'
-                        AND trade_synced_quantity_status
-                            = 'missing'
-                    )
+                                    AND trade_synced_quantity_status
+                                        = 'bilateral_synced'
+                                )
+
+                                OR
+
+                                (
+                                    quantity_availability_case
+                                        = 'export_only'
+
+                                    AND trade_synced_quantity_method
+                                        = 'export_quantity_retained'
+
+                                    AND trade_synced_quantity_status
+                                        = 'unilateral_retained'
+                                )
+
+                                OR
+
+                                (
+                                    quantity_availability_case
+                                        = 'import_only'
+
+                                    AND trade_synced_quantity_method
+                                        = 'import_quantity_retained'
+
+                                    AND trade_synced_quantity_status
+                                        = 'unilateral_retained'
+                                )
+
+                                OR
+
+                                (
+                                    quantity_availability_case
+                                        = 'no_quantity'
+
+                                    AND trade_synced_quantity_method
+                                        = 'no_usable_quantity'
+
+                                    AND trade_synced_quantity_status
+                                        = 'missing'
+                                )
+                            )
+                        )
+                    ),
+                    FALSE
                 )
                 """
             ).fetchone()[0]
@@ -1068,6 +1138,7 @@ def audit_quantity_reconciliation(
         trade_synced_methods_valid = (
             invalid_trade_synced_method_rows == 0
         )
+
         # --------------------------------------------------------------
         # Method arithmetic
         # --------------------------------------------------------------
@@ -1515,6 +1586,73 @@ def audit_quantity_reconciliation(
             and unmatched_input_rows == 0
         )
 
+
+        # --------------------------------------------------------------
+        # CIF/FOB unresolved preservation and non-reconciliation audit
+        # --------------------------------------------------------------
+
+        (
+            n_input_unresolved,
+            n_output_unresolved,
+            n_unresolved_provenance_mismatches,
+            n_unresolved_processing_violations,
+        ) = con.execute(
+            f"""
+            WITH input_unresolved AS (
+                SELECT *
+                FROM read_parquet({input_sql})
+                WHERE cif_fob_unresolved IS TRUE
+            ),
+            output_unresolved AS (
+                SELECT *
+                FROM read_parquet({quantity_sql})
+                WHERE cif_fob_unresolved IS TRUE
+            )
+            SELECT
+                (SELECT COUNT(*) FROM input_unresolved),
+
+                (SELECT COUNT(*) FROM output_unresolved),
+
+                (
+                    SELECT COUNT(*)
+                    FROM input_unresolved i
+                    LEFT JOIN read_parquet({quantity_sql}) q
+                    USING (year, exporter_iso, importer_iso, target_cmd)
+                    WHERE q.year IS NULL
+                    OR q.cif_fob_unresolved IS DISTINCT FROM i.cif_fob_unresolved
+                    OR q.cif_fob_unresolved_reason IS DISTINCT FROM i.cif_fob_unresolved_reason
+                    OR q.export_has_non_mass_quantity IS DISTINCT FROM i.export_has_non_mass_quantity
+                    OR q.import_has_non_mass_quantity IS DISTINCT FROM i.import_has_non_mass_quantity
+                    OR q.export_synchronized_quantity_kg IS DISTINCT FROM i.export_synchronized_quantity_kg
+                    OR q.import_synchronized_quantity_kg IS DISTINCT FROM i.import_synchronized_quantity_kg
+                ),
+
+                (
+                    SELECT COUNT(*)
+                    FROM output_unresolved
+                    WHERE quantity_reconciled_kg IS NOT NULL
+                    OR trade_synced_quantity_kg IS NOT NULL
+                    OR quantity_reliability_weighted_kg IS NOT NULL
+                    OR quantity_value_weighted_kg IS NOT NULL
+                    OR export_quantity_reliability_weight IS NOT NULL
+                    OR import_quantity_reliability_weight IS NOT NULL
+                    OR quantity_reconciliation_method IS DISTINCT FROM 'cif_fob_unresolved'
+                    OR trade_synced_quantity_method IS DISTINCT FROM 'cif_fob_unresolved'
+                    OR trade_synced_quantity_status IS DISTINCT FROM 'cif_fob_unresolved'
+                )
+            """
+        ).fetchone()
+
+        unresolved_preserved = (
+            n_input_unresolved == n_output_unresolved
+            and n_unresolved_provenance_mismatches == 0
+        )
+
+        unresolved_processing_skipped = (
+            n_unresolved_processing_violations == 0
+        )
+
+
         # --------------------------------------------------------------
         # Final audit decision
         # --------------------------------------------------------------
@@ -1551,6 +1689,9 @@ def audit_quantity_reconciliation(
                 simple_mean_valid,
                 value_weighted_candidate_valid,
                 quantity_reliability_candidate_valid,
+
+                unresolved_preserved,
+                unresolved_processing_skipped,
             )
         )
 
@@ -1747,7 +1888,14 @@ def audit_quantity_reconciliation(
                         AS trade_synced_unilateral_mismatches,
 
                     {str(trade_synced_unilateral_preserved).upper()}
-                        AS trade_synced_unilateral_preserved
+                        AS trade_synced_unilateral_preserved,
+
+                    {n_input_unresolved} AS n_input_unresolved,
+                    {n_output_unresolved} AS n_output_unresolved,
+                    {n_unresolved_provenance_mismatches} AS n_unresolved_provenance_mismatches,
+                    {n_unresolved_processing_violations} AS n_unresolved_processing_violations,
+                    {str(unresolved_preserved).upper()} AS unresolved_preserved,
+                    {str(unresolved_processing_skipped).upper()} AS unresolved_processing_skipped,
             )
             TO {audit_sql}
             (
@@ -1829,6 +1977,19 @@ def audit_quantity_reconciliation(
             f"{trade_value_mismatches:,}",
         )
         logger.info(
+            "  CIF/FOB unresolved preserved: %s / %s",
+            f"{n_output_unresolved:,}",
+            f"{n_input_unresolved:,}",
+        )
+        logger.info(
+            "  Unresolved provenance mismatches: %s",
+            f"{n_unresolved_provenance_mismatches:,}",
+        )
+        logger.info(
+            "  Unresolved processing violations: %s",
+            f"{n_unresolved_processing_violations:,}",
+        )
+        logger.info(
             "  Unmatched quantity/input rows: %s / %s",
             f"{unmatched_quantity_rows:,}",
             f"{unmatched_input_rows:,}",
@@ -1908,6 +2069,8 @@ def audit_quantity_reconciliation(
                 "bilateral_population_preserved": (
                     bilateral_population_preserved
                 ),
+                "unresolved_preserved": unresolved_preserved,
+                "unresolved_processing_skipped": unresolved_processing_skipped,
             }
 
             failed_checks = [

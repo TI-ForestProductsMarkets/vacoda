@@ -184,6 +184,10 @@ def reconcile_bilateral_quantity(
             "import_synchronized_quantity_kg",
             "exporter_adjusted_weight",
             "importer_adjusted_weight",
+            "cif_fob_unresolved",
+            "cif_fob_unresolved_reason",
+            "export_has_non_mass_quantity",
+            "import_has_non_mass_quantity",
         }
 
         _require_columns(
@@ -421,6 +425,7 @@ def reconcile_bilateral_quantity(
                         = 'both_quantity'
                       AND quantity_relative_difference
                         IS NOT NULL
+                      AND cif_fob_unresolved IS FALSE
 
                     UNION ALL
 
@@ -439,6 +444,7 @@ def reconcile_bilateral_quantity(
                         = 'both_quantity'
                       AND quantity_relative_difference
                         IS NOT NULL
+                      AND cif_fob_unresolved IS FALSE
                 ),
 
                 quantity_country_reliability AS (
@@ -769,8 +775,9 @@ def reconcile_bilateral_quantity(
                         *,
 
                         CASE
-                            WHEN quantity_availability_case
-                                    = 'both_quantity'
+                            WHEN cif_fob_unresolved IS TRUE
+                                THEN NULL
+                            WHEN quantity_availability_case = 'both_quantity'
                              AND export_quantity_reliability
                                     IS NOT NULL
                              AND import_quantity_reliability
@@ -792,6 +799,8 @@ def reconcile_bilateral_quantity(
                             AS export_quantity_reliability_weight,
 
                         CASE
+                            WHEN cif_fob_unresolved IS TRUE
+                                THEN NULL
                             WHEN quantity_availability_case
                                     = 'both_quantity'
                              AND export_quantity_reliability
@@ -865,8 +874,8 @@ def reconcile_bilateral_quantity(
                 reconciled AS (
                     SELECT
                         *,
-
                         CASE
+                            WHEN cif_fob_unresolved IS TRUE THEN NULL
                             WHEN quantity_availability_case
                                     = 'both_quantity'
                              AND quantity_reliability_weighted_kg
@@ -889,6 +898,8 @@ def reconcile_bilateral_quantity(
                         END AS quantity_reconciled_kg,
 
                         CASE
+                            WHEN cif_fob_unresolved IS TRUE
+                                THEN 'cif_fob_unresolved'
                             WHEN quantity_availability_case
                                     = 'both_quantity'
                              AND quantity_reliability_weighted_kg
@@ -919,7 +930,7 @@ def reconcile_bilateral_quantity(
                             --
                             -- In an exact tie, prefer the neutral bilateral mean.
                             -- -------------------------------------------------------------
-
+                            WHEN cif_fob_unresolved IS TRUE THEN NULL
                             WHEN quantity_availability_case = 'both_quantity'
                             AND mean_unit_value_log_distance IS NOT NULL
                             AND mean_unit_value_log_distance
@@ -959,6 +970,7 @@ def reconcile_bilateral_quantity(
 
                         
                         CASE
+                            WHEN cif_fob_unresolved IS TRUE THEN 'cif_fob_unresolved'
                             WHEN quantity_availability_case = 'both_quantity'
                             AND mean_unit_value_log_distance IS NOT NULL
                             AND mean_unit_value_log_distance
@@ -994,6 +1006,7 @@ def reconcile_bilateral_quantity(
                         END AS trade_synced_quantity_method,
                         
                         CASE
+                            WHEN cif_fob_unresolved IS TRUE THEN 'cif_fob_unresolved'
                             WHEN quantity_availability_case = 'both_quantity'
                                 THEN 'bilateral_synced'
 

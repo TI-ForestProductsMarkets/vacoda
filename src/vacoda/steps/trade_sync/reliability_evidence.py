@@ -697,7 +697,13 @@ def build_trade_sync_reliability_evidence(
                 (
                     SELECT MAX(reliability_deviation)
                     FROM output
-                ) AS maximum_deviation
+                ) AS maximum_deviation,
+
+                (
+                    SELECT COUNT(*)
+                    FROM output
+                    WHERE cif_fob_unresolved IS TRUE
+                ) AS n_unresolved_in_evidence,
 
             """
         ).fetchone()
@@ -722,6 +728,7 @@ def build_trade_sync_reliability_evidence(
             mean_deviation,
             p90_deviation,
             maximum_deviation,
+            n_unresolved_in_evidence,
         ) = output_audit_row
 
         included_share_percent = (
@@ -762,6 +769,12 @@ def build_trade_sync_reliability_evidence(
             raise RuntimeError(
                 "Reliability evidence inclusion and exclusion counts "
                 "do not partition the prepared population."
+            )
+
+        if int(n_unresolved_in_evidence) > 0:
+            raise RuntimeError(
+                "Reliability-evidence output contains "
+                f"{int(n_unresolved_in_evidence):,} unresolved CIF/FOB cases."
             )
 
         if int(n_output_rows) != int(n_included_evidence_rows):
