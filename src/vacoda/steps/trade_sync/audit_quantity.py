@@ -712,6 +712,7 @@ def audit_quantity_reconciliation(
 
                     (
                         quantity_availability_case = 'import_only'
+                        AND cif_fob_unresolved IS FALSE
                         AND (
                             trade_synced_quantity_kg IS NULL
                             OR ABS(
@@ -1895,7 +1896,7 @@ def audit_quantity_reconciliation(
                     {n_unresolved_provenance_mismatches} AS n_unresolved_provenance_mismatches,
                     {n_unresolved_processing_violations} AS n_unresolved_processing_violations,
                     {str(unresolved_preserved).upper()} AS unresolved_preserved,
-                    {str(unresolved_processing_skipped).upper()} AS unresolved_processing_skipped,
+                    {str(unresolved_processing_skipped).upper()} AS unresolved_processing_skipped
             )
             TO {audit_sql}
             (
