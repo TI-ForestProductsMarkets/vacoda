@@ -15,10 +15,10 @@ pipeline:
     - "hs_sync"
     - "quantity"
     - "cif_fob"
-    - "trade_sync"
-    - "value"
-    - "validation"
-    - "release"
+  #  - "trade_sync"
+  #  - "value"
+  #  - "validation"
+  #  - "release"
 
   # Stop immediately if a step fails or reports ready_for_next_step=false.
   fail_fast: true

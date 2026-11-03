@@ -619,6 +619,9 @@ def build_mirror_pairs(
                 {synchronized_quantity_estimated_col},
 
                 {synchronized_quantity_source_col},
+                
+                has_non_mass_quantity,
+
 
                 CAST(
                     canonical_weight_is_proxy
@@ -752,6 +755,9 @@ def build_mirror_pairs(
                 {synchronized_quantity_estimated_col}
                     AS export_is_synchronized_quantity_estimated,
 
+                has_non_mass_quantity
+                    AS export_has_non_mass_quantity,
+
                 canonical_weight_is_proxy
                     AS export_weight_is_proxy,
 
@@ -818,6 +824,8 @@ def build_mirror_pairs(
                 {synchronized_quantity_estimated_col}
                     AS import_is_synchronized_quantity_estimated,
 
+                has_non_mass_quantity
+                    AS import_has_non_mass_quantity,
 
                 canonical_weight_is_proxy
                     AS import_weight_is_proxy,
@@ -918,6 +926,9 @@ def build_mirror_pairs(
 
                 x.export_is_synchronized_quantity_estimated,
                 m.import_is_synchronized_quantity_estimated,
+
+                x.export_has_non_mass_quantity,
+                m.import_has_non_mass_quantity,
 
                 x.export_weight_is_proxy,
                 m.import_weight_is_proxy,

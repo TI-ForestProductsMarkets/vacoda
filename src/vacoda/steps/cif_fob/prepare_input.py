@@ -713,6 +713,14 @@ def prepare_cif_fob_input(
                     )
                 ) AS {synchronized_quantity_estimated_col},
 
+                
+                -- Preserve non-mass quantity evidence across selected
+                -- reported, non-aggregate source components.
+                BOOL_OR(
+                    COALESCE(has_non_mass_quantity, FALSE)
+                ) AS has_non_mass_quantity,
+
+                
                 BOOL_OR(
                     COALESCE(
                         row_canonical_weight_is_proxy,
@@ -991,6 +999,27 @@ def prepare_cif_fob_input(
             **input_metrics,
             **output_metrics,
         }
+
+        # ==============================================================
+        # Non Mass AUDIT METRICS
+        # ==============================================================
+
+
+        non_mass_null_count = con.execute(
+            """
+            SELECT COUNT(*)
+            FROM read_parquet(?)
+            WHERE has_non_mass_quantity IS NULL
+            """,
+            [str(output_path)],
+        ).fetchone()[0]
+
+        if non_mass_null_count:
+            raise RuntimeError(
+                "CIF/FOB prepared input contains "
+                f"{non_mass_null_count:,} NULL non-mass quantity flags."
+            )
+
 
         # ==============================================================
         # DERIVED AUDIT METRICS

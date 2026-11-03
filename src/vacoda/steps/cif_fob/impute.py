@@ -36,6 +36,25 @@ def _inspect_existing_imputation(*, output_path: Path, audit_path: Path, threads
     con = duckdb.connect()
     try:
         con.execute(f"SET threads = {int(threads)}")
+        required_columns = {
+            "cif_fob_unresolved",
+            "cif_fob_unresolved_reason",
+        }
+
+        available_columns = {
+            row[0]
+            for row in con.execute(
+                "DESCRIBE SELECT * FROM read_parquet(?)",
+                [str(output_path)],
+            ).fetchall()
+        }
+
+        missing = required_columns - available_columns
+
+        if missing:
+            raise RuntimeError(
+                f"Checkpointed imputation output missing columns: {sorted(missing)}"
+            )
         row = con.execute("""
             SELECT COUNT(*),
                    COUNT(DISTINCT (year, exporter_iso, importer_iso, target_cmd)),
@@ -50,10 +69,63 @@ def _inspect_existing_imputation(*, output_path: Path, audit_path: Path, threads
                    )
             FROM read_parquet(?)
         """, [str(output_path)]).fetchone()
+
+        unresolved_stats = con.execute("""
+            SELECT
+                COUNT(*) FILTER (
+                    WHERE cif_fob_unresolved
+                ),
+                COUNT(*) FILTER (
+                    WHERE cif_fob_unresolved_reason =
+                        'zero_value_minimal_quantity'
+                ),
+                COUNT(*) FILTER (
+                    WHERE cif_fob_unresolved_reason =
+                        'zero_value_non_mass_quantity'
+                ),
+                COUNT(*) FILTER (
+                    WHERE cif_fob_unresolved_reason =
+                        'zero_value_no_quantity'
+                ),
+                COUNT(*) FILTER (
+                    WHERE cif_fob_unresolved IS NULL
+                    OR cif_fob_unresolved IS DISTINCT FROM
+                            NOT (
+                                COALESCE(
+                                    isfinite(export_value_fob)
+                                    AND export_value_fob > 0,
+                                    FALSE
+                                )
+                                OR
+                                COALESCE(
+                                    isfinite(import_value_fob_corrected)
+                                    AND import_value_fob_corrected > 0,
+                                    FALSE
+                                )
+                            )
+                    OR (
+                            cif_fob_unresolved IS TRUE
+                            AND cif_fob_unresolved_reason IS NULL
+                    )
+                    OR (
+                            cif_fob_unresolved IS FALSE
+                            AND cif_fob_unresolved_reason IS NOT NULL
+                    )
+                )
+            FROM read_parquet(?)
+        """, [str(output_path)]).fetchone()
     finally:
         con.close()
     if row is None or row[0] != row[1] or row[3] != 0 or not audit_path.is_file():
         raise RuntimeError("Checkpointed CIF/FOB imputation product failed inspection.")
+
+    if (
+        unresolved_stats[4] != 0
+        or unresolved_stats[0] != sum(unresolved_stats[1:4])
+    ):
+        raise RuntimeError(
+            "Checkpointed unresolved classification is invalid."
+        )
 
     ## The audit summary is a separate artifact that is not guaranteed to exist, but if it does exist, it must pass the ready check.
     audit = audit_summary(
@@ -69,6 +141,28 @@ def _inspect_existing_imputation(*, output_path: Path, audit_path: Path, threads
         raise RuntimeError(
             "Checkpointed CIF/FOB imputation audit is invalid."
         )
+
+    con = duckdb.connect()
+    try:
+        audit_counts = con.execute("""
+            SELECT
+                n_unresolved,
+                n_unresolved_minimal_quantity,
+                n_unresolved_non_mass_quantity,
+                n_unresolved_no_quantity
+            FROM read_parquet(?)
+        """, [str(audit_path)]).fetchone()
+    finally:
+        con.close()
+
+    if (
+        audit_counts is None
+        or tuple(audit_counts) != tuple(unresolved_stats[:4])
+    ):
+        raise RuntimeError(
+            "Checkpointed unresolved counts disagree with audit."
+        )
+    
     return {
         "status": "reused",
         "audit_passed": True,
@@ -80,6 +174,10 @@ def _inspect_existing_imputation(*, output_path: Path, audit_path: Path, threads
         "imputation_audit_path": audit_path,
         "total_rows": int(row[0]),
         "imputed_rows": int(row[2]),
+        "unresolved_rows": int(unresolved_stats[0]),
+        "unresolved_minimal_quantity": int(unresolved_stats[1]),
+        "unresolved_non_mass_quantity": int(unresolved_stats[2]),
+        "unresolved_no_quantity": int(unresolved_stats[3]),
     }
 
 
@@ -210,7 +308,11 @@ def impute_cif_fob_factors(
             "original": set(KEY) | {"model_eligible", "factor_source", "import_value_cif",
                 "export_value_fob", "import_value_fob_corrected", "cif_fob_factor_applied",
                 "cif_fob_factor_applied_source", "cif_fob_correction_applied",
-                "factor_for_application"},
+                "factor_for_application",
+                "export_has_non_mass_quantity",
+                "import_has_non_mass_quantity",
+            },
+
             "rates": set(KEY) | {"model_eligible", "factor_source", "observed_cif_fob_factor"},
             "mirror": set(KEY) | {"training_eligible", "weight_concordance", "raw_value_ratio"},
         }
@@ -403,6 +505,64 @@ def impute_cif_fob_factors(
             ), i.imputation_method
             FROM original c LEFT JOIN imputed i USING(year, exporter_iso, importer_iso, target_cmd)
         """)
+        con.execute("""
+            CREATE TEMP VIEW final_classified AS
+            WITH evidence AS (
+                SELECT
+                    r.*,
+
+                    NOT (
+                        COALESCE(
+                            isfinite(export_value_fob)
+                            AND export_value_fob > 0,
+                            FALSE
+                        )
+                        OR
+                        COALESCE(
+                            isfinite(import_value_fob_corrected)
+                            AND import_value_fob_corrected > 0,
+                            FALSE
+                        )
+                    ) AS unresolved_value,
+
+                    (
+                        COALESCE(
+                            isfinite(export_synchronized_quantity_kg)
+                            AND export_synchronized_quantity_kg > 0,
+                            FALSE
+                        )
+                        OR
+                        COALESCE(
+                            isfinite(import_synchronized_quantity_kg)
+                            AND import_synchronized_quantity_kg > 0,
+                            FALSE
+                        )
+                    ) AS has_mass_quantity
+
+                FROM recovered r
+            )
+            SELECT
+                * EXCLUDE (unresolved_value, has_mass_quantity),
+
+                unresolved_value AS cif_fob_unresolved,
+
+                CASE
+                    WHEN NOT unresolved_value THEN NULL
+
+                    WHEN has_mass_quantity
+                        THEN 'zero_value_minimal_quantity'
+
+                    WHEN (
+                        COALESCE(export_has_non_mass_quantity, FALSE)
+                        OR COALESCE(import_has_non_mass_quantity, FALSE)
+                    )
+                        THEN 'zero_value_non_mass_quantity'
+
+                    ELSE 'zero_value_no_quantity'
+                END AS cif_fob_unresolved_reason
+
+            FROM evidence
+        """)
         stats = con.execute("""
             SELECT COUNT(*) AS total_rows,
                    COUNT(DISTINCT (year, exporter_iso, importer_iso, target_cmd)) AS distinct_keys,
@@ -476,6 +636,69 @@ def impute_cif_fob_factors(
             FROM recovered
         """).fetchone()
 
+
+        unresolved_stats = con.execute("""
+            SELECT
+                COUNT(*) FILTER (
+                    WHERE cif_fob_unresolved
+                ) AS n_unresolved,
+
+                COUNT(*) FILTER (
+                    WHERE cif_fob_unresolved
+                    AND cif_fob_unresolved_reason =
+                        'zero_value_minimal_quantity'
+                ) AS n_minimal_quantity,
+
+                COUNT(*) FILTER (
+                    WHERE cif_fob_unresolved
+                    AND cif_fob_unresolved_reason =
+                        'zero_value_non_mass_quantity'
+                ) AS n_non_mass_quantity,
+
+                COUNT(*) FILTER (
+                    WHERE cif_fob_unresolved
+                    AND cif_fob_unresolved_reason =
+                        'zero_value_no_quantity'
+                ) AS n_no_quantity,
+
+                COUNT(*) FILTER (
+                    WHERE cif_fob_unresolved IS NULL
+                    OR (
+                        cif_fob_unresolved
+                        AND cif_fob_unresolved_reason IS NULL
+                    )
+                    OR (
+                        NOT cif_fob_unresolved
+                        AND cif_fob_unresolved_reason IS NOT NULL
+                    )
+                ) AS n_invalid_classifications,
+
+                COUNT(*) FILTER (
+                    WHERE cif_fob_unresolved IS DISTINCT FROM
+                        NOT (
+                            COALESCE(
+                                isfinite(export_value_fob)
+                                AND export_value_fob > 0, FALSE
+                            )
+                            OR
+                            COALESCE(
+                                isfinite(import_value_fob_corrected)
+                                AND import_value_fob_corrected > 0, FALSE
+                            )
+                        )
+                ) AS n_unresolved_flag_mismatch
+                
+            FROM final_classified
+        """).fetchone()
+        (
+            n_unresolved,
+            n_minimal_quantity,
+            n_non_mass_quantity,
+            n_no_quantity,
+            n_invalid_classifications,
+            n_unresolved_flag_mismatch
+        ) = unresolved_stats
+
         checks = {
             "row_count_preserved": stats[0] == original_rows,
             "bilateral_keys_unique": stats[0] == stats[1],
@@ -489,6 +712,18 @@ def impute_cif_fob_factors(
             "imputation_provenance_valid": invalid_provenance == 0,
             "existing_rows_preserved": drift == 0,
             "imputed_values_complete": all(value == 0 for value in stats[3:]),
+            "unresolved_classification_valid": (n_invalid_classifications == 0),
+
+            "unresolved_reasons_complete": (
+                n_unresolved
+                == n_minimal_quantity
+                + n_non_mass_quantity
+                + n_no_quantity
+            ),
+
+            "unresolved_flags_match_values": (
+                n_unresolved_flag_mismatch == 0
+            ),
         }
 
         audit_passed = all(checks.values())
@@ -504,6 +739,12 @@ def impute_cif_fob_factors(
             "n_non_target_drift": int(drift),
             **checks,
             "audit_passed": audit_passed,
+            "n_unresolved": int(n_unresolved),
+            "n_unresolved_minimal_quantity": int(n_minimal_quantity),
+            "n_unresolved_non_mass_quantity": int(n_non_mass_quantity),
+            "n_unresolved_no_quantity": int(n_no_quantity),
+            "n_invalid_unresolved_classifications": int(n_invalid_classifications),
+            "n_unresolved_flag_mismatch": int(n_unresolved_flag_mismatch),
         }
 
         columns_sql = []
@@ -542,8 +783,17 @@ def impute_cif_fob_factors(
                 + ", ".join(failed_checks)
             )
         logger.info("  Imputation eligible rows: %s", f"{n_targets:,}")
+
+
         # Output is written only after audits pass.
-        con.execute(f"COPY (SELECT * FROM recovered) TO {_sql_path(output_path)} (FORMAT PARQUET, COMPRESSION ZSTD)")
+        con.execute(f"""
+                    COPY (
+                        SELECT * FROM final_classified
+                    )
+                    TO {_sql_path(output_path)}
+                    (FORMAT PARQUET, COMPRESSION ZSTD)
+                """)
+        
         con.execute(f"""
             COPY (
                 SELECT imputation_method, COUNT(*) AS observations,
@@ -566,7 +816,13 @@ def impute_cif_fob_factors(
         logger.info("  Imputed rows: %s", f"{n_targets:,}")
         logger.info("  Total output rows: %s", f"{stats[0]:,}")
         logger.info("  Audit passed: %s", audit_passed)
+        logger.info("  Unresolved observations: %s", f"{n_unresolved:,}")
+        logger.info("    Minimal quantity: %s", f"{n_minimal_quantity:,}")
+        logger.info("    Non-mass quantity: %s", f"{n_non_mass_quantity:,}")
+        logger.info("    No quantity: %s", f"{n_no_quantity:,}")
+        logger.info("    Flag mismatch: %s", f"{n_unresolved_flag_mismatch:,}")
         logger.info("  Ready for Trade-sync: %s", audit_passed)
+        
         return {
             "status": "completed",
             "audit_passed": audit_passed,
@@ -579,6 +835,10 @@ def impute_cif_fob_factors(
             "imputation_audit_path": audit_path,
             "imputed_rows": n_targets,
             "total_rows": stats[0],
+            "unresolved_rows": int(n_unresolved),
+            "unresolved_minimal_quantity": int(n_minimal_quantity),
+            "unresolved_non_mass_quantity": int(n_non_mass_quantity),
+            "unresolved_no_quantity": int(n_no_quantity),
         }
     finally:
         con.close()

@@ -477,6 +477,16 @@ def synchronize_quantity(
 
 
                     -- ==============================================
+                    -- Non-mass quantity evidence
+                    -- ==============================================
+
+                    (
+                        COALESCE(has_quantity_supplementary, FALSE)
+                        OR COALESCE(has_alt_quantity_supplementary, FALSE)
+                    ) AS has_non_mass_quantity,
+
+
+                    -- ==============================================
                     -- Supplementary source provenance
                     -- ==============================================
 
@@ -642,7 +652,10 @@ def synchronize_quantity(
 
                 count(*) FILTER (
                     WHERE supplementary_quantity_source = 'alt_quantity'
-                ) AS n_supplementary_from_alt_quantity
+                ) AS n_supplementary_from_alt_quantity,
+                COUNT(*) FILTER (
+                    WHERE has_non_mass_quantity
+                ) AS n_with_non_mass_quantity
 
             FROM read_parquet(?)
             """,
@@ -660,6 +673,7 @@ def synchronize_quantity(
             n_supplementary,
             n_supplementary_from_quantity,
             n_supplementary_from_alt_quantity,
+            n_with_non_mass_quantity,
         ) = summary
 
         synchronized_pct = (
@@ -712,6 +726,28 @@ def synchronize_quantity(
             raise RuntimeError(
                 "Supplementary quantity/unit null-consistency failed: "
                 f"{supplementary_null_mismatch:,} mismatched rows."
+            )
+
+        non_mass_flag_mismatch = con.execute(
+            """
+            SELECT COUNT(*)
+            FROM read_parquet(?)
+            WHERE has_non_mass_quantity IS DISTINCT FROM (
+                COALESCE(
+                    isfinite(supplementary_quantity)
+                    AND supplementary_quantity > 0
+                    AND supplementary_unit IS NOT NULL,
+                    FALSE
+                )
+            )
+            """,
+            [str(output_path)],
+        ).fetchone()[0]
+
+        if non_mass_flag_mismatch:
+            raise RuntimeError(
+                "Non-mass quantity evidence flag is inconsistent: "
+                f"{non_mass_flag_mismatch:,} observations."
             )
 
         classified_rows = (
@@ -925,6 +961,10 @@ def synchronize_quantity(
             f"{n_supplementary_from_alt_quantity:,}",
         )
         logger.info(
+            "Rows with non-mass quantity evidence: %s",
+            f"{n_with_non_mass_quantity:,}",
+        )
+        logger.info(
             "Synchronized Quantity output: %s",
             output_path,
         )
@@ -1002,4 +1042,5 @@ def synchronize_quantity(
         "supplementary_pct": float(
             supplementary_pct
         ),
+        "n_with_non_mass_quantity": int(n_with_non_mass_quantity),
     }
