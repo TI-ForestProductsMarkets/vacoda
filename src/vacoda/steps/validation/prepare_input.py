@@ -64,6 +64,23 @@ def prepare_validation_input(
         cfg.method.structural.required_fields
     )
 
+    required_fields = tuple(dict.fromkeys((
+        *required_fields,
+
+        # Trade Sync quantity candidates
+        "quantity_value_weighted_kg",
+
+        # CIF–FOB unresolved provenance
+        "cif_fob_unresolved",
+        "cif_fob_unresolved_reason",
+        "export_has_non_mass_quantity",
+        "import_has_non_mass_quantity",
+
+        # Monetary values
+        "trade_value_reconciled",
+        "trade_value_reconciled_constant_usd",
+    )))
+
     target_col = str(cfg.model.target.column)
     target_sql = '"' + target_col.replace('"', '""') + '"'
 
@@ -299,6 +316,42 @@ def prepare_validation_input(
         logger.info(
             "  Prepared Validation parquet written."
         )
+
+        ## Check that unresolved CIF–FOB observations are preserved
+        unresolved_input, unresolved_output = (
+            con.execute(
+                f"""
+                SELECT
+                    (
+                        SELECT COUNT(*)
+                        FROM read_parquet({input_sql})
+                        WHERE year BETWEEN ? AND ?
+                        AND cif_fob_unresolved IS TRUE
+                    ),
+                    (
+                        SELECT COUNT(*)
+                        FROM read_parquet({output_sql})
+                        WHERE cif_fob_unresolved IS TRUE
+                    )
+                """,
+                [
+                    int(cfg.scope.min_year),
+                    int(cfg.scope.max_year),
+                ],
+            ).fetchone()
+        )
+
+        if unresolved_input != unresolved_output:
+            raise RuntimeError(
+                "Validation preparation lost unresolved CIF–FOB observations: "
+                f"input={unresolved_input}, output={unresolved_output}."
+            )
+
+        logger.info(
+            "  Unresolved CIF–FOB observations preserved: %s",
+            unresolved_output,
+        )
+        
         # --------------------------------------------------------------
         # Verify prepared output
         # --------------------------------------------------------------

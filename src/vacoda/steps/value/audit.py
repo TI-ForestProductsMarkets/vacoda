@@ -825,6 +825,38 @@ def run_value_output_audit(
         )
 
         # ==============================================================
+        # 16. Unresolved CIF–FOB observations remain unresolved
+        # ==============================================================
+
+        unresolved_count, unresolved_violations = con.execute(
+            f"""
+            SELECT
+                COUNT(*) FILTER (
+                    WHERE cif_fob_unresolved IS TRUE
+                ),
+                COUNT(*) FILTER (
+                    WHERE cif_fob_unresolved IS TRUE
+                    AND (
+                        {nominal_value_column} IS NOT NULL
+                        OR {CONSTANT_VALUE_COLUMN} IS NOT NULL
+                        OR quantity_value_weighted_kg IS NOT NULL
+                    )
+                )
+            FROM read_parquet({output_sql})
+            """
+        ).fetchone()
+
+        audit_rows.append(
+            _audit_row(
+                check="cif_fob_unresolved_values_preserved",
+                passed=unresolved_violations == 0,
+                value=int(unresolved_violations),
+                expected=0,
+                details=f"unresolved_rows={unresolved_count}",
+            )
+        )
+
+        # ==============================================================
         # Write audit
         # ==============================================================
 

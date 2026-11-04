@@ -100,6 +100,20 @@ def audit_structural_integrity(
         structural_cfg.required_fields
     )
 
+    required_fields = tuple(dict.fromkeys((
+        *structural_cfg.required_fields,
+
+        "trade_value_reconciled",
+        "trade_value_reconciled_constant_usd",
+
+        "quantity_value_weighted_kg",
+
+        "cif_fob_unresolved",
+        "cif_fob_unresolved_reason",
+        "export_has_non_mass_quantity",
+        "import_has_non_mass_quantity",
+    )))
+
     canonical_key = tuple(
         structural_cfg.canonical_key
     )
@@ -224,7 +238,7 @@ def audit_structural_integrity(
             "structural_audit_path": output_path,
 
             "audit_passed": True,
-            "ready_for_diagnostics": True,
+            "ready_for_training_sample": True,
 
             "n_rows": int(
                 reused_n_rows
@@ -460,6 +474,67 @@ def audit_structural_integrity(
             if require_positive_quantity
             else True
         )
+
+        # --------------------------------------------------------------
+        # CIF-FOB unresolved observations
+        # --------------------------------------------------------------
+        (
+            n_unresolved_rows,
+            n_unresolved_violations,
+        ) = con.execute(
+            f"""
+            SELECT
+                COUNT(*) FILTER (
+                    WHERE cif_fob_unresolved IS TRUE
+                ),
+
+                COUNT(*) FILTER (
+                    WHERE cif_fob_unresolved IS TRUE
+                    AND (
+                        trade_value_reconciled IS NOT NULL
+                        OR trade_value_reconciled_constant_usd IS NOT NULL
+                        OR quantity_value_weighted_kg IS NOT NULL
+                    )
+                )
+
+            FROM read_parquet({input_sql})
+            """
+        ).fetchone()
+
+        n_unresolved_rows = int(n_unresolved_rows)
+        n_unresolved_violations = int(n_unresolved_violations)
+
+        unresolved_values_valid = (
+            n_unresolved_violations == 0
+        )
+
+        n_invalid_unresolved_classifications = int(
+            con.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM read_parquet({input_sql})
+                WHERE
+                    (
+                        cif_fob_unresolved IS TRUE
+                        AND (
+                            cif_fob_unresolved_reason IS NULL
+                            OR cif_fob_unresolved_reason NOT IN (
+                                'zero_value_minimal_quantity',
+                                'zero_value_non_mass_quantity'
+                            )
+                        )
+                    )
+                    OR (
+                        cif_fob_unresolved IS NOT TRUE
+                        AND cif_fob_unresolved_reason IS NOT NULL
+                    )
+                """
+            ).fetchone()[0]
+        )
+
+        unresolved_classifications_valid = (
+            n_invalid_unresolved_classifications == 0
+        )
         # --------------------------------------------------------------
         # Duplicate canonical keys
         # --------------------------------------------------------------
@@ -547,7 +622,7 @@ def audit_structural_integrity(
             and quantity_numeric_valid
         )
 
-        ready_for_diagnostics = audit_passed
+        ready_for_training_sample = audit_passed
         # --------------------------------------------------------------
         # Write audit artifact
         # --------------------------------------------------------------
@@ -593,6 +668,13 @@ def audit_structural_integrity(
             "nominal_value_valid": nominal_value_valid,
             "n_invalid_nominal_value_rows": (
                 n_invalid_nominal_value_rows
+            ),
+
+            "unresolved_values_valid": unresolved_values_valid,
+            "n_unresolved_rows": n_unresolved_rows,
+            "n_unresolved_violations": n_unresolved_violations,
+            "unresolved_classifications_valid": (
+                unresolved_classifications_valid
             ),
 
             "constant_value_valid": constant_value_valid,
@@ -759,7 +841,7 @@ def audit_structural_integrity(
         "structural_audit_path": output_path,
 
         "audit_passed": True,
-        "ready_for_diagnostics": ready_for_diagnostics,
+        "ready_for_training_sample": ready_for_training_sample,
 
         "n_rows": n_rows,
         "n_missing_quantity_rows": (

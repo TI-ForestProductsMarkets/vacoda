@@ -590,10 +590,20 @@ def audit_validation_inference(
                         AS n_hs6_seen_hs4_unseen,
 
                     COUNT(*) FILTER (
-                        WHERE manual_review_required IS DISTINCT FROM (
-                            hs6_seen IS FALSE AND hs4_seen IS FALSE
-                        )
-                    ) AS n_manual_review_rule_mismatches,
+                        WHERE
+                            (
+                                model_input_valid IS TRUE
+                                AND manual_review_required IS DISTINCT FROM (
+                                    hs6_seen IS FALSE
+                                    AND hs4_seen IS FALSE
+                                )
+                            )
+                            OR (
+                                model_input_valid IS FALSE
+                                AND manual_review_required IS NOT NULL
+                            )
+                    )
+                        AS n_manual_review_rule_mismatches,
                         
                     -- --------------------------------------------------
                     -- Model metadata

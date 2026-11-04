@@ -2143,6 +2143,7 @@ def train_validation_models(
                 *feature_columns,
                 target_col,
                 "training_selected",
+                "cif_fob_unresolved"
             ]
         )
     )
@@ -2194,6 +2195,22 @@ def train_validation_models(
         input_sql = sql_literal(
             input_path
         )
+
+        ## Check that unresolved CIF–FOB observations are preserved
+        invalid_training_rows = con.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM read_parquet({input_sql})
+            WHERE training_selected IS TRUE
+            AND cif_fob_unresolved IS TRUE
+            """
+        ).fetchone()[0]
+
+        if invalid_training_rows:
+            raise RuntimeError(
+                "Unresolved CIF–FOB observations were selected "
+                f"for model training: {invalid_training_rows:,}."
+            )
 
         select_sql = ",\n".join(
             f'"{column}"'

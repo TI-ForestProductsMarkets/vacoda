@@ -309,8 +309,22 @@ def deflate_trade_values(
             required_columns={
                 year_column,
                 nominal_value_column,
+
+                # Bilateral identity
+                "exporter_iso",
+                "importer_iso",
+                "target_cmd",
+
+                # Quantity candidates passed to Validation
+                "quantity_value_weighted_kg",
+
+                # CIF–FOB provenance
+                "cif_fob_unresolved",
+                "cif_fob_unresolved_reason",
+                "export_has_non_mass_quantity",
+                "import_has_non_mass_quantity",
             },
-            label="Trade Sync Value input",
+            label="Final Trade Sync Value input",
         )
 
         # Avoid silently overwriting columns if this step is accidentally
@@ -335,17 +349,14 @@ def deflate_trade_values(
         missing_years = con.execute(
             f"""
             SELECT DISTINCT
-                                CAST(t.{year_column} AS INTEGER) AS year
+                CAST(t.{year_column} AS INTEGER) AS year
             FROM read_parquet({input_sql}) AS t
 
             LEFT JOIN read_parquet({deflator_sql}) AS d
-                            ON CAST(t.{year_column} AS INTEGER) = d.year
+                ON CAST(t.{year_column} AS INTEGER) = d.year
 
             WHERE
-                                t.{year_column}
-                    BETWEEN ? AND ?
-                AND d.year IS NULL
-
+                t.{year_column} BETWEEN ? AND ? AND d.year IS NULL
             ORDER BY year
             """,
             [
@@ -452,6 +463,29 @@ def deflate_trade_values(
         # --------------------------------------------------------------
 
         output_sql = sql_literal(temporary_path)
+
+        # --------------------------------------------------------------
+        # Unresolved CIF–FOB observations should not have any monetary 
+        # --------------------------------------------------------------
+        unresolved_violations = con.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM read_parquet({output_sql})
+            WHERE cif_fob_unresolved IS TRUE
+            AND (
+                trade_value_reconciled IS NOT NULL
+                OR {CONSTANT_VALUE_COLUMN} IS NOT NULL
+                OR quantity_value_weighted_kg IS NOT NULL
+            )
+            """
+        ).fetchone()[0]
+
+        if unresolved_violations:
+            raise RuntimeError(
+                "Value output assigns monetary or weighted quantity "
+                "values to unresolved CIF–FOB observations: "
+                f"{unresolved_violations:,}."
+            )
 
         input_rows = int(
             con.execute(

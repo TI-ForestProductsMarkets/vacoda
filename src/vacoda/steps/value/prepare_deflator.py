@@ -21,6 +21,8 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+import numpy as np
+import csv
 
 import pandas as pd
 
@@ -40,24 +42,22 @@ from vacoda.pipeline.checkpoint import (
 def _find_world_bank_header_row(
     source_path: Path,
 ) -> int:
-    """
-    Return the zero-based row containing the World Bank CSV header.
+    required = {
+        "Country Name",
+        "Country Code",
+        "Indicator Code",
+    }
 
-    World Bank downloads commonly contain metadata lines before the
-    actual table, so the header position is discovered rather than
-    hard-coded.
-    """
     with source_path.open(
         "r",
         encoding="utf-8-sig",
         errors="replace",
+        newline="",
     ) as handle:
-        for row_number, line in enumerate(handle):
-            if (
-                '"Country Name"' in line
-                and '"Country Code"' in line
-                and '"Indicator Code"' in line
-            ):
+        reader = csv.reader(handle)
+
+        for row_number, fields in enumerate(reader):
+            if required.issubset(set(fields)):
                 return row_number
 
     raise RuntimeError(
@@ -292,7 +292,7 @@ def _audit_prepared_deflator(
         )
 
     if (
-        prepared["gdp_deflator"].isna().any()
+        not np.isfinite(prepared["gdp_deflator"].to_numpy()).all()
         or prepared["gdp_deflator"].le(0).any()
     ):
         raise RuntimeError(

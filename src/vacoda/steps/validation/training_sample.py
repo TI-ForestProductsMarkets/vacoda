@@ -488,22 +488,18 @@ def build_training_sample(
                     AS selected_unit_value,
 
                 (
-                    {quantity_col} IS NOT NULL
+                    cif_fob_unresolved IS FALSE
+
+                    AND {quantity_col} IS NOT NULL
                     AND {quantity_col} > 0
                     AND isfinite(
-                        CAST(
-                            {quantity_col}
-                            AS DOUBLE
-                        )
+                        CAST({quantity_col} AS DOUBLE)
                     )
 
                     AND {nominal_value_col} IS NOT NULL
                     AND {nominal_value_col} > 0
                     AND isfinite(
-                        CAST(
-                            {nominal_value_col}
-                            AS DOUBLE
-                        )
+                        CAST({nominal_value_col} AS DOUBLE)
                     )
 
                     AND selected_unit_value IS NOT NULL
@@ -729,53 +725,67 @@ def build_training_sample(
                 SELECT
                     evidence.*,
 
+                    -- Normalized UV distance
                     CASE
-                        WHEN
-                            evidence.selected_uv_log_distance IS NOT NULL
+                        WHEN evidence.selected_uv_log_distance IS NULL
+                        OR evidence.hs_year_uv_log_mad IS NULL
+                        OR NOT isfinite(evidence.selected_uv_log_distance)
+                        OR NOT isfinite(evidence.hs_year_uv_log_mad)
+                        THEN NULL
 
-                            AND evidence.hs_year_uv_log_mad IS NOT NULL
-                            AND evidence.hs_year_uv_log_mad > 0
+                        -- Perfect agreement with a zero-MAD reference
+                        WHEN evidence.hs_year_uv_log_mad = 0
+                        AND evidence.selected_uv_log_distance = 0
+                        THEN 0.0
 
-                            AND isfinite(
-                                evidence.selected_uv_log_distance
-                            )
+                        -- Positive deviation from a zero-MAD reference
+                        WHEN evidence.hs_year_uv_log_mad = 0
+                        THEN NULL
 
-                            AND isfinite(
-                                evidence.hs_year_uv_log_mad
-                            )
-
+                        WHEN evidence.hs_year_uv_log_mad > 0
                         THEN
                             evidence.selected_uv_log_distance
-                            /
-                            evidence.hs_year_uv_log_mad
+                            / evidence.hs_year_uv_log_mad
 
                         ELSE NULL
-                    END
-                        AS training_normalized_uv_distance,
+                    END AS training_normalized_uv_distance,
 
-                    (
-                        evidence.hs_year_uv_reference_n IS NOT NULL
-                        AND evidence.hs_year_uv_reference_n
-                            >= {min_reference_observations}
+                    -- Final training population
+                    COALESCE(
+                        (
+                            evidence.training_eligible IS TRUE
 
-                        AND evidence.hs_year_uv_log_mad IS NOT NULL
-                        AND evidence.hs_year_uv_log_mad > 0
-                        AND isfinite(
-                            evidence.hs_year_uv_log_mad
-                        )
+                            AND evidence.hs_year_uv_reference_n
+                                >= {min_reference_observations}
 
-                        AND evidence.selected_uv_log_distance IS NOT NULL
-                        AND isfinite(
-                            evidence.selected_uv_log_distance
-                        )
+                            AND evidence.hs_year_uv_log_mad IS NOT NULL
+                            AND isfinite(evidence.hs_year_uv_log_mad)
 
-                        AND (
-                            evidence.selected_uv_log_distance
-                            /
-                            evidence.hs_year_uv_log_mad
-                        ) <= {max_normalized_uv_distance_mad}
-                    )
-                        AS training_selected
+                            AND evidence.selected_uv_log_distance IS NOT NULL
+                            AND isfinite(evidence.selected_uv_log_distance)
+
+                            AND (
+                                -- Standard positive-MAD case
+                                (
+                                    evidence.hs_year_uv_log_mad > 0
+
+                                    AND (
+                                        evidence.selected_uv_log_distance
+                                        / evidence.hs_year_uv_log_mad
+                                    ) <= {max_normalized_uv_distance_mad}
+                                )
+
+                                OR
+
+                                -- Zero-MAD case: exact agreement only
+                                (
+                                    evidence.hs_year_uv_log_mad = 0
+                                    AND evidence.selected_uv_log_distance = 0
+                                )
+                            )
+                        ),
+                        FALSE
+                    ) AS training_selected
 
                 FROM (
 
@@ -878,6 +888,56 @@ def build_training_sample(
 
         output_sql = sql_literal(
             output_path
+        )
+
+        training_integrity = con.execute(
+            f"""
+            SELECT
+                COUNT(*) FILTER (
+                    WHERE training_selected IS NULL
+                ) AS null_selection_flags,
+
+                COUNT(*) FILTER (
+                    WHERE cif_fob_unresolved IS TRUE
+                      AND training_selected IS TRUE
+                ) AS unresolved_selected,
+
+                COUNT(*) FILTER (
+                    WHERE training_selected IS TRUE
+                      AND training_eligible IS NOT TRUE
+                ) AS selected_without_eligibility,
+
+                COUNT(*) FILTER (
+                    WHERE training_selected IS TRUE
+                      AND hs_year_uv_log_mad = 0
+                ) AS selected_zero_mad
+
+            FROM read_parquet({output_sql})
+            """
+        ).fetchone()
+
+        (
+            null_selection_flags,
+            unresolved_selected,
+            selected_without_eligibility,
+            selected_zero_mad,
+        ) = map(int, training_integrity)
+
+        if (
+            null_selection_flags
+            or unresolved_selected
+            or selected_without_eligibility
+        ):
+            raise RuntimeError(
+                "Validation training-selection integrity failed: "
+                f"null_flags={null_selection_flags}, "
+                f"unresolved_selected={unresolved_selected}, "
+                f"selected_without_eligibility={selected_without_eligibility}"
+            )
+
+        logger.info(
+            "  Selected training rows with MAD=0: %s",
+            f"{selected_zero_mad:,}",
         )
 
         # --------------------------------------------------------------
