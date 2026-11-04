@@ -46,7 +46,7 @@ trade_sync:
 
     reconciled_trade:
       enable: true
-      filename: "comtrade_target_{target_hs_lower}_trade_synced.parquet"
+      filename: "target_{target_hs_lower}_trade_value_reconciled.parquet"
 
     reconciliation_audit:
       enable: true
@@ -54,7 +54,7 @@ trade_sync:
 
     reconciled_quantity:
       enable: true
-      filename: "comtrade_target_{target_hs_lower}_trade_synced_quantity.parquet"
+      filename: "comtrade_target_{target_hs_lower}_trade_synced.parquet"
 
     reconciliation_audit_quantity:
       enable: true
