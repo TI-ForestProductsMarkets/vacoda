@@ -183,6 +183,7 @@ def build_diagnostics(
     selected_model_path: Path,
     inference_path: Path,
     inference_audit_path: Path,
+    release_readiness_path: Path,
     run_id: str,
     force: bool = False,
     logger,
@@ -204,6 +205,7 @@ def build_diagnostics(
     selected_model_path = Path(selected_model_path)
     inference_path = Path(inference_path)
     inference_audit_path = Path(inference_audit_path)
+    release_readiness_path = Path(release_readiness_path)
 
     if not input_path.is_file():
         raise FileNotFoundError(
@@ -237,6 +239,11 @@ def build_diagnostics(
         raise FileNotFoundError(
             "Validation inference-audit artifact not found: "
             f"{inference_audit_path}"
+        )
+
+    if not release_readiness_path.is_file():
+        raise FileNotFoundError(
+            f"Release-readiness artifact not found: {release_readiness_path}"
         )
     
     training_definition = training_definition_name(
@@ -399,6 +406,10 @@ def build_diagnostics(
             inference_audit_path,
             hash_file=True,
         ),
+        "release_readiness": file_fingerprint(
+            release_readiness_path,
+            hash_file=True,
+        ),
     }
 
     reusable, reason = validate_local_checkpoint(
@@ -487,6 +498,25 @@ def build_diagnostics(
 
         diagnostics_rows: list[dict[str, Any]] = []
 
+        # --------------------------------------------------------------
+        # Ready for relase metrics
+        # --------------------------------------------------------------
+
+        release_ready = con.execute(
+            "SELECT ready_for_release FROM read_parquet(?)",
+            [str(release_readiness_path)],
+        ).fetchone()
+
+        if release_ready is None or release_ready[0] is None:
+            raise RuntimeError("Release-readiness decision is missing.")
+
+        _append_metric(
+            diagnostics_rows,
+            scope="release_readiness",
+            criterion="ready_for_release",
+            value=float(bool(release_ready[0])),
+        )
+        
         # --------------------------------------------------------------
         # Require passing inference audit
         # --------------------------------------------------------------

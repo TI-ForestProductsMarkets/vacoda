@@ -620,6 +620,8 @@ def audit_structural_integrity(
             and nominal_value_valid
             and constant_value_valid
             and quantity_numeric_valid
+            and unresolved_values_valid
+            and unresolved_classifications_valid
         )
 
         ready_for_training_sample = audit_passed
@@ -840,7 +842,7 @@ def audit_structural_integrity(
         "output_path": output_path,
         "structural_audit_path": output_path,
 
-        "audit_passed": True,
+        "audit_passed": audit_passed,
         "ready_for_training_sample": ready_for_training_sample,
 
         "n_rows": n_rows,

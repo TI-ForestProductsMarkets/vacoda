@@ -25,6 +25,7 @@ from vacoda.steps.validation.model_training import train_validation_models
 from vacoda.steps.validation.model_selection import select_validation_model
 from vacoda.steps.validation.model_fitting import fit_selected_validation_model
 from vacoda.steps.validation.inference import run_validation_inference
+from vacoda.steps.validation.release_gate import evaluate_release_readiness
 from vacoda.steps.validation.diagnostics import  build_diagnostics
 from vacoda.steps.validation.audit_inference import audit_validation_inference
 from vacoda.steps.validation.reporting import build_validation_report
@@ -49,6 +50,7 @@ REQUIRED_PRODUCTS = (
     "selected_model",
     "fitted_model",
     "inference",
+    "release_readiness",
     "inference_audit",
     "diagnostics",
 )
@@ -64,8 +66,9 @@ WORKFLOW_STEPS = [
     "Fit Fallback Validation Model",
     "Run Validation inference",
     "Audit cross-variable consistency",
+    "Evaluate release readiness",
     "Build Diagnostics",
-    "Write Validation decision report",
+    "Build Validation decision report",
 ]
 
 
@@ -436,12 +439,42 @@ def run_validation_workflow(
 
 
         # ==================================================================
-        # Step 10 — Build diagnostics
+        # Step 10 — Evaluate release readiness
+        # ==================================================================
+        release_readiness_result = run_step(
+            logger=logger,
+            step_number=10,
+            total_steps=TOTAL_WORKFLOW_STEPS,
+            title=WORKFLOW_STEPS[9],
+            runner=lambda: evaluate_release_readiness(
+                cfg=cfg,
+                prepared_input_path=prepared_path,
+                inference_path=inference_path,
+                structural_audit_path=structural_audit_path,
+                inference_audit_path=inference_audit_path,
+                selected_model_path=selected_model_path,
+                run_id=run_id,
+                force=force,
+                logger=logger,
+            ),
+        )
+
+        release_readiness_path = require_artifact(
+            result=release_readiness_result,
+            path_key="release_readiness_path",
+            consumer_step=WORKFLOW_STEPS[10],
+            producer_product="Validation release readiness",
+        )
+
+        ready_for_release = release_readiness_result["ready_for_release"]
+
+        # ==================================================================
+        # Step 11 — Build diagnostics
         # ==================================================================
 
         diagnostic_result = run_step(
             logger=logger,
-            step_number=10,
+            step_number=11,
             total_steps=TOTAL_WORKFLOW_STEPS,
             title=WORKFLOW_STEPS[10],
             runner=lambda: build_diagnostics(
@@ -452,6 +485,7 @@ def run_validation_workflow(
                 selected_model_path=selected_model_path,
                 inference_path=inference_path,
                 inference_audit_path=inference_audit_path,
+                release_readiness_path=release_readiness_path,
                 run_id=run_id,
                 force=force,
                 logger=logger,
@@ -461,17 +495,17 @@ def run_validation_workflow(
         diagnostics_path = require_artifact(
             result=diagnostic_result,
             path_key="diagnostics_path",
-            consumer_step=WORKFLOW_STEPS[10],
+            consumer_step=WORKFLOW_STEPS[11],
             producer_product="quantity-model diagnostics",
         )
 
         # ==================================================================
-        # Step 11 — Build Validation report
+        # Step 12 — Build Validation report
         # ==================================================================
 
         report_result = run_step(
             logger=logger,
-            step_number=11,
+            step_number=12,
             total_steps=TOTAL_WORKFLOW_STEPS,
             title=WORKFLOW_STEPS[11],
             runner=lambda: build_validation_report(
@@ -479,6 +513,7 @@ def run_validation_workflow(
                 prepared_input_path=prepared_path,
                 structural_audit_path=structural_audit_path,
                 diagnostics_path=diagnostics_path,
+                release_readiness_path=release_readiness_path,
                 run_id=run_id,
                 force=force,
                 logger=logger,
@@ -490,26 +525,14 @@ def run_validation_workflow(
         # Final Validation readiness
         # ==============================================================
 
-        structural_passed = (
-            structural_result.get("audit_passed") is True
-        )
-
-        inference_passed = (
-            inference_audit_result.get("audit_passed") is True
-        )
+        structural_passed = (structural_result.get("audit_passed") is True)
+        inference_passed = (inference_audit_result.get("audit_passed") is True)
 
         report_path = require_artifact(
             result=report_result,
             path_key="report_path",
             consumer_step="VACODA Release",
             producer_product="Validation report",
-        )
-
-        ready_for_release = (
-            structural_passed
-            and inference_passed
-            and diagnostics_path.is_file()
-            and report_path.is_file()
         )
 
         if not ready_for_release:
@@ -583,6 +606,7 @@ def run_validation_workflow(
 
         "structural_audit_passed": structural_passed,
         "inference_audit_passed": inference_passed,
-
+        "release_readiness_path": release_readiness_path,
+        "release_failure_reasons": release_readiness_result["failure_reasons"],
         "workflow_duration_seconds": workflow_elapsed,
     }

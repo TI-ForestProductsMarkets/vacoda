@@ -18,7 +18,7 @@ human-readable tables, figures, and methodological interpretation.
 """
 
 from __future__ import annotations
-
+import json
 from pathlib import Path
 import math
 import shutil
@@ -2156,6 +2156,7 @@ def build_validation_report(
     prepared_input_path: Path,
     structural_audit_path: Path,
     diagnostics_path: Path,
+    release_readiness_path: Path,
     run_id: str,
     force: bool = False,
     logger,
@@ -2169,11 +2170,13 @@ def build_validation_report(
     prepared_input_path = Path(prepared_input_path)
     structural_audit_path = Path(structural_audit_path)
     diagnostics_path = Path(diagnostics_path)
+    release_readiness_path = Path(release_readiness_path)
 
     for label, path in (
         ("prepared Validation input", prepared_input_path),
         ("Validation structural audit", structural_audit_path),
         ("Validation diagnostics", diagnostics_path),
+        ("Validation release readiness", release_readiness_path),
     ):
         if not path.is_file():
             raise FileNotFoundError(
@@ -2284,6 +2287,19 @@ def build_validation_report(
                 "Validation diagnostics are missing required columns: "
                 + ", ".join(sorted(missing))
             )
+
+        ## ready for release 
+        release_decision = con.execute(
+            "SELECT ready_for_release, failure_reasons "
+            "FROM read_parquet(?)",
+            [str(release_readiness_path)],
+        ).fetchone()
+
+        if release_decision is None or release_decision[0] is None:
+            raise RuntimeError("Release-readiness decision is missing.")
+
+        ready_for_release = bool(release_decision[0])
+        failure_reasons = json.loads(release_decision[1] or "[]")
 
         # ============================================================== 
         # Structural integrity
@@ -4137,6 +4153,19 @@ def build_validation_report(
                 f"  - Diagnostics: `{diagnostics_path}`",
                 f"  - Figure directory: `{figure_dir}`",
                 f"  - Report: `{report_path}`",
+            "",
+            "## Release readiness",
+            "",
+            f"**Ready for release:** {'YES' if ready_for_release else 'NO'}",
+            "",
+            *(
+                ["**Reasons for rejection:**", ""]
+                + [f"- {reason}" for reason in failure_reasons]
+                if not ready_for_release
+                else ["All mandatory release-readiness checks passed."]
+            ),
+            "",
+            f"Audit artifact: `{release_readiness_path}`",
             "",
             "__TOC__",
             "",

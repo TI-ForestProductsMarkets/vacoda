@@ -65,6 +65,10 @@ validation:
       enable: true
       filename: "audits/target_{target_hs_lower}_inference_audit.parquet"
 
+    release_readiness:
+      enable: true
+      filename: "audits/target_{target_hs_lower}_release_readiness.parquet"
+
     diagnostics:
       enable: true
       filename: "diagnostics/target_{target_hs_lower}_diagnostics.parquet"
@@ -364,21 +368,6 @@ validation:
 
     selection:
       enabled: false
-
-
-  decision:
-
-    fail_on:
-      structural_failure: true
-      duplicate_keys: true
-      invalid_hs_codes: true
-      invalid_years: true
-
-    allow_flagged_outliers: true
-    allow_imputed_rows: true
-
-    ready_flag: "ready_for_release"
-
 
   # --------------------------------------------------------------------
   # Logging

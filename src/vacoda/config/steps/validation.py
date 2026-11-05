@@ -269,7 +269,8 @@ class ValidationProductsConfig:
     selected_model:ValidationProductConfig
     fitted_model:ValidationProductConfig
     inference:ValidationProductConfig
-    inference_audit:ValidationProductConfig
+    inference_audit: ValidationProductConfig
+    release_readiness: ValidationProductConfig
     diagnostics: ValidationProductConfig
 
     @classmethod
@@ -299,6 +300,7 @@ class ValidationProductsConfig:
             fitted_model=product("fitted_model"),
             inference=product("inference"),
             inference_audit=product("inference_audit"),
+            release_readiness=product("release_readiness"),
             diagnostics=product("diagnostics"),
         )
 
@@ -1262,96 +1264,6 @@ class ValidationDiagnosticsConfig:
             ),
         )
 
-
-# ---------------------------------------------------------------------
-# Decision
-# ---------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class ValidationFailOnConfig:
-    structural_failure: bool
-    duplicate_keys: bool
-    invalid_hs_codes: bool
-    invalid_years: bool
-
-    @classmethod
-    def from_dict(
-        cls,
-        cfg: dict[str, Any],
-    ) -> "ValidationFailOnConfig":
-        return cls(
-            structural_failure=require_bool(
-                cfg.get("structural_failure"),
-                key=(
-                    "validation.decision.fail_on."
-                    "structural_failure"
-                ),
-            ),
-            duplicate_keys=require_bool(
-                cfg.get("duplicate_keys"),
-                key=(
-                    "validation.decision.fail_on."
-                    "duplicate_keys"
-                ),
-            ),
-            invalid_hs_codes=require_bool(
-                cfg.get("invalid_hs_codes"),
-                key=(
-                    "validation.decision.fail_on."
-                    "invalid_hs_codes"
-                ),
-            ),
-            invalid_years=require_bool(
-                cfg.get("invalid_years"),
-                key=(
-                    "validation.decision.fail_on."
-                    "invalid_years"
-                ),
-            ),
-        )
-
-
-@dataclass(frozen=True)
-class ValidationDecisionConfig:
-    fail_on: ValidationFailOnConfig
-    allow_flagged_outliers: bool
-    allow_imputed_rows: bool
-    ready_flag: str
-
-    @classmethod
-    def from_dict(
-        cls,
-        cfg: dict[str, Any],
-    ) -> "ValidationDecisionConfig":
-        return cls(
-            fail_on=ValidationFailOnConfig.from_dict(
-                require_dict(
-                    cfg.get("fail_on"),
-                    key="validation.decision.fail_on",
-                )
-            ),
-            allow_flagged_outliers=require_bool(
-                cfg.get("allow_flagged_outliers"),
-                key=(
-                    "validation.decision."
-                    "allow_flagged_outliers"
-                ),
-            ),
-            allow_imputed_rows=require_bool(
-                cfg.get("allow_imputed_rows"),
-                key=(
-                    "validation.decision."
-                    "allow_imputed_rows"
-                ),
-            ),
-            ready_flag=require_str(
-                cfg.get("ready_flag"),
-                key="validation.decision.ready_flag",
-            ),
-        )
-
-
 # ---------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------
@@ -1486,7 +1398,6 @@ class ValidationConfig:
     model: ValidationModelConfig
     method: ValidationMethodConfig
     diagnostics: ValidationDiagnosticsConfig
-    decision: ValidationDecisionConfig
     logging: ValidationLoggingConfig
     artifacts: ValidationArtifactsConfig
     scope: PipelineScopeConfig
@@ -1574,12 +1485,6 @@ class ValidationConfig:
                     key="validation.diagnostics",
                 )
             ),
-            decision=ValidationDecisionConfig.from_dict(
-                require_dict(
-                    rendered.get("decision"),
-                    key="validation.decision",
-                )
-            ),
             logging=ValidationLoggingConfig.from_dict(
                 require_dict(
                     rendered.get("logging"),
@@ -1612,6 +1517,7 @@ class ValidationConfig:
             "fitted_model": self.products.fitted_model,
             "inference": self.products.inference,
             "inference_audit": self.products.inference_audit,
+            "release_readiness": self.products.release_readiness,
             "diagnostics": self.products.diagnostics,
         }
 
@@ -1637,6 +1543,7 @@ class ValidationConfig:
                 "fitted_model",
                 "inference",
                 "inference_audit",
+                "release_readiness",
                 "diagnostics",
             )
         }
@@ -1651,6 +1558,7 @@ class ValidationConfig:
             "fitted_model": self.products.fitted_model.enable,
             "inference": self.products.inference.enable,
             "inference_audit": self.products.inference_audit.enable,
+            "release_readiness": self.products.release_readiness.enable,
             "diagnostics": self.products.diagnostics.enable,
         }
 
