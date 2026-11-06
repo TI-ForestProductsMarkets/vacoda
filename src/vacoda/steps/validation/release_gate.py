@@ -323,9 +323,9 @@ def evaluate_release_readiness(
 
     ready_symbol = get_symbols("hooray" if ready else "warning_light")
     if ready:
-        logger.info("%s VALIDATION RELEASE READINESS: PASSED", ready_symbol)
+        logger.info("VALIDATION RELEASE READINESS: %s PASSED", ready_symbol)
     else:
-        logger.warning("%s VALIDATION RELEASE READINESS: FAILED", ready_symbol)
+        logger.warning("VALIDATION RELEASE READINESS: %s FAILED", ready_symbol)
         for reason in reasons:
             logger.warning("  - %s", reason)
     logger.info("ready_for_release = %s", ready)

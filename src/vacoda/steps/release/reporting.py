@@ -26,7 +26,7 @@ from vacoda.visualization.relationships import plot_figure_pair, plot_figure_row
 SIDECARS = (
     "journey",
     "availability",
-    "review",
+    "fallback",
     "missing_reasons",
     "distributions",
     "annual_trade",
@@ -385,7 +385,10 @@ def build_release_report(
         }
         journey = sorted(sidecars["journey"], key=lambda r: r["stage_order"])
         availability = sidecars["availability"]
-        review = sorted(sidecars["review"], key=lambda r: (-r["review_rows"], r["target_cmd"]))
+        fallback = sorted(
+            sidecars["fallback"],
+            key=lambda r: (-r["fallback_rows"], r["target_cmd"]),
+        )
         reasons = sorted(sidecars["missing_reasons"], key=lambda r: (-r["rows"], r["reason"]))
         dist = [r for r in sidecars["distributions"] if r["period_type"] == "all_years"]
         annual_trade = sorted(sidecars["annual_trade"], key=lambda r: r["year"])
@@ -407,8 +410,8 @@ def build_release_report(
         missing_value_rows = int(overall["enriched_rows"]) - int(overall["nominal_value_rows"])
         if sum(int(r["rows"]) for r in reasons) != missing_value_rows:
             raise RuntimeError("Missing-reason totals differ from missing monetary values")
-        if sum(int(r["review_rows"]) for r in review) != overall["manual_review_rows"]:
-            raise RuntimeError("Review totals differ from overall diagnostics")
+        if sum(int(r["fallback_rows"]) for r in fallback) != int(overall["fallback_prediction_rows"]):
+            raise RuntimeError("Fallback totals differ from overall diagnostics")
 
         _plot_journey(journey, figure_paths["journey"])
         _plot_annual_coverage(annual, figure_paths["annual_coverage"])
@@ -483,10 +486,10 @@ def build_release_report(
             "(`trade_value_reconciled`). This measures the availability of reconciled monetary values, "
             "not inflation-adjusted values in constant USD.",
             "",
-            "- **Model predictions:** Number of bilateral observations for which Validation generated a raw "
-            "model-predicted quantity (`model_prediction_quantity_kg` in its unsuppressed form). "
-            "This includes predictions subsequently excluded from the standard Release dataset under "
-            "the manual-review policy; those predictions remain in the enriched dataset.",
+            "- **Model predictions:** Number of bilateral observations for which "
+            "Validation generated a model-predicted quantity. Predictions include "
+            "the selected Embedding MLP and the Random Forest fallback. Both "
+            "Standard and Enriched Release datasets preserve these predictions.",
             "",
             "**Important:** These columns describe overlapping populations and must not be added together. "
             "Neither synchronized quantities nor model predictions represent independently verified physical weights.",
@@ -527,44 +530,61 @@ def build_release_report(
             "",
             "_Evidence categories describe observed values, not established causes of missing factors._", 
             "",
-            "## 3. Model Predictions and Review", 
+            "## 3. Model Predictions and Fallback",
             "",
-            "### 3.1 Training, inference and publication", 
+            "### 3.1 Training, inference and publication",
             "",
             *_table(["Population", "Observations"], [
                 ("Training selected", _fmt(overall["training_selected_rows"])),
                 ("Model predictions", _fmt(overall["raw_model_prediction_rows"])),
                 ("Standard predictions retained", _fmt(overall["standard_prediction_rows"])),
-                ("Manual review", _fmt(overall["manual_review_rows"])),
+                ("Random Forest fallback predictions", _fmt(overall["fallback_prediction_rows"])),
+                ("Fallback HS6 codes", _fmt(overall["fallback_hs6_codes"])),
                 ("Support not evaluated", _fmt(overall["support_not_evaluated_rows"])),
-            ]), 
+                ("Rows with recorded imputation method", _fmt(overall["imputed_value_rows"])),
+            ]),
             "",
             "**Quantity publication policy:** The configured Validation quantity "
             f"(`{quantity_col}`) is published as `trade_quantity_kg`. "
-            "Validation provides `model_prediction_quantity_kg` as an additional "
-            "model-based quantity estimate; it does not overwrite the reconciled quantity.",
+            "Model predictions provide an additional quantity estimate and "
+            "do not overwrite the reconciled quantity.",
             "",
-            "The standard dataset withholds model predictions for observations "
-            "requiring manual review. The enriched dataset retains the raw "
-            "predictions together with model-support flags and reconciliation "
-            "provenance.",
+            "The selected Embedding MLP handles observations where HS6 or HS4 "
+            "was represented during model fitting. When both categories are "
+            "unseen, prediction is routed to the Random Forest fallback. "
+            "Both published datasets retain these predictions. Observations "
+            "with invalid model inputs receive no prediction.",
+            "",
+            "**Monetary-value imputation:** Both published datasets preserve "
+            "the `imputation_method` field from Validation Prepared. "
+            "The reported count describes observations with a recorded method; "
+            "Release does not perform additional imputation.",
             "",
             "**Model interpretation:** Predictions are learned from selected "
             "synchronized trade observations, not independently verified "
-            "shipment weights. Detailed training rules, out-of-fold evaluation "
-            "and UV-coherence diagnostics are documented in Validation.",
+            "shipment weights. Detailed training rules and out-of-fold "
+            "evaluation are documented in Validation.",
             "",
-            "### 3.2 HS6 requiring review", 
+            "### 3.2 Random Forest fallback by HS6",
             "",
-            *_table(["HS6", "Rows", "First year", "Last year", "HS6 unseen", "HS4 unseen"], [
-                (r["target_cmd"], _fmt(r["review_rows"]),
-                 _fmt(r["first_year"], year=True), _fmt(r["last_year"], year=True),
-                 _fmt(r["hs6_unseen_rows"]), _fmt(r["hs4_unseen_rows"])) for r in review
-            ]), 
+            *_table(
+                ["HS6", "Fallback predictions", "First year", "Last year"],
+                [
+                    (
+                        r["target_cmd"],
+                        _fmt(r["fallback_rows"]),
+                        _fmt(r["first_year"], year=True),
+                        _fmt(r["last_year"], year=True),
+                    )
+                    for r in fallback
+                ],
+            ),
             "",
-            "_Review requires both model-support flags explicitly FALSE. Raw predictions remain in enriched; "
-            "standard predictions are withheld. HS-mapping provenance is not available in these diagnostics._", 
+            "Fallback predictions are used when both HS6 and HS4 were unseen "
+            "during primary-model fitting. They are retained in both "
+            "Standard and Enriched datasets.",
             "",
+
             "### 3.3 Prediction discrepancy", 
             "",
             "- The plot shows the distribution of absolute logarithmic discrepancies between synchronized trade quantities "
@@ -679,7 +699,8 @@ def build_release_report(
             ]), 
             "",
             f"**Audit:** passed · {n_checks} checks · 0 failed. "
-            f"**Review predictions withheld from standard:** {_fmt(overall['manual_review_rows'])}.",
+            f"**Random Forest fallback predictions retained:** "
+            f"{_fmt(overall['fallback_prediction_rows'])}.",            
             "",
             "### 5.2 Published artifacts", 
             "",
@@ -704,9 +725,10 @@ def build_release_report(
             "should be interpreted as independently verified shipment weights.",
             "",
             "Missing values remain missing when the relevant source evidence "
-            "or required model inputs are unavailable. Predictions for "
-            "unsupported product categories are retained for review only "
-            "in the enriched dataset.",
+            "or required model inputs are unavailable. Random Forest fallback "
+            "predictions are retained in both datasets when HS6 and HS4 are "
+            "unseen during primary-model fitting. Recorded monetary-value "
+            "imputation provenance is preserved in both published datasets.",
             "",
             "Detailed methodology, diagnostic figures and validation "
             "results remain in the individual upstream module reports. "
@@ -779,7 +801,9 @@ def build_release_report(
             "decision": decision, 
             "audit_passed": True,
             "n_rows": int(overall["standard_rows"]),
-            "n_manual_review_rows": int(overall["manual_review_rows"]),
+            "n_fallback_prediction_rows": int(overall["fallback_prediction_rows"]),
+            "n_fallback_hs6_codes": int(overall["fallback_hs6_codes"]),
+            "n_imputed_value_rows": int(overall["imputed_value_rows"]),
             "n_failed_audit_checks": 0,
             "duration_seconds": perf_counter() - start,
         }

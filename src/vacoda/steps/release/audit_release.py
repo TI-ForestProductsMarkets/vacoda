@@ -40,7 +40,7 @@ def audit_release_candidates(
 
     Both output schemas are checked in exact YAML column order. Source and
     candidate populations must have identical, complete, unique keys.
-    Standard suppresses manual-review predictions; enriched retains them.
+    Both datasets preserve primary and fallback predictions.
     """
     start = perf_counter()
     paths = {
@@ -73,15 +73,35 @@ def audit_release_candidates(
             "enriched_schema_exact": actual["enriched"] == public_schema(expected_enriched),
         }
         needed = {
-            "prepared": set(KEY) | {"trade_value_reconciled", quantity_col},
-            "inference": set(KEY) | {"model_prediction_quantity_kg", "model_prediction_available",
-                                     "manual_review_required", "hs6_seen", "hs4_seen"},
-            "standard": set(KEY) | {"trade_value_reconciled", quantity_col,
-                                    "model_prediction_quantity_kg", "model_prediction_available",
-                                    "manual_review_required"},
-            "enriched": set(KEY) | {"trade_value_reconciled", quantity_col,
-                                    "model_prediction_quantity_kg", "model_prediction_available",
-                                    "manual_review_required", "hs6_seen", "hs4_seen"},
+            "prepared": set(KEY) | {
+                "trade_value_reconciled",
+                quantity_col,
+                "imputation_method",
+            },
+            "inference": set(KEY) | {
+                "model_prediction_quantity_kg",
+                "model_prediction_available",
+                "hs6_seen",
+                "hs4_seen",
+                "validation_model_type",
+            },
+            "standard": set(KEY) | {
+                "trade_value_reconciled",
+                quantity_col,
+                "model_prediction_quantity_kg",
+                "model_prediction_available",
+                "imputation_method",
+            },
+            "enriched": set(KEY) | {
+                "trade_value_reconciled",
+                quantity_col,
+                "model_prediction_quantity_kg",
+                "model_prediction_available",
+                "imputation_method",
+                "hs6_seen",
+                "hs4_seen",
+                "validation_model_type",
+            },
         }
         missing = {
             name: sorted(
@@ -145,34 +165,23 @@ def audit_release_candidates(
 
         metrics["standard_enriched_shared_mismatches"] = int(con.execute(f"""
             SELECT COUNT(*) FROM standard s JOIN enriched e ON {join}
-            WHERE {" OR ".join(f's."{c}" IS DISTINCT FROM e."{c}"' for c in expected_standard if c != 'model_prediction_quantity_kg')}
+            WHERE {" OR ".join(f's."{c}" IS DISTINCT FROM e."{c}"' for c in expected_standard)}
         """).fetchone()[0])
         # Compare publication policy against original inference, not merely
         # against the already-generated enriched candidate.
         join_si = " AND ".join(f"s.{k} = i.{k}" for k in KEY)
         join_ei = " AND ".join(f"e.{k} = i.{k}" for k in KEY)
         metrics["standard_prediction_mismatches"] = int(con.execute(f"""
-            SELECT COUNT(*) FROM standard s JOIN inference i ON {join_si}
-            WHERE s.model_prediction_quantity_kg IS DISTINCT FROM
-                CASE WHEN i.manual_review_required IS TRUE THEN NULL
-                     ELSE i.model_prediction_quantity_kg END
+            SELECT COUNT(*)
+            FROM standard s
+            JOIN inference i ON {join_si}
+            WHERE s.model_prediction_quantity_kg
+                  IS DISTINCT FROM i.model_prediction_quantity_kg
         """).fetchone()[0])
         metrics["enriched_prediction_mismatches"] = int(con.execute(f"""
             SELECT COUNT(*) FROM enriched e JOIN inference i ON {join_ei}
             WHERE e.model_prediction_quantity_kg
                   IS DISTINCT FROM i.model_prediction_quantity_kg
-        """).fetchone()[0])
-        metrics["manual_review_rule_mismatches"] = int(con.execute("""
-            SELECT COUNT(*) FROM inference
-            WHERE manual_review_required IS DISTINCT FROM
-                  (hs6_seen IS FALSE AND hs4_seen IS FALSE)
-        """).fetchone()[0])
-        metrics["manual_review_rows"] = int(con.execute("""
-            SELECT COUNT(*) FROM inference WHERE manual_review_required IS TRUE
-        """).fetchone()[0])
-        metrics["manual_review_hs6_codes"] = int(con.execute("""
-            SELECT COUNT(DISTINCT target_cmd) FROM inference
-            WHERE manual_review_required IS TRUE
         """).fetchone()[0])
 
         # Independent comparison of canonical trade values and quantities.
@@ -183,18 +192,21 @@ def audit_release_candidates(
                OR p."{quantity_col}" IS DISTINCT FROM s."{quantity_col}"
         """).fetchone()[0])
         metrics["inference_standard_flag_mismatches"] = int(con.execute(f"""
-            SELECT COUNT(*) FROM inference i JOIN standard s ON {join_si}
-            WHERE i.model_prediction_available IS DISTINCT FROM s.model_prediction_available
-               OR i.manual_review_required IS DISTINCT FROM s.manual_review_required
+            SELECT COUNT(*)
+            FROM inference i
+            JOIN standard s ON {join_si}
+            WHERE i.model_prediction_available
+                  IS DISTINCT FROM s.model_prediction_available
         """).fetchone()[0])
 
         # All non-derived enriched evidence must match its original source.
         from vacoda.steps.release.release_data import PREPARED_FIELDS, INFERENCE_FIELDS, DERIVED
         prepared_extra = sorted((set(expected_enriched) & PREPARED_FIELDS)
                                 - {"trade_value_reconciled", quantity_col})
-        inference_extra = sorted((set(expected_enriched) & INFERENCE_FIELDS)
-                                 - {"model_prediction_quantity_kg", "model_prediction_available",
-                                    "manual_review_required"})
+        inference_extra = sorted(
+            (set(expected_enriched) & INFERENCE_FIELDS)
+            - {"model_prediction_quantity_kg", "model_prediction_available"}
+        )
         metrics["prepared_enriched_evidence_mismatches"] = int(con.execute(f"""
             SELECT COUNT(*) FROM prepared p JOIN enriched e
             ON {" AND ".join(f"p.{k} = e.{k}" for k in KEY)}
@@ -205,6 +217,22 @@ def audit_release_candidates(
             ON {" AND ".join(f"i.{k} = e.{k}" for k in KEY)}
             WHERE {" OR ".join(f'i."{c}" IS DISTINCT FROM e."{c}"' for c in inference_extra)}
         """).fetchone()[0]) if inference_extra else 0
+
+        fallback_rows, fallback_codes = con.execute("""
+            SELECT
+                COUNT(*) FILTER (
+                    WHERE validation_model_type = 'random_forest'
+                      AND model_prediction_available IS TRUE
+                ),
+                COUNT(DISTINCT target_cmd) FILTER (
+                    WHERE validation_model_type = 'random_forest'
+                      AND model_prediction_available IS TRUE
+                )
+            FROM inference
+        """).fetchone()
+
+        metrics["fallback_prediction_rows"] = int(fallback_rows)
+        metrics["fallback_hs6_codes"] = int(fallback_codes)
 
         n = metrics["prepared_rows"]
         checks = {
@@ -229,7 +257,6 @@ def audit_release_candidates(
                 metrics["standard_prediction_mismatches"] == 0,
             "enriched_prediction_preserved":
                 metrics["enriched_prediction_mismatches"] == 0,
-            "manual_review_rule_consistent": metrics["manual_review_rule_mismatches"] == 0,
             "prepared_trade_fields_preserved":
                 metrics["prepared_standard_trade_mismatches"] == 0,
             "inference_flags_preserved":
@@ -266,9 +293,12 @@ def audit_release_candidates(
             tmp.unlink(missing_ok=True)
 
         failed_checks = [name for name, ok in checks.items() if not ok]
-        logger.info("Release candidate audit: rows=%s, manual-review=%s (%s HS6 codes)",
-                    f"{n:,}", f"{metrics['manual_review_rows']:,}",
-                    f"{metrics['manual_review_hs6_codes']:,}")
+        logger.info(
+            "Release candidate audit: rows=%s, fallback predictions=%s (%s HS6 codes)",
+            f"{n:,}",
+            f"{metrics['fallback_prediction_rows']:,}",
+            f"{metrics['fallback_hs6_codes']:,}",
+        )
         logger.info("Release audit artifact: %s", audit_path)
         if failed_checks:
             raise RuntimeError("Release candidate audit failed: " + ", ".join(failed_checks))
@@ -280,8 +310,8 @@ def audit_release_candidates(
             "audit_path": audit_path,
             "audit_passed": True,
             "n_rows": n,
-            "n_manual_review_rows": metrics["manual_review_rows"],
-            "n_manual_review_hs6_codes": metrics["manual_review_hs6_codes"],
+            "n_fallback_prediction_rows": metrics["fallback_prediction_rows"],
+            "n_fallback_hs6_codes": metrics["fallback_hs6_codes"],
             "duration_seconds": perf_counter() - start,
         }
     finally:

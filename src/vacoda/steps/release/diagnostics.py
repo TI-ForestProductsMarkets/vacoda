@@ -36,7 +36,7 @@ def _sidecar_paths(main_path: Path) -> dict[str, Path]:
     names = (
         "journey",
         "availability",
-        "review",
+        "fallback",
         "missing_reasons",
         "distributions",
         "annual_trade",
@@ -378,33 +378,41 @@ def _build_sidecars(
     temps["availability"] = _write_frame(
         con, " UNION ALL ".join(selects), sidecar_paths["availability"]
     )
-    # 3. Unseen-category review records: discover codes and years from the
-    # published enriched dataset. NULL seen-flags stay distinct from FALSE.
-    ecols = {
-            row[0]
-            for row in con.execute(
-                "DESCRIBE SELECT * FROM enriched_release"
-            ).fetchall()
-        }
-    review_required = {
-        "target_cmd", "year", "manual_review_required", "hs6_seen",
-        "hs4_seen", "model_prediction_quantity_kg",
+    # 3. Random Forest fallback predictions by HS6 product.
+    fallback_required = {
+        "target_cmd",
+        "year",
+        "validation_model_type",
+        "model_prediction_available",
+        "hs6_seen",
+        "hs4_seen",
     }
-    missing = review_required - ecols
+
+    ecols = {
+        row[0] for row in con.execute(
+            "DESCRIBE SELECT * FROM enriched_release"
+        ).fetchall()
+    }
+
+    missing = fallback_required - ecols
     if missing:
-        raise RuntimeError(f"Release enriched missing review fields: {sorted(missing)}")
-    temps["review"] = _write_frame(con, """
-        SELECT CAST(target_cmd AS VARCHAR) AS target_cmd,
-               MIN(year) AS first_year, MAX(year) AS last_year,
-               COUNT(*) AS review_rows,
-               COUNT(*) FILTER (WHERE model_prediction_quantity_kg IS NOT NULL)
-                   AS raw_prediction_rows,
-               COUNT(*) FILTER (WHERE hs6_seen IS FALSE) AS hs6_unseen_rows,
-               COUNT(*) FILTER (WHERE hs4_seen IS FALSE) AS hs4_unseen_rows
+        raise RuntimeError(
+            f"Release enriched missing fallback fields: {sorted(missing)}"
+        )
+
+    temps["fallback"] = _write_frame(con, """
+        SELECT
+            CAST(target_cmd AS VARCHAR) AS target_cmd,
+            MIN(year) AS first_year,
+            MAX(year) AS last_year,
+            COUNT(*) AS fallback_rows
         FROM enriched_release
-        WHERE manual_review_required IS TRUE
-        GROUP BY 1 ORDER BY review_rows DESC, target_cmd
-    """, sidecar_paths["review"])
+        WHERE validation_model_type = 'random_forest'
+          AND model_prediction_available IS TRUE
+        GROUP BY 1
+        ORDER BY fallback_rows DESC, target_cmd
+    """, sidecar_paths["fallback"])
+
     # 4. Explanations: derive cases from source-side CIF/FOB values if supplied.
     # This classifies every missing reconciled value by available side evidence.
     # Counts are not the same thing as proof of source causation. Expose
@@ -686,11 +694,8 @@ def build_release_diagnostics(
                         WHERE model_prediction_quantity_kg IS NOT NULL
                     ) AS standard_prediction_rows,
                     COUNT(*) FILTER (
-                        WHERE manual_review_required IS TRUE
-                    ) AS manual_review_rows,
-                    COUNT(DISTINCT target_cmd) FILTER (
-                        WHERE manual_review_required IS TRUE
-                    ) AS manual_review_hs6_codes,
+                        WHERE imputation_method IS NOT NULL
+                    ) AS imputed_value_rows,
                     MEDIAN(trade_value_reconciled) AS median_trade_value_usd,
                     MEDIAN({quantity_sql}) AS median_synced_quantity_kg,
                     MEDIAN(model_prediction_quantity_kg) AS median_standard_prediction_kg
@@ -707,6 +712,14 @@ def build_release_diagnostics(
                     COUNT(*) FILTER (
                         WHERE model_prediction_quantity_kg IS NOT NULL
                     ) AS raw_model_prediction_rows,
+                    COUNT(*) FILTER (
+                        WHERE validation_model_type = 'random_forest'
+                        AND model_prediction_available IS TRUE
+                    ) AS fallback_prediction_rows,
+                    COUNT(DISTINCT target_cmd) FILTER (
+                        WHERE validation_model_type = 'random_forest'
+                        AND model_prediction_available IS TRUE
+                    ) AS fallback_hs6_codes,
                     COUNT(*) FILTER (
                         WHERE model_input_valid IS TRUE
                     ) AS model_input_valid_rows,
@@ -744,8 +757,9 @@ def build_release_diagnostics(
                 s.model_prediction_available_rows,
                 s.standard_prediction_rows,
                 e.raw_model_prediction_rows,
-                s.manual_review_rows,
-                s.manual_review_hs6_codes,
+                s.imputed_value_rows,
+                e.fallback_prediction_rows,
+                e.fallback_hs6_codes,
                 e.model_input_valid_rows,
                 e.training_selected_rows,
                 e.unseen_hs6_rows,
@@ -773,16 +787,32 @@ def build_release_diagnostics(
             "(FORMAT PARQUET, COMPRESSION ZSTD)"
         )
         summary = con.execute(f"""
-            SELECT standard_rows, enriched_rows, manual_review_rows,
-                   manual_review_hs6_codes, standard_prediction_rows,
-                   raw_model_prediction_rows
+            SELECT
+                standard_rows,
+                enriched_rows,
+                imputed_value_rows,
+                fallback_prediction_rows,
+                fallback_hs6_codes,
+                standard_prediction_rows,
+                raw_model_prediction_rows
             FROM read_parquet({sql_literal(temporary_path)})
             WHERE period_type = 'all_years'
         """).fetchall()
+
         if len(summary) != 1:
-            raise RuntimeError("Release diagnostics missing all-years summary.")
-        (n_standard, n_enriched, n_review, n_review_codes,
-         n_standard_prediction, n_raw_prediction) = summary[0]
+            raise RuntimeError(
+                "Release diagnostics missing all-years summary."
+            )
+
+        (
+            n_standard,
+            n_enriched,
+            n_imputed,
+            n_fallback,
+            n_fallback_codes,
+            n_standard_prediction,
+            n_raw_prediction,
+        ) = summary[0]
         if not n_standard or not n_enriched:
             raise RuntimeError("Published Release dataset is empty.")
         sidecar_temp = _build_sidecars(
@@ -814,12 +844,13 @@ def build_release_diagnostics(
             "  Records: standard=%s enriched=%s", f"{n_standard:,}", f"{n_enriched:,}"
         )
         logger.info(
-            "  Manual review: %s rows (%s HS6 codes)",
-            f"{n_review:,}", f"{n_review_codes:,}"
+            "  Random Forest fallback: %s rows (%s HS6 codes)",
+            f"{n_fallback:,}",
+            f"{n_fallback_codes:,}",
         )
         logger.info(
-            "  Predictions: standard=%s enriched raw=%s",
-            f"{n_standard_prediction:,}", f"{n_raw_prediction:,}"
+            "  Rows with recorded imputation method: %s",
+            f"{n_imputed:,}",
         )
         return {
             "status": "completed",
@@ -833,12 +864,13 @@ def build_release_diagnostics(
             "country_trade_path": sidecar_paths["country_trade"],
             "product_trade_path": sidecar_paths["product_trade"],
             "feature_distributions_path": sidecar_paths["feature_distributions"],
-            "review_path": sidecar_paths["review"],
             "missing_reasons_path": sidecar_paths["missing_reasons"],
             "distributions_path": sidecar_paths["distributions"],
             "n_rows": int(n_standard),
-            "n_manual_review_rows": int(n_review),
-            "n_manual_review_hs6_codes": int(n_review_codes),
+            "fallback_path": sidecar_paths["fallback"],
+            "n_fallback_prediction_rows": int(n_fallback),
+            "n_fallback_hs6_codes": int(n_fallback_codes),
+            "n_imputed_value_rows": int(n_imputed),
             "duration_seconds": perf_counter() - start,
         }
     finally:

@@ -144,9 +144,20 @@ def _audit_details(audit_path: Path, run_id: str, release_id: str) -> dict[str, 
             "DESCRIBE SELECT * FROM read_parquet(?)", [str(audit_path)]
         ).fetchall()
         columns = {str(row[0]) for row in description}
-        required = {"run_id", "release_id", "audit_passed", "standard_schema_exact",
-                    "enriched_schema_exact", "standard_prediction_policy_consistent",
-                    "enriched_prediction_preserved", "manual_review_rule_consistent"}
+        required = {
+            "run_id",
+            "release_id",
+            "audit_passed",
+            "standard_schema_exact",
+            "enriched_schema_exact",
+            "standard_prediction_policy_consistent",
+            "enriched_prediction_preserved",
+            "standard_enriched_shared_fields_consistent",
+            "prepared_trade_fields_preserved",
+            "inference_flags_preserved",
+            "enriched_prepared_evidence_preserved",
+            "enriched_inference_evidence_preserved",
+        }
         if required - columns:
             raise RuntimeError(f"Release audit missing columns: {sorted(required - columns)}")
         rows = con.execute("SELECT * FROM read_parquet(?)", [str(audit_path)]).fetchall()
@@ -367,9 +378,10 @@ def publish_release_datasets(
     if standard_candidate.resolve() == standard_path.resolve() or enriched_candidate.resolve() == enriched_path.resolve():
         raise ValueError("Candidate and published paths must differ.")
     if existing:
-        logger.info(
-            "REBUILD — Published Release differs from audited candidates. "
-            "Replacing outdated publication."
+        raise RuntimeError(
+            "Release publication already exists but differs from "
+            "the audited candidates. Publication is immutable; "
+            "use a new release_id."
         )
     if standard_path.parent != enriched_path.parent or standard_path.parent != metadata_standard.parent:
         raise ValueError("Release artifacts must share a publication directory.")
@@ -475,15 +487,26 @@ def publish_release_datasets(
                           "min_year": cfg.scope.min_year,
                           "max_year": cfg.scope.max_year},
                 "artifact": info,
-                "audit": {"path": str(audit_path), "sha256": audit_hash,
-                          "passed": True, "n_rows": audit_record.get("standard_rows"),
-                          "manual_review_rows": audit_record.get("manual_review_rows"),
-                          "manual_review_hs6_codes": audit_record.get("manual_review_hs6_codes")},
+                "audit": {
+                    "path": str(audit_path),
+                    "sha256": audit_hash,
+                    "passed": True,
+                    "n_rows": audit_record.get("standard_rows"),
+                    "fallback_prediction_rows": audit_record.get("fallback_prediction_rows"),
+                    "fallback_hs6_codes": audit_record.get("fallback_hs6_codes"),
+                },
                 "publication_policy": {
-                    "manual_review_rule": "hs6_seen IS FALSE AND hs4_seen IS FALSE",
-                    "standard_prediction": "NULL when manual_review_required is true",
-                    "enriched_prediction": "original model prediction preserved",
-                    "model_prediction_available": "original inference availability preserved",
+                    "primary_model": (
+                        "Selected embedding MLP for observations with "
+                        "HS6 or HS4 represented during model fitting"
+                    ),
+                    "fallback_model": (
+                        "Random Forest when both HS6 and HS4 are unseen"
+                    ),
+                    "standard_prediction": "Original inference prediction preserved",
+                    "enriched_prediction": "Original inference prediction preserved",
+                    "model_prediction_available": "Original inference availability preserved",
+                    "imputation_method": "Preserved from Validation Prepared",
                 },
                 "unit_value_reference_basis": "Must be verified against the Validation reference methodology",
                 "data_dictionary": dictionary_info[0 if kind == "standard" else 1],

@@ -133,7 +133,7 @@ def run_release_workflow(
         )
 
         # ==================================================================
-        # Step 2 — Build both candidate datasets (staging only)
+        # Step 2 — Build Release datasets
         # ==================================================================
         build_result = run_step(
             logger=logger,

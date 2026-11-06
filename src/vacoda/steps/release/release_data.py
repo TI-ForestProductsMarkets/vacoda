@@ -25,25 +25,47 @@ from vacoda.pipeline.checkpoint import (
 
 KEY = ("year", "exporter_iso", "importer_iso", "target_cmd")
 PREPARED_EXTRA = {
-    "export_value_fob", "import_value_cif", "import_value_fob_corrected",
-    "export_synchronized_quantity_kg", "import_synchronized_quantity_kg",
-    "export_synchronized_quantity_source", "import_synchronized_quantity_source",
-    "pair_uses_estimated_weight", "pair_uses_weight_proxy",
-    "trade_value_reconciled_constant_usd", "cif_fob_factor_applied",
-    "cif_fob_factor_applied_source", "reconciliation_status",
-    "reconciliation_method_applied", "trade_synced_quantity_method",
-    "trade_synced_quantity_status", "quantity_availability_case",
-    "product_year_median_unit_value", "product_year_log_unit_value_mad",
-    "unit_value_reference_observations", "exporter_adjusted_weight", "importer_adjusted_weight",
+    "export_value_fob", 
+    "import_value_cif", 
+    "import_value_fob_corrected",
+    "export_synchronized_quantity_kg", 
+    "import_synchronized_quantity_kg",
+    "export_synchronized_quantity_source", 
+    "import_synchronized_quantity_source",
+    "pair_uses_estimated_weight", 
+    "pair_uses_weight_proxy",
+    "trade_value_reconciled_constant_usd", 
+    "cif_fob_factor_applied",
+    "cif_fob_factor_applied_source", 
+    "reconciliation_status",
+    "reconciliation_method_applied", 
+    "trade_synced_quantity_method",
+    "trade_synced_quantity_status", 
+    "quantity_availability_case",
+    "product_year_median_unit_value", 
+    "product_year_log_unit_value_mad",
+    "unit_value_reference_observations", 
+    "exporter_adjusted_weight", 
+    "importer_adjusted_weight",
+    "imputation_method"
 }
 INFERENCE_EXTRA = {
-    "training_selected", "model_input_valid", "quantity_log_residual",
-    "quantity_abs_log_residual", "exporter_seen", "importer_seen",
-    "hs6_seen", "hs4_seen", "validation_model_name", "validation_model_type",
+    "training_selected", 
+    "model_input_valid", 
+    "quantity_log_residual",
+    "quantity_abs_log_residual", 
+    "exporter_seen", 
+    "importer_seen",
+    "hs6_seen", 
+    "hs4_seen", 
+    "validation_model_name", 
+    "validation_model_type",
 }
 DERIVED = {
-    "trade_sync_uv_usd_per_kg", "model_uv_usd_per_kg",
-    "trade_sync_uv_mad_distance", "model_uv_mad_distance",
+    "trade_sync_uv_usd_per_kg", 
+    "model_uv_usd_per_kg",
+    "trade_sync_uv_mad_distance", 
+    "model_uv_mad_distance",
 }
 PUBLIC_COLUMN_NAMES = {
     "target_cmd": "hs6",
@@ -83,8 +105,9 @@ PREPARED_FIELDS = {
     "trade_value_reconciled", *PREPARED_EXTRA,
 }
 INFERENCE_FIELDS = {
-    "model_prediction_quantity_kg", "model_prediction_available",
-    "manual_review_required", *INFERENCE_EXTRA,
+    "model_prediction_quantity_kg",
+    "model_prediction_available",
+    *INFERENCE_EXTRA,
 }
 
 
@@ -284,15 +307,6 @@ def build_release_candidates(
             raise RuntimeError(
                 f"Prepared/Inference quantity disagreement: {quantity_conflicts} rows"
             )
-        review_mismatches = con.execute("""
-            SELECT COUNT(*) FROM i
-            WHERE manual_review_required IS DISTINCT FROM
-                  (hs6_seen IS FALSE AND hs4_seen IS FALSE)
-        """).fetchone()[0]
-        if review_mismatches:
-            raise RuntimeError(
-                f"Inference manual-review flag mismatches: {review_mismatches}"
-            )
 
         # All four UV diagnostics use nominal reconciled USD / kg. The
         # reference's value basis must be confirmed to match before publication.
@@ -341,15 +355,7 @@ def build_release_candidates(
             return f'{source} AS "{public_name}"'
 
         select_standard = ", ".join(
-            published_column(
-                col,
-                (
-                    'CASE WHEN manual_review_required IS TRUE THEN NULL '
-                    'ELSE model_prediction_quantity_kg END'
-                )
-                if col == "model_prediction_quantity_kg"
-                else None,
-            )
+            published_column(col)
             for col in standard_cols
         )
 
@@ -383,10 +389,14 @@ def build_release_candidates(
             for tmp in temporary:
                 tmp.unlink(missing_ok=True)
 
-        review_rows, review_codes = con.execute("""
-            SELECT COUNT(*) FILTER (WHERE manual_review_required IS TRUE),
-                   COUNT(DISTINCT target_cmd) FILTER
-                     (WHERE manual_review_required IS TRUE)
+        fallback_rows, fallback_codes = con.execute("""
+            SELECT
+                COUNT(*) FILTER (
+                    WHERE validation_model_type = 'random_forest'
+                ),
+                COUNT(DISTINCT target_cmd) FILTER (
+                    WHERE validation_model_type = 'random_forest'
+                )
             FROM release_evidence
         """).fetchone()
 
@@ -435,8 +445,11 @@ def build_release_candidates(
             output_paths=output_paths,
         )
 
-        logger.info("Release candidates built: rows=%s, manual-review=%s (%s HS6 codes)",
-            f"{prepared_rows:,}", f"{review_rows:,}", f"{review_codes:,}",
+        logger.info(
+            "Release candidates built: rows=%s, fallback predictions=%s (%s HS6 codes)",
+            f"{prepared_rows:,}",
+            f"{fallback_rows:,}",
+            f"{fallback_codes:,}",
         )
         logger.info("  Candidate standard: %s", standard_path)
         logger.info("  Candidate enriched: %s", enriched_path)
@@ -446,8 +459,8 @@ def build_release_candidates(
             "candidate_standard_path": standard_path,
             "candidate_enriched_path": enriched_path,
             "n_rows": prepared_rows,
-            "n_manual_review_rows": int(review_rows),
-            "n_manual_review_hs6_codes": int(review_codes),
+            "n_fallback_prediction_rows": int(fallback_rows),
+            "n_fallback_hs6_codes": int(fallback_codes),
             "duration_seconds": perf_counter() - start,
         }
     finally:

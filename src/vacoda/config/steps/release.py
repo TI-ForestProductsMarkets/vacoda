@@ -207,10 +207,14 @@ class ReleaseSchemaConfig:
         if overlap:
             raise ValueError("Release schemas overlap: " + ", ".join(sorted(overlap)))
         required = {
-            "year", "exporter_iso", "importer_iso", "target_cmd",
+            "year", 
+            "exporter_iso", 
+            "importer_iso", 
+            "target_cmd",
             "trade_value_reconciled",
-            "model_prediction_quantity_kg", "model_prediction_available",
-            "manual_review_required",
+            "model_prediction_quantity_kg", 
+            "model_prediction_available",
+            "imputation_method",
         }
         if not required.issubset(standard):
             raise ValueError("Release standard schema missing required fields: "

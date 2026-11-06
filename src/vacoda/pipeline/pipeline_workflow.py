@@ -475,7 +475,7 @@ def _run_release_step(
         "ingestion": upstream_cfgs["ingestion"].output_path(),
         "hs_sync": upstream_cfgs["hs_sync"].apply_output_path(),
         "quantity": upstream_cfgs["quantity"].product_path("synchronized_quantity"),
-        "cif_fob": upstream_cfgs["cif_fob"].product_path("corrected_trade"),
+        "cif_fob": upstream_cfgs["trade_sync"].input_path(),
         "trade_sync": upstream_cfgs["trade_sync"].product_path("reconciled_trade"),
         "value": upstream_cfgs["value"].product_path("deflated_trade"),
     }
@@ -1003,7 +1003,7 @@ def _build_release_plan(
         "ingestion": upstream_cfgs["ingestion"].output_path(),
         "hs_sync": upstream_cfgs["hs_sync"].apply_output_path(),
         "quantity": upstream_cfgs["quantity"].product_path("synchronized_quantity"),
-        "cif_fob": upstream_cfgs["cif_fob"].product_path("corrected_trade"),
+        "cif_fob": upstream_cfgs["trade_sync"].input_path(),
         "trade_sync": upstream_cfgs["trade_sync"].product_path("reconciled_trade"),
         "value": upstream_cfgs["value"].product_path("deflated_trade"),
     }
@@ -1519,7 +1519,7 @@ def run_pipeline(
                 if ok:
                     logger.info("DONE — %s (%.2fs)", step_name, duration_seconds)
                     logger.info("  Status: %s", status)
-                    logger.info("  %s %s %s Ready flag %s: %s", ready_symbol, ready_symbol, ready_symbol, step_cfg.required_ready_flag, ready_value)
+                    logger.info("  Ready flag %s %s %s %s: %s", ready_symbol, ready_symbol, ready_symbol, step_cfg.required_ready_flag, ready_value)
 
                     if cfg.checkpoint.enabled:
 
@@ -1600,11 +1600,23 @@ def run_pipeline(
         manifest = pd.DataFrame(manifest_rows)
         manifest.to_csv(manifest_path, index=False)
 
+        passed = pipeline_status == "completed"
+        status_symbol = get_symbols(
+            "hooray" if passed else "warning_light"
+        )
+
         logger.info("")
         logger.info("=" * 72)
-        logger.info("%s Status: %s", get_symbols("right_finger"), pipeline_status)
-        logger.info(" Manifest: %s",manifest_path)
-        logger.info(" Log file: %s", log_path)
+
+        log_status = logger.info if passed else logger.error
+        log_status(
+            "Status: %s %s",
+            status_symbol,
+            pipeline_status.upper(),
+        )
+
+        logger.info("Manifest: %s", manifest_path)
+        logger.info("Log file: %s", log_path)
         logger.info("=" * 72)
 
         if pipeline_status != "completed":

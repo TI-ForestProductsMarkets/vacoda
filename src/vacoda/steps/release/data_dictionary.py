@@ -11,7 +11,6 @@ VARIABLES = {
     "quantity_value_weighted_kg": ("kg", "Bilateral trade quantity obtained through VACODA's quantity synchronization method."),
     "model_prediction_quantity_kg": ("kg", "Quantity estimated by the selected machine-learning model."),
     "model_prediction_available": ("Boolean", "Whether a model prediction was generated."),
-    "manual_review_required": ("Boolean", "Whether both HS6 and HS4 categories were absent from model training."),
 
     "export_value_fob": ("Nominal USD", "Exporter-reported trade value on a free-on-board basis."),
     "import_value_cif": ("Nominal USD", "Importer-reported trade value including cost, insurance, and freight."),
@@ -52,6 +51,8 @@ VARIABLES = {
     "trade_synced_quantity_status": ("Category", "Status of bilateral quantity synchronization."),
     "quantity_availability_case": ("Category", "Availability of usable export-side and import-side quantity evidence."),
 
+    "imputation_method": ("Category", "Method used to impute the reconciled trade value, where applicable. Preserved from Validation Prepared."),
+    
     "product_year_median_unit_value": ("USD/kg", "Median product unit-value reference calculated from the configured reference window."),
     "product_year_log_unit_value_mad": ("Log-scale", "Median absolute deviation of log unit values around the product reference."),
     "unit_value_reference_observations": ("Count", "Number of observations contributing to the unit-value reference."),
@@ -68,8 +69,16 @@ VARIABLES = {
     "importer_seen": ("Boolean", "Whether the importer was represented during model fitting."),
     "hs6_seen": ("Boolean", "Whether the HS6 category was represented during model fitting."),
     "hs4_seen": ("Boolean", "Whether the HS4 category was represented during model fitting."),
-    "validation_model_name": ("Text", "Name of the selected Validation model."),
-    "validation_model_type": ("Text", "Algorithm family of the selected Validation model."),
+    "validation_model_name": (
+        "Text",
+        "Name of the model that generated this observation's prediction. "
+        "Identifies either the selected primary model or the Random Forest fallback."
+    ),
+    "validation_model_type": (
+        "Text",
+        "Algorithm family of the model used for this observation's prediction. "
+        "Missing when no prediction was generated."
+    ),
 }
 
 VARIABLE_GROUPS = {
@@ -85,7 +94,7 @@ VARIABLE_GROUPS = {
             "quantity_value_weighted_kg",
             "model_prediction_quantity_kg",
             "model_prediction_available",
-            "manual_review_required",
+            "imputation_method",
         ],
     ),
 
@@ -278,11 +287,11 @@ def write_data_dictionary(
     )
 
     if set(columns) == standard_fields:
-        # Standard dataset: one table with all 9 variables
+        # Standard dataset: one table containing its configured variables
         lines.extend(make_table(columns))
 
     else:
-        # Enriched dataset: all 43 variables in six categories
+        # Enriched dataset: variables organized into six categories
         grouped_columns = [
             column
             for _, (_, fields) in VARIABLE_GROUPS.items()
