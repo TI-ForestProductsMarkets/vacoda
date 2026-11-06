@@ -16,6 +16,7 @@ import pandas as pd
 
 from vacoda.config.steps.validation import ValidationConfig
 from vacoda.utils.sql import sql_literal
+from vacoda.utils.display import get_symbols
 
 
 KEY = ("year", "exporter_iso", "importer_iso", "target_cmd")
@@ -89,7 +90,6 @@ def evaluate_release_readiness(
         "n_prediction_rows": None,
         "eligible_prediction_coverage": None,
         "population_prediction_coverage": None,
-        "n_manual_review_rows": None,
         "n_imputed_value_rows": None,
         "model_name": None,
         "model_type": None,
@@ -250,7 +250,7 @@ def evaluate_release_readiness(
         # Coverage and descriptive findings. Missing input is not eligible.
         if checks["inference_exists"]:
             try:
-                required = {"model_input_valid", "model_prediction_available", "manual_review_required"}
+                required = {"model_input_valid", "model_prediction_available"}
                 missing = required - _columns(con, paths["inference"])
                 if missing:
                     raise ValueError(f"Missing inference fields: {sorted(missing)}")
@@ -268,15 +268,13 @@ def evaluate_release_readiness(
                             WHERE model_input_valid IS TRUE
                               AND model_prediction_available IS TRUE
                         ) AS eligible_predicted,
-                        COUNT(*) FILTER (WHERE manual_review_required IS TRUE) AS review,
                         {imputed_sql} AS imputed
                     FROM read_parquet({sql_literal(paths['inference'])})
                 """).fetchone()
-                total, eligible, predicted, eligible_predicted, review, imputed = row
+                total, eligible, predicted, eligible_predicted, imputed = row
                 metrics.update({
                     "n_model_input_valid_rows": int(eligible),
                     "n_prediction_rows": int(predicted),
-                    "n_manual_review_rows": int(review),
                     "n_imputed_value_rows": None if imputed is None else int(imputed),
                     "eligible_prediction_coverage": (
                         float(eligible_predicted) / eligible if eligible else None
@@ -323,10 +321,11 @@ def evaluate_release_readiness(
         if temporary_path.exists():
             temporary_path.unlink()
 
+    ready_symbol = get_symbols("hooray" if ready else "warning_light")
     if ready:
-        logger.info("VALIDATION RELEASE READINESS: PASSED")
+        logger.info("%s VALIDATION RELEASE READINESS: PASSED", ready_symbol)
     else:
-        logger.warning("VALIDATION RELEASE READINESS: FAILED")
+        logger.warning("%s VALIDATION RELEASE READINESS: FAILED", ready_symbol)
         for reason in reasons:
             logger.warning("  - %s", reason)
     logger.info("ready_for_release = %s", ready)

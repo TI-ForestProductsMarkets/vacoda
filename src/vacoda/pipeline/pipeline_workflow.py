@@ -1515,10 +1515,11 @@ def run_pipeline(
                 output_path = _result_output_path(result, plan.output_path)
                 audit_path = _result_audit_path(result, plan.audit_path)
 
+                ready_symbol = get_symbols("hooray") if ready_value else get_symbols("warning_light")
                 if ok:
                     logger.info("DONE — %s (%.2fs)", step_name, duration_seconds)
                     logger.info("  Status: %s", status)
-                    logger.info("  Ready flag %s: %s", step_cfg.required_ready_flag, ready_value)
+                    logger.info("  %s %s %s Ready flag %s: %s", ready_symbol, ready_symbol, ready_symbol, step_cfg.required_ready_flag, ready_value)
 
                     if cfg.checkpoint.enabled:
 

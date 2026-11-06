@@ -1158,8 +1158,6 @@ def _inference_semantic_payload(
             "categorical_support_features": list(
                 cfg.model.features.categorical
             ),
-            "manual_review_flag": "manual_review_required",
-            "manual_review_rule": "hs6_seen_false_and_hs4_seen_false",
             "routing": "disjoint_primary_embedding_fallback_nonembedding_v1",
         },
         "features": {
@@ -1510,6 +1508,8 @@ def run_validation_inference(
                 *feature_columns,
                 target_column,
                 "training_selected",
+                "trade_value_reconciled",
+                "imputation_method"
             ]
         )
     )
@@ -1854,6 +1854,8 @@ def run_validation_inference(
                 *cfg.model.features.numeric.keys(),
                 cfg.model.target.column,
                 "training_selected",
+                "trade_value_reconciled",
+                "imputation_method"
             ]
         )
     )
@@ -1900,19 +1902,6 @@ def run_validation_inference(
         ].to_numpy()
 
     inference["validation_model_name"] = prediction_model_names
-
-
-    # Manual review is required when neither the HS6 nor
-    # its parent HS4 was seen by the fitted model.
-    if not {"hs6_seen", "hs4_seen"}.issubset(inference.columns):
-        raise RuntimeError(
-            "Cannot determine manual review status: "
-            "hs6_seen and hs4_seen support flags are required."
-        )
-
-    inference["manual_review_required"] = (inference["hs6_seen"].eq(False) & inference["hs4_seen"].eq(False)).astype("boolean")
-
-
     inference["validation_model_type"] = prediction_model_types
 
     # ------------------------------------------------------------------

@@ -48,10 +48,11 @@ _SYMBOLS = {
     "flag": "\U0001F6A9",             # 🚩
     "reuse": "\u267B\uFE0F",          # ♻️
     "rebuild": "\U0001F528",          # 🔨
-    "build": "\U0001F6E0\uFE0F",    # 🛠️
+    "build": "\U0001F6E0\uFE0F",      # 🛠️
     "rebuilt": "\U0001F6E0\uFE0F",    # 🛠️
     "search": "\U0001F50E",           # 🔎
-    "write": "\U0001F4DD",            # 📝   
+    "write": "\U0001F4DD",            # 📝
+    "hooray": "\U0001F389",            # 🎉
 }
 
 _ANSI_COLORS = {

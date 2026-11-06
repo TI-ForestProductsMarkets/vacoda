@@ -643,24 +643,40 @@ def build_diagnostics(
         # Production model identity
         # --------------------------------------------------------------
 
-        production_models = con.execute(
-            """
-            SELECT DISTINCT
+        production_models = con.execute("""
+            SELECT
                 validation_model_name,
-                validation_model_type
+                validation_model_type,
+                COUNT(*) AS n_rows
             FROM validation_inference
-            """
-        ).fetchall()
+            WHERE model_input_valid IS TRUE
+            GROUP BY 1, 2
+        """).fetchall()
 
-        if len(production_models) != 1:
+        if len(production_models) != 2:
             raise RuntimeError(
-                "Validation inference must identify exactly "
-                "one production model."
+                "Expected primary and fallback model identities."
             )
 
-        production_model_name, production_model_type = (
-            production_models[0]
-        )
+        for model_name, model_type, n_rows in production_models:
+            _append_metric(
+                diagnostics_rows,
+                scope="inference_model",
+                criterion="production_model",
+                model_name=str(model_name),
+                variable=str(model_type),
+                n_rows=int(n_rows),
+            )
+
+        selected_model = con.execute(
+            "SELECT model_name, model_type FROM read_parquet(?)",
+            [str(selected_model_path)],
+        ).fetchone()
+
+        if selected_model is None:
+            raise RuntimeError("Selected-model artifact is empty.")
+
+        production_model_name, production_model_type = selected_model
 
         if not production_model_name or not production_model_type:
             raise RuntimeError(

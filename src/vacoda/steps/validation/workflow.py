@@ -29,7 +29,6 @@ from vacoda.steps.validation.release_gate import evaluate_release_readiness
 from vacoda.steps.validation.diagnostics import  build_diagnostics
 from vacoda.steps.validation.audit_inference import audit_validation_inference
 from vacoda.steps.validation.reporting import build_validation_report
-
 from vacoda.utils.artifacts import (
     require_artifact,
     require_enabled_products,
@@ -535,25 +534,20 @@ def run_validation_workflow(
             producer_product="Validation report",
         )
 
-        if not ready_for_release:
-            raise RuntimeError(
-                "Validation is not ready for Release: "
-                f"structural_passed={structural_passed}, "
-                f"inference_passed={inference_passed}"
+        if ready_for_release:
+            logger.info(
+                "VALIDATION PASSED — READY FOR RELEASE")
+        else:
+            logger.warning(
+                "VALIDATION COMPLETE — NOT READY FOR RELEASE",
             )
-
-        logger.info(
-            "Validation ready for Release: %s",
-            ready_for_release,
-        )
 
         workflow_elapsed = perf_counter() - workflow_start
 
         separator(logger)
 
         logger.info(
-            "%s Validation workflow finished.",
-            get_symbols("success"),
+            "Validation workflow finished.",
         )
         logger.info("Run ID: %s", run_id)
  

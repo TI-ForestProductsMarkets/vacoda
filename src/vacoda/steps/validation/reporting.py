@@ -45,12 +45,10 @@ from vacoda.visualization.relationships import plot_figure_pair
 # Helpers
 # ======================================================================
 
-
 def valid_output(path: Path) -> bool:
     """Return True when an existing output appears usable."""
 
     return path.is_file() and path.stat().st_size > 0
-
 
 
 def _format_integer(value: float | int | None) -> str:
@@ -60,7 +58,6 @@ def _format_integer(value: float | int | None) -> str:
         return "NA"
 
     return f"{int(round(float(value))):,}"
-
 
 
 def _format_percent(
@@ -2290,7 +2287,7 @@ def build_validation_report(
 
         ## ready for release 
         release_decision = con.execute(
-            "SELECT ready_for_release, failure_reasons "
+            "SELECT ready_for_release, failure_reasons, model_name "
             "FROM read_parquet(?)",
             [str(release_readiness_path)],
         ).fetchone()
@@ -2300,6 +2297,7 @@ def build_validation_report(
 
         ready_for_release = bool(release_decision[0])
         failure_reasons = json.loads(release_decision[1] or "[]")
+        selected_model_name = str(release_decision[2])
 
         # ============================================================== 
         # Structural integrity
@@ -2895,25 +2893,6 @@ def build_validation_report(
         # Multiplicative interpretation of selected model OOF errors
         # --------------------------------------------------------------
 
-        inference_model = _require_diagnostic_scope(
-            diagnostics,
-            "inference_model",
-        )
-
-        selected_names = (
-            inference_model["model_name"]
-            .dropna()
-            .astype(str)
-            .unique()
-        )
-
-        if len(selected_names) != 1:
-            raise RuntimeError(
-                "Could not identify one selected production model."
-            )
-
-        selected_model_name = selected_names[0]
-
         selected_oof = oof_absolute.loc[
             oof_absolute["model_name"].eq(selected_model_name)
         ].copy()
@@ -3207,6 +3186,22 @@ def build_validation_report(
         # ==============================================================
         # Production inference diagnostics
         # ==============================================================
+
+        inference_models = _require_diagnostic_scope(
+            diagnostics, "inference_model"
+        )
+
+        inference_models_display = pd.DataFrame([
+            {
+                "Role": (
+                    "Primary" if row.model_name == selected_model_name
+                    else "Fallback"
+                ),
+                "Model": _model_definition(row.model_name),
+                "Predictions": _format_integer(row.n_rows),
+            }
+            for row in inference_models.itertuples(index=False)
+        ])
 
         inference_population = _require_diagnostic_scope(
             diagnostics,
@@ -4601,12 +4596,14 @@ def build_validation_report(
             "## 8. Production inference",
             "",
             (
-                "The selected production model is applied to the complete "
-                "trade population. This stage produces model evidence only; it "
-                "does not yet decide whether an observed quantity should be preserved, "
-                "replaced, imputed, or left unresolved."
+                "Production inference uses the selected embedding MLP as the "
+                "primary model. A Random Forest fallback handles observations "
+                "where both HS6 and HS4 categories are unseen. Observations "
+                "with invalid numerical model inputs receive no prediction. "
+                "This stage produces model evidence, not quantity corrections."
             ),
             "",
+            _markdown_table(inference_models_display),
 
             "### 8.1. Inference population and prediction coverage",
             "",
@@ -4646,12 +4643,11 @@ def build_validation_report(
             "### 8.3. Products unseen during production fitting",
             "",
             (
-                "The following table lists HS6 products occurring in inferable "
-                "Validation rows that were not represented among the observations "
-                "used to fit the production model. These rows can still receive a "
-                "numerical prediction through the model's unknown-category handling, "
-                "but their support status must be retained for later Validation "
-                "decision rules."
+                "The following table lists HS6 products not represented "
+                "during production fitting. When HS4 remains known, the "
+                "embedding MLP supplies the prediction. When both HS6 and "
+                "HS4 are unseen, prediction is routed to the Random Forest "
+                "fallback."
             ),
             "",
             _markdown_table(
@@ -4761,7 +4757,8 @@ def build_validation_report(
             "",
             "- Changes in unit-value distance from an HS×year reference measure "
             "statistical coherence, not necessarily corrections to erroneous data. "
-            "Predictions for products without training support require separate review.",
+            "The Random Forest fallback provides predictions for products with "
+            "neither HS6 nor HS4 represented in primary-model training.",
             "",
         ]
 
