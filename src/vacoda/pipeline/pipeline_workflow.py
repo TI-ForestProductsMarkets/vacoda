@@ -1571,8 +1571,13 @@ def run_pipeline(
             except Exception as exc:
                 duration_seconds = perf_counter() - start
                 pipeline_status = "failed"
-
-                logger.exception("Step failed: %s", step_name)
+                logger.error(
+                    "%s Step failed: %s — %s: %s",
+                    get_symbols("cross"),
+                    step_name,
+                    type(exc).__name__,
+                    exc,
+                )
 
                 manifest_rows.append(
                     _manifest_row(
