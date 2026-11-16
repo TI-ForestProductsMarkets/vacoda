@@ -79,7 +79,7 @@ steps:
     required_ready_flag: "ready_for_value_sync"
 
   value:
-    enabled: false
+    enabled: true
     config: "configs/steps/value.yaml"
     expected_status:
       - "completed"
