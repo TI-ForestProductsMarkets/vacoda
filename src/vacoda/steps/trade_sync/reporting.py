@@ -10,7 +10,7 @@ Outputs
 - Reconciliation-status figure
 - Annual trade-value totals figure
 - Country-reliability figure
-- Positive-positive agreement/discrepancy figure
+- Positive-positive agreement/discrepancy diagnostics
 """
 
 from __future__ import annotations
@@ -1489,6 +1489,37 @@ def build_trade_sync_report(
                 "Reconciliation audit is missing required columns: "
                 + ", ".join(sorted(missing_audit_columns))
             )
+
+
+        ## Imputation reporting
+        value_imputation_metrics = {
+            "input_rows": "Input rows with an imputed CIF/FOB factor",
+            "rows_with_usable_reconciled_value": (
+                "Of those, rows with usable reconciled trade value"
+            ),
+        }
+        quantity_outcome_metrics = {
+            "usable_reconciled_kg": "Rows with usable reconciled kg",
+            "missing_reconciled_kg": "Rows without usable reconciled kg",
+            "blocked_by_cif_fob": "Of those, CIF/FOB unresolved",
+            "no_usable_input_kg": "Of those, neither side supplied usable kg",
+            "weights_unavailable": "Of those, bilateral weights unavailable",
+        }
+
+        outcome_tables = {}
+        for scope, labels in (
+            ("value_imputation", value_imputation_metrics),
+            ("quantity_outcome", quantity_outcome_metrics),
+        ):
+            outcome_tables[scope] = pd.DataFrame([
+                {
+                    "Measure": label,
+                    "Rows": _format_integer(
+                        _metric_lookup(diagnostics, scope=scope, metric=metric)
+                    ),
+                }
+                for metric, label in labels.items()
+            ])
 
         # --------------------------------------------------------------
         # Core diagnostic totals
@@ -3320,7 +3351,7 @@ def build_trade_sync_report(
         "## 5. Decision basis",
         "",
         (
-            f"The Trade Sync output is `{decision.lower()}` for Weight "
+            f"The Trade Sync output is `{decision.lower()}` for Value "
             "Sync because:"
         ),
         "",
@@ -3399,7 +3430,7 @@ def build_trade_sync_report(
         ),
         f"| Reconciliation audit passed | `{audit_passed}` |",
         (
-            "| Ready for Weight Sync | "
+            "| Ready for Value Sync | "
             f"`{ready_for_processed_export}` |"
         ),
         "",
@@ -4036,54 +4067,19 @@ def build_trade_sync_report(
             )
         ),
         "",
-
-        "### 9.4 Trade-Sync quantity decision",
+        "### 9.4 Trade Sync quantity decision",
         "",
         (
-            "The four candidate methods are compared below using the same "
-            "criteria. The production choice should preserve the information "
-            "contained in the original reporter pairs while avoiding undue "
-            "dependence on any one diagnostic signal."
+            "`quantity_reconciled_kg` is the selected quantity output. "
+            "When both sides have usable kg, Trade Sync combines them using "
+            "quantity-reliability weights. It retains a sole usable kg value "
+            "at full weight. Bilateral rows with unavailable weights remain "
+            "missing. The reliability calculation includes pairs with "
+            "estimated quantities."
         ),
         "",
-        _markdown_table(
-            pd.DataFrame(
-                {
-                    "Candidate": quantity_candidate_overall["Candidate"],
-                    "Reporter-pair range preserved": [
-                        _format_percent(value)
-                        for value in quantity_candidate_overall[
-                            "reporter_unit_value_range_share"
-                        ]
-                    ],
-                    "Median product-year reference distance": [
-                        f"{value:.3f}" if pd.notna(value) else "NA"
-                        for value in quantity_candidate_overall[
-                            "median_reference_robust_distance"
-                        ]
-                    ],
-                    "Median distance from nearest reported quantity": [
-                        _format_percent(value)
-                        for value in quantity_candidate_overall[
-                            "median_nearest_report_quantity_fraction"
-                        ]
-                    ],
-                }
-            )
-        ),
+        _markdown_table(outcome_tables["quantity_outcome"]),
         "",
-        (
-            "The current implementation of `trade_synced_quantity_kg` remains "
-            "the unit-value-guided construction until the comparison above is "
-            "used to make the final methodological choice."
-        ),
-        "",
-        (
-            "Once that choice is made, `trade_synced_quantity_kg` should be "
-            "defined exclusively by the selected bilateral method, with "
-            "exporter-only and importer-only quantities retained unchanged and "
-            "rows with no usable quantity left missing."
-        ),
         "",
         "## 10. Value reconciliation composition",
         "",
@@ -4108,6 +4104,16 @@ def build_trade_sync_report(
             figure_paths["status"],
             document_path=report_path,
         ),
+        "",
+        "### 10.1 CIF/FOB value-imputation coverage",
+        "",
+        (
+            "CIF/FOB imputes missing correction factors upstream. "
+            "This table shows how many affected bilateral rows reached "
+            "Trade Sync and received a usable reconciled trade value."
+        ),
+        "",
+        _markdown_table(outcome_tables["value_imputation"]),
         "",
         "## 11. Annual results",
         "",

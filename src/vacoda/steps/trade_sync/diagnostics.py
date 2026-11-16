@@ -3103,6 +3103,33 @@ def build_trade_sync_diagnostics(
                 reporting_direction
         ),
 
+                imputation_and_coverage AS (
+            SELECT
+                COUNT(*) AS total_rows,
+                COUNT(*) FILTER (
+                    WHERE NULLIF(TRIM(imputation_method), '') IS NOT NULL
+                ) AS value_imputed_rows,
+                COUNT(*) FILTER (
+                    WHERE NULLIF(TRIM(imputation_method), '') IS NOT NULL
+                      AND isfinite(trade_value_reconciled)
+                      AND trade_value_reconciled > 0
+                ) AS value_imputed_rows_with_usable_value,
+                COUNT(*) FILTER (
+                    WHERE isfinite(quantity_reconciled_kg)
+                      AND quantity_reconciled_kg > 0
+                ) AS usable_reconciled_kg_rows,
+                COUNT(*) FILTER (
+                    WHERE quantity_reconciliation_method = 'cif_fob_unresolved'
+                ) AS quantity_blocked_by_cif_fob,
+                COUNT(*) FILTER (
+                    WHERE quantity_reconciliation_method = 'no_usable_quantity'
+                ) AS no_usable_input_kg,
+                COUNT(*) FILTER (
+                    WHERE quantity_reconciliation_method = 'quantity_weights_unavailable'
+                ) AS quantity_weights_unavailable
+            FROM read_parquet({reconciled_sql})
+        ),
+
         diagnostics AS (
 
             -- ==========================================================
@@ -5019,6 +5046,33 @@ def build_trade_sync_diagnostics(
                 'median_nearest_report_quantity_fraction',
                 median_nearest_report_quantity_fraction
             FROM quantity_candidate_extreme_wide
+
+            UNION ALL
+
+            SELECT
+                m.scope,
+                NULL::INTEGER,
+                NULL::VARCHAR,
+                NULL::VARCHAR,
+                m.metric,
+                m.metric_value
+            FROM imputation_and_coverage AS s
+            CROSS JOIN LATERAL (
+                VALUES
+                    ('value_imputation', 'input_rows', s.value_imputed_rows),
+                    ('value_imputation', 'rows_with_usable_reconciled_value',
+                     s.value_imputed_rows_with_usable_value),
+                    ('quantity_outcome', 'usable_reconciled_kg',
+                     s.usable_reconciled_kg_rows),
+                    ('quantity_outcome', 'missing_reconciled_kg',
+                     s.total_rows - s.usable_reconciled_kg_rows),
+                    ('quantity_outcome', 'blocked_by_cif_fob',
+                     s.quantity_blocked_by_cif_fob),
+                    ('quantity_outcome', 'no_usable_input_kg',
+                     s.no_usable_input_kg),
+                    ('quantity_outcome', 'weights_unavailable',
+                     s.quantity_weights_unavailable)
+            ) AS m(scope, metric, metric_value)
         )
 
         SELECT *
