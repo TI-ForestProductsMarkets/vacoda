@@ -5286,6 +5286,8 @@ def build_trade_sync_diagnostics(
             "quantity_candidate_extreme",
             "quantity_three_candidate_match",
             "quantity_three_candidate_extreme",
+            "quantity_outcome",
+            "value_imputation",
         }
 
         missing_scopes = (
