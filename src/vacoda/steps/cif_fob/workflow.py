@@ -31,6 +31,7 @@ from vacoda.config.steps.cif_fob import CifFobConfig
 from vacoda.utils.display import get_symbols
 from vacoda.utils.logger import get_logger
 from vacoda.utils.runtime import run_step, timed_workflow
+from vacoda.utils.timing import timed_step
 from vacoda.utils.artifacts import artifact_result, require_artifact, require_enabled_products, require_product_dependency
 
 WORKFLOW_STEPS = [
@@ -59,7 +60,6 @@ REQUIRED_PRODUCTS = (
     "diagnostics",
     "corrected_trade",
 )
-
 
 def get_enabled_products(cfg: CifFobConfig) -> dict[str, bool]:
     """Return CIF/FOB product enablement as a plain dictionary."""

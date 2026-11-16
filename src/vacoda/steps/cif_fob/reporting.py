@@ -4277,6 +4277,45 @@ def _write_training_evidence_audit_figures(
     return figure_paths
 
 
+def _resolve_primary_selection_metadata(
+    *,
+    estimated_rates_result: dict[str, Any],
+    estimated_rates_path: Path | None = None,
+) -> tuple[str | None, str | None]:
+    """Resolve the selected CIF/FOB run and algorithm from the result or Parquet."""
+    primary_run_name = (
+        str(estimated_rates_result.get("primary_estimation_run") or "").strip()
+        or None
+    )
+    primary_model_name = (
+        str(estimated_rates_result.get("primary_model_name") or "").strip()
+        or None
+    )
+
+    if primary_run_name is None and estimated_rates_path is not None:
+        con = duckdb.connect()
+        try:
+            row = con.execute(
+                """
+                SELECT
+                    ANY_VALUE(primary_estimation_run) AS primary_estimation_run,
+                    ANY_VALUE(primary_model_name) AS primary_model_name
+                FROM read_parquet(?)
+                """,
+                [str(estimated_rates_path)],
+            ).fetchone()
+            if row is not None:
+                primary_run_name = str(row[0] or "").strip() or None
+                primary_model_name = str(row[1] or "").strip() or None
+        finally:
+            con.close()
+
+    if primary_model_name is None and primary_run_name:
+        primary_model_name = primary_run_name.split("__", 1)[0]
+
+    return primary_run_name, primary_model_name
+
+
 def _write_value_band_model_comparison_figures(
     *,
     cfg: CifFobConfig,
@@ -4285,6 +4324,8 @@ def _write_value_band_model_comparison_figures(
     prediction_columns_by_run: dict[str, dict[str, str]],
     figure_dir: Path,
     logger,
+    primary_run_name: str | None = None,
+    primary_model_name: str | None = None,
 ) -> tuple[
     pd.DataFrame,
     pd.DataFrame,
@@ -4326,24 +4367,31 @@ def _write_value_band_model_comparison_figures(
         for value in all_summary["model_name"].dropna().unique()
     }
 
-    primary_algorithm = str(
-        cfg.method.estimation.models.primary
-    ).strip().lower()
-
-    primary_predictor_set = str(
-        getattr(
-            cfg.method.estimation,
-            "primary_predictor_set",
-            "",
+    primary_run_name = str(primary_run_name or "").strip() or None
+    primary_model_name = str(primary_model_name or "").strip() or None
+    if primary_run_name is not None:
+        expected_primary_run = primary_run_name
+        primary_algorithm = primary_run_name.split("__", 1)[0].lower()
+        primary_predictor_set = (
+            primary_run_name.split("__", 1)[1]
+            if "__" in primary_run_name
+            else ""
         )
-        or ""
-    ).strip()
-
-    expected_primary_run = (
-        f"{primary_algorithm}__{primary_predictor_set}"
-        if primary_predictor_set
-        else primary_algorithm
-    )
+    else:
+        primary_algorithm = str(primary_model_name or "").strip().lower()
+        primary_predictor_set = str(
+            getattr(
+                cfg.method.estimation,
+                "primary_predictor_set",
+                "",
+            )
+            or ""
+        ).strip()
+        expected_primary_run = (
+            f"{primary_algorithm}__{primary_predictor_set}"
+            if primary_predictor_set
+            else primary_algorithm
+        )
 
     if expected_primary_run in available_runs:
         primary_run = expected_primary_run
@@ -5729,6 +5777,11 @@ def write_cif_fob_decision_report(
             "'prediction_columns_by_run'."
         )
 
+    primary_run_name, primary_model_name = _resolve_primary_selection_metadata(
+        estimated_rates_result=estimated_rates_result,
+        estimated_rates_path=estimated_rates_path,
+    )
+
     (
     value_band_comparison,
     value_band_comparison_long,
@@ -5740,6 +5793,8 @@ def write_cif_fob_decision_report(
         prediction_columns_by_run=prediction_columns_by_run,
         figure_dir=figure_dir,
         logger=logger,
+        primary_run_name=primary_run_name,
+        primary_model_name=primary_model_name,
     )
 
     figure_paths.update(
@@ -5775,7 +5830,12 @@ def write_cif_fob_decision_report(
     )
 
     ## 2. Plot the model ranking by mean log-factor MAE
-    primary_run_name = str(cfg.method.estimation.models.primary).strip().lower() 
+    primary_run_name, primary_model_name = _resolve_primary_selection_metadata(
+        estimated_rates_result=estimated_rates_result,
+        estimated_rates_path=estimated_rates_path,
+    )
+    primary_run_name = str(primary_run_name or "").strip()
+    primary_model_name = str(primary_model_name or primary_run_name.split("__", 1)[0]).strip()
     fig, _, _ = plot_model_metric_ranking(
         summary,
         metric="mean_mae_log_factor",
@@ -5980,18 +6040,22 @@ def write_cif_fob_decision_report(
 
     ranked["model_display_name"] =  ranked["algorithm_display_name"].astype(str)
 
-    primary_algorithm = str(
-        cfg.method.estimation.models.primary
-    ).strip().lower()
+    primary_run_name, primary_model_name = _resolve_primary_selection_metadata(
+        estimated_rates_result=estimated_rates_result,
+        estimated_rates_path=estimated_rates_path,
+    )
+    primary_run_name = str(primary_run_name or "").strip() or None
+    primary_model_name = str(primary_model_name or "").strip() or None
 
-    primary_predictor_set = str(
-        getattr(
-            cfg.method.estimation,
-            "primary_predictor_set",
-            "",
-        )
-        or ""
-    ).strip()
+    primary_algorithm = (
+        primary_model_name or (primary_run_name.split("__", 1)[0] if primary_run_name else "")
+    ).lower()
+
+    primary_predictor_set = (
+        primary_run_name.split("__", 1)[1]
+        if primary_run_name and "__" in primary_run_name
+        else ""
+    )
 
     primary_model = (
         f"{primary_algorithm}__{primary_predictor_set}"

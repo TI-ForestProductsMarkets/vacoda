@@ -153,7 +153,7 @@ def audit_trade_reconciliation(
 
 
     logger.info(
-        "🔨 REBUILD — Trade Sync reconciliation audit."
+        " REBUILD — Trade Sync reconciliation audit."
     )
 
     prepared_sql = sql_literal(

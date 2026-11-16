@@ -1686,7 +1686,6 @@ class CifFobModelCheckpointsConfig:
 class CifFobModelsConfig:
     """Registry of configured CIF/FOB estimation model candidates."""
 
-    primary: str
     model_checkpoints: CifFobModelCheckpointsConfig
     candidates: dict[str, CifFobCandidateModelConfig]
 
@@ -1748,20 +1747,7 @@ class CifFobModelsConfig:
                     f"{name!r}."
                 )
 
-        primary = require_str(
-            cfg.get("primary"),
-            key="cif_fob.method.estimation.models.primary",
-        ).strip()
-
-        if primary not in candidates:
-            raise ValueError(
-                f"Configured primary CIF/FOB model {primary!r} is not "
-                "present in models.candidates. Available candidates: "
-                + ", ".join(sorted(candidates))
-            )
-
         return cls(
-            primary=primary,
             model_checkpoints=CifFobModelCheckpointsConfig.from_dict(
                 require_dict(
                     cfg.get("model_checkpoints"),
@@ -1795,8 +1781,8 @@ class CifFobModelsConfig:
         self,
         name: str | None = None,
     ) -> CifFobCandidateModelConfig:
-        """Return a named candidate, or the configured primary."""
-        candidate_name = name or self.primary
+        """Return a named candidate"""
+        candidate_name = name
 
         if candidate_name not in self.candidates:
             raise KeyError(

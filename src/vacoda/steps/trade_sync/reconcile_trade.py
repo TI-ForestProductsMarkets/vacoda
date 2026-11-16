@@ -202,7 +202,7 @@ def reconcile_trade(
         }
 
     logger.info(
-        "🔨 REBUILD — Reconciled Trade Sync output: %s",
+        " REBUILD — Reconciled Trade Sync output: %s",
         "forced" if force else reason,
     )
 

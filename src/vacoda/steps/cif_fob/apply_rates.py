@@ -944,11 +944,6 @@ def apply_cif_fob_weights(
     if len(primary_models) != 1:
         raise RuntimeError(f"Expected one primary model; found {primary_models!r}.")
     primary_model_name = primary_models[0]
-    if "hist_gradient_boosting" not in primary_model_name:
-        raise RuntimeError(
-            "Application expects a HistGradientBoosting primary model, but found "
-            f"{primary_model_name!r}."
-        )
 
     quantiles, calibration_rows = _calibrate_log_error_quantiles(data, levels)
 

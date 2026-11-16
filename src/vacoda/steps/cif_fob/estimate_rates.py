@@ -20,6 +20,7 @@ from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
 from typing import Any
 import json
+import logging
 import platform
 from hashlib import sha256
 import joblib
@@ -69,6 +70,8 @@ MODEL_ROW_KEY = [
     "target_cmd",
 ]
 
+logger = logging.getLogger(__name__)
+
 # ======================================================================
 # Small containers
 # ======================================================================
@@ -115,8 +118,6 @@ class EstimationRunSpec:
     model_cfg: Any
     predictors: list[str]
     categorical_predictors: list[str]
-    is_primary: bool
-
 
 # ======================================================================
 # Generic helpers
@@ -259,18 +260,21 @@ def _prediction_columns_by_run(
             spec.model_cfg,
         )
 
-        column_prefix = (
-            model_prefix
-            if spec.predictor_set_name is None
-            else f"{model_prefix}__{spec.predictor_set_name}"
-        )
+        if spec.predictor_set_name is None:
+            column_prefix = model_prefix
+        else:
+            predictor_set_prefix = "".join(
+                character if character.isalnum() else "_"
+                for character in spec.predictor_set_name.lower()
+            ).strip("_")
+            column_prefix = f"{model_prefix}__{predictor_set_prefix}"
 
         result[spec.run_name] = {
             "full_predicted_factor": (
-                f"{column_prefix}_full_predicted_factor"
+                f"{column_prefix}_estimated_cif_fob_factor"
             ),
             "full_predicted_log_factor": (
-                f"{column_prefix}_full_predicted_log_factor"
+                f"{column_prefix}_predicted_log_cif_fob_factor"
             ),
             "holdout_predicted_factor": (
                 f"{column_prefix}_holdout_predicted_factor"
@@ -287,7 +291,6 @@ def _resolve_run_specs(
     cfg: CifFobConfig,
     model_configs: dict[str, Any],
     predictor_sets: dict[str, Any],
-    primary_model_name: str,
 ) -> list[EstimationRunSpec]:
     """Build concrete algorithm × predictor-set run specifications."""
     estimation_cfg = cfg.method.estimation
@@ -339,14 +342,6 @@ def _resolve_run_specs(
                 run_name = f"{model_name}__{predictor_set_name}"
                 categorical_for_run = categorical_predictors
 
-            is_primary = (
-                model_name == primary_model_name
-                and (
-                    predictor_set_name == "global_predictors"
-                    or predictor_set_name == primary_predictor_set_name
-                )
-            )
-
             run_specs.append(
                 EstimationRunSpec(
                     run_name=run_name,
@@ -359,14 +354,8 @@ def _resolve_run_specs(
                     model_cfg=model_cfg,
                     predictors=predictors,
                     categorical_predictors=categorical_for_run,
-                    is_primary=is_primary,
                 )
             )
-
-    if not any(spec.is_primary for spec in run_specs):
-        raise RuntimeError(
-            "Could not resolve a primary CIF/FOB estimation run."
-        )
 
     return run_specs
 
@@ -374,9 +363,9 @@ def _resolve_run_specs(
 
 def _enabled_model_configs(
     cfg: CifFobConfig,
-) -> tuple[str, dict[str, Any]]:
+) -> dict[str, Any]:
     """
-    Return the configured primary model and enabled model candidates.
+    Return the enabled model candidates.
 
     Only the multi-model ``estimation.models`` configuration is accepted.
     """
@@ -390,7 +379,6 @@ def _enabled_model_configs(
             "The legacy single 'model' block is not supported."
         )
 
-    primary = str(models_cfg.primary).strip().lower()
     enabled = dict(models_cfg.enabled())
 
     if not enabled:
@@ -398,12 +386,7 @@ def _enabled_model_configs(
             "No enabled CIF/FOB estimation models are configured."
         )
 
-    if primary not in enabled:
-        raise ValueError(
-            f"Primary CIF/FOB model {primary!r} is not enabled."
-        )
-
-    return primary, enabled
+    return enabled
 
 def _write_model_artifact(
     *,
@@ -565,7 +548,7 @@ def _aggregate_estimated_rates_payload(
     common_payload: dict[str, Any],
     run_specs: list[EstimationRunSpec],
     model_run_fingerprints: dict[str, str],
-    primary_run_name: str,
+    model_selection: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return the semantic identity of estimated_rates.parquet."""
     return {
@@ -575,7 +558,7 @@ def _aggregate_estimated_rates_payload(
             input_path
         ),
         "common": common_payload,
-        "primary_estimation_run": primary_run_name,
+        "model_selection": model_selection,
         "enabled_estimation_runs": [
             spec.run_name
             for spec in run_specs
@@ -620,7 +603,6 @@ def _write_model_metadata(
         "run_name": run_spec.run_name,
         "model_name": run_spec.model_name,
         "predictor_set_name": run_spec.predictor_set_name,
-        "is_primary": bool(run_spec.is_primary),
         "fitted_model_class": type(fitted_model).__name__,
         "estimator_class": type(
             fitted_model.estimator
@@ -704,6 +686,7 @@ def _print_payload_diff(
     expected: Any,
     path: str = "",
 ) -> None:
+    """Log nested payload diffs at debug level without spamming stdout."""
     if isinstance(stored, dict) and isinstance(expected, dict):
         keys = sorted(set(stored) | set(expected))
 
@@ -711,9 +694,9 @@ def _print_payload_diff(
             child = f"{path}.{key}" if path else key
 
             if key not in stored:
-                print(f"+ {child}: {expected[key]!r}")
+                logger.debug("+ %s: %r", child, expected[key])
             elif key not in expected:
-                print(f"- {child}: {stored[key]!r}")
+                logger.debug("- %s: %r", child, stored[key])
             else:
                 _print_payload_diff(
                     stored[key],
@@ -724,10 +707,7 @@ def _print_payload_diff(
         return
 
     if stored != expected:
-        print(
-            f"~ {path}: "
-            f"{stored!r} -> {expected!r}"
-        )
+        logger.debug("~ %s: %r -> %r", path, stored, expected)
 
 def _validate_model_row_keys(
     frame: pd.DataFrame,
@@ -3006,6 +2986,9 @@ def _inspect_existing_estimated_rates(
                 ANY_VALUE(primary_estimation_run)
                     AS primary_estimation_run,
 
+                ANY_VALUE(selection_mae_log_factor)
+                    AS selection_mae_log_factor,
+
                 ANY_VALUE(estimation_minimum_factor)
                     AS minimum_factor,
 
@@ -3062,6 +3045,7 @@ def _inspect_existing_estimated_rates(
         n_rows,
         primary_model_name,
         primary_estimation_run,
+        selection_mae_log_factor,
         minimum_factor,
         maximum_factor,
         holdout_year,
@@ -3091,17 +3075,12 @@ def _inspect_existing_estimated_rates(
         else 0.0
     )
 
-    primary_model_name_cfg, model_configs = (
-        _enabled_model_configs(cfg)
-    )
-
+    model_configs = _enabled_model_configs(cfg)
     predictor_sets = _configured_predictor_sets(cfg)
-
     run_specs = _resolve_run_specs(
         cfg=cfg,
         model_configs=model_configs,
         predictor_sets=predictor_sets,
-        primary_model_name=primary_model_name_cfg,
     )
 
     prediction_columns_by_run = _prediction_columns_by_run(
@@ -3130,6 +3109,7 @@ def _inspect_existing_estimated_rates(
         # Critical metadata needed downstream.
         "primary_model_name": primary_model_name,
         "primary_estimation_run": primary_estimation_run,
+        "selection_mae_log_factor": selection_mae_log_factor,
         "minimum_factor": minimum_factor,
         "maximum_factor": maximum_factor,
         "holdout_year": holdout_year,
@@ -3293,6 +3273,7 @@ def estimate_cif_fob_rates(
         },
         "estimation": cfg.method.estimation,
         "predictors": cfg.method.predictors,
+        "model_selection_policy": "pooled_log_factor_mae_v1",
     }
 
     config_fp = semantic_config_fingerprint(
@@ -3309,24 +3290,28 @@ def estimate_cif_fob_rates(
 
     estimation_cfg = cfg.method.estimation
 
-    primary_model_name, model_configs = _enabled_model_configs(cfg)
+    model_configs = _enabled_model_configs(cfg)
     predictor_sets = _configured_predictor_sets(cfg)
 
     run_specs = _resolve_run_specs(
         cfg=cfg,
         model_configs=model_configs,
         predictor_sets=predictor_sets,
-        primary_model_name=primary_model_name,
     )
 
+    production_predictor_set = estimation_cfg.primary_predictor_set_name()
+    selection_specs = [
+        spec for spec in run_specs
+        if spec.predictor_set_name == production_predictor_set
+    ]
+    if not selection_specs:
+        raise RuntimeError(
+            f"No enabled CIF/FOB runs use the production predictor set "
+            f"{production_predictor_set!r}."
+        )
+    
     predictors = _all_predictors_for_validation(
         predictor_sets
-    )
-
-    primary_run_name = next(
-        spec.run_name
-        for spec in run_specs
-        if spec.is_primary
     )
 
     minimum_evidence_value = float(
@@ -3350,8 +3335,6 @@ def estimate_cif_fob_rates(
         "  Enabled models: %s",
         ", ".join(model_configs),
     )
-    logger.info("  Primary model: %s", primary_model_name)
-    logger.info("  Primary estimation run: %s", primary_run_name)
     logger.info(
         "  Minimum evidence value: %.2f USD",
         minimum_evidence_value,
@@ -3705,6 +3688,14 @@ def estimate_cif_fob_rates(
         data["prediction_eligible"]
     ].copy()
 
+    selection_years = [
+        year for year in validation_years if year < latest_holdout_year
+    ]
+    if not selection_years:
+        raise RuntimeError(
+            "CIF/FOB model selection requires a validation year "
+            "before the final holdout."
+        )
 
     common_estimation_payload = (
         _common_estimation_payload(
@@ -3741,6 +3732,15 @@ def estimate_cif_fob_rates(
         in run_semantic_payloads.items()
     }
 
+    production_predictor_set = estimation_cfg.primary_predictor_set_name()
+    model_selection = {
+        "metric": "mae_log_factor",
+        "aggregation": "holdout_row_weighted",
+        "production_predictor_set": production_predictor_set,
+        "selection_years": selection_years,
+        "tie_break": "run_name",
+    }
+
     aggregate_semantic_payload = (
         _aggregate_estimated_rates_payload(
             input_path=input_path,
@@ -3749,7 +3749,7 @@ def estimate_cif_fob_rates(
             model_run_fingerprints=(
                 model_run_fingerprints
             ),
-            primary_run_name=primary_run_name,
+            model_selection=model_selection,
         )
     )
 
@@ -3839,10 +3839,7 @@ def estimate_cif_fob_rates(
         & data["clean_estimation_eligible"]
     )
 
-    primary_factor_column: str | None = None
-    primary_log_column: str | None = None
-    primary_holdout_factor_column: str | None = None
-    primary_holdout_log_column: str | None = None
+    prediction_columns: dict[str, tuple[str, str, str, str]] = {}
 
     for run_spec in run_specs:
         
@@ -4150,32 +4147,66 @@ def estimate_cif_fob_rates(
                 100.0 * float(row["p95_ape"]),
             )
 
-        if run_spec.is_primary:
-            primary_log_column = log_column
-            primary_factor_column = factor_column
-            primary_holdout_log_column = holdout_log_column
-            primary_holdout_factor_column = holdout_factor_column
-
-
-    if any(column is None for column in [
-            primary_factor_column,
-            primary_log_column,
-            primary_holdout_factor_column,
-            primary_holdout_log_column,
-        ]
-        ):
-        raise RuntimeError(
-            "Primary model prediction columns were not produced."
-        )
-
-    if primary_factor_column is None or primary_log_column is None:
-        raise RuntimeError(
-            "Primary model predictions were not produced."
+        prediction_columns[run_spec.run_name] = (
+            log_column,
+            factor_column,
+            holdout_log_column,
+            holdout_factor_column,
         )
 
     fold_results = pd.concat(
         all_fold_results,
         ignore_index=True,
+    )
+
+    expected_holdout_counts = (
+        clean.groupby("year").size().reindex(selection_years)
+    )
+    selection_scores: dict[str, float] = {}
+
+    for spec in selection_specs:
+        folds = fold_results.loc[
+            fold_results["model_name"].eq(spec.run_name)
+            & fold_results["validation_year"].isin(selection_years)
+        ].sort_values("validation_year")
+
+        if (
+            folds["validation_year"].tolist() != selection_years
+            or not np.array_equal(
+                folds["n_holdout"].to_numpy(),
+                expected_holdout_counts.to_numpy(),
+            )
+            or (folds["n_holdout"] <= 0).any()
+            or not np.isfinite(folds["mae_log_factor"]).all()
+        ):
+            raise RuntimeError(
+                f"Run {spec.run_name!r} has incomplete or invalid selection folds."
+            )
+
+        selection_scores[spec.run_name] = float(
+            np.average(folds["mae_log_factor"], weights=folds["n_holdout"])
+        )
+
+    winner = min(
+        selection_specs,
+        key=lambda spec: (selection_scores[spec.run_name], spec.run_name),
+    )
+    primary_model_name = winner.model_name
+    primary_run_name = winner.run_name
+    selection_mae_log_factor = selection_scores[primary_run_name]
+
+    (
+        primary_log_column,
+        primary_factor_column,
+        primary_holdout_log_column,
+        primary_holdout_factor_column,
+    ) = prediction_columns[primary_run_name]
+
+    logger.info(
+        "Selected CIF/FOB run: %s (pooled log-factor MAE %.6f, years %s)",
+        primary_run_name,
+        selection_mae_log_factor,
+        ", ".join(map(str, selection_years)),
     )
 
     validation_summary = _summarise_backtests(
@@ -4220,6 +4251,7 @@ def estimate_cif_fob_rates(
 
     data["primary_model_name"] = primary_model_name
     data["primary_estimation_run"] = primary_run_name
+    data["selection_mae_log_factor"] = selection_mae_log_factor
     data["estimation_holdout_year"] = latest_holdout_year
     data["estimation_training_observations"] = len(clean)
     data["estimation_minimum_factor"] = minimum_factor
@@ -4423,6 +4455,8 @@ def estimate_cif_fob_rates(
             "primary_estimation_run": (
                 primary_run_name
             ),
+            "selection_score": selection_mae_log_factor,
+            "model_selection": model_selection,
             "enabled_estimation_runs": [
                 spec.run_name
                 for spec in run_specs
@@ -4503,6 +4537,7 @@ def estimate_cif_fob_rates(
         
         "primary_model_name": primary_model_name,
         "primary_estimation_run": primary_run_name,
+        "selection_mae_log_factor": selection_mae_log_factor,
         "minimum_factor": minimum_factor,
         "maximum_factor": maximum_factor,
         "maximum_factor_rule":maximum_factor_metrics,

@@ -136,7 +136,7 @@ def reconcile_bilateral_quantity(
     )
 
     logger.info(
-        "🔨 REBUILD — Bilateral quantity reconciliation."
+        " REBUILD — Bilateral quantity reconciliation."
     )
 
     input_sql = sql_literal(
