@@ -1057,6 +1057,7 @@ def build_quantity_report(
     prepared_input_path: Path,
     reconciliation_evidence_path: Path,
     synchronized_quantity_path: Path,
+    imputed_quantity_path: Path,
     diagnostics_path: Path,
     run_id: str,
     force: bool = False,
@@ -1067,6 +1068,7 @@ def build_quantity_report(
     prepared_input_path = Path(prepared_input_path)
     reconciliation_evidence_path = Path(reconciliation_evidence_path)
     synchronized_quantity_path = Path(synchronized_quantity_path)
+    imputed_quantity_path = Path(imputed_quantity_path)
     diagnostics_path = Path(diagnostics_path)
 
     for label, path in (
@@ -1074,9 +1076,40 @@ def build_quantity_report(
         ("Quantity reconciliation evidence", reconciliation_evidence_path),
         ("synchronized Quantity output", synchronized_quantity_path),
         ("Quantity diagnostics", diagnostics_path),
+        ("imputed Quantity output", imputed_quantity_path),
     ):
         if not path.exists():
             raise FileNotFoundError(f"{label} not found: {path}")
+
+    con = duckdb.connect()
+    try:
+        con.execute(f"SET threads = {int(cfg.engine.threads)}")
+        diagnostics = con.execute(
+            f"SELECT * FROM read_parquet({sql_literal(diagnostics_path)})"
+        ).fetchdf()
+    finally:
+        con.close()
+
+    imputation_metrics = _diagnostic_group(diagnostics, "quantity_imputation")
+    imputation_labels = {
+        "missing_before": "Reporting rows without usable kg before imputation",
+        "imputed_rows": "Reporting rows filled by imputation",
+        "missing_after": "Reporting rows still without usable kg",
+        "imputed_in_cif_fob_source_scope": (
+            "Imputed reporting rows in the CIF/FOB source scope"
+        ),
+    }
+    imputation_table = pd.DataFrame(
+        [
+            {
+                "Outcome": label,
+                "Rows": _format_integer(
+                    _metric_value(imputation_metrics, metric)
+                ),
+            }
+            for metric, label in imputation_labels.items()
+        ]
+    )
 
     if not cfg.artifacts.enable:
         return {
@@ -3922,9 +3955,21 @@ def build_quantity_report(
                 "synchronized kg quantity under the adopted methodology."
             ),
             "",
-            "## 10. Remaining kg gaps",
+            "### 9.6 Imputation of missing kg",
             "",
-            "### 10.1 Final physical-information coverage",
+            (
+                "For reporting rows with missing kg and positive trade value, "
+                "Quantity estimates kg using the median unit value for the same "
+                "HS6 product, year, and flow direction. The reference pool "
+                f"requires at least {cfg.method.imputation.min_reference_rows:,} "
+                "eligible observations."
+            ),
+            "",
+            _markdown_table(imputation_table),
+            "",
+            "## 10. Kg gaps before imputation",
+            "",
+            "### 10.1 Physical-information coverage before imputation",
             "",
             (
                 "The Quantity module produces three final physical-information fields: "

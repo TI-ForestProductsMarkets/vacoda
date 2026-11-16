@@ -38,6 +38,10 @@ quantity:
 
     synchronized_quantity:
       enable: true
+      filename: "target_{target_hs_lower}_quantity_synced.parquet"
+
+    imputed_quantity:
+      enable: true
       filename: "comtrade_target_{target_hs_lower}_quantity_synced.parquet"
 
     diagnostics:
@@ -72,6 +76,12 @@ quantity:
       # Preserve it separately and never mix it into the canonical
       # kg quantity unless explicitly enabled in future.
       use_as_quantity_proxy: false
+
+
+    # impute missing quantities for records that have a reported value but no reported quantity.
+    # min_reference_rows is the minimum number of reference rows required to perform imputation from HS6 code pool.
+    imputation:
+      min_reference_rows: 30
 
   # --------------------------------------------------------------------
   # Diagnostics

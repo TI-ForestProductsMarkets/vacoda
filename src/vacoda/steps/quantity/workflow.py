@@ -21,6 +21,7 @@ from vacoda.steps.quantity.reconciliation_evidence import (
 )
 from vacoda.steps.quantity.reporting import build_quantity_report
 from vacoda.steps.quantity.synchronize import synchronize_quantity
+from vacoda.steps.quantity.impute import impute_missing_quantities
 from vacoda.steps.quantity.audit import run_quantity_output_audit
 from vacoda.utils.artifacts import (
     require_artifact,
@@ -40,6 +41,7 @@ REQUIRED_PRODUCTS = (
     "prepared_input",
     "reconciliation_evidence",
     "synchronized_quantity",
+    "imputed_quantity",
     "diagnostics",
 )
 
@@ -48,6 +50,7 @@ WORKFLOW_STEPS = [
     "Prepare Quantity input",
     "Build Quantity reconciliation evidence",
     "Synchronize quantity",
+    "Impute missing quantities",
     "Build Quantity diagnostics",
     "Audit Quantity Output",
     "Write Quantity decision report",
@@ -250,19 +253,44 @@ def run_quantity_workflow(
         )
 
         # ==================================================================
-        # Step 4 — Build diagnostics
+        # Step 4 — Impute missing quantities
         # ==================================================================
 
-        diagnostics_result = run_step(
+        imputed_result = run_step(
             logger=logger,
             step_number=4,
             total_steps=TOTAL_WORKFLOW_STEPS,
             title=WORKFLOW_STEPS[3],
+            runner=lambda: impute_missing_quantities(
+                cfg=cfg,
+                synchronized_quantity_path=synchronized_path,
+                run_id=run_id,
+                logger=logger,
+            ),
+        )
+
+        imputed_path = require_artifact(
+            result=imputed_result,
+            path_key="imputed_quantity_path",
+            consumer_step=WORKFLOW_STEPS[4],
+            producer_product="imputed Quantity Parquet",
+        )
+
+        # ==================================================================
+        # Step 5 — Build diagnostics
+        # ==================================================================
+
+        diagnostics_result = run_step(
+            logger=logger,
+            step_number=5,
+            total_steps=TOTAL_WORKFLOW_STEPS,
+            title=WORKFLOW_STEPS[4],
             runner=lambda: build_quantity_diagnostics(
                 cfg=cfg,
                 prepared_input_path=prepared_path,
                 reconciliation_evidence_path=evidence_path,
                 synchronized_quantity_path=synchronized_path,
+                imputed_quantity_path=imputed_path,
                 run_id=run_id,
                 force=force,
                 logger=logger,
@@ -272,19 +300,19 @@ def run_quantity_workflow(
         diagnostics_path = require_artifact(
             result=diagnostics_result,
             path_key="diagnostics_path",
-            consumer_step=WORKFLOW_STEPS[4],
+            consumer_step=WORKFLOW_STEPS[5],
             producer_product="Quantity diagnostics Parquet",
         )
 
         # ==================================================================
-        # Step 5 — Audit Quantity output
+        # Step 6 — Audit Quantity output
         # ==================================================================
 
         audit_result = run_step(
             logger=logger,
-            step_number=5,
+            step_number=6,
             total_steps=TOTAL_WORKFLOW_STEPS,
-            title=WORKFLOW_STEPS[4],
+            title=WORKFLOW_STEPS[5],
             runner=lambda: run_quantity_output_audit(
                 cfg=cfg,
                 synchronized_quantity_path=synchronized_path,
@@ -296,24 +324,25 @@ def run_quantity_workflow(
         audit_path = require_artifact(
             result=audit_result,
             path_key="audit_path",
-            consumer_step=WORKFLOW_STEPS[5],
+            consumer_step=WORKFLOW_STEPS[6],
             producer_product="Quantity audit Parquet",
         )
 
         # ==================================================================
-        # Step 6 — Write Quantity decision report
+        # Step 7 — Write Quantity decision report
         # ==================================================================
 
         report_result = run_step(
             logger=logger,
-            step_number=6,
+            step_number=7,
             total_steps=TOTAL_WORKFLOW_STEPS,
-            title=WORKFLOW_STEPS[5],
+            title=WORKFLOW_STEPS[6],
             runner=lambda: build_quantity_report(
                 cfg=cfg,
                 prepared_input_path=prepared_path,
                 reconciliation_evidence_path=evidence_path,
                 synchronized_quantity_path=synchronized_path,
+                imputed_quantity_path=imputed_path,
                 diagnostics_path=diagnostics_path,
                 run_id=run_id,
                 force=force,
@@ -339,7 +368,17 @@ def run_quantity_workflow(
             and synchronized_path.stat().st_size > 0
         )
 
-        ready_for_cif_fob = synchronized_output_valid
+        ready_for_cif_fob = (
+            audit_result.get("audit_passed") is True
+            and imputed_result.get("audit_passed") is True
+            and imputed_path.is_file()
+            and imputed_path.stat().st_size > 0
+        )
+
+        if not ready_for_cif_fob:
+            raise RuntimeError(
+                "Quantity handoff failed the synchronization or imputation checks."
+            )
 
         if not ready_for_cif_fob:
             raise RuntimeError(
@@ -407,8 +446,9 @@ def run_quantity_workflow(
         # Master-pipeline readiness contract.
         "ready_for_cif_fob": ready_for_cif_fob,
 
-        # Canonical primary output.
-        "output_path": synchronized_path,
+        "output_path": imputed_path,
+        "synchronized_quantity_path": synchronized_path,
+        "imputed_quantity_path": imputed_path,
 
         # Explicit Quantity product paths.
         "prepared_input_path": prepared_path,

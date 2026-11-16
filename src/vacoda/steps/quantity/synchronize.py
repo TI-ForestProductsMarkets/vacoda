@@ -915,7 +915,7 @@ def synchronize_quantity(
             )
 
         audit_passed = True
-        ready_for_diagnostics = audit_passed
+        ready_for_imputation = audit_passed
 
         logger.info(
             "Quantity rows: %s",
@@ -975,8 +975,8 @@ def synchronize_quantity(
             audit_passed,
         )
         logger.info(
-            "  Ready for diagnostics: %s",
-            ready_for_diagnostics,
+            "  Ready for imputation: %s",
+            ready_for_imputation,
         )
 
     finally:
@@ -1006,7 +1006,7 @@ def synchronize_quantity(
         "synchronized_quantity_path": output_path,
 
         "audit_passed": audit_passed,
-        "ready_for_diagnostics": ready_for_diagnostics,
+        "ready_for_imputation": ready_for_imputation,
 
         "n_rows": int(n_rows),
         "n_synchronized": int(n_synchronized),

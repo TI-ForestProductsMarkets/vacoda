@@ -184,6 +184,7 @@ class QuantityProductsConfig:
     prepared_input: QuantityProductConfig
     reconciliation_evidence: QuantityProductConfig
     synchronized_quantity: QuantityProductConfig
+    imputed_quantity: QuantityProductConfig
     diagnostics: QuantityProductConfig
 
     @classmethod
@@ -211,6 +212,7 @@ class QuantityProductsConfig:
             synchronized_quantity=product(
                 "synchronized_quantity"
             ),
+            imputed_quantity=product("imputed_quantity"),
             diagnostics=product("diagnostics"),
         )
 
@@ -348,11 +350,26 @@ class QuantityGrossWeightConfig:
             )
         )
 
+@dataclass(frozen=True)
+class QuantityImputationConfig:
+    min_reference_rows: int
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "QuantityImputationConfig":
+        min_reference_rows = cfg.get("min_reference_rows")
+        if type(min_reference_rows) is not int or min_reference_rows < 1:
+            raise ValueError(
+                "quantity.method.imputation.min_reference_rows "
+                "must be a positive integer."
+            )
+        return cls(min_reference_rows=min_reference_rows)
+    
 
 @dataclass(frozen=True)
 class QuantityMethodConfig:
     kg_reconciliation: QuantityKgReconciliationConfig
     gross_weight: QuantityGrossWeightConfig
+    imputation: QuantityImputationConfig
 
     @classmethod
     def from_dict(
@@ -372,6 +389,12 @@ class QuantityMethodConfig:
                 require_dict(
                     cfg.get("gross_weight"),
                     key="quantity.method.gross_weight",
+                )
+            ),
+            imputation=QuantityImputationConfig.from_dict(
+                require_dict(
+                    cfg.get("imputation"),
+                    key="quantity.method.imputation",
                 )
             ),
         )
@@ -723,6 +746,7 @@ class QuantityConfig:
             "synchronized_quantity": (
                 self.products.synchronized_quantity
             ),
+            "imputed_quantity": self.products.imputed_quantity,
             "diagnostics": self.products.diagnostics,
         }
 
@@ -743,6 +767,7 @@ class QuantityConfig:
                 "prepared_input",
                 "reconciliation_evidence",
                 "synchronized_quantity",
+                "imputed_quantity",
                 "diagnostics",
             )
         }
@@ -758,6 +783,7 @@ class QuantityConfig:
             "synchronized_quantity": (
                 self.products.synchronized_quantity.enable
             ),
+            "imputed_quantity": self.products.imputed_quantity.enable,
             "diagnostics": self.products.diagnostics.enable,
         }
 

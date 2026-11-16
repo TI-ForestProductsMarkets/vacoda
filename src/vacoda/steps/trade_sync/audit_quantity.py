@@ -1,5 +1,5 @@
 """
-src.vacoda.steps.trade_sync.quantity_audit
+src.vacoda.steps.trade_sync.audit_quantity
 
 Integrity audit for Trade Sync bilateral quantity reconciliation.
 
@@ -21,11 +21,10 @@ import duckdb
 from vacoda.config.steps.trade_sync import TradeSyncConfig
 from vacoda.utils.sql import sql_literal
 
+
 # ======================================================================
 # Helpers
 # ======================================================================
-
-
 
 def _valid_output(path: Path) -> bool:
     """Return True when an existing output appears usable."""
@@ -561,13 +560,15 @@ def audit_quantity_reconciliation(
 
                 FROM read_parquet({quantity_sql})
 
-                WHERE quantity_availability_case IN (
-                    'both_quantity',
-                    'export_only',
-                    'import_only'
+                WHERE cif_fob_unresolved IS FALSE
+                AND quantity_reconciled_kg IS NULL
+                AND (
+                    quantity_availability_case IN ('export_only', 'import_only')
+                    OR (
+                        quantity_availability_case = 'both_quantity'
+                        AND quantity_reliability_weighted_kg IS NOT NULL
+                    )
                 )
-                  AND cif_fob_unresolved IS FALSE
-                  AND quantity_reconciled_kg IS NULL
                 """
             ).fetchone()[0]
         )
@@ -993,7 +994,7 @@ def audit_quantity_reconciliation(
 
                                     AND quantity_reconciliation_method IN (
                                         'quantity_reliability_weighted',
-                                        'bilateral_simple_mean_fallback'
+                                        'quantity_weights_unavailable'
                                     )
                                 )
 
@@ -1180,37 +1181,15 @@ def audit_quantity_reconciliation(
             ).fetchone()[0]
         )
 
-        mean_fallback_mismatches = int(
+        weights_unavailable_mismatches = int(
             con.execute(
                 f"""
                 SELECT COUNT(*)
-
                 FROM read_parquet({quantity_sql})
-
-                WHERE quantity_reconciliation_method
-                        = 'bilateral_simple_mean_fallback'
-
+                WHERE quantity_reconciliation_method = 'quantity_weights_unavailable'
                   AND (
-                        quantity_simple_mean_kg
-                            IS NULL
-
-                        OR quantity_reconciled_kg
-                            IS NULL
-
-                        OR ABS(
-                            quantity_reconciled_kg
-                            - quantity_simple_mean_kg
-                        )
-                        >
-                        (
-                            1e-9
-                            * GREATEST(
-                                ABS(
-                                    quantity_simple_mean_kg
-                                ),
-                                1.0
-                            )
-                        )
+                      quantity_reliability_weighted_kg IS NOT NULL
+                      OR quantity_reconciled_kg IS NOT NULL
                   )
                 """
             ).fetchone()[0]
@@ -1218,7 +1197,7 @@ def audit_quantity_reconciliation(
 
         reconciliation_arithmetic_valid = (
             weighted_method_mismatches == 0
-            and mean_fallback_mismatches == 0
+            and weights_unavailable_mismatches == 0
         )
 
         # --------------------------------------------------------------
@@ -1822,8 +1801,8 @@ def audit_quantity_reconciliation(
                     {weighted_method_mismatches}
                         AS weighted_method_mismatches,
 
-                    {mean_fallback_mismatches}
-                        AS mean_fallback_mismatches,
+                    {weights_unavailable_mismatches}
+                        AS weights_unavailable_mismatches,
 
                     {str(reconciliation_arithmetic_valid).upper()}
                         AS reconciliation_arithmetic_valid,
@@ -1958,7 +1937,7 @@ def audit_quantity_reconciliation(
         )
         logger.info(
             "  Method/arithmetic mismatches: %s",
-            f"{invalid_method_rows + weighted_method_mismatches + mean_fallback_mismatches:,}",
+            f"{invalid_method_rows + weighted_method_mismatches + weights_unavailable_mismatches:,}",
         )
 
         logger.info(

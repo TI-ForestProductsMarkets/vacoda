@@ -45,6 +45,7 @@ def build_quantity_diagnostics(
     prepared_input_path: Path,
     reconciliation_evidence_path: Path,
     synchronized_quantity_path: Path,
+    imputed_quantity_path: Path,
     run_id: str,
     force: bool,
     logger,
@@ -82,6 +83,9 @@ def build_quantity_diagnostics(
     synchronized_quantity_path = Path(
         synchronized_quantity_path
     )
+    imputed_quantity_path = Path(
+        imputed_quantity_path
+    )
 
     required_inputs = {
         "prepared Quantity input": prepared_input_path,
@@ -90,6 +94,9 @@ def build_quantity_diagnostics(
         ),
         "synchronized Quantity output": (
             synchronized_quantity_path
+        ),
+        "imputed Quantity output": (
+            imputed_quantity_path
         ),
     }
 
@@ -131,6 +138,10 @@ def build_quantity_diagnostics(
         ),
         "synchronized_quantity": file_fingerprint(
             synchronized_quantity_path,
+            hash_file=True,
+        ),
+        "imputed_quantity": file_fingerprint(
+            imputed_quantity_path,
             hash_file=True,
         ),
     }
@@ -3289,6 +3300,66 @@ def build_quantity_diagnostics(
                 supplementary_quantity_source,
                 is_supplementary_quantity_estimated,
                 population.n_total
+            """
+        )
+
+
+
+        ## Imputation cases
+        imputed_sql = sql_literal(imputed_quantity_path)
+
+        queries.append(
+            f"""
+            WITH summary AS (
+                SELECT
+                    COUNT(*) AS total_rows,
+                    COUNT(*) FILTER (
+                        WHERE NOT COALESCE(
+                            isfinite(synchronized_quantity_kg_before_imputation)
+                            AND synchronized_quantity_kg_before_imputation > 0,
+                            FALSE
+                        )
+                    ) AS missing_before,
+                    COUNT(*) FILTER (
+                        WHERE isfinite(quantity_imputed_kg)
+                          AND quantity_imputed_kg > 0
+                    ) AS imputed_rows,
+                    COUNT(*) FILTER (
+                        WHERE NOT COALESCE(
+                            isfinite(synchronized_quantity_kg)
+                            AND synchronized_quantity_kg > 0,
+                            FALSE
+                        )
+                    ) AS missing_after,
+                    COUNT(*) FILTER (
+                        WHERE isfinite(quantity_imputed_kg)
+                          AND quantity_imputed_kg > 0
+                          AND year BETWEEN {int(cfg.scope.min_year)}
+                                       AND {int(cfg.scope.max_year)}
+                          AND flow_code IN ('X', 'M')
+                          AND CAST(is_reported AS BOOLEAN) IS TRUE
+                          AND CAST(is_aggregate AS BOOLEAN) IS NOT TRUE
+                    ) AS imputed_in_cif_fob_source_scope
+                FROM read_parquet({imputed_sql})
+            )
+            SELECT
+                'quantity_imputation' AS diagnostic_group,
+                m.metric,
+                CAST(m.metric_value AS DOUBLE) AS value,
+                100.0 * m.metric_value / NULLIF(s.total_rows, 0) AS percentage,
+                NULL::INTEGER AS year,
+                NULL::VARCHAR AS category_1,
+                NULL::VARCHAR AS category_2,
+                NULL::VARCHAR AS category_3
+            FROM summary AS s
+            CROSS JOIN LATERAL (
+                VALUES
+                    ('missing_before', s.missing_before),
+                    ('imputed_rows', s.imputed_rows),
+                    ('missing_after', s.missing_after),
+                    ('imputed_in_cif_fob_source_scope',
+                     s.imputed_in_cif_fob_source_scope)
+            ) AS m(metric, metric_value)
             """
         )
 

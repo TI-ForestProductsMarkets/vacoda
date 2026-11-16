@@ -474,7 +474,7 @@ def _run_release_step(
     source_paths = {
         "ingestion": upstream_cfgs["ingestion"].output_path(),
         "hs_sync": upstream_cfgs["hs_sync"].apply_output_path(),
-        "quantity": upstream_cfgs["quantity"].product_path("synchronized_quantity"),
+        "quantity": upstream_cfgs["quantity"].product_path("imputed_quantity"),
         "cif_fob": upstream_cfgs["trade_sync"].input_path(),
         "trade_sync": upstream_cfgs["trade_sync"].product_path("reconciled_trade"),
         "value": upstream_cfgs["value"].product_path("deflated_trade"),

@@ -1,5 +1,5 @@
 """
-src.vacoda.steps.trade_sync.quantity_reconciliation
+src.vacoda.steps.trade_sync.reconcile_quantity
 
 Bilateral quantity reconciliation for Trade Sync.
 
@@ -134,22 +134,6 @@ def reconcile_bilateral_quantity(
         parents=True,
         exist_ok=True,
     )
-
-    if (
-        not force
-        and _valid_output(output_path)
-    ):
-        logger.info(
-            "🔄 REUSE — Reconciled bilateral quantity: %s",
-            output_path,
-        )
-
-        return {
-            "status": "reused",
-            "run_id": run_id,
-            "reconciled_quantity_path": output_path,
-            "output_path": output_path,
-        }
 
     logger.info(
         "🔨 REBUILD — Bilateral quantity reconciliation."
@@ -876,22 +860,14 @@ def reconcile_bilateral_quantity(
                         *,
                         CASE
                             WHEN cif_fob_unresolved IS TRUE THEN NULL
-                            WHEN quantity_availability_case
-                                    = 'both_quantity'
-                             AND quantity_reliability_weighted_kg
-                                    IS NOT NULL
+
+                            WHEN quantity_availability_case = 'both_quantity'
                                 THEN quantity_reliability_weighted_kg
 
-                            WHEN quantity_availability_case
-                                    = 'both_quantity'
-                                THEN quantity_simple_mean_kg
-
-                            WHEN quantity_availability_case
-                                    = 'export_only'
+                            WHEN quantity_availability_case = 'export_only'
                                 THEN export_synchronized_quantity_kg
 
-                            WHEN quantity_availability_case
-                                    = 'import_only'
+                            WHEN quantity_availability_case = 'import_only'
                                 THEN import_synchronized_quantity_kg
 
                             ELSE NULL
@@ -908,7 +884,7 @@ def reconcile_bilateral_quantity(
 
                             WHEN quantity_availability_case
                                     = 'both_quantity'
-                                THEN 'bilateral_simple_mean_fallback'
+                                THEN 'quantity_weights_unavailable'
 
                             WHEN quantity_availability_case
                                     = 'export_only'
@@ -1166,7 +1142,7 @@ def reconcile_bilateral_quantity(
         )
 
         logger.info(
-            "  Simple-mean fallback: %s",
+            "  Quantity weights unavailable: %s",
             f"{n_simple_mean_fallback:,}",
         )
 
