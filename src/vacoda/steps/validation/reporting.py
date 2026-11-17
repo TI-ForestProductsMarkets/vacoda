@@ -2298,6 +2298,9 @@ def build_validation_report(
         ready_for_release = bool(release_decision[0])
         failure_reasons = json.loads(release_decision[1] or "[]")
         selected_model_name = str(release_decision[2])
+        selected_model_display = _model_definition(
+            selected_model_name
+        )
 
         # ============================================================== 
         # Structural integrity
@@ -4591,11 +4594,12 @@ def build_validation_report(
             "## 8. Production inference",
             "",
             (
-                "Production inference uses the selected embedding MLP as the "
-                "primary model. A Random Forest fallback handles observations "
-                "where both HS6 and HS4 categories are unseen. Observations "
-                "with invalid numerical model inputs receive no prediction. "
-                "This stage produces model evidence, not quantity corrections."
+                f"Production inference uses the selected primary model "
+                f"({selected_model_display}). The table below lists all "
+                "models that supplied production predictions and the number "
+                "of rows each model served. Observations with invalid model "
+                "inputs receive no prediction. This stage produces model "
+                "evidence, not quantity corrections."
             ),
             "",
             _markdown_table(inference_models_display),
@@ -4616,17 +4620,11 @@ def build_validation_report(
             "### 8.2. Categorical support",
             "",
             (
-                "The fitted model learned separate categorical representations for "
-                "exporter, importer, HS6 product, and HS4 product group. Support is "
-                "therefore assessed independently for each feature: a row may contain "
-                "a known exporter and importer while its HS6 or HS4 product code was "
-                "never present in the production-fitting population."
-            ),
-            "",
-            (
-                "An unseen category is mapped to the model's reserved unknown-category "
-                "ID. For products, an unseen HS6 can still retain broader product "
-                "information when its HS4 group was seen during fitting."
+                "Categorical support is assessed against the production-fitting "
+                "population for each categorical feature used by the selected "
+                "model. A row may have support for some categorical features "
+                "and not others, and support can differ across models that "
+                "contributed predictions."
             ),
             "",
             get_table_pair(
@@ -4639,10 +4637,10 @@ def build_validation_report(
             "",
             (
                 "The following table lists HS6 products not represented "
-                "during production fitting. When HS4 remains known, the "
-                "embedding MLP supplies the prediction. When both HS6 and "
-                "HS4 are unseen, prediction is routed to the Random Forest "
-                "fallback."
+                "during production fitting. Prediction availability for these "
+                "products depends on model input validity and on whether a "
+                "contributing inference model can generalize to the observed "
+                "feature pattern."
             ),
             "",
             _markdown_table(
@@ -4752,8 +4750,9 @@ def build_validation_report(
             "",
             "- Changes in unit-value distance from an HS×year reference measure "
             "statistical coherence, not necessarily corrections to erroneous data. "
-            "The Random Forest fallback provides predictions for products with "
-            "neither HS6 nor HS4 represented in primary-model training.",
+            "When multiple inference models are active, prediction coverage is "
+            "governed by the selected primary model, model-input validity, and "
+            "the model-routing outcomes reported in Section 8.",
             "",
         ]
 
