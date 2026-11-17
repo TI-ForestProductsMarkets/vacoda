@@ -64,11 +64,13 @@ def prepare_validation_input(
         cfg.method.structural.required_fields
     )
 
+    target_col = str(cfg.model.target.column)
+
     required_fields = tuple(dict.fromkeys((
         *required_fields,
 
-        # Trade Sync quantity candidates
-        "quantity_value_weighted_kg",
+        # Quantity target configured in validation.yaml
+        target_col,
 
         # CIF–FOB unresolved provenance
         "cif_fob_unresolved",
@@ -81,7 +83,6 @@ def prepare_validation_input(
         "trade_value_reconciled_constant_usd",
     )))
 
-    target_col = str(cfg.model.target.column)
     target_sql = '"' + target_col.replace('"', '""') + '"'
 
     checkpoint_path = (

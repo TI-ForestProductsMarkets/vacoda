@@ -304,14 +304,6 @@ def run_validation_workflow(
             producer_product="selected Validation model",
         )
 
-        selected_fallback_model_path = require_artifact(
-            result=selected_model_result,
-            path_key="selected_fallback_model_path",
-            consumer_step=WORKFLOW_STEPS[6],
-            producer_product="selected fallback Validation model",
-        )
-
-
         # ==================================================================
         # Step 6 — Fit Selected Validation Model
         # ==================================================================
@@ -349,35 +341,57 @@ def run_validation_workflow(
         # Step 7 — Fit Fallback Validation Model
         # ==================================================================
 
-        fallback_fitted_result = run_step(
-            logger=logger,
-            step_number=7,
-            total_steps=TOTAL_WORKFLOW_STEPS,
-            title=WORKFLOW_STEPS[6],
-            runner=lambda: fit_selected_validation_model(
-                cfg=cfg,
-                training_sample_path=training_sample_path,
-                selected_model_path=selected_fallback_model_path,
-                run_id=run_id,
-                role="fallback",
-                force=force,
+        primary_model_type = fitted_model_result["model_type"]
+        selected_fallback_model_path = None
+        fallback_fitted_model_path = None
+        fallback_model_bundle_path = None
+        fallback_model_name = None
+        fallback_model_type = None
+
+        if primary_model_type == "embedding_mlp":
+            selected_fallback_model_path = require_artifact(
+                result=selected_model_result,
+                path_key="selected_fallback_model_path",
+                consumer_step=WORKFLOW_STEPS[6],
+                producer_product="selected fallback Validation model",
+            )
+
+            fallback_fitted_result = run_step(
                 logger=logger,
-            ),
-        )
+                step_number=7,
+                total_steps=TOTAL_WORKFLOW_STEPS,
+                title=WORKFLOW_STEPS[6],
+                runner=lambda: fit_selected_validation_model(
+                    cfg=cfg,
+                    training_sample_path=training_sample_path,
+                    selected_model_path=selected_fallback_model_path,
+                    run_id=run_id,
+                    role="fallback",
+                    force=force,
+                    logger=logger,
+                ),
+            )
 
-        fallback_fitted_model_path = require_artifact(
-            result=fallback_fitted_result,
-            path_key="fitted_model_path",
-            consumer_step=WORKFLOW_STEPS[7],
-            producer_product="fitted fallback Validation model",
-        )
-
-        fallback_model_bundle_path = require_artifact(
-            result=fallback_fitted_result,
-            path_key="model_bundle_path",
-            consumer_step=WORKFLOW_STEPS[7],
-            producer_product="fitted fallback Validation model bundle",
-        )
+            fallback_fitted_model_path = require_artifact(
+                result=fallback_fitted_result,
+                path_key="fitted_model_path",
+                consumer_step=WORKFLOW_STEPS[7],
+                producer_product="fitted fallback Validation model",
+            )
+            fallback_model_bundle_path = require_artifact(
+                result=fallback_fitted_result,
+                path_key="model_bundle_path",
+                consumer_step=WORKFLOW_STEPS[7],
+                producer_product="fitted fallback Validation model bundle",
+            )
+            fallback_model_name = fallback_fitted_result["model_name"]
+            fallback_model_type = fallback_fitted_result["model_type"]
+        else:
+            logger.info(
+                "SKIP — Step 7/%d: fallback fitting is optional for primary model type %s.",
+                TOTAL_WORKFLOW_STEPS,
+                primary_model_type,
+            )
 
         # ==================================================================
         # Step 8 — Run Validation inference
@@ -421,8 +435,9 @@ def run_validation_workflow(
                 cfg=cfg,
                 inference_path=inference_path,
                 primary_model_name=fitted_model_result["model_name"],
-                fallback_model_name=fallback_fitted_result["model_name"],
-                fallback_model_type=fallback_fitted_result["model_type"],
+                primary_model_type=primary_model_type,
+                fallback_model_name=fallback_model_name,
+                fallback_model_type=fallback_model_type,
                 run_id=run_id,
                 force=force,
                 logger=logger,

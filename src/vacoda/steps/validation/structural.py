@@ -106,7 +106,7 @@ def audit_structural_integrity(
         "trade_value_reconciled",
         "trade_value_reconciled_constant_usd",
 
-        "quantity_value_weighted_kg",
+        target_col,
 
         "cif_fob_unresolved",
         "cif_fob_unresolved_reason",
@@ -493,7 +493,7 @@ def audit_structural_integrity(
                     AND (
                         trade_value_reconciled IS NOT NULL
                         OR trade_value_reconciled_constant_usd IS NOT NULL
-                        OR quantity_value_weighted_kg IS NOT NULL
+                        OR {target_sql} IS NOT NULL
                     )
                 )
 

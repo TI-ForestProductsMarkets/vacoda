@@ -97,7 +97,7 @@ validation:
     # Prediction target
     # ------------------------------------------------------------
     target:
-      column: "quantity_value_weighted_kg"
+      column: "quantity_reconciled_kg"
       transform: "log"
 
     # ------------------------------------------------------------
@@ -117,7 +117,7 @@ validation:
         - target_hs4
 
       exclude:
-        - quantity_value_weighted_kg
+        - quantity_reconciled_kg
         - quantity_selected_kg
         - quantity_simple_mean_kg
         - trade_synced_quantity_kg
@@ -156,7 +156,7 @@ validation:
           min_samples_leaf: 50
 
       extra_trees:
-        enable: true
+        enable: false
         type: "extra_trees"
         parameters:
           n_estimators: 300
@@ -164,7 +164,7 @@ validation:
           max_features: 0.8
       
       random_forest:
-        enable: true
+        enable: false
         type: "random_forest"
         parameters:
           n_estimators: 300
@@ -187,7 +187,7 @@ validation:
           tol: 0.0001
           
       emb_mlp_bs4096_lr0p001:
-        enable: true
+        enable: false
         type: "embedding_mlp"
         parameters:
           batch_size: 4096
@@ -277,7 +277,7 @@ validation:
         - trade_value_reconciled
         - trade_value_reconciled_constant_usd
 
-        - quantity_value_weighted_kg
+        - quantity_reconciled_kg
 
         - export_synchronized_quantity_kg
         - import_synchronized_quantity_kg
@@ -317,7 +317,7 @@ validation:
       year: "year"
       product: "target_cmd"
 
-      quantity: "quantity_value_weighted_kg"
+      quantity: "quantity_reconciled_kg"
       nominal_value: "trade_value_reconciled"
       constant_value: "trade_value_reconciled_constant_usd"
 

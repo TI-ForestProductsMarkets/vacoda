@@ -288,8 +288,7 @@ def select_validation_model(
     )
 
     logger.info(
-        "%s Select Validation production-model candidate",
-        get_symbols("build"),
+        "Select Validation production-model candidate",
     )
 
     logger.info(
@@ -326,55 +325,78 @@ def select_validation_model(
     fallback_manifest_path = manifest_path_for(fallback_output_path)
 
     primary_reusable = False
-    fallback_reusable = False
     if not force:
         primary_reusable, _ = validate_manifest(
             artifact_path=output_path,
             manifest_path=manifest_path,
             expected_payload=semantic_payload,
         )
-        fallback_reusable, _ = validate_manifest(
-            artifact_path=fallback_output_path,
-            manifest_path=fallback_manifest_path,
-            expected_payload=fallback_payload,
-        )
 
-    if primary_reusable and fallback_reusable:
+    if primary_reusable:
+        fallback_row = None
         con = duckdb.connect()
         try:
             primary_row = con.execute(
                 "SELECT model_name, model_type, selection_value "
-                "FROM read_parquet(?)", [str(output_path)]
+                "FROM read_parquet(?)",
+                [str(output_path)],
             ).fetchone()
-            fallback_row = con.execute(
-                "SELECT model_name, model_type, selection_value "
-                "FROM read_parquet(?)", [str(fallback_output_path)]
-            ).fetchone()
+
+            if primary_row is None:
+                raise RuntimeError("Reusable primary model selection is empty.")
+
+            needs_fallback = str(primary_row[1]) == "embedding_mlp"
+            if needs_fallback:
+                fallback_reusable, _ = validate_manifest(
+                    artifact_path=fallback_output_path,
+                    manifest_path=fallback_manifest_path,
+                    expected_payload=fallback_payload,
+                )
+                if fallback_reusable:
+                    fallback_row = con.execute(
+                        "SELECT model_name, model_type, selection_value "
+                        "FROM read_parquet(?)",
+                        [str(fallback_output_path)],
+                    ).fetchone()
         finally:
             con.close()
 
-        if primary_row is None or fallback_row is None:
-            raise RuntimeError("Reusable model-selection artifact is empty.")
-
-        return {
-            "status": "completed",
-            "run_id": run_id,
-            "selected_model_path": output_path,
-            "selected_model_name": str(primary_row[0]),
-            "selected_model_type": str(primary_row[1]),
-            "selection_metric": "mae_log",
-            "selection_value": float(primary_row[2]),
-            "selected_fallback_model_path": fallback_output_path,
-            "selected_fallback_model_name": str(fallback_row[0]),
-            "selected_fallback_model_type": str(fallback_row[1]),
-            "fallback_selection_metric": "mae_log",
-            "fallback_selection_value": float(fallback_row[2]),
-            "duration_seconds": perf_counter() - start,
-            "reused": True,
-        }
+        if not needs_fallback or fallback_row is not None:
+            logger.info(
+                "REUSE — Selected Validation model: %s (%s), MAE_log=%.6f",
+                primary_row[0],
+                primary_row[1],
+                float(primary_row[2]),
+            )
+            return {
+                "status": "completed",
+                "run_id": run_id,
+                "selected_model_path": output_path,
+                "selected_model_name": str(primary_row[0]),
+                "selected_model_type": str(primary_row[1]),
+                "selection_metric": "mae_log",
+                "selection_value": float(primary_row[2]),
+                "selected_fallback_model_path": (
+                    fallback_output_path if fallback_row is not None else None
+                ),
+                "selected_fallback_model_name": (
+                    str(fallback_row[0]) if fallback_row is not None else None
+                ),
+                "selected_fallback_model_type": (
+                    str(fallback_row[1]) if fallback_row is not None else None
+                ),
+                "fallback_selection_metric": (
+                    "mae_log" if fallback_row is not None else None
+                ),
+                "fallback_selection_value": (
+                    float(fallback_row[2]) if fallback_row is not None else None
+                ),
+                "duration_seconds": perf_counter() - start,
+                "reused": True,
+            }
 
     logger.info(
-        "%s REBUILD — Primary and fallback Validation selections",
+        "%s REBUILD — Validation model selections",
         get_symbols("rebuilt"),
     )
 
@@ -548,29 +570,6 @@ def select_validation_model(
                 "candidate-model coverage."
             )
 
-        # Select the strongest non-embedding candidate independently.
-        fallback_candidates = candidate_summary.loc[
-            candidate_summary["model_type"] != "embedding_mlp"
-        ]
-
-        if fallback_candidates.empty:
-            raise RuntimeError(
-                "No non-embedding candidate available for fallback selection."
-            )
-
-        fallback = fallback_candidates.iloc[0]
-
-        fallback_model_name = str(fallback["model_name"])
-        fallback_model_type = str(fallback["model_type"])
-        fallback_selection_value = float(fallback["mae_log"])
-
-        logger.info(
-            "  Best non-embedding model: %s (%s), MAE_log=%.6f",
-            fallback_model_name,
-            fallback_model_type,
-            fallback_selection_value,
-        )
-
         # --------------------------------------------------------------
         # Select minimum overall OOF MAE
         # --------------------------------------------------------------
@@ -657,26 +656,44 @@ def select_validation_model(
                 f"configuration: {configured_type!r}."
             )
 
-        if fallback_model_name not in enabled_models:
-            raise RuntimeError(
-                f"Fallback model {fallback_model_name!r} is not enabled."
-            )
-        if str(enabled_models[fallback_model_name].type) != fallback_model_type:
-            raise RuntimeError("Fallback model type differs from configuration.")
-        if fallback_model_type == "embedding_mlp":
-            raise RuntimeError("The fallback model must not use embeddings.")
+        needs_fallback = selected_model_type == "embedding_mlp"
+        fallback_model_name = None
+        fallback_model_type = None
+        fallback_selection_value = None
 
-        # Write primary and fallback selection artifacts independently.
+        if needs_fallback:
+            fallback_candidates = candidate_summary.loc[
+                candidate_summary["model_type"] != "embedding_mlp"
+            ]
+            if fallback_candidates.empty:
+                raise RuntimeError(
+                    "The selected embedding model requires a non-embedding "
+                    "fallback, but no candidate is available."
+                )
+
+            fallback = fallback_candidates.iloc[0]
+            fallback_model_name = str(fallback["model_name"])
+            fallback_model_type = str(fallback["model_type"])
+            fallback_selection_value = float(fallback["mae_log"])
+
+            if fallback_model_name not in enabled_models:
+                raise RuntimeError(
+                    f"Fallback model {fallback_model_name!r} is not enabled."
+                )
+            if str(enabled_models[fallback_model_name].type) != fallback_model_type:
+                raise RuntimeError("Fallback model type differs from configuration.")
+
+            _write_selection_artifact(
+                con=con,
+                output_path=fallback_output_path,
+                candidate=fallback,
+                run_id=run_id,
+            )
+
         _write_selection_artifact(
             con=con,
             output_path=output_path,
             candidate=selected,
-            run_id=run_id,
-        )
-        _write_selection_artifact(
-            con=con,
-            output_path=fallback_output_path,
-            candidate=fallback,
             run_id=run_id,
         )
 
@@ -710,18 +727,20 @@ def select_validation_model(
         },
     )
 
-    write_manifest(
-        manifest_path=fallback_manifest_path,
-        artifact_name="validation_selected_fallback_model",
-        semantic_payload=fallback_payload,
-        artifact_path=fallback_output_path,
-        extra={
-            "selected_model_name": fallback_model_name,
-            "selected_model_type": fallback_model_type,
-            "selection_metric": "mae_log",
-            "selection_value": fallback_selection_value,
-        },
-    )
+    if needs_fallback:
+
+        write_manifest(
+            manifest_path=fallback_manifest_path,
+            artifact_name="validation_selected_fallback_model",
+            semantic_payload=fallback_payload,
+            artifact_path=fallback_output_path,
+            extra={
+                "selected_model_name": fallback_model_name,
+                "selected_model_type": fallback_model_type,
+                "selection_metric": "mae_log",
+                "selection_value": fallback_selection_value,
+            },
+        )
 
     elapsed = (
         perf_counter()
@@ -744,11 +763,12 @@ def select_validation_model(
         selection_value,
     )
 
-    logger.info(
-        "  Fallback model: %s (MAE_log=%.6f)",
-        fallback_model_name,
-        fallback_selection_value,
-    )
+    if needs_fallback:
+        logger.info(
+            "  Fallback model: %s (MAE_log=%.6f)",
+            fallback_model_name,
+            fallback_selection_value,
+        )
 
 
     logger.info(
@@ -805,10 +825,12 @@ def select_validation_model(
             selection_value
         ),
 
-        "selected_fallback_model_path": fallback_output_path,
+        "selected_fallback_model_path": (
+            fallback_output_path if needs_fallback else None
+        ),
         "selected_fallback_model_name": fallback_model_name,
         "selected_fallback_model_type": fallback_model_type,
-        "fallback_selection_metric": "mae_log",
+        "fallback_selection_metric": "mae_log" if needs_fallback else None,
         "fallback_selection_value": fallback_selection_value,
 
         "n_predictions": (

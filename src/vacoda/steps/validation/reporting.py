@@ -3096,91 +3096,94 @@ def build_validation_report(
         # Weighted-ensemble best results
         # --------------------------------------------------------------
 
-        weighted_ensemble_best = _require_diagnostic_scope(
+        weighted_ensemble_best = _scope_frame(
             diagnostics,
             "model_weighted_ensemble_best",
         )
+        weighted_ensemble_best_display = pd.DataFrame()
 
-        weighted_ensemble_best_pivot = (
-            weighted_ensemble_best.pivot_table(
-                index=[
-                    "model_name",
-                    "candidate",
-                ],
-                columns="variable",
-                values="value",
-                aggfunc="first",
+        if not weighted_ensemble_best.empty:
+
+            weighted_ensemble_best_pivot = (
+                weighted_ensemble_best.pivot_table(
+                    index=[
+                        "model_name",
+                        "candidate",
+                    ],
+                    columns="variable",
+                    values="value",
+                    aggfunc="first",
+                )
+                .reset_index()
             )
-            .reset_index()
-        )
 
-        for required_metric in (
-            "best_weight_model_a",
-            "best_ensemble_mae_log",
-            "model_a_mae_log",
-            "model_b_mae_log",
-            "better_single_mae_log",
-            "improvement_vs_best_single",
-        ):
-            if (
-                required_metric
-                not in weighted_ensemble_best_pivot.columns
+            for required_metric in (
+                "best_weight_model_a",
+                "best_ensemble_mae_log",
+                "model_a_mae_log",
+                "model_b_mae_log",
+                "better_single_mae_log",
+                "improvement_vs_best_single",
             ):
-                weighted_ensemble_best_pivot[
+                if (
                     required_metric
-                ] = math.nan
-
-        weighted_ensemble_best_display = pd.DataFrame(
-            {
-                "Model A": (
+                    not in weighted_ensemble_best_pivot.columns
+                ):
                     weighted_ensemble_best_pivot[
-                        "model_name"
-                    ].map(_model_plot_label).astype(str)
-                ),
+                        required_metric
+                    ] = math.nan
 
-                "Model B": (
-                    weighted_ensemble_best_pivot[
-                        "candidate"
-                    ].map(_model_plot_label).astype(str)
-                ),
+            weighted_ensemble_best_display = pd.DataFrame(
+                {
+                    "Model A": (
+                        weighted_ensemble_best_pivot[
+                            "model_name"
+                        ].map(_model_plot_label).astype(str)
+                    ),
 
-                "Best weight on A": (
-                    weighted_ensemble_best_pivot[
-                        "best_weight_model_a"
-                    ]
-                ),
+                    "Model B": (
+                        weighted_ensemble_best_pivot[
+                            "candidate"
+                        ].map(_model_plot_label).astype(str)
+                    ),
 
-                "Weight on B": (
-                    1.0
-                    - pd.to_numeric(
+                    "Best weight on A": (
                         weighted_ensemble_best_pivot[
                             "best_weight_model_a"
-                        ],
-                        errors="coerce",
-                    )
-                ),
+                        ]
+                    ),
 
-                "Best ensemble MAE": (
-                    weighted_ensemble_best_pivot[
-                        "best_ensemble_mae_log"
-                    ]
-                ),
+                    "Weight on B": (
+                        1.0
+                        - pd.to_numeric(
+                            weighted_ensemble_best_pivot[
+                                "best_weight_model_a"
+                            ],
+                            errors="coerce",
+                        )
+                    ),
 
-                "Best single-model MAE": (
-                    weighted_ensemble_best_pivot[
-                        "better_single_mae_log"
-                    ]
-                ),
+                    "Best ensemble MAE": (
+                        weighted_ensemble_best_pivot[
+                            "best_ensemble_mae_log"
+                        ]
+                    ),
 
-                "MAE improvement": (
-                    weighted_ensemble_best_pivot[
-                        "improvement_vs_best_single"
-                    ]
-                ),
-            }
-        ).sort_values(
-            "Best ensemble MAE"
-        )
+                    "Best single-model MAE": (
+                        weighted_ensemble_best_pivot[
+                            "better_single_mae_log"
+                        ]
+                    ),
+
+                    "MAE improvement": (
+                        weighted_ensemble_best_pivot[
+                            "improvement_vs_best_single"
+                        ]
+                    ),
+                }
+            ).sort_values(
+                "Best ensemble MAE"
+            )
 
 
         # ==============================================================
@@ -3966,12 +3969,12 @@ def build_validation_report(
             ],
         )
 
-        _plot_weighted_ensemble_curves(
+        weighted_ensemble_curve_path = _plot_weighted_ensemble_curves(
             diagnostics=diagnostics,
-            output_path=figure_paths[
-                "weighted_ensemble_curves"
-            ],
+            output_path=figure_paths["weighted_ensemble_curves"],
         )
+        if weighted_ensemble_curve_path is None:
+            figure_paths.pop("weighted_ensemble_curves")
 
         _plot_inference_product_bias(
             product_metrics=product_metrics,
@@ -4099,6 +4102,39 @@ def build_validation_report(
             ">10×": oof_hs4["share_over_10x"].map(_format_percent),
         })
 
+        weighted_ensemble_lines = []
+        if (
+            not weighted_ensemble_best_display.empty
+            or weighted_ensemble_curve_path is not None
+        ):
+            weighted_ensemble_lines.extend([
+                "### 6.6. Weighted ensemble performance",
+                "",
+                "The blends are evaluated on matched out-of-fold predictions "
+                "on the log scale. Model A receives weight `w` and Model B "
+                "receives weight `1 - w`.",
+                "",
+            ])
+
+            if not weighted_ensemble_best_display.empty:
+                weighted_ensemble_lines.extend([
+                    "A positive MAE improvement means the blend outperformed "
+                    "the stronger of its two constituent models.",
+                    "",
+                    _markdown_table(weighted_ensemble_best_display),
+                    "",
+                ])
+
+            if weighted_ensemble_curve_path is not None:
+                weighted_ensemble_lines.extend([
+                    markdown_image(
+                        "Weighted ensemble performance curves",
+                        weighted_ensemble_curve_path,
+                        document_path=report_path,
+                        width=850,
+                    ),
+                    "",
+                ])
 
         lines = [
             (
@@ -4534,48 +4570,7 @@ def build_validation_report(
                 ),
             ),
             "",
-
-            "### 6.6. Weighted ensemble performance",
-            "",
-            (
-                "The candidate pairs above are evaluated as weighted "
-                "two-model ensembles in log-prediction space. For each "
-                "pair, Model A receives weight `w` and Model B receives "
-                "weight `1 - w`. Performance is evaluated directly on "
-                "the same out-of-fold held-out observations used for "
-                "single-model evaluation."
-            ),
-            "",
-            (
-                "- The summary below reports the best tested weighting "
-                "for each model pair. A positive MAE improvement means "
-                "that the weighted ensemble outperforms the stronger "
-                "of its two constituent models."
-            ),
-            "",
-            _markdown_table(
-                weighted_ensemble_best_display
-            ),
-            "",
-            (
-                "- The figure shows how out-of-fold MAE changes as the "
-                "weight assigned to Model A varies from 0 to 1. "
-                "Endpoints therefore correspond to the standalone "
-                "models, while interior points represent blended "
-                "predictions. A curve dipping below both endpoints "
-                "provides direct evidence that combining the models "
-                "improves predictive accuracy."
-            ),
-            "",
-            markdown_image(
-                "Weighted ensemble performance curves",
-                figure_paths[
-                    "weighted_ensemble_curves"
-                ],
-                document_path=report_path,
-                width=850,
-            ),
-            "",
+            *weighted_ensemble_lines,
             "## 7. Current methodological status",
             "",
             (

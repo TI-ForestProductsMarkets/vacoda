@@ -86,7 +86,7 @@ steps:
     required_ready_flag: "ready_for_validation"
 
   validation:
-    enabled: false
+    enabled: true
     config: "configs/steps/validation.yaml"
     expected_status:
       - "completed"

@@ -90,8 +90,9 @@ def audit_validation_inference(
     cfg: ValidationConfig,
     inference_path: Path,
     primary_model_name: str,
-    fallback_model_name: str,
-    fallback_model_type: str,
+    primary_model_type: str,
+    fallback_model_name: str | None,
+    fallback_model_type: str | None,    
     run_id: str,
     output_path: Path | None = None,
     force: bool = False,
@@ -107,14 +108,29 @@ def audit_validation_inference(
     A successful return implies ``audit_passed=True``.
     """
 
-    if fallback_model_type == "embedding_mlp":
-        raise RuntimeError(
-            "Fallback model must be non-embedding."
-        )
+    primary_is_embedding = primary_model_type == "embedding_mlp"
+
+    if primary_is_embedding:
+        if not fallback_model_name or not fallback_model_type:
+            raise RuntimeError("An embedding primary requires a fallback model identity.")
+        if fallback_model_type == "embedding_mlp":
+            raise RuntimeError("Fallback model must be non-embedding.")
+    elif fallback_model_name is not None or fallback_model_type is not None:
+        raise RuntimeError("A non-embedding primary must run without a fallback.")
 
     primary_name_sql = sql_literal(primary_model_name)
-    fallback_name_sql = sql_literal(fallback_model_name)
-    fallback_type_sql = sql_literal(fallback_model_type)
+    primary_type_sql = sql_literal(primary_model_type)
+    fallback_name_sql = (
+        sql_literal(fallback_model_name) if primary_is_embedding else "NULL"
+    )
+    fallback_type_sql = (
+        sql_literal(fallback_model_type) if primary_is_embedding else "NULL"
+    )
+    needs_fallback_sql = (
+        "(hs6_seen IS FALSE AND hs4_seen IS FALSE)"
+        if primary_is_embedding
+        else "FALSE"
+    )
 
     inference_path = Path(
         inference_path
@@ -611,28 +627,26 @@ def audit_validation_inference(
 
                     COUNT(*) FILTER (
                         WHERE model_input_valid IS TRUE
-                        AND hs6_seen IS FALSE
-                        AND hs4_seen IS FALSE
-                        AND (
-                            NOT model_prediction_available
-                            OR validation_model_name
-                                IS DISTINCT FROM {fallback_name_sql}
-                            OR validation_model_type
-                                IS DISTINCT FROM {fallback_type_sql}
-                        )
+                          AND {needs_fallback_sql}
+                          AND (
+                              model_prediction_available IS DISTINCT FROM TRUE
+                              OR validation_model_name
+                                  IS DISTINCT FROM {fallback_name_sql}
+                              OR validation_model_type
+                                  IS DISTINCT FROM {fallback_type_sql}
+                          )
                     ) AS n_invalid_fallback_routing,
 
                     COUNT(*) FILTER (
                         WHERE model_input_valid IS TRUE
-                        AND (
-                            hs6_seen IS TRUE
-                            OR hs4_seen IS TRUE
-                        )
-                        AND (
-                            NOT model_prediction_available
-                            OR validation_model_name
-                                IS DISTINCT FROM {primary_name_sql}
-                        )
+                          AND NOT ({needs_fallback_sql})
+                          AND (
+                              model_prediction_available IS DISTINCT FROM TRUE
+                              OR validation_model_name
+                                  IS DISTINCT FROM {primary_name_sql}
+                              OR validation_model_type
+                                  IS DISTINCT FROM {primary_type_sql}
+                          )
                     ) AS n_invalid_primary_routing,
 
                     COUNT(*) FILTER (

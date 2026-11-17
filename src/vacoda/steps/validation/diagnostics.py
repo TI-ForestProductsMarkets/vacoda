@@ -653,11 +653,6 @@ def build_diagnostics(
             GROUP BY 1, 2
         """).fetchall()
 
-        if len(production_models) != 2:
-            raise RuntimeError(
-                "Expected primary and fallback model identities."
-            )
-
         for model_name, model_type, n_rows in production_models:
             _append_metric(
                 diagnostics_rows,
