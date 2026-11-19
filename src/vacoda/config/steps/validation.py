@@ -6,9 +6,9 @@ Config reader for configs/steps/validation.yaml.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
+from dataclasses import dataclass, replace
 
 from vacoda.config.base import (
     get_step_config_path,
@@ -943,6 +943,7 @@ class ValidationModelConfig:
             ),
         )
 
+
 # ---------------------------------------------------------------------
 # Structural validation
 # ---------------------------------------------------------------------
@@ -1438,6 +1439,69 @@ class ValidationQuantityPlausibilityConfig:
             ),
         )
 
+# ---------------------------------------------------------------------
+# Value model fitting
+# ---------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ValidationValueModelFeaturesConfig:
+    numeric: dict[str, ValidationNumericFeatureConfig]
+
+    @classmethod
+    def from_dict(
+        cls,
+        cfg: dict[str, Any],
+    ) -> "ValidationValueModelFeaturesConfig":
+        key = "validation.value_model.features.numeric"
+        raw_numeric = require_dict(cfg.get("numeric"), key=key)
+
+        numeric = {}
+        for name, feature_cfg in raw_numeric.items():
+            column = require_str(name, key=f"{key} feature name").strip()
+            if not column or column in numeric:
+                raise ValueError(f"{key} contains an empty or duplicate feature name.")
+
+            feature_key = f"{key}.{column}"
+            numeric[column] = ValidationNumericFeatureConfig.from_dict(
+                require_dict(feature_cfg, key=feature_key),
+                key=feature_key,
+            )
+
+        return cls(numeric=numeric)
+
+
+def _parse_value_model(
+    cfg: dict[str, Any],
+    *,
+    shared_model: ValidationModelConfig,
+) -> ValidationModelConfig:
+    key = "validation.value_model"
+    target = ValidationModelTargetConfig.from_dict(
+        require_dict(cfg.get("target"), key=f"{key}.target")
+    )
+    overrides = ValidationValueModelFeaturesConfig.from_dict(
+        require_dict(cfg.get("features"), key=f"{key}.features")
+    )
+
+    features = ValidationModelFeaturesConfig(
+        numeric=overrides.numeric,
+        categorical=shared_model.features.categorical,
+        exclude=(target.column,),
+    )
+
+    overlap = set(features.numeric) & set(features.categorical)
+    if overlap:
+        raise ValueError(
+            f"{key} has features listed as both numeric and categorical: {sorted(overlap)}"
+        )
+    if target.column in features.feature_columns:
+        raise ValueError(f"{key} target {target.column!r} cannot also be a feature.")
+    if shared_model.validation.year_column not in features.feature_columns:
+        raise ValueError(f"{key} features must include the configured validation year column.")
+
+    return replace(shared_model, target=target, features=features)
+
 
 # ---------------------------------------------------------------------
 # Root config
@@ -1452,6 +1516,7 @@ class ValidationConfig:
     quantity_plausibility: ValidationQuantityPlausibilityConfig
     model: ValidationModelConfig
     method: ValidationMethodConfig
+    value_model: ValidationModelConfig | None = None
     diagnostics: ValidationDiagnosticsConfig
     logging: ValidationLoggingConfig
     artifacts: ValidationArtifactsConfig
@@ -1501,6 +1566,17 @@ class ValidationConfig:
                 target_hs=scope.target_hs,
             ),
             key="validation",
+        )
+        model=model,
+        value_model=value_model,
+        raw_value_model = rendered.get("value_model")
+        value_model = (
+            _parse_value_model(
+                require_dict(raw_value_model, key="validation.value_model"),
+                shared_model=model,
+            )
+            if raw_value_model is not None
+            else None
         )
 
         return cls(
