@@ -542,6 +542,7 @@ def run_validation_workflow(
                 cfg=cfg,
                 prepared_input_path=prepared_path,
                 structural_audit_path=structural_audit_path,
+                quantity_plausibility_result=quantity_plausibility_result,
                 diagnostics_path=diagnostics_path,
                 release_readiness_path=release_readiness_path,
                 run_id=run_id,

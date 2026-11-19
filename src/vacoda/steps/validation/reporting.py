@@ -2152,6 +2152,7 @@ def build_validation_report(
     cfg: ValidationConfig,
     prepared_input_path: Path,
     structural_audit_path: Path,
+    quantity_plausibility_result: dict[str, Any] | None = None,
     diagnostics_path: Path,
     release_readiness_path: Path,
     run_id: str,
@@ -4755,6 +4756,34 @@ def build_validation_report(
             "the model-routing outcomes reported in Section 8.",
             "",
         ]
+
+        if quantity_plausibility_result is not None:
+            result = quantity_plausibility_result
+            summary = result["summary"].copy()
+            assessed = summary[
+                ["below_bounds", "within_bounds", "above_bounds"]
+            ].sum(axis=1)
+            denominator = assessed.where(assessed.gt(0))
+
+            summary["Below (%)"] = 100 * summary["below_bounds"] / denominator
+            summary["Above (%)"] = 100 * summary["above_bounds"] / denominator
+            summary["Outside (%)"] = summary["Below (%)"] + summary["Above (%)"]
+            summary = summary.round(2)
+
+            lines.extend([
+                "## 10. Quantity plausibility",
+                "",
+                f"Calibrated on held-out {result['calibration_year']} flows "
+                f"with a nominal outside rate of {result['nominal_outside_rate']:.0%}.",
+                "Percentages below use assessed rows as the denominator.",
+                "Outside-bound quantities are flagged for review.",
+                "",
+                _markdown_table(summary),
+                "",
+                f"Row-level output: `{result['quantity_plausibility_path']}`",
+                "",
+            ])
+            
 
         insert_markdown_toc(
             lines,
