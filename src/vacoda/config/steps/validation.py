@@ -1397,6 +1397,7 @@ class ValidationConfig:
     input: ValidationInputConfig
     output: ValidationOutputConfig
     products: ValidationProductsConfig
+    quantity_plausibility: ValidationQuantityPlausibilityConfig
     model: ValidationModelConfig
     method: ValidationMethodConfig
     diagnostics: ValidationDiagnosticsConfig
@@ -1467,6 +1468,249 @@ class ValidationConfig:
                 require_dict(
                     rendered.get("products"),
                     key="validation.products",
+                )
+            ),
+            quantity_plausibility=(
+                ValidationQuantityPlausibilityConfig.from_dict(
+                    require_dict(
+                        rendered.get("quantity_plausibility"),
+                        key="validation.quantity_plausibility",
+                    )
+                )
+            ),
+            model=ValidationModelConfig.from_dict(
+                require_dict(
+                    rendered.get("model"),
+                    key="validation.model",
+                )
+            ),
+            method=ValidationMethodConfig.from_dict(
+                require_dict(
+                    rendered.get("method"),
+                    key="validation.method",
+                )
+            ),
+            diagnostics=ValidationDiagnosticsConfig.from_dict(
+                require_dict(
+                    rendered.get("diagnostics"),
+                    key="validation.diagnostics",
+                )
+            ),
+            logging=ValidationLoggingConfig.from_dict(
+                require_dict(
+                    rendered.get("logging"),
+                    key="validation.logging",
+                )
+            ),
+            artifacts=ValidationArtifactsConfig.from_dict(
+                require_dict(
+                    rendered.get("artifacts"),
+                    key="validation.artifacts",
+                )
+            ),
+            scope=scope,
+            engine=engine,
+        )
+
+    def input_path(self) -> Path:
+        return self.input.resolve_path()
+
+    def output_dir(self) -> Path:
+        return self.output.resolve_dir()
+
+    def product_path(self, product_name: str) -> Path:
+        products = {
+            "prepared_input": self.products.prepared_input,
+            "structural_audit": self.products.structural_audit,
+            "training_sample": self.products.training_sample,
+            "model_predictions": self.products.model_predictions,
+            "selected_model": self.products.selected_model,
+            "fitted_model": self.products.fitted_model,
+            "inference": self.products.inference,
+            "inference_audit": self.products.inference_audit,
+            "quantity_plausibility": self.products.quantity_plausibility,
+            "release_readiness": self.products.release_readiness,
+            "diagnostics": self.products.diagnostics,
+        }
+
+        if product_name not in products:
+            raise KeyError(
+                f"Unknown Validation product: {product_name!r}"
+            )
+
+        return (
+            self.output_dir()
+            / products[product_name].filename
+        )
+
+    def resolved_product_paths(self) -> dict[str, Path]:
+        return {
+            name: self.product_path(name)
+            for name in (
+                "prepared_input",
+                "structural_audit",
+                "training_sample",
+                "model_predictions",
+                "selected_model",
+                "fitted_model",
+                "inference",
+                "inference_audit",
+                "quantity_plausibility",
+                "release_readiness",
+                "diagnostics",
+            )
+        }
+
+    def enabled_products(self) -> dict[str, bool]:
+        return {
+            "prepared_input": self.products.prepared_input.enable,
+            "structural_audit": self.products.structural_audit.enable,
+            "training_sample": self.products.training_sample.enable,
+            "model_predictions": self.products.model_predictions.enable,
+            "selected_model": self.products.selected_model.enable,
+            "fitted_model": self.products.fitted_model.enable,
+            "inference": self.products.inference.enable,
+            "inference_audit": self.products.inference_audit.enable,
+            "quantity_plausibility": self.products.quantity_plausibility.enable,
+            "release_readiness": self.products.release_readiness.enable,
+            "diagnostics": self.products.diagnostics.enable,
+        }
+
+    def log_path(self) -> Path:
+        return self.logging.resolve_log_file()
+
+    def artifacts_path(self, run_id: str) -> Path:
+        return self.artifacts.timestamped_path(run_id)
+
+    def artifacts_latest_path(self) -> Path:
+        return self.artifacts.latest_path()
+
+
+# ---------------------------------------------------------------------
+# Quantity plausibility
+# ---------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ValidationQuantityPlausibilityConfig:
+    exclude_latest_years: int
+    nominal_outside_rate: float
+
+    @classmethod
+    def from_dict(
+        cls,
+        cfg: dict[str, Any],
+    ) -> "ValidationQuantityPlausibilityConfig":
+        return cls(
+            exclude_latest_years=require_int(
+                cfg.get("exclude_latest_years"),
+                key=(
+                    "validation.quantity_plausibility."
+                    "exclude_latest_years"
+                ),
+                min_value=0,
+            ),
+            nominal_outside_rate=require_float(
+                cfg.get("nominal_outside_rate"),
+                key=(
+                    "validation.quantity_plausibility."
+                    "nominal_outside_rate"
+                ),
+                min_value=0.0,
+                max_value=100.0,
+            ),
+        )
+
+
+# ---------------------------------------------------------------------
+# Root config
+# ---------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ValidationConfig:
+    input: ValidationInputConfig
+    output: ValidationOutputConfig
+    products: ValidationProductsConfig
+    quantity_plausibility: ValidationQuantityPlausibilityConfig
+    model: ValidationModelConfig
+    method: ValidationMethodConfig
+    diagnostics: ValidationDiagnosticsConfig
+    logging: ValidationLoggingConfig
+    artifacts: ValidationArtifactsConfig
+    scope: PipelineScopeConfig
+    engine: PipelineEngineConfig
+
+    @classmethod
+    def from_yaml(
+        cls,
+        config_path: Path | None = None,
+        *,
+        scope: PipelineScopeConfig | None = None,
+        engine: PipelineEngineConfig | None = None,
+    ) -> "ValidationConfig":
+        return cls.from_dict(
+            load_validation_config(config_path),
+            scope=scope,
+            engine=engine,
+        )
+
+    @classmethod
+    def from_dict(
+        cls,
+        raw: dict[str, Any],
+        *,
+        scope: PipelineScopeConfig | None = None,
+        engine: PipelineEngineConfig | None = None,
+    ) -> "ValidationConfig":
+        if scope is None:
+            raise ValueError(
+                "ValidationConfig requires pipeline scope."
+            )
+
+        if engine is None:
+            raise ValueError(
+                "ValidationConfig requires pipeline engine."
+            )
+
+        root = require_dict(
+            raw.get("validation"),
+            key="validation",
+        )
+
+        rendered = require_dict(
+            _render_value(
+                root,
+                target_hs=scope.target_hs,
+            ),
+            key="validation",
+        )
+
+        return cls(
+            input=ValidationInputConfig.from_dict(
+                require_dict(
+                    rendered.get("input"),
+                    key="validation.input",
+                )
+            ),
+            output=ValidationOutputConfig.from_dict(
+                require_dict(
+                    rendered.get("output"),
+                    key="validation.output",
+                )
+            ),
+            products=ValidationProductsConfig.from_dict(
+                require_dict(
+                    rendered.get("products"),
+                    key="validation.products",
+                )
+            ),
+            quantity_plausibility=(
+                ValidationQuantityPlausibilityConfig.from_dict(
+                    require_dict(
+                        rendered.get("quantity_plausibility"),
+                        key="validation.quantity_plausibility",
+                    )
                 )
             ),
             model=ValidationModelConfig.from_dict(
