@@ -268,6 +268,7 @@ class ValidationProductsConfig:
     model_predictions: ValidationProductConfig
     selected_model:ValidationProductConfig
     fitted_model:ValidationProductConfig
+    value_fitted_model: ValidationProductConfig | None = None
     inference:ValidationProductConfig
     inference_audit: ValidationProductConfig
     quantity_plausibility: ValidationProductConfig
@@ -299,6 +300,7 @@ class ValidationProductsConfig:
             model_predictions=product("model_predictions"),
             selected_model=product("selected_model"),
             fitted_model=product("fitted_model"),
+            value_fitted_model=(product("value_fitted_model") if "value_fitted_model" in cfg else None),
             inference=product("inference"),
             inference_audit=product("inference_audit"),
             quantity_plausibility=product("quantity_plausibility"),
@@ -1516,12 +1518,13 @@ class ValidationConfig:
     quantity_plausibility: ValidationQuantityPlausibilityConfig
     model: ValidationModelConfig
     method: ValidationMethodConfig
-    value_model: ValidationModelConfig | None = None
     diagnostics: ValidationDiagnosticsConfig
     logging: ValidationLoggingConfig
     artifacts: ValidationArtifactsConfig
     scope: PipelineScopeConfig
     engine: PipelineEngineConfig
+    value_model: ValidationModelConfig | None = None
+
 
     @classmethod
     def from_yaml(
@@ -1567,8 +1570,9 @@ class ValidationConfig:
             ),
             key="validation",
         )
-        model=model,
-        value_model=value_model,
+        model = ValidationModelConfig.from_dict(
+            require_dict(rendered.get("model"), key="validation.model")
+        )
         raw_value_model = rendered.get("value_model")
         value_model = (
             _parse_value_model(
@@ -1606,12 +1610,8 @@ class ValidationConfig:
                     )
                 )
             ),
-            model=ValidationModelConfig.from_dict(
-                require_dict(
-                    rendered.get("model"),
-                    key="validation.model",
-                )
-            ),
+            model=model,
+            value_model=value_model,
             method=ValidationMethodConfig.from_dict(
                 require_dict(
                     rendered.get("method"),
@@ -1660,6 +1660,9 @@ class ValidationConfig:
             "release_readiness": self.products.release_readiness,
             "diagnostics": self.products.diagnostics,
         }
+
+        if self.products.value_fitted_model is not None:
+            products["value_fitted_model"] = self.products.value_fitted_model
 
         if product_name not in products:
             raise KeyError(
