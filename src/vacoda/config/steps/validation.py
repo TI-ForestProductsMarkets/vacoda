@@ -1396,6 +1396,7 @@ class ValidationArtifactsConfig:
 class ValidationQuantityPlausibilityConfig:
     exclude_latest_years: int
     nominal_outside_rate: float
+    min_expected_rows_per_tail: int
 
     @classmethod
     def from_dict(
@@ -1420,6 +1421,14 @@ class ValidationQuantityPlausibilityConfig:
                 min_value=0,
             ),
             nominal_outside_rate=percent / 100,
+            min_expected_rows_per_tail=require_int(
+                cfg.get("min_expected_rows_per_tail"),
+                key=(
+                    "validation.quantity_plausibility."
+                    "min_expected_rows_per_tail"
+                ),
+                min_value=1,
+            ),
         )
 
 

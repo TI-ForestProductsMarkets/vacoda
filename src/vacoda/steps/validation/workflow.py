@@ -18,8 +18,6 @@ from vacoda.config.steps.validation import ValidationConfig
 
 from vacoda.steps.validation.prepare_input import prepare_validation_input
 from vacoda.steps.validation.structural import  audit_structural_integrity
-# from vacoda.steps.validation.quantity import select_quantity_candidate
-# from vacoda.steps.validation.quantity_audit import audit_quantity_selection
 from vacoda.steps.validation.training_sample import build_training_sample
 from vacoda.steps.validation.model_training import train_validation_models
 from vacoda.steps.validation.model_selection import select_validation_model
@@ -28,18 +26,17 @@ from vacoda.steps.validation.inference import run_validation_inference
 from vacoda.steps.validation.release_gate import evaluate_release_readiness
 from vacoda.steps.validation.diagnostics import  build_diagnostics
 from vacoda.steps.validation.audit_inference import audit_validation_inference
+from vacoda.steps.validation.quantity_plausibility import build_quantity_plausibility
 from vacoda.steps.validation.reporting import build_validation_report
 from vacoda.utils.artifacts import (
     require_artifact,
     require_enabled_products,
 )
-from vacoda.utils.display import get_symbols
 from vacoda.utils.runtime import (
     run_step,
     separator,
     timed_workflow,
 )
-
 
 REQUIRED_PRODUCTS = (
     "prepared_input",
@@ -49,11 +46,11 @@ REQUIRED_PRODUCTS = (
     "selected_model",
     "fitted_model",
     "inference",
+    "quantity_plausibility",
     "release_readiness",
     "inference_audit",
     "diagnostics",
 )
-
 
 WORKFLOW_STEPS = [
     "Prepare Validation input",
@@ -65,6 +62,7 @@ WORKFLOW_STEPS = [
     "Fit Fallback Validation Model",
     "Run Validation inference",
     "Audit cross-variable consistency",
+    "Build Quantity Plausibility",
     "Evaluate release readiness",
     "Build Diagnostics",
     "Build Validation decision report",
@@ -453,13 +451,31 @@ def run_validation_workflow(
 
 
         # ==================================================================
-        # Step 10 — Evaluate release readiness
+        # Step 10 — Build Quantity Plausibility
+        # ==================================================================
+        quantity_plausibility_result = run_step(
+                logger=logger,
+                step_number=10,
+                total_steps=TOTAL_WORKFLOW_STEPS,
+                title=WORKFLOW_STEPS[9],
+                runner=lambda: build_quantity_plausibility(
+                    cfg=cfg,
+                    training_sample_path=training_sample_path,
+                    inference_path=inference_path,
+                    primary_model_name=fitted_model_result["model_name"],
+                    force=force,
+                    logger=logger,
+                ),
+            )
+
+        # ==================================================================
+        # Step 11 — Evaluate release readiness
         # ==================================================================
         release_readiness_result = run_step(
             logger=logger,
-            step_number=10,
+            step_number=11,
             total_steps=TOTAL_WORKFLOW_STEPS,
-            title=WORKFLOW_STEPS[9],
+            title=WORKFLOW_STEPS[10],
             runner=lambda: evaluate_release_readiness(
                 cfg=cfg,
                 prepared_input_path=prepared_path,
@@ -483,14 +499,14 @@ def run_validation_workflow(
         ready_for_release = release_readiness_result["ready_for_release"]
 
         # ==================================================================
-        # Step 11 — Build diagnostics
+        # Step 12 — Build diagnostics
         # ==================================================================
 
         diagnostic_result = run_step(
             logger=logger,
-            step_number=11,
+            step_number=12,
             total_steps=TOTAL_WORKFLOW_STEPS,
-            title=WORKFLOW_STEPS[10],
+            title=WORKFLOW_STEPS[11],
             runner=lambda: build_diagnostics(
                 cfg=cfg,
                 input_path=training_sample_path,
@@ -509,19 +525,19 @@ def run_validation_workflow(
         diagnostics_path = require_artifact(
             result=diagnostic_result,
             path_key="diagnostics_path",
-            consumer_step=WORKFLOW_STEPS[11],
+            consumer_step=WORKFLOW_STEPS[12],
             producer_product="quantity-model diagnostics",
         )
 
         # ==================================================================
-        # Step 12 — Build Validation report
+        # Step 13 — Build Validation report
         # ==================================================================
 
         report_result = run_step(
             logger=logger,
-            step_number=12,
+            step_number=13,
             total_steps=TOTAL_WORKFLOW_STEPS,
-            title=WORKFLOW_STEPS[11],
+            title=WORKFLOW_STEPS[12],
             runner=lambda: build_validation_report(
                 cfg=cfg,
                 prepared_input_path=prepared_path,

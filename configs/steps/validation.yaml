@@ -75,7 +75,8 @@ validation:
 
   quantity_plausibility:
     exclude_latest_years: 1
-    nominal_outside_rate: 5  # Total outside the band, split equally between the two tails.
+    nominal_outside_percent: 5  # Total outside the band, split equally between the two tails.
+    min_expected_rows_per_tail: 20 # Minimum number of rows expected in each tail to consider the plausibility test valid.
 
   # --------------------------------------------------------------
   # Model development
