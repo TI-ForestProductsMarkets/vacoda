@@ -4144,20 +4144,28 @@ def build_validation_report(
         if quantity_plausibility_result is not None:
             result = quantity_plausibility_result
             summary = result["summary"]
-            outside = summary["below_bounds"] + summary["above_bounds"]
-            assessed = summary["within_bounds"] + outside
+            count_cols = ["within_bounds", "below_bounds", "above_bounds", "not_assessed"]
+            totals = summary[count_cols].sum()
+            counts = pd.concat([
+                summary[["year", *count_cols]],
+                pd.DataFrame([{"year": "All years", **totals.to_dict()}]),
+            ], ignore_index=True)
+
+            outside = counts["below_bounds"] + counts["above_bounds"]
+            assessed = counts["within_bounds"] + outside
             denominator = assessed.where(assessed.gt(0))
-            overall_rate = outside.sum() / assessed.sum() if assessed.sum() else None
+            tail_percent = 50 * result["nominal_outside_rate"]
 
             plausibility_display = pd.DataFrame({
-                "Year": summary["year"].astype(str),
+                "Year": counts["year"].astype(str),
                 "Assessed rows": assessed.map(_format_integer),
-                "Below bounds": (summary["below_bounds"] / denominator).map(_format_percent),
-                "Above bounds": (summary["above_bounds"] / denominator).map(_format_percent),
+                "Within bounds": (counts["within_bounds"] / denominator).map(_format_percent),
+                "Below bounds": (counts["below_bounds"] / denominator).map(_format_percent),
+                "Above bounds": (counts["above_bounds"] / denominator).map(_format_percent),
                 "Outside bounds": (outside / denominator).map(_format_percent),
-                "Not assessed": summary["not_assessed"].map(_format_integer),
+                "Not assessed": counts["not_assessed"].map(_format_integer),
             })
-
+            overall = plausibility_display.iloc[-1]
 
         lines = [
             (
@@ -4739,18 +4747,29 @@ def build_validation_report(
             "",
             "### 8.7. Quantity plausibility by year",
             "",
-            "This check compares each reconciled quantity with the lower and "
-            "upper bounds around the primary model prediction. The bounds "
-            f"were calibrated on held-out {result['calibration_year']} flows "
-            f"with a nominal outside rate of {result['nominal_outside_rate']:.0%}.",
+            f"Across all years, **{overall['Within bounds']}** of assessed quantities "
+            f"({_format_integer(totals['within_bounds'])} of {overall['Assessed rows']}) "
+            "fell within the model-based bounds.",
+            "",
+            "**Method.** VACODA fitted the selected quantity model on years before "
+            f"{result['calibration_year']} and predicted usable flows in that held-out year, "
+            "including flows outside the training MAD cutoff. For each group of predicted "
+            "quantities, it estimated the percentiles at "
+            f"{tail_percent:g}% and {100 - tail_percent:g}% of the observed-to-predicted "
+            "quantity ratio. Multiplying each production prediction by those two ratios "
+            "gives its lower and upper bounds in kg.",
             "",
             _markdown_table(plausibility_display),
             "",
-            f"Across all years, **{_format_percent(overall_rate)}** of assessed "
-            "rows fell outside the bounds. The percentages use assessed rows "
-            "as the denominator. **Not assessed** counts rows for which the "
-            "check could not be applied, for example when the observed "
-            "quantity was missing or the prediction came from a fallback model.",
+            "**Reading the table.** Assessed rows have a usable reconciled quantity and "
+            "applicable model-based bounds. Within bounds includes both boundary values. "
+            "Below and above refer to the reconciled quantity, and outside combines those "
+            "two shares. All percentages use assessed rows as the denominator. "
+            "Not assessed counts rows where the check could not be applied, for example "
+            "because the quantity was missing or the prediction came from a fallback model.",
+            "",
+            "_Outside-bound quantities are flagged for review. These rates describe "
+            "agreement with the production model reference._",
             "",
             "### 8.8. Training selection and UV coherence", 
             "",
