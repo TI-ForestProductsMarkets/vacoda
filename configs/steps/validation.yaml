@@ -78,10 +78,20 @@ validation:
     exclude_latest_years: 1        # Skip the latest available year when choosing the calibration year.
     nominal_outside_percent: 5     # Target 5% outside the bounds: 2.5% below and 2.5% above.
     min_expected_rows_per_tail: 20 # Use fewer size groups when a group would have fewer than 20 expected rows per tail.
-
     
   # --------------------------------------------------------------
-  # Model development
+  # Model development: quantity and value
+  #
+  # model:
+  #   Predicts quantity from trade value and trade-flow features.
+  #   Defines the model candidates, categorical features, training
+  #   sample rules, and validation settings.
+  #
+  # value_model:
+  #   Predicts trade value from quantity and trade-flow features.
+  #   Reuses the selected model type and hyperparameters, categorical
+  #   features, training sample rules, and validation settings from model.
+  #   Defines its own target and numeric predictors and is fitted separately.
   # --------------------------------------------------------------
 
   model:
@@ -269,6 +279,23 @@ validation:
 
 
     random_seed: 42
+
+
+  # --------------------------------------------------------------------
+  # Value model
+  # --------------------------------------------------------------------
+  value_model:
+
+    target:
+      column: "trade_value_reconciled_constant_usd"
+      transform: "log"
+
+    features:
+      numeric:
+        quantity_reconciled_kg:
+          transform: "log"
+        year:
+          transform: "none"
 
   # --------------------------------------------------------------------
   # Method
