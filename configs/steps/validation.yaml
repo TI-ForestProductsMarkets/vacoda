@@ -74,10 +74,12 @@ validation:
   # --------------------------------------------------------------------
 
   quantity_plausibility:
-    exclude_latest_years: 1
-    nominal_outside_percent: 5  # Total outside the band, split equally between the two tails.
-    min_expected_rows_per_tail: 20 # Minimum number of rows expected in each tail to consider the plausibility test valid.
+    max_size_groups: 5             # Fit separate bounds for up to five groups of predicted quantities.
+    exclude_latest_years: 1        # Skip the latest available year when choosing the calibration year.
+    nominal_outside_percent: 5     # Target 5% outside the bounds: 2.5% below and 2.5% above.
+    min_expected_rows_per_tail: 20 # Use fewer size groups when a group would have fewer than 20 expected rows per tail.
 
+    
   # --------------------------------------------------------------
   # Model development
   # --------------------------------------------------------------

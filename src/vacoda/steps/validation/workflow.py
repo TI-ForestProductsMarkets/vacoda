@@ -525,7 +525,7 @@ def run_validation_workflow(
         diagnostics_path = require_artifact(
             result=diagnostic_result,
             path_key="diagnostics_path",
-            consumer_step=WORKFLOW_STEPS[12],
+            consumer_step=WORKFLOW_STEPS[11],
             producer_product="quantity-model diagnostics",
         )
 

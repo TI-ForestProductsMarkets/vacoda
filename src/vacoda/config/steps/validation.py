@@ -1394,6 +1394,7 @@ class ValidationArtifactsConfig:
 
 @dataclass(frozen=True)
 class ValidationQuantityPlausibilityConfig:
+    max_size_groups: int
     exclude_latest_years: int
     nominal_outside_rate: float
     min_expected_rows_per_tail: int
@@ -1412,6 +1413,12 @@ class ValidationQuantityPlausibilityConfig:
             raise ValueError("nominal_outside_percent must be strictly between 0 and 100")
 
         return cls(
+            max_size_groups=require_int(
+                cfg.get("max_size_groups"),
+                key="validation.quantity_plausibility.max_size_groups",
+                min_value=1,
+            ),
+
             exclude_latest_years=require_int(
                 cfg.get("exclude_latest_years"),
                 key=(
