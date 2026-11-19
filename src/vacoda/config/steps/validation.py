@@ -268,7 +268,7 @@ class ValidationProductsConfig:
     model_predictions: ValidationProductConfig
     selected_model:ValidationProductConfig
     fitted_model:ValidationProductConfig
-    value_fitted_model: ValidationProductConfig | None = None
+    value_fitted_model: ValidationProductConfig
     inference:ValidationProductConfig
     inference_audit: ValidationProductConfig
     quantity_plausibility: ValidationProductConfig
@@ -1654,6 +1654,7 @@ class ValidationConfig:
             "model_predictions": self.products.model_predictions,
             "selected_model": self.products.selected_model,
             "fitted_model": self.products.fitted_model,
+            "value_fitted_model": self.products.value_fitted_model,
             "inference": self.products.inference,
             "inference_audit": self.products.inference_audit,
             "quantity_plausibility": self.products.quantity_plausibility,
@@ -1684,6 +1685,7 @@ class ValidationConfig:
                 "model_predictions",
                 "selected_model",
                 "fitted_model",
+                "value_fitted_model",
                 "inference",
                 "inference_audit",
                 "quantity_plausibility",
@@ -1700,6 +1702,11 @@ class ValidationConfig:
             "model_predictions": self.products.model_predictions.enable,
             "selected_model": self.products.selected_model.enable,
             "fitted_model": self.products.fitted_model.enable,
+            "value_fitted_model": (
+                self.products.value_fitted_model.enable
+                if self.products.value_fitted_model is not None
+                else False
+            ),
             "inference": self.products.inference.enable,
             "inference_audit": self.products.inference_audit.enable,
             "quantity_plausibility": self.products.quantity_plausibility.enable,
