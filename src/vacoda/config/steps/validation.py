@@ -270,6 +270,7 @@ class ValidationProductsConfig:
     fitted_model:ValidationProductConfig
     inference:ValidationProductConfig
     inference_audit: ValidationProductConfig
+    quantity_plausibility: ValidationProductConfig
     release_readiness: ValidationProductConfig
     diagnostics: ValidationProductConfig
 
@@ -300,6 +301,7 @@ class ValidationProductsConfig:
             fitted_model=product("fitted_model"),
             inference=product("inference"),
             inference_audit=product("inference_audit"),
+            quantity_plausibility=product("quantity_plausibility"),
             release_readiness=product("release_readiness"),
             diagnostics=product("diagnostics"),
         )
@@ -1517,6 +1519,7 @@ class ValidationConfig:
             "fitted_model": self.products.fitted_model,
             "inference": self.products.inference,
             "inference_audit": self.products.inference_audit,
+            "quantity_plausibility": self.products.quantity_plausibility,
             "release_readiness": self.products.release_readiness,
             "diagnostics": self.products.diagnostics,
         }
@@ -1543,6 +1546,7 @@ class ValidationConfig:
                 "fitted_model",
                 "inference",
                 "inference_audit",
+                "quantity_plausibility",
                 "release_readiness",
                 "diagnostics",
             )
@@ -1558,6 +1562,7 @@ class ValidationConfig:
             "fitted_model": self.products.fitted_model.enable,
             "inference": self.products.inference.enable,
             "inference_audit": self.products.inference_audit.enable,
+            "quantity_plausibility": self.products.quantity_plausibility.enable,
             "release_readiness": self.products.release_readiness.enable,
             "diagnostics": self.products.diagnostics.enable,
         }

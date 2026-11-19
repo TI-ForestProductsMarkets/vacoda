@@ -32,14 +32,6 @@ validation:
     structural_audit:
       enable: true
       filename: "audits/target_{target_hs_lower}_structural_audit.parquet"
-
-    # quantity_selection:
-    #   enable: true
-    #   filename: "quantity/comtrade_target_{target_hs_lower}_quantity_selection.parquet"
-
-    # quantity_selection_audit:
-    #   enable: true
-    #   filename: "audits/target_{target_hs_lower}_quantity_selection_audit.parquet"
       
     training_sample:
       enable: true
@@ -65,6 +57,10 @@ validation:
       enable: true
       filename: "audits/target_{target_hs_lower}_inference_audit.parquet"
 
+    quantity_plausibility:
+      enable: true
+      filename: "diagnostics/target_{target_hs_lower}_quantity_plausibility.parquet"
+
     release_readiness:
       enable: true
       filename: "audits/target_{target_hs_lower}_release_readiness.parquet"
@@ -72,7 +68,15 @@ validation:
     diagnostics:
       enable: true
       filename: "diagnostics/target_{target_hs_lower}_diagnostics.parquet"
-      
+
+  # --------------------------------------------------------------------
+  # Quantity plausibility
+  # --------------------------------------------------------------------
+
+  quantity_plausibility:
+    exclude_latest_years: 1
+    nominal_outside_rate: 5  # Total outside the band, split equally between the two tails.
+
   # --------------------------------------------------------------
   # Model development
   # --------------------------------------------------------------
