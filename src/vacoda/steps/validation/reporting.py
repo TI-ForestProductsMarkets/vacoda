@@ -4140,6 +4140,25 @@ def build_validation_report(
                     "",
                 ])
 
+        quantity_plausibility_lines = []
+        if quantity_plausibility_result is not None:
+            result = quantity_plausibility_result
+            summary = result["summary"]
+            outside = summary["below_bounds"] + summary["above_bounds"]
+            assessed = summary["within_bounds"] + outside
+            denominator = assessed.where(assessed.gt(0))
+            overall_rate = outside.sum() / assessed.sum() if assessed.sum() else None
+
+            plausibility_display = pd.DataFrame({
+                "Year": summary["year"].astype(str),
+                "Assessed rows": assessed.map(_format_integer),
+                "Below bounds": (summary["below_bounds"] / denominator).map(_format_percent),
+                "Above bounds": (summary["above_bounds"] / denominator).map(_format_percent),
+                "Outside bounds": (outside / denominator).map(_format_percent),
+                "Not assessed": summary["not_assessed"].map(_format_integer),
+            })
+
+
         lines = [
             (
                 "# VACODA Validation Model-Development Report — "
@@ -4718,8 +4737,22 @@ def build_validation_report(
             "observations. The table retains all HS6 products, including "
             "unsupported categories._",
             "",
-
-            "### 8.7. Training selection and UV coherence", 
+            "### 8.7. Quantity plausibility by year",
+            "",
+            "This check compares each reconciled quantity with the lower and "
+            "upper bounds around the primary model prediction. The bounds "
+            f"were calibrated on held-out {result['calibration_year']} flows "
+            f"with a nominal outside rate of {result['nominal_outside_rate']:.0%}.",
+            "",
+            _markdown_table(plausibility_display),
+            "",
+            f"Across all years, **{_format_percent(overall_rate)}** of assessed "
+            "rows fell outside the bounds. The percentages use assessed rows "
+            "as the denominator. **Not assessed** counts rows for which the "
+            "check could not be applied, for example when the observed "
+            "quantity was missing or the prediction came from a fallback model.",
+            "",
+            "### 8.8. Training selection and UV coherence", 
             "",
             "Matched observations are compared against the same HS×year UV "
             "reference before and after substituting model-predicted quantity. "
@@ -4733,7 +4766,7 @@ def build_validation_report(
             "been used to fit the model._", 
             "",
 
-            "### 8.8. Held-out performance by product family", "",
+            "### 8.9. Held-out performance by product family", "",
             "The following HS4 families have the largest out-of-fold MAE among "
             "groups with at least 100 held-out predictions. These evaluations "
             "use temporally held-out training-eligible observations.", "",
@@ -4756,34 +4789,6 @@ def build_validation_report(
             "the model-routing outcomes reported in Section 8.",
             "",
         ]
-
-        if quantity_plausibility_result is not None:
-            result = quantity_plausibility_result
-            summary = result["summary"].copy()
-            assessed = summary[
-                ["below_bounds", "within_bounds", "above_bounds"]
-            ].sum(axis=1)
-            denominator = assessed.where(assessed.gt(0))
-
-            summary["Below (%)"] = 100 * summary["below_bounds"] / denominator
-            summary["Above (%)"] = 100 * summary["above_bounds"] / denominator
-            summary["Outside (%)"] = summary["Below (%)"] + summary["Above (%)"]
-            summary = summary.round(2)
-
-            lines.extend([
-                "## 10. Quantity plausibility",
-                "",
-                f"Calibrated on held-out {result['calibration_year']} flows "
-                f"with a nominal outside rate of {result['nominal_outside_rate']:.0%}.",
-                "Percentages below use assessed rows as the denominator.",
-                "Outside-bound quantities are flagged for review.",
-                "",
-                _markdown_table(summary),
-                "",
-                f"Row-level output: `{result['quantity_plausibility_path']}`",
-                "",
-            ])
-            
 
         insert_markdown_toc(
             lines,
