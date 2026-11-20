@@ -24,6 +24,7 @@ from vacoda.steps.validation.model_training import train_validation_models
 from vacoda.steps.validation.model_selection import select_validation_model
 from vacoda.steps.validation.model_fitting import fit_selected_validation_model
 from vacoda.steps.validation.inference import run_validation_inference
+from vacoda.steps.validation.value_model_selection import compare_and_select_value_model
 from vacoda.steps.validation.release_gate import evaluate_release_readiness
 from vacoda.steps.validation.diagnostics import  build_diagnostics
 from vacoda.steps.validation.audit_inference import audit_validation_inference
@@ -61,6 +62,7 @@ WORKFLOW_STEPS = [
     "Select Validation Model",
     "Fit Selected Validation Model",
     "Fit Fallback Validation Model",
+    "Compare and Select Value Validation Model",
     "Fit Value Validation Model",
     "Run Validation inference",
     "Audit cross-variable consistency",
@@ -398,19 +400,46 @@ def run_validation_workflow(
 
 
         # ==================================================================
-        # Step 8 — Fit Value Validation Model
+        # Step 8 — Compare and select Value Validation Model
+        # ==================================================================
+
+        value_selection_result = None
+        value_selected_model_path = None
+
+        if enabled_products["value_selected_model"]:
+            value_selection_result = run_step(
+                logger=logger,
+                step_number=8,
+                total_steps=TOTAL_WORKFLOW_STEPS,
+                title=WORKFLOW_STEPS[7],
+                runner=lambda: compare_and_select_value_model(
+                    cfg=cfg,
+                    training_sample_path=training_sample_path,
+                    force=force,
+                    logger=logger,
+                ),
+            )
+            value_selected_model_path = require_artifact(
+                result=value_selection_result,
+                path_key="value_selected_model_path",
+                consumer_step=WORKFLOW_STEPS[8],
+                producer_product="selected value Validation model",
+            )
+
+        # ==================================================================
+        # Step 9 — Fit Value Validation Model
         # ==================================================================
         value_fitted_model_result = None
         if enabled_products["value_fitted_model"]:
             value_fitted_model_result = run_step(
                 logger=logger,
-                step_number=8,
+                step_number=9,
                 total_steps=TOTAL_WORKFLOW_STEPS,
-                title=WORKFLOW_STEPS[7],
+                title=WORKFLOW_STEPS[8],
                 runner=lambda: fit_selected_validation_model(
                     cfg=replace(cfg, model=cfg.value_model),
                     training_sample_path=training_sample_path,
-                    selected_model_path=selected_model_path,
+                    selected_model_path=value_selected_model_path,
                     output_path=cfg.product_path("value_fitted_model"),
                     run_id=run_id,
                     force=force,
@@ -419,14 +448,14 @@ def run_validation_workflow(
             )
 
         # ==================================================================
-        # Step 9 — Run Validation inference
+        # Step 10 — Run Validation inference
         # ==================================================================
 
         inference_result = run_step(
             logger=logger,
-            step_number=9,
+            step_number=10,
             total_steps=TOTAL_WORKFLOW_STEPS,
-            title=WORKFLOW_STEPS[8],
+            title=WORKFLOW_STEPS[9],
             runner=lambda: run_validation_inference(
                 cfg=cfg,
                 input_path=training_sample_path,
@@ -443,19 +472,19 @@ def run_validation_workflow(
         inference_path = require_artifact(
             result=inference_result,
             path_key="inference_path",
-            consumer_step=WORKFLOW_STEPS[9],
+            consumer_step=WORKFLOW_STEPS[10],
             producer_product="Validation inference",
         )
 
         # ==================================================================
-        # Step 10 — Audit Validation inference
+        # Step 11 — Audit Validation inference
         # ==================================================================
 
         inference_audit_result = run_step(
             logger=logger,
-            step_number=10,
+            step_number=11,
             total_steps=TOTAL_WORKFLOW_STEPS,
-            title=WORKFLOW_STEPS[9],
+            title=WORKFLOW_STEPS[10],
             runner=lambda: audit_validation_inference(
                 cfg=cfg,
                 inference_path=inference_path,
@@ -472,19 +501,19 @@ def run_validation_workflow(
         inference_audit_path = require_artifact(
             result=inference_audit_result,
             path_key="inference_audit_path",
-            consumer_step=WORKFLOW_STEPS[10],
+            consumer_step=WORKFLOW_STEPS[11],
             producer_product="Validation inference audit",
         )
 
 
         # ==================================================================
-        # Step 11 — Build Quantity Plausibility
+        # Step 12 — Build Quantity Plausibility
         # ==================================================================
         quantity_plausibility_result = run_step(
                 logger=logger,
-                step_number=11,
+                step_number=12,
                 total_steps=TOTAL_WORKFLOW_STEPS,
-                title=WORKFLOW_STEPS[10],
+                title=WORKFLOW_STEPS[11],
                 runner=lambda: build_quantity_plausibility(
                     cfg=cfg,
                     training_sample_path=training_sample_path,
@@ -496,13 +525,13 @@ def run_validation_workflow(
             )
 
         # ==================================================================
-        # Step 12 — Evaluate release readiness
+        # Step 13 — Evaluate release readiness
         # ==================================================================
         release_readiness_result = run_step(
             logger=logger,
-            step_number=12,
+            step_number=13,
             total_steps=TOTAL_WORKFLOW_STEPS,
-            title=WORKFLOW_STEPS[11],
+            title=WORKFLOW_STEPS[12],
             runner=lambda: evaluate_release_readiness(
                 cfg=cfg,
                 prepared_input_path=prepared_path,
@@ -519,21 +548,21 @@ def run_validation_workflow(
         release_readiness_path = require_artifact(
             result=release_readiness_result,
             path_key="release_readiness_path",
-            consumer_step=WORKFLOW_STEPS[11],
+            consumer_step=WORKFLOW_STEPS[12],
             producer_product="Validation release readiness",
         )
 
         ready_for_release = release_readiness_result["ready_for_release"]
 
         # ==================================================================
-        # Step 13 — Build diagnostics
+        # Step 14 — Build diagnostics
         # ==================================================================
 
         diagnostic_result = run_step(
             logger=logger,
-            step_number=13,
+            step_number=14,
             total_steps=TOTAL_WORKFLOW_STEPS,
-            title=WORKFLOW_STEPS[12],
+            title=WORKFLOW_STEPS[13],
             runner=lambda: build_diagnostics(
                 cfg=cfg,
                 input_path=training_sample_path,
@@ -552,19 +581,19 @@ def run_validation_workflow(
         diagnostics_path = require_artifact(
             result=diagnostic_result,
             path_key="diagnostics_path",
-            consumer_step=WORKFLOW_STEPS[12],
+            consumer_step=WORKFLOW_STEPS[13],
             producer_product="quantity-model diagnostics",
         )
 
         # ==================================================================
-        # Step 14 — Build Validation report
+        # Step 15 — Build Validation report
         # ==================================================================
 
         report_result = run_step(
             logger=logger,
-            step_number=14,
+            step_number=15,
             total_steps=TOTAL_WORKFLOW_STEPS,
-            title=WORKFLOW_STEPS[13],
+            title=WORKFLOW_STEPS[14],
             runner=lambda: build_validation_report(
                 cfg=cfg,
                 prepared_input_path=prepared_path,

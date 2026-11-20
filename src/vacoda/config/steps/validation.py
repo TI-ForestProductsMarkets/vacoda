@@ -266,10 +266,12 @@ class ValidationProductsConfig:
     structural_audit: ValidationProductConfig
     training_sample: ValidationProductConfig
     model_predictions: ValidationProductConfig
-    selected_model:ValidationProductConfig
-    fitted_model:ValidationProductConfig
+    selected_model: ValidationProductConfig
+    fitted_model: ValidationProductConfig
     value_fitted_model: ValidationProductConfig
-    inference:ValidationProductConfig
+    value_selected_model: ValidationProductConfig
+    value_model_predictions: ValidationProductConfig
+    inference: ValidationProductConfig
     inference_audit: ValidationProductConfig
     quantity_plausibility: ValidationProductConfig
     release_readiness: ValidationProductConfig
@@ -301,6 +303,8 @@ class ValidationProductsConfig:
             selected_model=product("selected_model"),
             fitted_model=product("fitted_model"),
             value_fitted_model=(product("value_fitted_model") if "value_fitted_model" in cfg else None),
+            value_selected_model=(product("value_selected_model") if "value_selected_model" in cfg else None),
+            value_model_predictions=(product("value_model_predictions") if "value_model_predictions" in cfg else None),
             inference=product("inference"),
             inference_audit=product("inference_audit"),
             quantity_plausibility=product("quantity_plausibility"),
@@ -1502,7 +1506,18 @@ def _parse_value_model(
     if shared_model.validation.year_column not in features.feature_columns:
         raise ValueError(f"{key} features must include the configured validation year column.")
 
-    return replace(shared_model, target=target, features=features)
+    candidates = _require_str_list(cfg.get("candidates"), key=f"{key}.candidates")
+    enabled = shared_model.models.enabled()
+
+    if not candidates or set(candidates) - enabled.keys():
+        raise ValueError(f"{key}.candidates must name enabled shared models.")
+
+    return replace(
+        shared_model,
+        target=target,
+        features=features,
+        models=ValidationModelsConfig({name: enabled[name] for name in candidates}),
+    )
 
 
 # ---------------------------------------------------------------------
@@ -1655,6 +1670,8 @@ class ValidationConfig:
             "selected_model": self.products.selected_model,
             "fitted_model": self.products.fitted_model,
             "value_fitted_model": self.products.value_fitted_model,
+            "value_selected_model": self.products.value_selected_model,
+            "value_model_predictions": self.products.value_model_predictions,
             "inference": self.products.inference,
             "inference_audit": self.products.inference_audit,
             "quantity_plausibility": self.products.quantity_plausibility,
@@ -1686,6 +1703,8 @@ class ValidationConfig:
                 "selected_model",
                 "fitted_model",
                 "value_fitted_model",
+                "value_selected_model",
+                "value_model_predictions",
                 "inference",
                 "inference_audit",
                 "quantity_plausibility",
@@ -1707,6 +1726,8 @@ class ValidationConfig:
                 if self.products.value_fitted_model is not None
                 else False
             ),
+            "value_selected_model": self.products.value_selected_model.enable,
+            "value_model_predictions": self.products.value_model_predictions.enable,
             "inference": self.products.inference.enable,
             "inference_audit": self.products.inference_audit.enable,
             "quantity_plausibility": self.products.quantity_plausibility.enable,

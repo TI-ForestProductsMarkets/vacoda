@@ -48,9 +48,17 @@ validation:
     fitted_model:
       enable: true
       filename: "model/target_{target_hs_lower}_fitted_model.parquet"
-    
-    value_fitted_model:
+
+    value_selected_model:
       enable: true
+      filename: "model/value/target_{target_hs_lower}_value_selected_model.parquet"
+    
+    value_model_predictions:
+      enable: true
+      filename: "model/value/target_{target_hs_lower}_value_model_predictions.parquet"
+
+    value_fitted_model:
+      enable: false
       filename: "model/value/target_{target_hs_lower}_value_fitted_model.parquet"
 
     inference:
@@ -289,6 +297,11 @@ validation:
   # Value model
   # --------------------------------------------------------------------
   value_model:
+
+    candidates:
+      - emb_mlp_bs4096_lr0p001
+      - histogram_gradient_boosting
+      - random_forest
 
     target:
       column: "trade_value_reconciled_constant_usd"

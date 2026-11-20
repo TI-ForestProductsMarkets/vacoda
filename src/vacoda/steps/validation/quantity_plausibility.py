@@ -79,35 +79,21 @@ def _predict_calibration_fold(*, cfg, training, holdout, model, logger):
 
     return _inverse_target(values=transformed, cfg=cfg)
 
-
-def _build_or_reuse_calibration(
-    *, cfg, con, training_sample_path, calibration_path, primary_model_name, force, logger,
-):
+def _load_calibration_fold(*, 
+                           cfg, 
+                           con, 
+                           training_sample_path, 
+                           key_columns=(),
+                           ) -> tuple[int, pd.DataFrame, pd.DataFrame]:
+    """Load selected training rows and usable rows from a later year."""
     settings = cfg.quantity_plausibility
-    model = cfg.model.models.enabled()[primary_model_name]
-    payload = {
-        "training_sample": file_stat_fingerprint(training_sample_path),
-        "settings": asdict(settings),
-        "target": asdict(cfg.model.target),
-        "features": asdict(cfg.model.features),
-        "validation": asdict(cfg.model.validation),
-        "model_name": primary_model_name,
-        "model": asdict(model),
-        "random_seed": cfg.model.random_seed,
-        "training_cutoff": cfg.model.training_sample.max_normalized_uv_distance_mad,
-    }
-    manifest = manifest_path_for(calibration_path)
-    reusable, reason = validate_manifest(
-        artifact_path=calibration_path, manifest_path=manifest, expected_payload=payload,
-    )
-    if reusable and not force:
-        logger.info("Reusing quantity plausibility calibration: %s", calibration_path)
-        return
 
     target = cfg.model.target.column
     numeric = cfg.model.features.numeric
     year_col = cfg.model.validation.year_column
-    columns = dict.fromkeys([year_col, target, *numeric, *cfg.model.features.categorical])
+    columns = dict.fromkeys([
+        *key_columns, year_col, target, *numeric, *cfg.model.features.categorical,
+    ])
     projection = ", ".join(map(sql_identifier, columns))
     year = sql_identifier(year_col)
     source = sql_literal(training_sample_path)
@@ -149,7 +135,6 @@ def _build_or_reuse_calibration(
         )
 
     calibration_year = eligible_years[-1]
-    logger.info("Calibrating quantity bounds on %d (%s)", calibration_year, reason)
     training = con.execute(
         f"SELECT {projection} FROM read_parquet({source}) "
         f"WHERE {year} < ? AND training_selected IS TRUE",
@@ -161,6 +146,39 @@ def _build_or_reuse_calibration(
         f"WHERE {year} = ? AND {usable}",
         [calibration_year],
     ).df()
+
+    return calibration_year, training, holdout
+
+
+def _build_or_reuse_calibration(
+    *, cfg, con, training_sample_path, calibration_path, primary_model_name, force, logger,
+):
+    settings = cfg.quantity_plausibility
+    model = cfg.model.models.enabled()[primary_model_name]
+    payload = {
+        "training_sample": file_stat_fingerprint(training_sample_path),
+        "settings": asdict(settings),
+        "target": asdict(cfg.model.target),
+        "features": asdict(cfg.model.features),
+        "validation": asdict(cfg.model.validation),
+        "model_name": primary_model_name,
+        "model": asdict(model),
+        "random_seed": cfg.model.random_seed,
+        "training_cutoff": cfg.model.training_sample.max_normalized_uv_distance_mad,
+    }
+    manifest = manifest_path_for(calibration_path)
+    reusable, reason = validate_manifest(
+        artifact_path=calibration_path, manifest_path=manifest, expected_payload=payload,
+    )
+    if reusable and not force:
+        logger.info("Reusing quantity plausibility calibration: %s", calibration_path)
+        return
+
+    calibration_year, training, holdout = _load_calibration_fold(
+        cfg=cfg, con=con, training_sample_path=training_sample_path,
+    )
+    target = cfg.model.target.column
+    logger.info("Calibrating quantity bounds on %d (%s)", calibration_year, reason)
 
     logger.info("Quantity calibration: %s training rows, %s held-out rows",
                 f"{len(training):,}", f"{len(holdout):,}")
