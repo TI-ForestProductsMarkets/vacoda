@@ -1476,6 +1476,9 @@ class ValidationValueModelFeaturesConfig:
 
         return cls(numeric=numeric)
 
+class ValidationConfigError(ValueError):
+    """A user-correctable validation configuration error."""
+
 
 def _parse_value_model(
     cfg: dict[str, Any],
@@ -1507,18 +1510,30 @@ def _parse_value_model(
         raise ValueError(f"{key} features must include the configured validation year column.")
 
     candidates = _require_str_list(cfg.get("candidates"), key=f"{key}.candidates")
-    enabled = shared_model.models.enabled()
+    if not candidates:
+        raise ValueError(f"{key}.candidates must name at least one model.")
 
-    if not candidates or set(candidates) - enabled.keys():
-        raise ValueError(f"{key}.candidates must name enabled shared models.")
+    shared_candidates = shared_model.models.models
+    unknown = set(candidates) - shared_candidates.keys()
+    if unknown:
+        raise ValueError(
+            f"{key}.candidates contains unknown models: {', '.join(sorted(unknown))}."
+        )
+
+    disabled = [name for name in candidates if not shared_candidates[name].enable]
+    if disabled:
+        raise ValidationConfigError(
+            f"{key}.candidates lists models disabled in validation.model.models: "
+            f"{', '.join(disabled)}. Remove them from {key}.candidates "
+            "or enable them in validation.model.models."
+        )
 
     return replace(
         shared_model,
         target=target,
         features=features,
-        models=ValidationModelsConfig({name: enabled[name] for name in candidates}),
+        models=ValidationModelsConfig({name: shared_candidates[name] for name in candidates})
     )
-
 
 # ---------------------------------------------------------------------
 # Root config

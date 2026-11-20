@@ -1442,10 +1442,14 @@ def _fit_sklearn_production_model(
         f"{len(y_all):,}",
     )
 
-    estimator.fit(
-        x_encoded,
-        y_all,
+    fit_started = perf_counter()
+    estimator.fit(x_encoded, y_all)
+    logger.info(
+        "  %s fit completed in %.1f minutes.",
+        model_type,
+        (perf_counter() - fit_started) / 60,
     )
+
 
     return {
         "estimator": estimator,
@@ -2677,9 +2681,7 @@ def fit_selected_validation_model(
             ),
         }
 
-        with temporary_bundle_path.open(
-            "wb"
-        ) as handle:
+        with temporary_bundle_path.open("wb") as handle:
 
             pickle.dump(
                 bundle,
@@ -2688,6 +2690,8 @@ def fit_selected_validation_model(
                     pickle.HIGHEST_PROTOCOL
                 ),
             )
+
+            logger.info("  Writing fitted model bundle to %s", bundle_path)
 
         temporary_bundle_path.replace(
             bundle_path

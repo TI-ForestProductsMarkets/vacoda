@@ -23,7 +23,7 @@ from vacoda.config.steps.quantity import QuantityConfig
 from vacoda.config.steps.cif_fob import CifFobConfig
 from vacoda.config.steps.trade_sync import TradeSyncConfig
 from vacoda.config.steps.value import ValueConfig
-from vacoda.config.steps.validation import ValidationConfig
+from vacoda.config.steps.validation import ValidationConfig, ValidationConfigError
 
 ## Processing
 from vacoda.steps.ingestion.staging import build_comtrade_ingestion_layer
@@ -1370,9 +1370,9 @@ def run_pipeline(
             checkpoint_dir=checkpoint_dir,
             logger=logger,
         )
-    except Exception as exc:
-        logger.exception("Could not build pipeline preflight plan.")
-        raise SystemExit(1) from exc
+    except ValidationConfigError as exc:
+        logger.error("Invalid validation configuration. %s", exc)
+        raise SystemExit(1) from None
     
     if cfg.pipeline.require_confirmation:
         confirmed = _confirm_pipeline_run(

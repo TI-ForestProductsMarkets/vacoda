@@ -23,7 +23,7 @@ from vacoda.pipeline.artifact_manifest import (
     write_manifest,
 )
 from vacoda.utils.sql import sql_identifier, sql_literal
-
+from vacoda.steps.validation.training_sample import training_definition_name
 
 def _calibration_edges(
     prediction: np.ndarray,
@@ -235,12 +235,20 @@ def build_quantity_plausibility(
     force: bool = False,
     logger,
 ) -> dict[str, Any] | None:
+    
     settings = cfg.quantity_plausibility
     if not cfg.products.quantity_plausibility.enable:
         return None
 
-    output_path = cfg.product_path("quantity_plausibility")
+    ## Saved under training definition name to avoid collisions with other training definitions
+    base_output_path = cfg.product_path("quantity_plausibility")
+    output_path = (
+        base_output_path.parent
+        / training_definition_name(cfg=cfg)
+        / base_output_path.name
+    )
     calibration_path = output_path.with_stem(f"{output_path.stem}_bounds")
+
     inputs = {training_sample_path.resolve(), inference_path.resolve()}
     if (
         output_path.resolve() in inputs
