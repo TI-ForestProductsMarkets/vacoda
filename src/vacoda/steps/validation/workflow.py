@@ -46,7 +46,6 @@ REQUIRED_PRODUCTS = (
     "model_predictions",
     "selected_model",
     "fitted_model",
-    "value_fitted_model",
     "inference",
     "quantity_plausibility",
     "release_readiness",
