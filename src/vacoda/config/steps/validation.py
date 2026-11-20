@@ -1523,9 +1523,7 @@ def _parse_value_model(
     disabled = [name for name in candidates if not shared_candidates[name].enable]
     if disabled:
         raise ValidationConfigError(
-            f"{key}.candidates lists models disabled in validation.model.models: "
-            f"{', '.join(disabled)}. Remove them from {key}.candidates "
-            "or enable them in validation.model.models."
+            f"Remove disabled models from value_model.candidates: {', '.join(disabled)}."
         )
 
     return replace(

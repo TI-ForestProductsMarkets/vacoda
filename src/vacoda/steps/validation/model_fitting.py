@@ -32,6 +32,7 @@ from pathlib import Path
 import pickle
 from time import perf_counter
 from typing import Any
+from math import isclose
 
 import duckdb
 import numpy as np
@@ -57,6 +58,7 @@ from vacoda.pipeline.artifact_manifest import (
     manifest_path_for,
     validate_manifest,
     write_manifest,
+    read_manifest
 )
 
 from vacoda.steps.validation.model_training import (
@@ -80,6 +82,39 @@ from vacoda.utils.sql import sql_literal
 
 FITTED_MODEL_CACHE_VERSION = 1
 
+
+def _validate_fitted_model_manifest(
+    *,
+    artifact_path: Path,
+    manifest_path: Path,
+    expected_payload: dict[str, Any],
+) -> tuple[bool, str]:
+    reusable, reason = validate_manifest(
+        artifact_path=artifact_path,
+        manifest_path=manifest_path,
+        expected_payload=expected_payload,
+    )
+    if reusable or reason != "semantic fingerprint changed":
+        return reusable, reason
+
+    manifest = read_manifest(manifest_path) or {}
+    cached_selection = manifest.get("semantic_payload", {}).get("selection", {})
+    cached_mae = cached_selection.get("value")
+    expected_selection = expected_payload["selection"]
+
+    if not isinstance(cached_mae, (int, float)) or not isclose(
+        cached_mae, expected_selection["value"], rel_tol=1e-12
+    ):
+        return reusable, reason
+
+    return validate_manifest(
+        artifact_path=artifact_path,
+        manifest_path=manifest_path,
+        expected_payload={
+            **expected_payload,
+            "selection": {**expected_selection, "value": cached_mae},
+        },
+    )
 
 # ======================================================================
 # Selected-model artifact
@@ -2033,7 +2068,7 @@ def fit_selected_validation_model(
         (
             metadata_reusable,
             metadata_reason,
-        ) = validate_manifest(
+        ) = _validate_fitted_model_manifest(
             artifact_path=output_path,
             manifest_path=(
                 metadata_manifest_path
@@ -2046,7 +2081,7 @@ def fit_selected_validation_model(
         (
             bundle_reusable,
             bundle_reason,
-        ) = validate_manifest(
+        ) = _validate_fitted_model_manifest(
             artifact_path=bundle_path,
             manifest_path=(
                 bundle_manifest_path

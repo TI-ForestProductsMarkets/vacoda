@@ -301,7 +301,6 @@ validation:
     candidates:
       - emb_mlp_bs4096_lr0p001
       - histogram_gradient_boosting
-      - random_forest
 
     target:
       column: "trade_value_reconciled_constant_usd"
