@@ -3713,6 +3713,10 @@ def build_validation_report(
                         "Absolute log residual"
                     ]
                 ),
+                "Multiplicative disagreement": (
+                    residual_quantiles["Absolute log residual"]
+                    .map(lambda value: f"{math.exp(value):.2f}×")
+                ),
             }
         )
 
