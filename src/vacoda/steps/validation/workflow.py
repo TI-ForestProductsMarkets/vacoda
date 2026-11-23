@@ -577,6 +577,7 @@ def run_validation_workflow(
                 selected_model_path=selected_model_path,
                 value_selected_model_path=value_selected_model_path,
                 plausibility_path=plausibility_path,
+                value_fitted_model_path=value_fitted_model_path,
                 run_id=run_id,
                 force=force,
                 logger=logger,

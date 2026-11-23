@@ -59,6 +59,7 @@ def evaluate_release_readiness(
     inference_audit_path: Path,
     selected_model_path: Path,
     value_selected_model_path: Path,
+    value_fitted_model_path: Path,
     plausibility_path: Path,
     run_id: str,
     logger,
@@ -80,7 +81,11 @@ def evaluate_release_readiness(
         "inference_audit": Path(inference_audit_path),
         "selected_model": Path(selected_model_path),
         "value_selected_model": Path(value_selected_model_path),
+        "value_fitted_model": Path(value_fitted_model_path),
         "plausibility": Path(plausibility_path),
+        "value_calibration": Path(plausibility_path).with_stem(
+            f"{Path(plausibility_path).stem}_value_bounds"
+        ),
     }
 
     checks: dict[str, bool] = {}
@@ -106,6 +111,16 @@ def evaluate_release_readiness(
         "value_model_name": None,
         "value_model_type": None,
         "value_selection_value": None,
+        "value_fit_training_rows": None,
+        "value_fit_min_training_year": None,
+        "value_fit_max_training_year": None,
+        "value_fit_bundle_path": None,
+        "value_calibration_year": None,
+        "value_calibration_rows": None,
+        "value_calibration_size_groups": None,
+        "value_calibration_nominal_outside_rate": None,
+        "value_residual_invalid_rows": None,
+        "value_plausibility_classification_mismatches": None,
         "n_value_model_input_valid_rows": None,
         "n_value_prediction_rows": None,
         "value_eligible_prediction_coverage": None,
@@ -158,6 +173,35 @@ def evaluate_release_readiness(
                     metrics["n_inference_rows"] = int(audit["n_rows"])
             except (duckdb.Error, ValueError, TypeError) as exc:
                 record(f"{label}_passed", False, f"Unreadable {label}: {exc}")
+
+        # Require the value-specific invariants already computed by the
+        # cross-variable inference audit; do not silently rely on the aggregate
+        # audit_passed flag alone.
+        value_audit_fields = (
+            "n_value_prediction_availability_mismatches",
+            "n_invalid_value_prediction_routing",
+            "n_value_inverse_transform_mismatches",
+            "n_value_residual_availability_mismatches",
+            "n_value_residual_formula_mismatches",
+            "n_value_absolute_residual_mismatches",
+            "n_value_model_identity_mismatches",
+            "n_training_rows_invalid_value_input",
+            "n_joint_unit_value_identity_mismatches",
+        )
+        if checks["inference_audit_exists"]:
+            try:
+                audit_values = _one_row(con, paths["inference_audit"], value_audit_fields)
+                for field, value in audit_values.items():
+                    metrics[field] = int(value)
+                errors = {field: n for field, n in metrics.items()
+                          if field in value_audit_fields and n != 0}
+                record("value_inference_audit_valid", not errors,
+                       f"Value inference audit has nonzero mismatch counters: {errors}")
+            except (duckdb.Error, ValueError, TypeError, OverflowError) as exc:
+                record("value_inference_audit_valid", False,
+                       f"Cannot verify value-specific inference audit: {exc}")
+        else:
+            record("value_inference_audit_valid", False, "Inference audit unavailable")
 
         # Validate one selected-model record and its cross-validation evidence.
         if checks["selected_model_exists"]:
@@ -356,6 +400,117 @@ def evaluate_release_readiness(
                    "Selected value-model artifact unavailable")
 
         # ---------------------------------------------------------------
+        # Value production fit: selected identity, nonempty training evidence,
+        # real persisted weights. Selection statistics are NOT fit identity.
+        # ---------------------------------------------------------------
+        if checks["value_fitted_model_exists"] and checks["value_selected_model_exists"]:
+            try:
+                fit = _one_row(con, paths["value_fitted_model"], (
+                    "model_name", "model_type", "training_rows",
+                    "min_training_year", "max_training_year",
+                    "training_data_sha256", "model_bundle_path",
+                ))
+                n_fit = int(fit["training_rows"])
+                first_year = int(fit["min_training_year"])
+                last_year = int(fit["max_training_year"])
+                bundle_string = str(fit["model_bundle_path"] or "").strip()
+                bundle = Path(bundle_string) if bundle_string else None
+                fingerprint = str(fit["training_data_sha256"] or "")
+                matches = (
+                    fit["model_name"] == metrics["value_model_name"]
+                    and fit["model_type"] == metrics["value_model_type"]
+                )
+                fit_ok = (
+                    matches and n_fit > 0 and first_year <= last_year
+                    and len(fingerprint) == 64
+                )
+                bundle_ok = bool(bundle and bundle.is_file() and bundle.stat().st_size > 0)
+                metrics.update({
+                    "value_fit_training_rows": n_fit,
+                    "value_fit_min_training_year": first_year,
+                    "value_fit_max_training_year": last_year,
+                    "value_fit_bundle_path": bundle_string,
+                })
+                record("value_production_fit_valid", fit_ok,
+                       "Value production-fit metadata is invalid or differs from selection")
+                record("value_production_bundle_available", bundle_ok,
+                       f"Value production weights are missing or empty: {bundle_string}")
+            except (duckdb.Error, ValueError, TypeError, OSError, OverflowError) as exc:
+                record("value_production_fit_valid", False, f"Cannot verify value fit: {exc}")
+                record("value_production_bundle_available", False,
+                       f"Cannot verify value production weights: {exc}")
+        else:
+            record("value_production_fit_valid", False, "Value fitted or selected model is missing")
+            record("value_production_bundle_available", False,
+                   "Value fitted or selected model is missing")
+
+        # ---------------------------------------------------------------
+        # Value calibration: genuine held-out evidence, positive ratio
+        # intervals, coherent predicted-value groups, and model identity.
+        # A 95% observed within-bounds rate is not a pass/fail criterion.
+        # ---------------------------------------------------------------
+        if checks["value_calibration_exists"] and checks["value_selected_model_exists"]:
+            try:
+                expected = {
+                    "size_group", "lower_size", "upper_size", "lower_ratio",
+                    "upper_ratio", "calibration_rows", "calibration_year",
+                    "nominal_outside_rate", "model_name",
+                }
+                absent = sorted(expected - _columns(con, paths["value_calibration"]))
+                if absent:
+                    raise ValueError(f"Missing value calibration fields: {absent}")
+                calibration = con.execute(f"""
+                    SELECT size_group, lower_size, upper_size, lower_ratio,
+                           upper_ratio, calibration_rows, calibration_year,
+                           nominal_outside_rate, model_name
+                    FROM read_parquet({sql_literal(paths['value_calibration'])})
+                    ORDER BY lower_size, upper_size
+                """).fetchall()
+                if not calibration:
+                    raise ValueError("Empty value calibration")
+                bad = False
+                total_rows = 0
+                common_year = set()
+                common_rate = set()
+                for index, (group, lo, hi, ratio_lo, ratio_hi, n, yr, rate, name) in enumerate(calibration):
+                    total_rows += int(n)
+                    common_year.add(int(yr))
+                    common_rate.add(float(rate))
+                    bad |= (
+                        int(group) != index or int(n) <= 0
+                        or lo is None or hi is None or ratio_lo is None or ratio_hi is None
+                        or float(lo) < 0 or not math.isfinite(float(lo))
+                        or float(hi) <= float(lo)
+                        or not math.isfinite(float(ratio_lo))
+                        or not math.isfinite(float(ratio_hi))
+                        or float(ratio_lo) <= 0 or float(ratio_hi) < float(ratio_lo)
+                        or name != metrics["value_model_name"]
+                    )
+                    if index == 0:
+                        bad |= float(lo) != 0.0
+                    else:
+                        bad |= float(lo) != float(calibration[index - 1][2])
+                bad |= (not math.isinf(float(calibration[-1][2]))
+                        or len(common_year) != 1 or len(common_rate) != 1
+                        or not all(0 < rate < 1 for rate in common_rate))
+                metrics.update({
+                    "value_calibration_year": next(iter(common_year)) if len(common_year) == 1 else None,
+                    "value_calibration_rows": total_rows,
+                    "value_calibration_size_groups": len(calibration),
+                    "value_calibration_nominal_outside_rate": (
+                        next(iter(common_rate)) if len(common_rate) == 1 else None
+                    ),
+                })
+                record("value_calibration_evidence_valid", not bad and total_rows > 0,
+                       "Value calibration groups, ratio bounds, or held-out evidence are invalid")
+            except (duckdb.Error, ValueError, TypeError, OverflowError) as exc:
+                record("value_calibration_evidence_valid", False,
+                       f"Cannot verify value calibration: {exc}")
+        else:
+            record("value_calibration_evidence_valid", False,
+                   "Value calibration or value selection is missing")
+
+        # ---------------------------------------------------------------
         # Value inference: independent eligibility mask and coverage.
         # Do not penalize rows with an unavailable predictor.
         # ---------------------------------------------------------------
@@ -399,15 +554,49 @@ def evaluate_release_readiness(
                        f" (predicted={predicted:,}, null flags={null_flags:,})")
                 record("value_model_identity_valid", identity_mismatches == 0,
                        f"Value model identity differs for {identity_mismatches:,} predictions")
+                # Prediction and residual fields must agree with observed value.
+                # Tolerance concerns only floating-point representation.
+                residual_check = con.execute(f"""
+                    SELECT COUNT(*) FILTER (
+                        WHERE value_model_prediction_available IS TRUE AND (
+                            model_prediction_value IS NULL
+                            OR NOT isfinite(model_prediction_value)
+                            OR model_prediction_value <= 0
+                            OR model_prediction_log_value IS NULL
+                            OR NOT isfinite(model_prediction_log_value)
+                            OR ABS(LN(model_prediction_value) - model_prediction_log_value) > 1e-5
+                        )
+                    ) + COUNT(*) FILTER (
+                        WHERE observed_value_valid_for_log IS TRUE
+                          AND value_model_prediction_available IS TRUE AND (
+                            value_log_residual IS NULL
+                            OR value_abs_log_residual IS NULL
+                            OR NOT isfinite(value_log_residual)
+                            OR NOT isfinite(value_abs_log_residual)
+                            OR ABS(value_log_residual -
+                                (LN(trade_value_reconciled_constant_usd) -
+                                 model_prediction_log_value)) > 1e-5
+                            OR ABS(value_abs_log_residual - ABS(value_log_residual)) > 1e-5
+                        )
+                    )
+                    FROM read_parquet({sql_literal(paths['inference'])})
+                """).fetchone()[0]
+                metrics["value_residual_invalid_rows"] = int(residual_check)
+                record("value_prediction_residuals_valid", int(residual_check) == 0,
+                       f"Value prediction/residual identities invalid for {int(residual_check):,} checks")
             except (duckdb.Error, ValueError, TypeError) as exc:
                 record("value_eligible_prediction_coverage_complete", False,
                        f"Cannot verify value prediction coverage: {exc}")
                 record("value_model_identity_valid", False,
                        f"Cannot verify value model identity: {exc}")
+                record("value_prediction_residuals_valid", False,
+                       f"Cannot verify value residuals: {exc}")
         else:
             record("value_eligible_prediction_coverage_complete", False,
                    "Value inference unavailable")
             record("value_model_identity_valid", False,
+                   "Value inference unavailable")
+            record("value_prediction_residuals_valid", False,
                    "Value inference unavailable")
 
         # ---------------------------------------------------------------
@@ -481,15 +670,40 @@ def evaluate_release_readiness(
                            and bad_bounds == 0,
                            f"Invalid {label} plausibility: {bad_status:,} statuses, "
                            f"{bad_bounds:,} assessed bounds")
+                    if label == "value":
+                        mismatch = con.execute(f"""
+                            SELECT COUNT(*)
+                            FROM read_parquet({scored}) AS p
+                            JOIN read_parquet({source}) AS i
+                              USING (year, exporter_iso, importer_iso, target_cmd)
+                            WHERE p.value_plausibility_status IS DISTINCT FROM
+                              CASE
+                                WHEN value_lower_constant_usd IS NULL
+                                  OR value_upper_constant_usd IS NULL
+                                  OR NOT isfinite(value_lower_constant_usd)
+                                  OR NOT isfinite(value_upper_constant_usd)
+                                  THEN 'not_assessed'
+                                WHEN i.trade_value_reconciled_constant_usd < p.value_lower_constant_usd
+                                  THEN 'below_bounds'
+                                WHEN i.trade_value_reconciled_constant_usd > p.value_upper_constant_usd
+                                  THEN 'above_bounds'
+                                ELSE 'within_bounds'
+                              END
+                        """).fetchone()[0]
+                        metrics["value_plausibility_classification_mismatches"] = int(mismatch)
+                        record("value_plausibility_classification_valid", int(mismatch) == 0,
+                               f"Value plausibility classification differs for {int(mismatch):,} rows")
             except (duckdb.Error, ValueError, TypeError) as exc:
                 for check in ("plausibility_population_preserved",
                               "quantity_plausibility_structure_valid",
-                              "value_plausibility_structure_valid"):
+                              "value_plausibility_structure_valid",
+                               "value_plausibility_classification_valid"):
                     record(check, False, f"Cannot verify {check}: {exc}")
         else:
             for check in ("plausibility_population_preserved",
                           "quantity_plausibility_structure_valid",
-                          "value_plausibility_structure_valid"):
+                          "value_plausibility_structure_valid",
+                               "value_plausibility_classification_valid"):
                 record(check, False, "Plausibility or inference artifact unavailable")
 
     finally:

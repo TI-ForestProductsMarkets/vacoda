@@ -10,8 +10,10 @@ The diagnostics are deliberately separated into three concepts:
 2. training-sample diagnostics, which audit the canonical bilateral training
    population defined by HS × year UV support, positive UV MAD, and normalized
    UV distance;
-3. model diagnostics, which summarize expanding-window out-of-fold prediction
-   performance.
+3. quantity-model diagnostics, which summarize expanding-window out-of-fold
+   prediction performance;
+4. trade-value diagnostics, which report held-out model selection, fitting,
+   inference coverage and independent plausibility assessment.
 
 No reporter-side disagreement criterion is used to define the training sample.
 """

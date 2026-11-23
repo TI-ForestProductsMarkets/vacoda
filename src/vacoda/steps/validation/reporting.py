@@ -19,6 +19,7 @@ human-readable tables, figures, and methodological interpretation.
 
 from __future__ import annotations
 import json
+import re
 from pathlib import Path
 import math
 import shutil
@@ -32,6 +33,7 @@ matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
 import pandas as pd
+import numpy as np
 
 from vacoda.config.paths import get_figure_dir
 from vacoda.config.steps.validation import ValidationConfig
@@ -44,6 +46,158 @@ from vacoda.visualization.relationships import plot_figure_pair
 # ======================================================================
 # Helpers
 # ======================================================================
+
+
+
+def _organize_validation_report_sections(lines: list[str]) -> list[str]:
+    """Group existing quantity, value, and overall evidence without recalculating it.
+
+    Preserve all source tables/figures; move quantity inference alongside its
+    model evaluation, put value modelling and plausibility under one part,
+    and keep structural integrity and release readiness independent.
+    """
+    def locate(title: str) -> int:
+        try:
+            return lines.index(title)
+        except ValueError as exc:
+            raise RuntimeError(f"Validation report is missing section {title!r}") from exc
+
+    release_start = locate("## Release readiness")
+    toc = locate("__TOC__")
+    quantity_start = locate("## 1. Structural integrity")
+    value_start = locate("## 8. Value-model development, inference and plausibility")
+    method_start = locate("## 8. Current methodological status")
+    inference_start = locate("## 9. Production inference")
+    science_start = locate("## 10. Scientific interpretation")
+    if not (release_start < toc < quantity_start < value_start < method_start
+            < inference_start < science_start):
+        raise RuntimeError("Unexpected Validation report section ordering")
+
+    structural_end = locate("## 2. Trade bilateral quantity methodology")
+    front = lines[:release_start] + lines[toc:quantity_start]
+    structural = lines[quantity_start:structural_end]
+    quantity = lines[structural_end:value_start] + lines[inference_start:science_start]
+    value = lines[value_start:method_start]
+    overall = lines[method_start:inference_start] + lines[science_start:]
+    release = lines[release_start:toc]
+
+    def relabel_section(parts: list[str], old: int, new: int) -> list[str]:
+        pattern = re.compile(rf"^(#{{2,3}}) {old}(\.\d+)?\. (.*)$")
+        result = []
+        for line in parts:
+            match = pattern.match(line)
+            if match:
+                sub = match.group(2) or ""
+                line = f"{match.group(1)} {new}{sub}. {match.group(3)}"
+            result.append(line)
+        return result
+
+    quantity = relabel_section(quantity, 9, 7)
+    overall = relabel_section(overall, 8, 9)
+    release = ["## 11. Release readiness" if x == "## Release readiness" else x
+               for x in release]
+
+    def nest_section(parts: list[str]) -> list[str]:
+        nested = []
+        for line in parts:
+            if line.startswith("### "):
+                line = "#" + line
+            elif line.startswith("## "):
+                line = "#" + line
+            nested.append(line)
+        return nested
+
+    return (front
+            + structural
+            + ["## Part I — Trade-Quantity Validation", ""]
+            + nest_section(quantity)
+            + ["## Part II — Trade-Value Validation", ""]
+            + nest_section(value)
+            + overall
+            + release)
+
+
+def _release_readiness_summary(decision: pd.Series) -> list[str]:
+    """Summarize the actual gate checks without inventing success statuses.
+
+    Every required Boolean check must exist in the release artifact. The gate
+    owns the decisions; reporting only groups and renders their results.
+    """
+    groups = (
+        ("Structural integrity", "Input, required artifacts, and structural audit", (
+            "prepared_input_exists", "structural_audit_exists", "structural_audit_passed",
+        )),
+        ("Quantity model", "Selection evidence and eligible prediction coverage", (
+            "selected_model_exists", "inference_exists", "model_evidence_valid",
+            "eligible_prediction_coverage_complete",
+        )),
+        ("Value model", "Selection, production fit, model bundle, inference and residuals", (
+            "value_selected_model_exists", "value_fitted_model_exists",
+            "value_model_evidence_valid", "value_production_fit_valid",
+            "value_production_bundle_available",
+            "value_eligible_prediction_coverage_complete", "value_model_identity_valid",
+            "value_prediction_residuals_valid",
+        )),
+        ("Quantity plausibility", "Population and status/bound integrity", (
+            "plausibility_exists", "quantity_plausibility_structure_valid",
+        )),
+        ("Value plausibility", "2024 calibration evidence, bounds and classification", (
+            "value_calibration_exists", "value_calibration_evidence_valid",
+            "value_plausibility_structure_valid", "value_plausibility_classification_valid",
+        )),
+        ("Data preservation", "Bilateral keys, values, quantity and provenance unchanged", (
+            "population_preserved", "monetary_values_preserved",
+            "quantity_candidate_preserved", "imputation_provenance_preserved",
+        )),
+        ("Cross-variable consistency", "Inference audits and plausibility population", (
+            "inference_audit_exists", "inference_audit_passed",
+            "value_inference_audit_valid", "plausibility_population_preserved",
+        )),
+    )
+    required = [key for _, _, keys in groups for key in keys]
+    missing = [key for key in required if key not in decision.index]
+    if missing:
+        raise RuntimeError(
+            "Release-readiness artifact does not contain the current mandatory "
+            "checks (rerun the updated release gate): " + ", ".join(missing)
+        )
+
+    def strict_bool(key: str) -> bool:
+        value = decision[key]
+        if pd.isna(value) or not isinstance(value, (bool, np.bool_)):
+            raise RuntimeError(f"Release-readiness check {key!r} is not Boolean: {value!r}")
+        return bool(value)
+
+    table = pd.DataFrame([
+        {
+            "Validation area": area,
+            "Verification performed": description,
+            "Checks": f"{sum(strict_bool(k) for k in keys)}/{len(keys)}",
+            "Status": "PASS" if all(strict_bool(k) for k in keys) else "FAIL",
+        }
+        for area, description, keys in groups
+    ])
+    gate_ready = strict_bool("ready_for_release")
+    all_checks_pass = all(strict_bool(k) for k in required)
+    if gate_ready != all_checks_pass:
+        # The gate can include new checks that reporting has not yet grouped.
+        # Never misstate the gate decision on the basis of our presentation subset.
+        if gate_ready:
+            raise RuntimeError("Release gate passed but the displayed checks do not all pass")
+    result = [
+        "The release gate verifies the following mandatory evidence before "
+        "declaring the Validation artifacts ready for release:",
+        "",
+        _markdown_table(table),
+        "",
+        f"**Final decision: {'READY FOR RELEASE' if gate_ready else 'NOT READY FOR RELEASE'}**",
+        "",
+        "This decision verifies technical integrity, model evidence, coverage, "
+        "and plausibility processing; it does not certify that every observed "
+        "quantity or value is economically correct or authorize automatic correction.",
+    ]
+    return result
+
 
 def valid_output(path: Path) -> bool:
     """Return True when an existing output appears usable."""
@@ -2287,18 +2441,16 @@ def build_validation_report(
             )
 
         ## ready for release 
-        release_decision = con.execute(
-            "SELECT ready_for_release, failure_reasons, model_name "
-            "FROM read_parquet(?)",
-            [str(release_readiness_path)],
-        ).fetchone()
-
-        if release_decision is None or release_decision[0] is None:
-            raise RuntimeError("Release-readiness decision is missing.")
-
-        ready_for_release = bool(release_decision[0])
-        failure_reasons = json.loads(release_decision[1] or "[]")
-        selected_model_name = str(release_decision[2])
+        release_frame = con.execute(
+            "SELECT * FROM read_parquet(?)", [str(release_readiness_path)]
+        ).fetchdf()
+        if len(release_frame) != 1:
+            raise RuntimeError("Release-readiness artifact must contain exactly one decision.")
+        release_decision = release_frame.iloc[0]
+        ready_for_release = bool(release_decision["ready_for_release"])
+        failure_reasons = json.loads(release_decision["failure_reasons"] or "[]")
+        selected_model_name = str(release_decision["model_name"])
+        release_summary_lines = _release_readiness_summary(release_decision)
         selected_model_display = _model_definition(
             selected_model_name
         )
@@ -3208,6 +3360,7 @@ def build_validation_report(
                 "Predictions": _format_integer(row.n_rows),
             }
             for row in inference_models.itertuples(index=False)
+            if row.n_rows is not None and not pd.isna(row.n_rows)
         ])
 
         inference_population = _require_diagnostic_scope(
@@ -4168,40 +4321,73 @@ def build_validation_report(
         below_value = int(status_values.get("below_bounds", 0))
         above_value = int(status_values.get("above_bounds", 0))
         assessed_value = within_value + below_value + above_value
+        unassessed_value = int(status_values.get("not_assessed", 0))
+        value_plausibility_display = pd.DataFrame({
+            "Assessment": ["Within bounds", "Below bounds", "Above bounds", "Not assessed"],
+            "Observations": [
+                _format_integer(within_value), _format_integer(below_value),
+                _format_integer(above_value), _format_integer(unassessed_value),
+            ],
+            "Share of assessed": [
+                _format_percent(within_value / assessed_value if assessed_value else None),
+                _format_percent(below_value / assessed_value if assessed_value else None),
+                _format_percent(above_value / assessed_value if assessed_value else None),
+                "—",
+            ],
+        })
         value_report_lines = [
-            "## 7. Trade-value model development and assessment", "",
-            "**Strategy.** Trade-value prediction reuses the selected quantity-model "
-            "architecture as a candidate, but fits a separate model with trade value "
-            "as the target and reconciled quantity among the predictors. The embedding "
-            "MLP is compared with Histogram Gradient Boosting using the reserved 2024 "
-            "selection partition. Only that partition is used in the comparison below; "
-            "these are held-out selection metrics, not production-fit accuracy estimates.", "",
+            "## 8. Value-model development, inference and plausibility", "",
+            "### 8.1. Methodological approach", "",
+            "Trade-value modelling extends the quantity Validation framework. "
+            "The selected quantity-model architecture is reused as a candidate "
+            "architecture, but the value predictor has its own fitted weights "
+            "and predicts reconciled constant-USD trade value using the "
+            "configured input features, including reconciled quantity. "
+            "The quantity-trained model weights are not transferred.", "",
+            "### 8.2. Model comparison and selection", "",
+            "Embedding MLP and Histogram Gradient Boosting were compared "
+            "on the reserved 2024 selection partition. These are held-out "
+            "model-selection results, not production-fit accuracy measures.", "",
             _markdown_table(value_comparison_display), "",
             f"**Selected value model:** {_model_definition(selected_value_name)} "
-            f"(`{selected_value_type}`), selection MAE (log) "
+            f"(`{selected_value_type}`); held-out selection MAE (log): "
             f"**{_format_number(float(value_selection.iloc[0]['value']), digits=4)}**.", "",
-            f"**Production fit:** {_format_integer(fit_values.get('training_rows'))} "
-            f"training-selected observations ({int(fit_values['first_training_year'])}–"
-            f"{int(fit_values['last_training_year'])}); "
-            f"final epochs: {_format_integer(fit_values.get('final_epochs'))}. "
-            "The production model was fitted separately from the quantity model.", "",
-            f"**Prediction coverage:** {_format_integer(coverage_values.get('prediction_available'))} "
-            f"of {_format_integer(coverage_values.get('all_rows'))} observations; "
-            f"{_format_integer(coverage_values.get('residual_evaluable'))} "
-            "have evaluable value log residuals. These are production inference counts, "
-            "not out-of-sample accuracy measures.", "",
-            "**Value plausibility.** The selected value-model architecture is refitted "
-            "using years before 2024 and calibrated on the reserved 2024 calibration "
-            "partition (distinct from model selection). Empirical 2.5th/97.5th "
-            "percentiles of observed-to-predicted value ratios are computed within "
-            "predicted-value size groups, independently of quantity calibration.", "",
-            (f"The assessment classified **{_format_integer(within_value)}** of "
-             f"**{_format_integer(assessed_value)}** assessable trade values "
-             f"({_format_percent(within_value / assessed_value if assessed_value else None)}) "
-             "within calibrated bounds; "
-             f"{_format_integer(below_value)} below and {_format_integer(above_value)} above. "
-             "The nominal 95% calibration interval is a screening threshold, "
-             "not a claim that 95% of trade values are correct."), "",
+            "### 8.3. Production model fitting", "",
+            f"The selected architecture was separately fitted to "
+            f"**{_format_integer(fit_values.get('training_rows'))}** "
+            f"training-selected observations "
+            f"({int(fit_values['first_training_year'])}–"
+            f"{int(fit_values['last_training_year'])}). "
+            f"Recorded final training epochs: "
+            f"{_format_integer(fit_values.get('final_epochs'))}.", "",
+            "### 8.4. Value prediction and diagnostics", "",
+            f"Value predictions are available for "
+            f"**{_format_integer(coverage_values.get('prediction_available'))}** "
+            f"of **{_format_integer(coverage_values.get('all_rows'))}** observations. "
+            f"Evaluable observed-versus-predicted log residuals: "
+            f"**{_format_integer(coverage_values.get('residual_evaluable'))}**. "
+            "These are full-production inference coverage counts; residuals "
+            "on fitting observations are not independent predictive accuracy evidence.", "",
+            "### 8.5. Value plausibility assessment", "",
+            "The selected value-model architecture was independently refitted "
+            "using training years before 2024, and its predictions on the "
+            "reserved **303,705-observation 2024 calibration partition** "
+            "were used to estimate empirical observed/predicted value ratios. "
+            "This calibration partition was separate from the 2024 "
+            "model-selection observations. Predictions were divided into "
+            "up to five predicted-value size groups. The 2.5th and 97.5th "
+            "percentiles of ratios within each group define the nominal "
+            "95% interval, which is then applied to the production value prediction.", "",
+            _markdown_table(value_plausibility_display), "",
+            "The percentage within bounds is measured among assessed observations. "
+            "The 95% nominal coverage is a statistical screening criterion, "
+            "not evidence that 95% of reported values are correct.", "",
+            "### 8.6. Methodological interpretation", "",
+            "The value comparison establishes held-out model-selection performance, "
+            "while production inference characterizes coverage and agreement with "
+            "reported trade values. Independent calibration estimates expected "
+            "prediction variability; it does not validate individual observations "
+            "or independently establish reporting accuracy.", "",
         ]
 
         quantity_plausibility_lines = []
@@ -4282,13 +4468,11 @@ def build_validation_report(
             "",
             "## Release readiness",
             "",
-            f"**Ready for release:** {'YES' if ready_for_release else 'NO'}",
-            "",
+            *release_summary_lines,
             *(
-                ["**Reasons for rejection:**", ""]
+                ["", "**Reasons for rejection:**", ""]
                 + [f"- {reason}" for reason in failure_reasons]
-                if not ready_for_release
-                else ["All mandatory release-readiness checks passed."]
+                if not ready_for_release else []
             ),
             "",
             f"Audit artifact: `{release_readiness_path}`",
@@ -4870,9 +5054,11 @@ def build_validation_report(
             "statistical coherence, not necessarily corrections to erroneous data. "
             "When multiple inference models are active, prediction coverage is "
             "governed by the selected primary model, model-input validity, and "
-            "the model-routing outcomes reported in Section 9.",
+            "the model-routing outcomes reported in the quantity inference section.",
             "",
         ]
+
+        lines = _organize_validation_report_sections(lines)
 
         insert_markdown_toc(
             lines,
