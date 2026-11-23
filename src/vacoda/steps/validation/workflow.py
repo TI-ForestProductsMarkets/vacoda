@@ -28,8 +28,9 @@ from vacoda.steps.validation.value_model_selection import compare_and_select_val
 from vacoda.steps.validation.release_gate import evaluate_release_readiness
 from vacoda.steps.validation.diagnostics import  build_diagnostics
 from vacoda.steps.validation.audit_inference import audit_validation_inference
-from vacoda.steps.validation.quantity_plausibility import build_quantity_plausibility
+from vacoda.steps.validation.plausibility import build_plausibility
 from vacoda.steps.validation.reporting import build_validation_report
+from vacoda.utils import logger
 from vacoda.utils.artifacts import (
     require_artifact,
     require_enabled_products,
@@ -47,10 +48,12 @@ REQUIRED_PRODUCTS = (
     "model_predictions",
     "selected_model",
     "fitted_model",
+    "value_selected_model",
+    "value_fitted_model",
     "inference",
+    "inference_audit",
     "quantity_plausibility",
     "release_readiness",
-    "inference_audit",
     "diagnostics",
 )
 
@@ -66,7 +69,7 @@ WORKFLOW_STEPS = [
     "Fit Value Validation Model",
     "Run Validation inference",
     "Audit cross-variable consistency",
-    "Build Quantity Plausibility",
+    "Build Plausibility",
     "Evaluate release readiness",
     "Build Diagnostics",
     "Build Validation decision report",
@@ -426,6 +429,12 @@ def run_validation_workflow(
                 producer_product="selected value Validation model",
             )
 
+            value_selection_predictions_path = require_artifact(
+                result=value_selection_result,
+                path_key="value_model_predictions_path",
+                consumer_step=WORKFLOW_STEPS[11],
+                producer_product="value-model selection predictions",
+            )        
         # ==================================================================
         # Step 9 — Fit Value Validation Model
         # ==================================================================
@@ -447,6 +456,20 @@ def run_validation_workflow(
                 ),
             )
 
+        value_fitted_model_path = require_artifact(
+            result=value_fitted_model_result,
+            path_key="fitted_model_path",
+            consumer_step=WORKFLOW_STEPS[9],
+            producer_product="fitted value Validation model",
+        )
+
+        value_model_bundle_path = require_artifact(
+            result=value_fitted_model_result,
+            path_key="model_bundle_path",
+            consumer_step=WORKFLOW_STEPS[9],
+            producer_product="fitted value Validation model bundle",
+        )
+
         # ==================================================================
         # Step 10 — Run Validation inference
         # ==================================================================
@@ -463,6 +486,8 @@ def run_validation_workflow(
                 model_bundle_path=model_bundle_path,
                 fallback_fitted_model_path=fallback_fitted_model_path,
                 fallback_model_bundle_path=fallback_model_bundle_path,
+                value_fitted_model_path=value_fitted_model_path,
+                value_model_bundle_path=value_model_bundle_path,
                 run_id=run_id,
                 force=force,
                 logger=logger,
@@ -492,6 +517,8 @@ def run_validation_workflow(
                 primary_model_type=primary_model_type,
                 fallback_model_name=fallback_model_name,
                 fallback_model_type=fallback_model_type,
+                value_model_name=value_fitted_model_result["model_name"],
+                value_model_type=value_fitted_model_result["model_type"],
                 run_id=run_id,
                 force=force,
                 logger=logger,
@@ -509,20 +536,29 @@ def run_validation_workflow(
         # ==================================================================
         # Step 12 — Build Quantity Plausibility
         # ==================================================================
-        quantity_plausibility_result = run_step(
+        plausibility_result = run_step(
+            logger=logger,
+            step_number=12,
+            total_steps=TOTAL_WORKFLOW_STEPS,
+            title=WORKFLOW_STEPS[11],
+            runner=lambda: build_plausibility(
+                cfg=cfg,
+                training_sample_path=training_sample_path,
+                inference_path=inference_path,
+                primary_model_name=fitted_model_result["model_name"],
+                value_model_name=value_fitted_model_result["model_name"],
+                value_selection_predictions_path=value_selection_predictions_path,
+                force=force,
                 logger=logger,
-                step_number=12,
-                total_steps=TOTAL_WORKFLOW_STEPS,
-                title=WORKFLOW_STEPS[11],
-                runner=lambda: build_quantity_plausibility(
-                    cfg=cfg,
-                    training_sample_path=training_sample_path,
-                    inference_path=inference_path,
-                    primary_model_name=fitted_model_result["model_name"],
-                    force=force,
-                    logger=logger,
-                ),
-            )
+            ),
+        )
+
+        plausibility_path = require_artifact(
+            result=plausibility_result,
+            path_key="plausibility_path",
+            consumer_step=WORKFLOW_STEPS[12],
+            producer_product="Validation plausibility",
+        )
 
         # ==================================================================
         # Step 13 — Evaluate release readiness
@@ -539,6 +575,8 @@ def run_validation_workflow(
                 structural_audit_path=structural_audit_path,
                 inference_audit_path=inference_audit_path,
                 selected_model_path=selected_model_path,
+                value_selected_model_path=value_selected_model_path,
+                plausibility_path=plausibility_path,
                 run_id=run_id,
                 force=force,
                 logger=logger,
@@ -572,6 +610,10 @@ def run_validation_workflow(
                 inference_path=inference_path,
                 inference_audit_path=inference_audit_path,
                 release_readiness_path=release_readiness_path,
+                value_model_predictions_path=value_selection_predictions_path,
+                plausibility_path=plausibility_path,
+                value_selected_model_path=value_selected_model_path,
+                value_fitted_model_path=value_fitted_model_path,
                 run_id=run_id,
                 force=force,
                 logger=logger,
@@ -598,7 +640,7 @@ def run_validation_workflow(
                 cfg=cfg,
                 prepared_input_path=prepared_path,
                 structural_audit_path=structural_audit_path,
-                quantity_plausibility_result=quantity_plausibility_result,
+                quantity_plausibility_result=plausibility_result,
                 diagnostics_path=diagnostics_path,
                 release_readiness_path=release_readiness_path,
                 run_id=run_id,

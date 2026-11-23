@@ -1,17 +1,17 @@
 """
 vacoda.steps.validation.inference
 
-Run the fitted Validation production model over the complete Validation
-population.
+Run the fitted quantity and value production models over the complete
+Validation population.
 
 This step produces model evidence only. It does not decide whether an
 observed quantity should be preserved, replaced, imputed, or left unresolved.
 
 For every canonical Validation row it records:
 
-- fitted-model quantity prediction;
+- fitted-model quantity and value predictions;
 - fitted-model log-quantity prediction;
-- observed-vs-model log residual where an observed quantity exists;
+- observed-vs-model log residuals where positive observations exist;
 - categorical support flags derived from the fitted preprocessing state.
 
 These outputs are consumed later by Build validated trade.
@@ -19,7 +19,7 @@ These outputs are consumed later by Build validated trade.
 
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from time import perf_counter
 from typing import Any
@@ -45,7 +45,6 @@ from vacoda.pipeline.artifact_manifest import (
     write_manifest,
 )
 
-from vacoda.steps.validation import inference
 from vacoda.steps.validation.model_fitting import (
     _embedding_dimensions,
     _transform_embedding_features,
@@ -949,7 +948,7 @@ def _inverse_target_transform(
     ):
         raise RuntimeError(
             "Inverse target transformation produced "
-            "non-positive or non-finite quantity predictions."
+            "non-positive or non-finite predictions."
         )
 
     return quantity
@@ -1051,8 +1050,10 @@ def _inference_semantic_payload(
     fallback_metadata: dict[str, Any],  
     fallback_bundle: dict[str, Any],
     input_rows: int,
+    value_metadata: dict[str, Any],
+    value_bundle: dict[str, Any],
 ) -> dict[str, Any] | None:
-    """Return semantic identity of the inference artifact."""
+    """Return semantic identity of the joint quantity/value inference artifact."""
 
     return {
         "artifact": (
@@ -1129,6 +1130,26 @@ def _inference_semantic_payload(
             ),
         },
 
+        "value_model": {
+            "name": value_metadata["model_name"],
+            "type": value_metadata["model_type"],
+            "training_rows": value_metadata["training_rows"],
+            "final_epochs": value_metadata["final_epochs"],
+            "training_data_sha256": value_bundle.get("training_data_sha256"),
+            "parameters": json_safe(value_bundle.get("parameters", {})),
+            "target": {
+                "column": cfg.value_model.target.column,
+                "transform": cfg.value_model.target.transform,
+            },
+            "features": {
+                "numeric": {
+                    name: asdict(feature_cfg)
+                    for name, feature_cfg in cfg.value_model.features.numeric.items()
+                },
+                "categorical": list(cfg.value_model.features.categorical),
+            },
+        },
+
         "fallback_model": (
             {
                 "name": fallback_metadata["model_name"],
@@ -1158,6 +1179,14 @@ def _inference_semantic_payload(
             "categorical_support_features": list(
                 cfg.model.features.categorical
             ),
+            "value_predictions": [
+                "value_model_input_valid",
+                "model_prediction_log_value",
+                "model_prediction_value",
+                "value_log_residual",
+                "value_abs_log_residual",
+                "value_model_prediction_available",
+            ],
             "routing": (
                 "disjoint_primary_embedding_fallback_nonembedding_v1"
                 if metadata["model_type"] == "embedding_mlp"
@@ -1200,6 +1229,8 @@ def run_validation_inference(
     model_bundle_path: Path,
     fallback_fitted_model_path: Path | None,
     fallback_model_bundle_path: Path | None,
+    value_fitted_model_path: Path,
+    value_model_bundle_path: Path,
     run_id: str,
     output_path: Path | None = None,
     force: bool = False,
@@ -1218,7 +1249,9 @@ def run_validation_inference(
     fitted_model_path = Path(fitted_model_path)
 
     model_bundle_path = Path(model_bundle_path)
-    
+    value_fitted_model_path = Path(value_fitted_model_path)
+    value_model_bundle_path = Path(value_model_bundle_path)
+
     if not input_path.is_file():
         raise FileNotFoundError(
             "Validation inference input not found: "
@@ -1236,6 +1269,10 @@ def run_validation_inference(
             "Fitted Validation model bundle not found: "
             f"{model_bundle_path}"
         )
+
+    for path in (value_fitted_model_path, value_model_bundle_path):
+        if not path.is_file():
+            raise FileNotFoundError(f"Value model artifact not found: {path}")
 
     output_path = (
         Path(
@@ -1322,6 +1359,27 @@ def run_validation_inference(
                 "model_type"
             ]
         ),
+    )
+
+    # Value model is independent of the quantity primary/fallback route.
+    value_cfg = replace(cfg, model=cfg.value_model)
+    value_metadata = _read_fitted_model_metadata(
+        fitted_model_path=value_fitted_model_path,
+    )
+    value_bundle = _load_bundle(
+        model_bundle_path=value_model_bundle_path,
+        model_type=value_metadata["model_type"],
+    )
+    _validate_bundle_identity(bundle=value_bundle, metadata=value_metadata)
+    if (
+        value_bundle.get("target_column") != cfg.value_model.target.column
+        or value_bundle.get("target_transform") != cfg.value_model.target.transform
+    ):
+        raise RuntimeError("Value model target configuration mismatch.")
+    _validate_bundle_feature_contract(
+        bundle=value_bundle,
+        cfg=value_cfg,
+        model_type=value_metadata["model_type"],
     )
 
     primary_is_embedding = metadata["model_type"] == "embedding_mlp"
@@ -1438,6 +1496,8 @@ def run_validation_inference(
         fallback_bundle=fallback_bundle,
         input_path=input_path,
         input_rows=input_rows,
+        value_metadata=value_metadata,
+        value_bundle=value_bundle,
     )
 
     manifest_path = (
@@ -1479,6 +1539,8 @@ def run_validation_inference(
             "inference_path": output_path,
             "model_name": metadata["model_name"],
             "model_type": metadata["model_type"],
+            "value_model_name": value_metadata["model_name"],
+            "value_model_type": value_metadata["model_type"],
             "rows": input_rows,
             "duration_seconds": elapsed,
             "reused": True,
@@ -1493,9 +1555,8 @@ def run_validation_inference(
     # Load complete inference population
     # ------------------------------------------------------------------
 
-    target_column = (
-        cfg.model.target.column
-    )
+    target_column = cfg.model.target.column
+    value_target_column = cfg.value_model.target.column
 
     numeric_columns = list(
         cfg.model.features.numeric.keys()
@@ -1517,7 +1578,9 @@ def run_validation_inference(
             [
                 *MODEL_ROW_KEY,
                 *feature_columns,
+                *cfg.value_model.features.feature_columns,
                 target_column,
+                value_target_column,
                 "training_selected",
                 "trade_value_reconciled",
                 "imputation_method"
@@ -1854,6 +1917,71 @@ def run_validation_inference(
     )
 
     # ------------------------------------------------------------------
+    # Independent value prediction, using observed quantity as a predictor.
+    # Quantity and value have separate valid-input masks: a missing quantity
+    # must not invalidate an otherwise predictable quantity-model row.
+    # ------------------------------------------------------------------
+
+    if cfg.value_model.target.transform != "log":
+        raise RuntimeError("Current value residual evidence requires a log target.")
+
+    value_input_valid = _model_input_valid_mask(frame=frame, cfg=value_cfg)
+    value_positions = value_input_valid.to_numpy(dtype=bool)
+    value_indices = np.flatnonzero(value_positions)
+
+    value_prediction_model_space = np.full(input_rows, np.nan, dtype=float)
+    value_prediction = np.full(input_rows, np.nan, dtype=float)
+
+    if len(value_indices):
+        value_predictable = frame.loc[value_input_valid].reset_index(drop=True)
+        value_features = _build_feature_frame(frame=value_predictable, cfg=value_cfg)
+
+        if value_metadata["model_type"] == "embedding_mlp":
+            value_log, _ = _predict_embedding_model(
+                feature_frame=value_features,
+                bundle=value_bundle,
+                cfg=value_cfg,
+                logger=logger,
+            )
+        else:
+            value_log, _ = _predict_sklearn_model(
+                feature_frame=value_features,
+                bundle=value_bundle,
+            )
+
+        value_original = _inverse_target_transform(
+            prediction=value_log,
+            target_transform=value_bundle["target_transform"],
+        )
+        value_prediction_model_space[value_indices] = value_log
+        value_prediction[value_indices] = value_original
+
+    if not np.isfinite(value_prediction_model_space[value_positions]).all():
+        raise RuntimeError("Valid-input value rows are missing predictions.")
+    if not np.isnan(value_prediction_model_space[~value_positions]).all():
+        raise RuntimeError("Invalid-input value rows received predictions.")
+
+    observed_value = pd.to_numeric(
+        frame[value_target_column], errors="coerce"
+    ).to_numpy(dtype=float)
+    observed_value_available = np.isfinite(observed_value)
+    observed_value_valid_for_log = observed_value_available & (observed_value > 0)
+    value_residual_valid = observed_value_valid_for_log & np.isfinite(
+        value_prediction_model_space
+    )
+    value_log_residual = np.full(input_rows, np.nan, dtype=float)
+    value_log_residual[value_residual_valid] = (
+        np.log(observed_value[value_residual_valid])
+        - value_prediction_model_space[value_residual_valid]
+    )
+    logger.info(
+        "  Value predictions (%s): %s / %s",
+        value_metadata["model_name"],
+        f"{len(value_indices):,}",
+        f"{input_rows:,}",
+    )
+
+    # ------------------------------------------------------------------
     # Assemble inference artifact
 
     output_columns = (
@@ -1862,7 +1990,9 @@ def run_validation_inference(
                 *MODEL_ROW_KEY,
                 "target_hs4",
                 *cfg.model.features.numeric.keys(),
+                *cfg.value_model.features.numeric.keys(),
                 cfg.model.target.column,
+                cfg.value_model.target.column,
                 "training_selected",
                 "trade_value_reconciled",
                 "imputation_method"
@@ -1910,6 +2040,20 @@ def run_validation_inference(
         ] = support_flags[
             column
         ].to_numpy()
+
+    # Preserve the existing quantity columns; add value-specific columns.
+    inference["value_model_input_valid"] = value_positions
+    inference["model_prediction_log_value"] = value_prediction_model_space
+    inference["model_prediction_value"] = value_prediction
+    inference["value_model_prediction_available"] = np.isfinite(
+        value_prediction_model_space
+    )
+    inference["observed_value_available"] = observed_value_available
+    inference["observed_value_valid_for_log"] = observed_value_valid_for_log
+    inference["value_log_residual"] = value_log_residual
+    inference["value_abs_log_residual"] = np.abs(value_log_residual)
+    inference["value_validation_model_name"] = value_metadata["model_name"]
+    inference["value_validation_model_type"] = value_metadata["model_type"]
 
     inference["validation_model_name"] = prediction_model_names
     inference["validation_model_type"] = prediction_model_types
@@ -2059,6 +2203,9 @@ def run_validation_inference(
             "missing_quantity_rows": (
                 missing_observed_rows
             ),
+            "value_model_name": value_metadata["model_name"],
+            "value_model_type": value_metadata["model_type"],
+            "value_predicted_rows": int(value_positions.sum()),
         },
     )
 
@@ -2115,5 +2262,8 @@ def run_validation_inference(
         "duration_seconds": (
             elapsed
         ),
+        "value_model_name": value_metadata["model_name"],
+        "value_model_type": value_metadata["model_type"],
+        "value_predicted_rows": int(value_positions.sum()),
         "reused": False,
     }

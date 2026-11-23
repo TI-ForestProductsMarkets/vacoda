@@ -19,7 +19,7 @@ from vacoda.pipeline.artifact_manifest import (
     validate_manifest,
     write_manifest,
 )
-from vacoda.steps.validation.quantity_plausibility import (
+from vacoda.steps.validation.plausibility import (
     _load_calibration_fold,
     _predict_calibration_fold,
 )

@@ -16,7 +16,8 @@ It verifies:
 7. categorical-support flag consistency;
 8. fitted-model metadata consistency;
 9. training-selection consistency;
-10. value/quantity/unit-value algebraic consistency.
+10. value/quantity/unit-value algebraic consistency;
+11. value-model input, prediction, residual, and model-identity consistency.
 
 The audit does not modify Validation rows and does not create corrected
 or imputed values.
@@ -94,6 +95,8 @@ def audit_validation_inference(
     fallback_model_name: str | None,
     fallback_model_type: str | None,    
     run_id: str,
+    value_model_name: str,
+    value_model_type: str,
     output_path: Path | None = None,
     force: bool = False,
     logger,
@@ -107,6 +110,14 @@ def audit_validation_inference(
 
     A successful return implies ``audit_passed=True``.
     """
+
+    if not value_model_name or not value_model_type:
+        raise ValueError("Value model name and type are required for inference audit.")
+
+    value_name_sql = sql_literal(value_model_name)
+    value_type_sql = sql_literal(value_model_type)
+    value_target_col = str(cfg.value_model.target.column)
+    value_target_sql = '"' + value_target_col.replace('"', '""') + '"'
 
     primary_is_embedding = primary_model_type == "embedding_mlp"
 
@@ -225,6 +236,17 @@ def audit_validation_inference(
 
             "validation_model_name",
             "validation_model_type",
+            value_target_col,
+            "value_model_input_valid",
+            "model_prediction_log_value",
+            "model_prediction_value",
+            "value_model_prediction_available",
+            "observed_value_available",
+            "observed_value_valid_for_log",
+            "value_log_residual",
+            "value_abs_log_residual",
+            "value_validation_model_name",
+            "value_validation_model_type",
         }
 
         _require_columns(
@@ -1002,6 +1024,128 @@ def audit_validation_inference(
         }
 
         # ==============================================================
+        # VALUE MODEL AND JOINT VALUE / QUANTITY AUDIT
+        # ==============================================================
+        # Kept as a second aggregate to preserve the existing quantity
+        # audit schema and checks without changing their positional unpacking.
+        value_checks_sql = {
+            "n_null_value_model_input_valid": "value_model_input_valid IS NULL",
+            "n_value_input_mask_mismatches": f"""
+                value_model_input_valid IS DISTINCT FROM (
+                    {target_sql} IS NOT NULL
+                    AND isfinite({target_sql})
+                    AND {target_sql} > 0
+                )
+            """,
+            "n_observed_value_availability_mismatches": f"""
+                observed_value_available IS DISTINCT FROM (
+                    {value_target_sql} IS NOT NULL
+                    AND isfinite({value_target_sql})
+                )
+            """,
+            "n_observed_value_log_validity_mismatches": f"""
+                observed_value_valid_for_log IS DISTINCT FROM (
+                    {value_target_sql} IS NOT NULL
+                    AND isfinite({value_target_sql})
+                    AND {value_target_sql} > 0
+                )
+            """,
+            "n_value_prediction_availability_mismatches": """
+                value_model_prediction_available IS DISTINCT FROM (
+                    model_prediction_log_value IS NOT NULL
+                    AND isfinite(model_prediction_log_value)
+                    AND model_prediction_value IS NOT NULL
+                    AND isfinite(model_prediction_value)
+                    AND model_prediction_value > 0
+                )
+            """,
+            "n_invalid_value_prediction_routing": """
+                value_model_input_valid IS DISTINCT FROM
+                value_model_prediction_available
+            """,
+            "n_value_inverse_transform_mismatches": """
+                value_model_prediction_available IS TRUE
+                AND ABS(model_prediction_value - EXP(model_prediction_log_value))
+                    > 1e-10 * GREATEST(ABS(model_prediction_value), 1.0)
+            """,
+            "n_value_residual_availability_mismatches": """
+                (value_log_residual IS NOT NULL AND isfinite(value_log_residual))
+                IS DISTINCT FROM (
+                    observed_value_valid_for_log IS TRUE
+                    AND value_model_prediction_available IS TRUE
+                )
+            """,
+            "n_value_residual_formula_mismatches": f"""
+                observed_value_valid_for_log IS TRUE
+                AND value_model_prediction_available IS TRUE
+                AND (
+                    value_log_residual IS NULL
+                    OR NOT isfinite(value_log_residual)
+                    OR ABS(value_log_residual - (
+                        LN({value_target_sql}) - model_prediction_log_value
+                    )) > 1e-10 * GREATEST(ABS(value_log_residual), 1.0)
+                )
+            """,
+            "n_value_absolute_residual_mismatches": """
+                (value_log_residual IS NULL AND value_abs_log_residual IS NOT NULL)
+                OR (value_log_residual IS NOT NULL AND (
+                    value_abs_log_residual IS NULL
+                    OR NOT isfinite(value_abs_log_residual)
+                    OR ABS(value_abs_log_residual - ABS(value_log_residual))
+                        > 1e-12 * GREATEST(ABS(value_abs_log_residual), 1.0)
+                ))
+            """,
+            "n_value_model_identity_mismatches": f"""
+                value_validation_model_name IS DISTINCT FROM {value_name_sql}
+                OR value_validation_model_type IS DISTINCT FROM {value_type_sql}
+            """,
+            "n_training_rows_invalid_value_input": """
+                training_selected IS TRUE AND value_model_input_valid IS DISTINCT FROM TRUE
+            """,
+            # The two model targets are fitted independently. Their
+            # predictions need not equal the observations or each other.
+            # But the implied unit-value ratios must obey algebra.
+            "n_joint_unit_value_identity_mismatches": f"""
+                observed_value_valid_for_log IS TRUE
+                AND observed_quantity_valid_for_log IS TRUE
+                AND value_model_prediction_available IS TRUE
+                AND model_prediction_available IS TRUE
+                AND ABS(
+                    (model_prediction_log_value - model_prediction_log_quantity)
+                    - (LN({value_target_sql}) - LN({target_sql}))
+                    + value_log_residual - quantity_log_residual
+                ) > 1e-10 * GREATEST(
+                    ABS(value_log_residual), ABS(quantity_log_residual), 1.0
+                )
+            """,
+        }
+        value_summaries_sql = {
+            "n_value_input_valid_rows": "value_model_input_valid IS TRUE",
+            "n_value_prediction_rows": "value_model_prediction_available IS TRUE",
+            "n_value_residual_rows": "value_log_residual IS NOT NULL",
+            "n_joint_unit_value_identity_rows": """
+                observed_value_valid_for_log IS TRUE
+                AND observed_quantity_valid_for_log IS TRUE
+                AND value_model_prediction_available IS TRUE
+                AND model_prediction_available IS TRUE
+            """,
+        }
+        value_sql_parts = [
+            f"COUNT(*) FILTER (WHERE {condition}) AS {name}"
+            for name, condition in (
+                {**value_checks_sql, **value_summaries_sql}
+            ).items()
+        ]
+        value_row = con.execute(
+            f"SELECT {', '.join(value_sql_parts)} FROM read_parquet({inference_sql})"
+        ).fetchone()
+        value_counts = dict(zip(
+            [*value_checks_sql, *value_summaries_sql],
+            map(int, value_row),
+        ))
+        counts.update(value_counts)
+
+        # ==============================================================
         # HARD AUDIT CHECKS
         # ==============================================================
 
@@ -1144,6 +1288,12 @@ def audit_validation_inference(
                 ] == 0,
         }
 
+        checks.update({
+            name.removeprefix("n_").removesuffix("_mismatches") + "_valid":
+                value_counts[name] == 0
+            for name in value_checks_sql
+        })
+
         audit_passed = all(
             checks.values()
         )
@@ -1251,6 +1401,12 @@ def audit_validation_inference(
         )
 
         logger.info(
+            "  Value predictions: %s; value residuals: %s",
+            f"{counts['n_value_prediction_rows']:,}",
+            f"{counts['n_value_residual_rows']:,}",
+        )
+
+        logger.info(
             "  Residual rows: %s",
             f"{counts['n_residual_rows']:,}",
         )
@@ -1337,6 +1493,8 @@ def audit_validation_inference(
             "n_residual_rows": counts[
                 "n_residual_rows"
             ],
+            "n_value_prediction_rows": counts["n_value_prediction_rows"],
+            "n_value_residual_rows": counts["n_value_residual_rows"],
             "n_unit_value_identity_mismatches": counts[
                 "n_unit_value_identity_mismatches"
             ],

@@ -4140,6 +4140,70 @@ def build_validation_report(
                     "",
                 ])
 
+        # Value model: obtain all numbers from the diagnostics artifact,
+        # never from hard-coded selection results or production training losses.
+        value_comparison = _scope_frame(diagnostics, "value_model_comparison")
+        value_selection = _scope_frame(diagnostics, "value_model_selection")
+        value_fit = _scope_frame(diagnostics, "value_model_fit")
+        value_coverage = _scope_frame(diagnostics, "value_inference_population")
+        value_plausibility = _scope_frame(diagnostics, "value_plausibility")
+        if value_comparison.empty or len(value_selection) != 1 or value_fit.empty or value_coverage.empty:
+            raise RuntimeError("Value-model diagnostics are incomplete for reporting")
+        selected_value_name = str(value_selection.iloc[0]["model_name"])
+        selected_value_type = str(value_selection.iloc[0]["variable"])
+        value_comparison_pivot = value_comparison.pivot_table(
+            index=["model_name", "n_rows"], columns="variable", values="value",
+            aggfunc="first",
+        ).reset_index().sort_values("mae_log")
+        value_comparison_display = pd.DataFrame({
+            "Candidate": value_comparison_pivot["model_name"].map(_model_definition),
+            "Selection rows": value_comparison_pivot["n_rows"].map(_format_integer),
+            "MAE (log)": value_comparison_pivot["mae_log"].map(lambda x: _format_number(x, digits=4)),
+            "Signed log bias": value_comparison_pivot["signed_log_bias"].map(lambda x: _format_number(x, digits=4)),
+        })
+        fit_values = dict(zip(value_fit["variable"], value_fit["value"]))
+        coverage_values = dict(zip(value_coverage["variable"], value_coverage["n_rows"]))
+        status_values = dict(zip(value_plausibility["criterion"], value_plausibility["n_rows"]))
+        within_value = int(status_values.get("within_bounds", 0))
+        below_value = int(status_values.get("below_bounds", 0))
+        above_value = int(status_values.get("above_bounds", 0))
+        assessed_value = within_value + below_value + above_value
+        value_report_lines = [
+            "## 7. Trade-value model development and assessment", "",
+            "**Strategy.** Trade-value prediction reuses the selected quantity-model "
+            "architecture as a candidate, but fits a separate model with trade value "
+            "as the target and reconciled quantity among the predictors. The embedding "
+            "MLP is compared with Histogram Gradient Boosting using the reserved 2024 "
+            "selection partition. Only that partition is used in the comparison below; "
+            "these are held-out selection metrics, not production-fit accuracy estimates.", "",
+            _markdown_table(value_comparison_display), "",
+            f"**Selected value model:** {_model_definition(selected_value_name)} "
+            f"(`{selected_value_type}`), selection MAE (log) "
+            f"**{_format_number(float(value_selection.iloc[0]['value']), digits=4)}**.", "",
+            f"**Production fit:** {_format_integer(fit_values.get('training_rows'))} "
+            f"training-selected observations ({int(fit_values['first_training_year'])}–"
+            f"{int(fit_values['last_training_year'])}); "
+            f"final epochs: {_format_integer(fit_values.get('final_epochs'))}. "
+            "The production model was fitted separately from the quantity model.", "",
+            f"**Prediction coverage:** {_format_integer(coverage_values.get('prediction_available'))} "
+            f"of {_format_integer(coverage_values.get('all_rows'))} observations; "
+            f"{_format_integer(coverage_values.get('residual_evaluable'))} "
+            "have evaluable value log residuals. These are production inference counts, "
+            "not out-of-sample accuracy measures.", "",
+            "**Value plausibility.** The selected value-model architecture is refitted "
+            "using years before 2024 and calibrated on the reserved 2024 calibration "
+            "partition (distinct from model selection). Empirical 2.5th/97.5th "
+            "percentiles of observed-to-predicted value ratios are computed within "
+            "predicted-value size groups, independently of quantity calibration.", "",
+            (f"The assessment classified **{_format_integer(within_value)}** of "
+             f"**{_format_integer(assessed_value)}** assessable trade values "
+             f"({_format_percent(within_value / assessed_value if assessed_value else None)}) "
+             "within calibrated bounds; "
+             f"{_format_integer(below_value)} below and {_format_integer(above_value)} above. "
+             "The nominal 95% calibration interval is a screening threshold, "
+             "not a claim that 95% of trade values are correct."), "",
+        ]
+
         quantity_plausibility_lines = []
         if quantity_plausibility_result is not None:
             result = quantity_plausibility_result
@@ -4602,7 +4666,8 @@ def build_validation_report(
             ),
             "",
             *weighted_ensemble_lines,
-            "## 7. Current methodological status",
+            *value_report_lines,
+            "## 8. Current methodological status",
             "",
             (
                 f"- Trade bilateral quantity methodology: **{selected_candidate_label}**."
@@ -4619,7 +4684,7 @@ def build_validation_report(
                 f"- Model validation strategy: `{validation_strategy}`."
             ),
             "",
-            "## 8. Production inference",
+            "## 9. Production inference",
             "",
             (
                 f"Production inference uses the selected primary model "
@@ -4632,7 +4697,7 @@ def build_validation_report(
             "",
             _markdown_table(inference_models_display),
 
-            "### 8.1. Inference population and prediction coverage",
+            "### 9.1. Inference population and prediction coverage",
             "",
             (
                 "Rows can receive a model prediction only when all required numeric "
@@ -4645,7 +4710,7 @@ def build_validation_report(
             ),
             "",
 
-            "### 8.2. Categorical support",
+            "### 9.2. Categorical support",
             "",
             (
                 "Categorical support is assessed against the production-fitting "
@@ -4661,7 +4726,7 @@ def build_validation_report(
             ),
             "",
 
-            "### 8.3. Products unseen during production fitting",
+            "### 9.3. Products unseen during production fitting",
             "",
             (
                 "The following table lists HS6 products not represented "
@@ -4676,7 +4741,7 @@ def build_validation_report(
             ),
             "",
 
-            "### 8.4. Observed-versus-model residual distribution",
+            "### 9.4. Observed-versus-model residual distribution",
             "",
             (
                 "For every row with a positive observed trade quantity and an "
@@ -4704,7 +4769,7 @@ def build_validation_report(
             ),
             "",
             "",
-            "### 8.5. Residual evidence by year",
+            "### 9.5. Residual evidence by year",
             "",
             (
                 "Year-level summaries show whether disagreement between the observed "
@@ -4723,7 +4788,7 @@ def build_validation_report(
                 )
             ),
             "",
-            "### 8.6. Model behavior by HS6",
+            "### 9.6. Model behavior by HS6",
             "",
             "Signed residuals reveal systematic quantity underprediction "
             "(positive) and overprediction (negative). "
@@ -4745,7 +4810,7 @@ def build_validation_report(
             "observations. The table retains all HS6 products, including "
             "unsupported categories._",
             "",
-            "### 8.7. Quantity plausibility by year",
+            "### 9.7. Quantity plausibility by year",
             "",
             f"Across all years, **{overall['Within bounds']}** of assessed quantities "
             f"({_format_integer(totals['within_bounds'])} of {overall['Assessed rows']}) "
@@ -4771,7 +4836,7 @@ def build_validation_report(
             "_Outside-bound quantities are flagged for review. These rates describe "
             "agreement with the production model reference._",
             "",
-            "### 8.8. Training selection and UV coherence", 
+            "### 9.8. Training selection and UV coherence", 
             "",
             "Matched observations are compared against the same HS×year UV "
             "reference before and after substituting model-predicted quantity. "
@@ -4785,13 +4850,13 @@ def build_validation_report(
             "been used to fit the model._", 
             "",
 
-            "### 8.9. Held-out performance by product family", "",
+            "### 9.9. Held-out performance by product family", "",
             "The following HS4 families have the largest out-of-fold MAE among "
             "groups with at least 100 held-out predictions. These evaluations "
             "use temporally held-out training-eligible observations.", "",
             _markdown_table(oof_hs4_display), 
             "",
-            "## 9. Scientific interpretation",
+            "## 10. Scientific interpretation",
             "",
             "- Validation distinguishes predictive accuracy, statistical unit-value "
             "coherence, and reliability of reported trade quantities.",
@@ -4805,7 +4870,7 @@ def build_validation_report(
             "statistical coherence, not necessarily corrections to erroneous data. "
             "When multiple inference models are active, prediction coverage is "
             "governed by the selected primary model, model-input validity, and "
-            "the model-routing outcomes reported in Section 8.",
+            "the model-routing outcomes reported in Section 9.",
             "",
         ]
 

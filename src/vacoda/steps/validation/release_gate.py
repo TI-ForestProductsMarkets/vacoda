@@ -1,4 +1,7 @@
-"""Publication-readiness gate for the current VACODA Validation inference product.
+"""
+vacoda.steps.validation.release_gate
+
+Publication-readiness gate for the current VACODA Validation inference product.
 
 This gate does not create corrected quantities or certify future Release outputs.
 A failed readiness check is recorded and logged, not raised as an exception.
@@ -55,6 +58,8 @@ def evaluate_release_readiness(
     structural_audit_path: Path,
     inference_audit_path: Path,
     selected_model_path: Path,
+    value_selected_model_path: Path,
+    plausibility_path: Path,
     run_id: str,
     logger,
     force: bool = False,
@@ -74,6 +79,8 @@ def evaluate_release_readiness(
         "structural_audit": Path(structural_audit_path),
         "inference_audit": Path(inference_audit_path),
         "selected_model": Path(selected_model_path),
+        "value_selected_model": Path(value_selected_model_path),
+        "plausibility": Path(plausibility_path),
     }
 
     checks: dict[str, bool] = {}
@@ -96,6 +103,25 @@ def evaluate_release_readiness(
         "selection_value": None,
         "n_oof_predictions": None,
         "n_validation_years": None,
+        "value_model_name": None,
+        "value_model_type": None,
+        "value_selection_value": None,
+        "n_value_model_input_valid_rows": None,
+        "n_value_prediction_rows": None,
+        "value_eligible_prediction_coverage": None,
+        "value_population_prediction_coverage": None,
+        "n_plausibility_rows": None,
+        "n_plausibility_missing_keys": None,
+        "n_plausibility_unexpected_keys": None,
+        "n_plausibility_duplicate_keys": None,
+        "quantity_within_bounds": None,
+        "quantity_below_bounds": None,
+        "quantity_above_bounds": None,
+        "quantity_not_assessed": None,
+        "value_within_bounds": None,
+        "value_below_bounds": None,
+        "value_above_bounds": None,
+        "value_not_assessed": None,
     }
 
     def record(name: str, passed: bool, reason: str) -> None:
@@ -293,6 +319,179 @@ def evaluate_release_readiness(
             record("eligible_prediction_coverage_complete", False,
                    "Cannot evaluate model coverage: inference artifact unavailable")
 
+        # ---------------------------------------------------------------
+        # Value-model selection evidence. Same distinction as quantity:
+        # model-selection statistics are evidence, not a quality threshold.
+        # ---------------------------------------------------------------
+        if checks["value_selected_model_exists"]:
+            try:
+                selection_columns = _columns(con, paths["value_selected_model"])
+                fields = ["model_name", "model_type", "selection_value"]
+                missing = set(fields) - selection_columns
+                if missing:
+                    raise ValueError(f"Missing value-selection fields: {sorted(missing)}")
+                selection = _one_row(con, paths["value_selected_model"], tuple(fields))
+                metrics["value_model_name"] = selection["model_name"]
+                metrics["value_model_type"] = selection["model_type"]
+                metrics["value_selection_value"] = selection["selection_value"]
+                valid = (
+                    bool(selection["model_name"])
+                    and bool(selection["model_type"])
+                    and selection["selection_value"] is not None
+                    and math.isfinite(float(selection["selection_value"]))
+                    and float(selection["selection_value"]) >= 0
+                )
+                if "selection_metric" in selection_columns:
+                    metric_name = _one_row(
+                        con, paths["value_selected_model"], ("selection_metric",)
+                    )["selection_metric"]
+                    valid = valid and metric_name in {"mae_log", "log_mae"}
+                record("value_model_evidence_valid", valid,
+                       "Selected value model lacks valid hold-out comparison evidence")
+            except (duckdb.Error, ValueError, TypeError, OverflowError) as exc:
+                record("value_model_evidence_valid", False,
+                       f"Invalid value-model selection evidence: {exc}")
+        else:
+            record("value_model_evidence_valid", False,
+                   "Selected value-model artifact unavailable")
+
+        # ---------------------------------------------------------------
+        # Value inference: independent eligibility mask and coverage.
+        # Do not penalize rows with an unavailable predictor.
+        # ---------------------------------------------------------------
+        if checks["inference_exists"]:
+            try:
+                necessary = {
+                    "value_model_input_valid", "value_model_prediction_available",
+                    "model_prediction_log_value", "model_prediction_value",
+                    "observed_value_available", "observed_value_valid_for_log",
+                    "value_log_residual", "value_abs_log_residual",
+                    "value_validation_model_name", "value_validation_model_type",
+                }
+                missing = sorted(necessary - _columns(con, paths["inference"]))
+                if missing:
+                    raise ValueError(f"Missing value inference fields: {missing}")
+                row = con.execute(f"""
+                    SELECT COUNT(*),
+                           COUNT(*) FILTER (WHERE value_model_input_valid IS TRUE),
+                           COUNT(*) FILTER (WHERE value_model_prediction_available IS TRUE),
+                           COUNT(*) FILTER (
+                               WHERE value_model_input_valid IS TRUE
+                                 AND value_model_prediction_available IS TRUE),
+                           COUNT(*) FILTER (
+                               WHERE value_model_input_valid IS NULL
+                                  OR value_model_prediction_available IS NULL),
+                           COUNT(*) FILTER (
+                               WHERE value_model_prediction_available IS TRUE
+                                 AND (value_validation_model_name IS DISTINCT FROM ?
+                                   OR value_validation_model_type IS DISTINCT FROM ?))
+                    FROM read_parquet({sql_literal(paths['inference'])})
+                """, [metrics["value_model_name"], metrics["value_model_type"]]).fetchone()
+                total, eligible, predicted, covered, null_flags, identity_mismatches = map(int, row)
+                metrics["n_value_model_input_valid_rows"] = eligible
+                metrics["n_value_prediction_rows"] = predicted
+                metrics["value_eligible_prediction_coverage"] = covered / eligible if eligible else None
+                metrics["value_population_prediction_coverage"] = predicted / total if total else None
+                record("value_eligible_prediction_coverage_complete",
+                       eligible > 0 and covered == eligible and predicted == eligible
+                       and null_flags == 0,
+                       f"Value predictions cover {covered:,} of {eligible:,} eligible rows"
+                       f" (predicted={predicted:,}, null flags={null_flags:,})")
+                record("value_model_identity_valid", identity_mismatches == 0,
+                       f"Value model identity differs for {identity_mismatches:,} predictions")
+            except (duckdb.Error, ValueError, TypeError) as exc:
+                record("value_eligible_prediction_coverage_complete", False,
+                       f"Cannot verify value prediction coverage: {exc}")
+                record("value_model_identity_valid", False,
+                       f"Cannot verify value model identity: {exc}")
+        else:
+            record("value_eligible_prediction_coverage_complete", False,
+                   "Value inference unavailable")
+            record("value_model_identity_valid", False,
+                   "Value inference unavailable")
+
+        # ---------------------------------------------------------------
+        # Joint plausibility artifact: same bilateral population, unique
+        # keys, two complete categorical status columns. Outliers are
+        # descriptive findings, NOT failures of the release gate.
+        # ---------------------------------------------------------------
+        if checks["plausibility_exists"] and checks["inference_exists"]:
+            try:
+                required = set(KEY) | {
+                    "quantity_plausibility_status", "value_plausibility_status",
+                    "quantity_lower_kg", "quantity_upper_kg",
+                    "value_lower_constant_usd", "value_upper_constant_usd",
+                }
+                missing = sorted(required - _columns(con, paths["plausibility"]))
+                if missing:
+                    raise ValueError(f"Missing plausibility fields: {missing}")
+                source = sql_literal(paths["inference"])
+                scored = sql_literal(paths["plausibility"])
+                key_list = ', '.join(f'"{k}"' for k in KEY)
+                pop = con.execute(f"""
+                    WITH i AS (SELECT {key_list} FROM read_parquet({source})),
+                         p AS (SELECT {key_list} FROM read_parquet({scored}))
+                    SELECT
+                        (SELECT COUNT(*) FROM p),
+                        (SELECT COUNT(*) - COUNT(DISTINCT ({key_list})) FROM p),
+                        (SELECT COUNT(*) FROM (SELECT * FROM i EXCEPT SELECT * FROM p)),
+                        (SELECT COUNT(*) FROM (SELECT * FROM p EXCEPT SELECT * FROM i))
+                """).fetchone()
+                n_rows, duplicate, missing_keys, extra_keys = map(int, pop)
+                metrics.update({
+                    "n_plausibility_rows": n_rows,
+                    "n_plausibility_duplicate_keys": duplicate,
+                    "n_plausibility_missing_keys": missing_keys,
+                    "n_plausibility_unexpected_keys": extra_keys,
+                })
+                record("plausibility_population_preserved",
+                       n_rows > 0 and duplicate == 0 and missing_keys == 0
+                       and extra_keys == 0,
+                       f"Plausibility key mismatch: {missing_keys:,} missing, "
+                       f"{extra_keys:,} unexpected, {duplicate:,} duplicates")
+
+                statuses = ("within_bounds", "below_bounds", "above_bounds", "not_assessed")
+                for label, lower, upper in (
+                    ("quantity", "quantity_lower_kg", "quantity_upper_kg"),
+                    ("value", "value_lower_constant_usd", "value_upper_constant_usd"),
+                ):
+                    status_col = f"{label}_plausibility_status"
+                    aggregate = ', '.join(
+                        f"COUNT(*) FILTER (WHERE {status_col} = '{status}')" for status in statuses
+                    )
+                    row = con.execute(f"""
+                        SELECT {aggregate},
+                               COUNT(*) FILTER (
+                                   WHERE {status_col} IS NULL OR
+                                         {status_col} NOT IN
+                                         ('within_bounds', 'below_bounds', 'above_bounds', 'not_assessed')),
+                               COUNT(*) FILTER (
+                                   WHERE {status_col} <> 'not_assessed'
+                                   AND ({lower} IS NULL OR {upper} IS NULL
+                                     OR NOT isfinite({lower}) OR NOT isfinite({upper})
+                                     OR {lower} <= 0 OR {upper} < {lower}))
+                        FROM read_parquet({scored})
+                    """).fetchone()
+                    counts = list(map(int, row))
+                    for status, count in zip(statuses, counts[:4]):
+                        metrics[f"{label}_{status}"] = count
+                    bad_status, bad_bounds = counts[4:]
+                    record(f"{label}_plausibility_structure_valid",
+                           sum(counts[:4]) == n_rows and bad_status == 0
+                           and bad_bounds == 0,
+                           f"Invalid {label} plausibility: {bad_status:,} statuses, "
+                           f"{bad_bounds:,} assessed bounds")
+            except (duckdb.Error, ValueError, TypeError) as exc:
+                for check in ("plausibility_population_preserved",
+                              "quantity_plausibility_structure_valid",
+                              "value_plausibility_structure_valid"):
+                    record(check, False, f"Cannot verify {check}: {exc}")
+        else:
+            for check in ("plausibility_population_preserved",
+                          "quantity_plausibility_structure_valid",
+                          "value_plausibility_structure_valid"):
+                record(check, False, "Plausibility or inference artifact unavailable")
+
     finally:
         con.close()
 
@@ -303,7 +502,7 @@ def evaluate_release_readiness(
         **checks,
         **metrics,
         "failure_reasons": json.dumps(reasons, ensure_ascii=False),
-        "release_scope": "validation_inference",
+        "release_scope": "validation_inference_and_plausibility",
     }
 
     # Write the decision before returning, including for failed readiness.

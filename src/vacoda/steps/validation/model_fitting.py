@@ -32,7 +32,6 @@ from pathlib import Path
 import pickle
 from time import perf_counter
 from typing import Any
-from math import isclose
 
 import duckdb
 import numpy as np
@@ -80,41 +79,66 @@ from vacoda.steps.validation.training_sample import (
 from vacoda.utils.sql import sql_literal
 
 
-FITTED_MODEL_CACHE_VERSION = 1
+FITTED_MODEL_CACHE_VERSION = 2
 
 
-def _validate_fitted_model_manifest(
+def _validate_production_bundle_manifest(
     *,
     artifact_path: Path,
     manifest_path: Path,
     expected_payload: dict[str, Any],
-) -> tuple[bool, str]:
+) -> tuple[bool, str, bool]:
+    """Validate fit identity, including a strict migration from v1 manifests.
+
+    V1 recorded model-selection evidence in the production-fit fingerprint.
+    That evidence does not affect fitted weights. To migrate a V1 bundle, we
+    allow its ORIGINAL selection fields, but require every other field to
+    match the current fit identity exactly and validate artifact integrity.
+    """
     reusable, reason = validate_manifest(
         artifact_path=artifact_path,
         manifest_path=manifest_path,
         expected_payload=expected_payload,
     )
     if reusable or reason != "semantic fingerprint changed":
-        return reusable, reason
+        return reusable, reason, False
 
     manifest = read_manifest(manifest_path) or {}
-    cached_selection = manifest.get("semantic_payload", {}).get("selection", {})
-    cached_mae = cached_selection.get("value")
-    expected_selection = expected_payload["selection"]
+    previous = manifest.get("semantic_payload")
+    if not isinstance(previous, dict) or previous.get("cache_version") != 1:
+        return False, reason, False
+    previous_selection = previous.get("selection")
+    if not isinstance(previous_selection, dict):
+        return False, reason, False
+    if (previous_selection.get("model_name") != expected_payload["model"]["name"]
+            or previous_selection.get("model_type") != expected_payload["model"]["type"]):
+        return False, reason, False
 
-    if not isinstance(cached_mae, (int, float)) or not isclose(
-        cached_mae, expected_selection["value"], rel_tol=1e-12
-    ):
-        return reusable, reason
-
-    return validate_manifest(
+    legacy_expected = {
+        **expected_payload,
+        "cache_version": 1,
+        "selection": previous_selection,
+    }
+    reusable, legacy_reason = validate_manifest(
         artifact_path=artifact_path,
         manifest_path=manifest_path,
-        expected_payload={
-            **expected_payload,
-            "selection": {**expected_selection, "value": cached_mae},
-        },
+        expected_payload=legacy_expected,
     )
+    if reusable:
+        return True, "legacy fit identity matches", True
+    return False, legacy_reason, False
+
+
+def _selection_evidence(selected_model: dict[str, Any]) -> dict[str, Any]:
+    """Selection provenance belongs to metadata, never the fitted weights."""
+    return {
+        "model_name": selected_model["model_name"],
+        "model_type": selected_model["model_type"],
+        "metric": selected_model["selection_metric"],
+        "direction": selected_model["selection_direction"],
+        "value": float(selected_model["selection_value"]),
+    }
+
 
 # ======================================================================
 # Selected-model artifact
@@ -260,34 +284,6 @@ def _fitted_model_semantic_payload(
                 cfg=cfg
             )
         ),
-
-        "selection": {
-            "model_name": (
-                selected_model[
-                    "model_name"
-                ]
-            ),
-            "model_type": (
-                selected_model[
-                    "model_type"
-                ]
-            ),
-            "metric": (
-                selected_model[
-                    "selection_metric"
-                ]
-            ),
-            "direction": (
-                selected_model[
-                    "selection_direction"
-                ]
-            ),
-            "value": float(
-                selected_model[
-                    "selection_value"
-                ]
-            ),
-        },
 
         "training_data": {
             "rows": int(
@@ -1648,6 +1644,175 @@ def _validate_sklearn_bundle(
         )
 
 
+def _write_fitted_model_metadata(
+    *,
+    output_path: Path,
+    metadata_manifest_path: Path,
+    metadata_semantic_payload: dict[str, Any],
+    bundle_path: Path,
+    selected_model: dict[str, Any],
+    selected_model_name: str,
+    selected_model_type: str,
+    training_rows: int,
+    min_training_year: int,
+    max_training_year: int,
+    training_data_sha256: str,
+    final_epochs: int | None,
+    epoch_selection_validation_loss: float | None,
+    run_id: str,
+) -> None:
+    """Refresh selection-aware metadata without touching fitted model weights."""
+    # ------------------------------------------------------------------
+    # Write fitted-model metadata artifact
+    # ------------------------------------------------------------------
+
+    metadata = pd.DataFrame(
+        [
+            {
+                "model_name": (
+                    selected_model_name
+                ),
+
+                "model_type": (
+                    selected_model_type
+                ),
+
+                "selection_metric": (
+                    selected_model[
+                        "selection_metric"
+                    ]
+                ),
+
+                "selection_direction": (
+                    selected_model[
+                        "selection_direction"
+                    ]
+                ),
+
+                "selection_value": (
+                    selected_model[
+                        "selection_value"
+                    ]
+                ),
+
+                "training_rows": (
+                    training_rows
+                ),
+
+                "min_training_year": (
+                    min_training_year
+                ),
+
+                "max_training_year": (
+                    max_training_year
+                ),
+
+                "training_data_sha256": (
+                    training_data_sha256
+                ),
+
+                "final_epochs": (
+                    final_epochs
+                ),
+
+                "epoch_selection_validation_loss": (
+                    epoch_selection_validation_loss
+                ),
+
+                "model_bundle_path": str(
+                    bundle_path
+                ),
+
+                "run_id": (
+                    run_id
+                ),
+            }
+        ]
+    )
+
+    temporary_output_path = (
+        output_path.with_suffix(
+            output_path.suffix
+            + ".tmp"
+        )
+    )
+
+    if temporary_output_path.exists():
+        temporary_output_path.unlink()
+
+    metadata_con = (
+        duckdb.connect()
+    )
+
+    try:
+
+        metadata_con.register(
+            "fitted_model_metadata",
+            metadata,
+        )
+
+        temporary_output_sql = (
+            sql_literal(
+                temporary_output_path
+            )
+        )
+
+        metadata_con.execute(
+            f"""
+            COPY fitted_model_metadata
+            TO {temporary_output_sql}
+            (
+                FORMAT PARQUET,
+                COMPRESSION ZSTD
+            )
+            """
+        )
+
+        metadata_con.unregister(
+            "fitted_model_metadata"
+        )
+
+    finally:
+        metadata_con.close()
+
+    temporary_output_path.replace(
+        output_path
+    )
+
+    write_manifest(
+        manifest_path=(
+            metadata_manifest_path
+        ),
+        artifact_name=(
+            "validation_fitted_model"
+        ),
+        semantic_payload=(
+            metadata_semantic_payload
+        ),
+        artifact_path=(
+            output_path
+        ),
+        extra={
+            "model_name": (
+                selected_model_name
+            ),
+            "model_type": (
+                selected_model_type
+            ),
+            "training_rows": (
+                training_rows
+            ),
+            "model_bundle_path": str(
+                bundle_path
+            ),
+            "final_epochs": (
+                final_epochs
+            ),
+        },
+    )
+
+
+
 # ======================================================================
 # Public step
 # ======================================================================
@@ -2049,6 +2214,13 @@ def fit_selected_validation_model(
         ),
     }
 
+    # Selection score affects the descriptive metadata, NOT the trained bundle.
+    metadata_semantic_payload = {
+        **semantic_payload,
+        "component": "fitted_model_metadata",
+        "selection_evidence": _selection_evidence(selected_model),
+    }
+
     # ------------------------------------------------------------------
     # Reuse
     # ------------------------------------------------------------------
@@ -2063,157 +2235,113 @@ def fit_selected_validation_model(
         "force=True"
     )
 
+    legacy_bundle = False
     if not force:
-
-        (
-            metadata_reusable,
-            metadata_reason,
-        ) = _validate_fitted_model_manifest(
+        bundle_reusable, bundle_reason, legacy_bundle = (
+            _validate_production_bundle_manifest(
+                artifact_path=bundle_path,
+                manifest_path=bundle_manifest_path,
+                expected_payload=bundle_semantic_payload,
+            )
+        )
+        metadata_reusable, metadata_reason = validate_manifest(
             artifact_path=output_path,
-            manifest_path=(
-                metadata_manifest_path
-            ),
-            expected_payload=(
-                semantic_payload
-            ),
+            manifest_path=metadata_manifest_path,
+            expected_payload=metadata_semantic_payload,
         )
 
-        (
-            bundle_reusable,
-            bundle_reason,
-        ) = _validate_fitted_model_manifest(
-            artifact_path=bundle_path,
-            manifest_path=(
-                bundle_manifest_path
-            ),
-            expected_payload=(
-                bundle_semantic_payload
-            ),
-        )
+    if bundle_reusable:
+        # Validate the physical model before promoting any legacy manifest.
+        if selected_model_type == "embedding_mlp":
+            _validate_embedding_bundle(bundle_path=bundle_path)
+        else:
+            _validate_sklearn_bundle(bundle_path=bundle_path)
 
-    if (
-        metadata_reusable
-        and bundle_reusable
-    ):
+        # Reuse the original fit's training-duration evidence. This remains
+        # valid because the complete fit identity was checked above.
+        final_epochs = None
+        epoch_selection_validation_loss = None
+        if output_path.is_file():
+            with duckdb.connect() as metadata_con:
+                row = metadata_con.execute(
+                    "SELECT model_name, model_type, training_data_sha256, "
+                    "final_epochs, epoch_selection_validation_loss "
+                    "FROM read_parquet(?)", [str(output_path)],
+                ).fetchone()
+            if row is not None:
+                if (row[0] != selected_model_name or row[1] != selected_model_type
+                        or row[2] != training_data_sha256):
+                    raise RuntimeError("Cached fitted-model metadata conflicts with fitted bundle.")
+                final_epochs = None if row[3] is None else int(row[3])
+                epoch_selection_validation_loss = (
+                    None if row[4] is None else float(row[4])
+                )
+
+        # If metadata was deleted, reconstruct duration evidence from the
+        # validated bundle, without retraining the model.
+        if final_epochs is None:
+            if selected_model_type == "embedding_mlp":
+                stored = torch.load(bundle_path, map_location="cpu", weights_only=False)
+                final_epochs = stored.get("final_epochs")
+                epoch_selection_validation_loss = stored.get(
+                    "epoch_selection_validation_loss"
+                )
+            else:
+                with bundle_path.open("rb") as handle:
+                    stored = pickle.load(handle)
+                final_epochs = stored.get("final_iterations")
+
+        if legacy_bundle:
+            write_manifest(
+                manifest_path=bundle_manifest_path,
+                artifact_name="validation_production_model_bundle",
+                semantic_payload=bundle_semantic_payload,
+                artifact_path=bundle_path,
+                extra={
+                    "model_name": selected_model_name,
+                    "model_type": selected_model_type,
+                    "training_rows": training_rows,
+                    "final_epochs": final_epochs,
+                },
+            )
+            logger.info("  Migrated fitted-model bundle manifest to fit-only identity.")
+
+        if not metadata_reusable:
+            _write_fitted_model_metadata(
+                output_path=output_path,
+                metadata_manifest_path=metadata_manifest_path,
+                metadata_semantic_payload=metadata_semantic_payload,
+                bundle_path=bundle_path,
+                selected_model=selected_model,
+                selected_model_name=selected_model_name,
+                selected_model_type=selected_model_type,
+                training_rows=training_rows,
+                min_training_year=min_training_year,
+                max_training_year=max_training_year,
+                training_data_sha256=training_data_sha256,
+                final_epochs=final_epochs,
+                epoch_selection_validation_loss=epoch_selection_validation_loss,
+                run_id=run_id,
+            )
+            metadata_reason = "selection metadata refreshed without refitting"
 
         logger.info(
-            "%s REUSE — Fitted Validation model "
-            "(metadata: %s; bundle: %s)",
-            get_symbols("reuse"),
-            metadata_reason,
-            bundle_reason,
+            "%s REUSE — Fitted Validation model (bundle: %s; metadata: %s)",
+            get_symbols("reuse"), bundle_reason, metadata_reason,
         )
-
-        if (
-            selected_model_type
-            == "embedding_mlp"
-        ):
-            _validate_embedding_bundle(
-                bundle_path=(
-                    bundle_path
-                )
-            )
-
-        else:
-            _validate_sklearn_bundle(
-                bundle_path=(
-                    bundle_path
-                )
-            )
-
-        metadata_con = (
-            duckdb.connect()
-        )
-
-        try:
-
-            metadata_row = (
-                metadata_con.execute(
-                    """
-                    SELECT
-                        final_epochs,
-                        epoch_selection_validation_loss
-
-                    FROM read_parquet(?)
-                    """,
-                    [
-                        str(
-                            output_path
-                        )
-                    ],
-                ).fetchone()
-            )
-
-        finally:
-            metadata_con.close()
-
-        final_epochs = (
-            None
-            if metadata_row is None
-            or metadata_row[0] is None
-            else int(
-                metadata_row[0]
-            )
-        )
-
-        epoch_selection_validation_loss = (
-            None
-            if metadata_row is None
-            or metadata_row[1] is None
-            else float(
-                metadata_row[1]
-            )
-        )
-
-        elapsed = (
-            perf_counter()
-            - start
-        )
-
+        elapsed = perf_counter() - start
         return {
-            "status": "completed",
-            "run_id": run_id,
-
-            "fitted_model_path": (
-                output_path
-            ),
-
-            "model_bundle_path": (
-                bundle_path
-            ),
-
-            "model_name": (
-                selected_model_name
-            ),
-
-            "model_type": (
-                selected_model_type
-            ),
-
-            "training_rows": (
-                training_rows
-            ),
-
-            "min_training_year": (
-                min_training_year
-            ),
-
-            "max_training_year": (
-                max_training_year
-            ),
-
-            "final_epochs": (
-                final_epochs
-            ),
-
-            "epoch_selection_validation_loss": (
-                epoch_selection_validation_loss
-            ),
-
-            "duration_seconds": (
-                elapsed
-            ),
-
+            "status": "completed", "run_id": run_id,
+            "fitted_model_path": output_path,
+            "model_bundle_path": bundle_path,
+            "model_name": selected_model_name,
+            "model_type": selected_model_type,
+            "training_rows": training_rows,
+            "min_training_year": min_training_year,
+            "max_training_year": max_training_year,
+            "final_epochs": final_epochs,
+            "epoch_selection_validation_loss": epoch_selection_validation_loss,
+            "duration_seconds": elapsed,
             "reused": True,
         }
 
@@ -2771,153 +2899,21 @@ def fit_selected_validation_model(
         },
     )
 
-    # ------------------------------------------------------------------
-    # Write fitted-model metadata artifact
-    # ------------------------------------------------------------------
-
-    metadata = pd.DataFrame(
-        [
-            {
-                "model_name": (
-                    selected_model_name
-                ),
-
-                "model_type": (
-                    selected_model_type
-                ),
-
-                "selection_metric": (
-                    selected_model[
-                        "selection_metric"
-                    ]
-                ),
-
-                "selection_direction": (
-                    selected_model[
-                        "selection_direction"
-                    ]
-                ),
-
-                "selection_value": (
-                    selected_model[
-                        "selection_value"
-                    ]
-                ),
-
-                "training_rows": (
-                    training_rows
-                ),
-
-                "min_training_year": (
-                    min_training_year
-                ),
-
-                "max_training_year": (
-                    max_training_year
-                ),
-
-                "training_data_sha256": (
-                    training_data_sha256
-                ),
-
-                "final_epochs": (
-                    final_epochs
-                ),
-
-                "epoch_selection_validation_loss": (
-                    epoch_selection_validation_loss
-                ),
-
-                "model_bundle_path": str(
-                    bundle_path
-                ),
-
-                "run_id": (
-                    run_id
-                ),
-            }
-        ]
-    )
-
-    temporary_output_path = (
-        output_path.with_suffix(
-            output_path.suffix
-            + ".tmp"
-        )
-    )
-
-    if temporary_output_path.exists():
-        temporary_output_path.unlink()
-
-    metadata_con = (
-        duckdb.connect()
-    )
-
-    try:
-
-        metadata_con.register(
-            "fitted_model_metadata",
-            metadata,
-        )
-
-        temporary_output_sql = (
-            sql_literal(
-                temporary_output_path
-            )
-        )
-
-        metadata_con.execute(
-            f"""
-            COPY fitted_model_metadata
-            TO {temporary_output_sql}
-            (
-                FORMAT PARQUET,
-                COMPRESSION ZSTD
-            )
-            """
-        )
-
-        metadata_con.unregister(
-            "fitted_model_metadata"
-        )
-
-    finally:
-        metadata_con.close()
-
-    temporary_output_path.replace(
-        output_path
-    )
-
-    write_manifest(
-        manifest_path=(
-            metadata_manifest_path
-        ),
-        artifact_name=(
-            "validation_fitted_model"
-        ),
-        semantic_payload=(
-            semantic_payload
-        ),
-        artifact_path=(
-            output_path
-        ),
-        extra={
-            "model_name": (
-                selected_model_name
-            ),
-            "model_type": (
-                selected_model_type
-            ),
-            "training_rows": (
-                training_rows
-            ),
-            "model_bundle_path": str(
-                bundle_path
-            ),
-            "final_epochs": (
-                final_epochs
-            ),
-        },
+    _write_fitted_model_metadata(
+        output_path=output_path,
+        metadata_manifest_path=metadata_manifest_path,
+        metadata_semantic_payload=metadata_semantic_payload,
+        bundle_path=bundle_path,
+        selected_model=selected_model,
+        selected_model_name=selected_model_name,
+        selected_model_type=selected_model_type,
+        training_rows=training_rows,
+        min_training_year=min_training_year,
+        max_training_year=max_training_year,
+        training_data_sha256=training_data_sha256,
+        final_epochs=final_epochs,
+        epoch_selection_validation_loss=epoch_selection_validation_loss,
+        run_id=run_id,
     )
 
     # ------------------------------------------------------------------

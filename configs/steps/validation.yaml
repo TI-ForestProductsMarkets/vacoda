@@ -58,7 +58,7 @@ validation:
       filename: "model/value/target_{target_hs_lower}_value_model_predictions.parquet"
 
     value_fitted_model:
-      enable: false
+      enable: true
       filename: "model/value/target_{target_hs_lower}_value_fitted_model.parquet"
 
     inference:

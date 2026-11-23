@@ -184,6 +184,10 @@ def build_diagnostics(
     inference_path: Path,
     inference_audit_path: Path,
     release_readiness_path: Path,
+    value_model_predictions_path: Path,
+    value_selected_model_path: Path,
+    value_fitted_model_path: Path,
+    plausibility_path: Path,
     run_id: str,
     force: bool = False,
     logger,
@@ -206,6 +210,16 @@ def build_diagnostics(
     inference_path = Path(inference_path)
     inference_audit_path = Path(inference_audit_path)
     release_readiness_path = Path(release_readiness_path)
+    value_model_predictions_path = Path(value_model_predictions_path)
+    value_selected_model_path = Path(value_selected_model_path)
+    value_fitted_model_path = Path(value_fitted_model_path)
+    plausibility_path = Path(plausibility_path)
+    for label, path in (("value comparison", value_model_predictions_path),
+                        ("value selection", value_selected_model_path),
+                        ("value fit", value_fitted_model_path),
+                        ("plausibility", plausibility_path)):
+        if not path.is_file():
+            raise FileNotFoundError(f"Validation diagnostics {label} missing: {path}")
 
     if not input_path.is_file():
         raise FileNotFoundError(
@@ -377,6 +391,7 @@ def build_diagnostics(
                 "product_residual_factors": (2.0, 5.0, 10.0),
                 "coherence_comparison_version": 1,
                 "oof_product_performance_version": 1,
+                "value_model_diagnostics_version": 1,
             },
         }
     )
@@ -405,6 +420,18 @@ def build_diagnostics(
         "inference_audit": file_fingerprint(
             inference_audit_path,
             hash_file=True,
+        ),
+        "value_model_predictions": file_fingerprint(
+            value_model_predictions_path, hash_file=True,
+        ),
+        "value_selected_model": file_fingerprint(
+            value_selected_model_path, hash_file=True,
+        ),
+        "value_fitted_model": file_fingerprint(
+            value_fitted_model_path, hash_file=True,
+        ),
+        "plausibility": file_fingerprint(
+            plausibility_path, hash_file=True,
         ),
         "release_readiness": file_fingerprint(
             release_readiness_path,
@@ -2887,6 +2914,91 @@ def build_diagnostics(
                     ),
                     n_rows=None,
                 )
+        # ==================================================================
+        # Value-model diagnostics — distinct from quantity OOF diagnostics.
+        # Evaluation metrics are calculated ONLY on the model-selection holdout,
+        # not on fitted production training observations.
+        # ==================================================================
+        value_predictions_sql = sql_literal(value_model_predictions_path)
+        selection_rows = con.execute(f"""
+            SELECT model_name, COUNT(*) AS n_rows,
+                   AVG(ABS(LN(observed_value_constant_usd /
+                              predicted_value_constant_usd))) AS mae_log,
+                   AVG(LN(observed_value_constant_usd /
+                          predicted_value_constant_usd)) AS signed_log_bias
+            FROM read_parquet({value_predictions_sql})
+            WHERE holdout_use = 'selection'
+              AND observed_value_constant_usd > 0
+              AND predicted_value_constant_usd > 0
+              AND isfinite(observed_value_constant_usd)
+              AND isfinite(predicted_value_constant_usd)
+            GROUP BY model_name
+            ORDER BY model_name
+        """).fetchall()
+        if not selection_rows:
+            raise RuntimeError("Value comparison has no valid selection holdout predictions")
+        for name, count, mae, bias in selection_rows:
+            for variable, val in (("mae_log", mae), ("signed_log_bias", bias)):
+                _append_metric(diagnostics_rows, scope="value_model_comparison",
+                               criterion="selection_holdout", model_name=str(name),
+                               variable=variable, value=float(val), n_rows=int(count))
+
+        value_selection = con.execute("""
+            SELECT model_name, model_type, selection_value
+            FROM read_parquet(?)
+        """, [str(value_selected_model_path)]).fetchall()
+        if len(value_selection) != 1:
+            raise RuntimeError("Expected exactly one selected value model")
+        value_name, value_type, value_selection_mae = value_selection[0]
+        _append_metric(diagnostics_rows, scope="value_model_selection",
+                       criterion="selected_value_model", model_name=str(value_name),
+                       variable=str(value_type), value=float(value_selection_mae))
+
+        fitted_value = con.execute("""
+            SELECT model_name, model_type, training_rows, min_training_year,
+                   max_training_year, final_epochs
+            FROM read_parquet(?)
+        """, [str(value_fitted_model_path)]).fetchall()
+        if len(fitted_value) != 1 or fitted_value[0][0] != value_name:
+            raise RuntimeError("Value fitting metadata disagrees with selected model")
+        _, _, n_fit, first_fit_year, last_fit_year, epochs = fitted_value[0]
+        for variable, val in (("training_rows", n_fit),
+                              ("first_training_year", first_fit_year),
+                              ("last_training_year", last_fit_year),
+                              ("final_epochs", epochs)):
+            if val is not None:
+                _append_metric(diagnostics_rows, scope="value_model_fit",
+                               criterion="production_fit", model_name=str(value_name),
+                               variable=variable, value=float(val))
+
+        # Value prediction coverage is a descriptive in-sample production
+        # statistic; it must not be reported as an independent test score.
+        n_total, n_value_predictions, n_value_residuals = con.execute("""
+            SELECT COUNT(*),
+                   COUNT(*) FILTER (WHERE value_model_prediction_available IS TRUE),
+                   COUNT(*) FILTER (WHERE value_log_residual IS NOT NULL
+                                         AND isfinite(value_log_residual))
+            FROM read_parquet(?)
+        """, [str(inference_path)]).fetchone()
+        for variable, count in (("all_rows", n_total),
+                                ("prediction_available", n_value_predictions),
+                                ("residual_evaluable", n_value_residuals)):
+            _append_metric(diagnostics_rows, scope="value_inference_population",
+                           criterion="production_inference", model_name=str(value_name),
+                           variable=variable, n_rows=int(count), total_rows=int(n_total),
+                           share_of_all=_share(int(count), int(n_total)))
+
+        statuses = con.execute("""
+            SELECT value_plausibility_status, COUNT(*)
+            FROM read_parquet(?)
+            GROUP BY 1
+        """, [str(plausibility_path)]).fetchall()
+        for status, count in statuses:
+            _append_metric(diagnostics_rows, scope="value_plausibility",
+                           criterion=str(status), model_name=str(value_name),
+                           n_rows=int(count), total_rows=int(n_total),
+                           share_of_all=_share(int(count), int(n_total)))
+
         # ==================================================================
         # Diagnostics artifact
         # ==================================================================
