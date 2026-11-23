@@ -24,6 +24,7 @@ from pathlib import Path
 import math
 import shutil
 from typing import Any
+import numpy as np
 
 import duckdb
 import matplotlib
@@ -225,6 +226,297 @@ def _format_percent(
         return "NA"
 
     return f"{100.0 * float(value):.{digits}f}%"
+
+
+
+def _plot_quantity_band_sensitivity(
+    *,
+    inference_path: Path,
+    output_path: Path,
+    threads: int,
+    display_factor: float = 3.0,
+) -> pd.DataFrame:
+    """Production quantity fit and multiplicative-band sensitivity."""
+
+    factors = (2.0, 3.0, 5.0, 10.0)
+
+    if display_factor not in factors:
+        raise ValueError(
+            f"display_factor must be one of {factors}"
+        )
+
+    con = duckdb.connect()
+
+    try:
+        con.execute(f"SET threads = {int(threads)}")
+
+        path_sql = sql_literal(inference_path)
+
+        con.execute(f"""
+            CREATE TEMP VIEW quantity_inference_fit AS
+            SELECT
+                model_prediction_log_quantity
+                    + quantity_log_residual AS observed_log,
+                model_prediction_log_quantity AS predicted_log
+            FROM read_parquet({path_sql})
+            WHERE observed_quantity_valid_for_log IS TRUE
+              AND model_prediction_available IS TRUE
+              AND model_prediction_quantity_kg > 0
+              AND isfinite(model_prediction_log_quantity)
+              AND isfinite(quantity_log_residual)
+        """)
+
+
+        # Robust residual scale from the complete inference population.
+        median_residual = con.execute("""
+            SELECT MEDIAN(observed_log - predicted_log)
+            FROM quantity_inference_fit
+        """).fetchone()[0]
+
+        residual_mad = con.execute(f"""
+            SELECT MEDIAN(
+                ABS(
+                    observed_log - predicted_log
+                    - {float(median_residual)}
+                )
+            )
+            FROM quantity_inference_fit
+        """).fetchone()[0]
+
+        robust_sigma = 1.4826 * float(residual_mad)
+
+        if not math.isfinite(robust_sigma) or robust_sigma <= 0:
+            raise RuntimeError(
+                "Cannot calculate a positive robust residual scale."
+            )
+
+        # ----------------------------------------------------------
+        # Full-population statistics and threshold sensitivity
+        # ----------------------------------------------------------
+
+        results = []
+
+        for factor in (float("inf"), *factors):
+
+            condition = (
+                "TRUE"
+                if math.isinf(factor)
+                else (
+                    "ABS(observed_log - predicted_log) "
+                    f"<= LN({factor})"
+                )
+            )
+
+            row = con.execute(f"""
+                WITH retained AS (
+                    SELECT
+                        observed_log,
+                        predicted_log
+                    FROM quantity_inference_fit
+                    WHERE {condition}
+                )
+                SELECT
+                    COUNT(*) AS n,
+                    AVG(observed_log) AS mean_y,
+                    SUM(observed_log * observed_log) AS sum_y2,
+                    SUM(
+                        POWER(
+                            observed_log - predicted_log,
+                            2
+                        )
+                    ) AS sse
+                FROM retained
+            """).fetchone()
+
+            n, mean_y, sum_y2, sse = row
+
+            if not n:
+                raise RuntimeError(
+                    "No production observations available "
+                    f"for multiplicative factor {factor}"
+                )
+
+            sst = sum_y2 - n * mean_y * mean_y
+
+            r2 = (
+                1.0 - sse / sst
+                if sst > 0
+                else float("nan")
+            )
+
+            results.append({
+                "factor": factor,
+                "n": int(n),
+                "r2_log": float(r2),
+            })
+
+        summary = pd.DataFrame(results)
+
+        total = int(summary.iloc[0]["n"])
+
+        summary["share_retained"] = (
+            summary["n"] / total
+        )
+
+        summary["share_excluded"] = (
+            1.0 - summary["share_retained"]
+        )
+
+        summary["log_cutoff"] = summary["factor"].map(
+            lambda f: math.log(f) if math.isfinite(f) else float("nan")
+        )
+
+        summary["robust_sigma_equivalent"] = (
+            summary["log_cutoff"] / robust_sigma
+        )
+
+
+        # ----------------------------------------------------------
+        # Sample only for plotting.
+        # All statistics above use the complete population.
+        # ----------------------------------------------------------
+
+        points = con.execute("""
+            SELECT
+                observed_log,
+                predicted_log
+            FROM quantity_inference_fit
+            USING SAMPLE 50000 ROWS (reservoir)
+        """).fetchdf()
+
+    finally:
+        con.close()
+
+    if points.empty:
+        raise RuntimeError(
+            "No production quantity pairs available for plotting."
+        )
+
+    # --------------------------------------------------------------
+    # Convert natural logarithms to log10 for readable axes
+    # --------------------------------------------------------------
+
+    observed_log = points[
+        "observed_log"
+    ].to_numpy(dtype=float)
+
+    predicted_log = points[
+        "predicted_log"
+    ].to_numpy(dtype=float)
+
+    x = predicted_log / math.log(10)
+    y = observed_log / math.log(10)
+
+    all_r2 = float(
+        summary.iloc[0]["r2_log"]
+    )
+
+    selected = summary.loc[
+        summary["factor"].eq(display_factor)
+    ].iloc[0]
+
+    # Identical axis limits for fair visual comparison.
+    lower = min(float(x.min()), float(y.min()))
+    upper = max(float(x.max()), float(y.max()))
+
+    # --------------------------------------------------------------
+    # Plot: complete population versus selected disagreement band
+    # --------------------------------------------------------------
+
+    fig, axes = plt.subplots(
+        1,
+        2,
+        figsize=(13, 5.5)
+    )
+
+    mask = (
+        np.abs(observed_log - predicted_log)
+        <= math.log(display_factor)
+    )
+
+    panels = (
+        (
+            axes[0],
+            np.ones(len(points), dtype=bool),
+            "Full production-inference population",
+            all_r2,
+        ),
+        (
+            axes[1],
+            mask,
+            f"Within {display_factor:g}× disagreement",
+            float(selected["r2_log"]),
+        ),
+    )
+
+    for ax, keep, title, r2 in panels:
+
+        ax.scatter(
+            x[keep],
+            y[keep],
+            s=3,
+            alpha=0.15,
+            rasterized=True,
+        )
+
+        ax.plot(
+            [lower, upper],
+            [lower, upper],
+            "r--",
+            linewidth=1.5,
+            label="1:1 reference",
+        )
+
+        ax.set_xlim(lower, upper)
+        ax.set_ylim(lower, upper)
+
+        ax.set_aspect(
+            "equal",
+            adjustable="box"
+        )
+
+        ax.set_title(title)
+
+        ax.set_xlabel(
+            "Log10(predicted quantity, kg)"
+        )
+
+        ax.set_ylabel(
+            "Log10(observed quantity, kg)"
+        )
+
+        ax.text(
+            0.04,
+            0.96,
+            f"R² (log) = {r2:.4f}",
+            transform=ax.transAxes,
+            va="top",
+            bbox=dict(
+                facecolor="white",
+                alpha=0.9,
+            ),
+        )
+
+        ax.grid(alpha=0.2)
+
+    fig.tight_layout()
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    fig.savefig(
+        output_path,
+        dpi=180,
+        bbox_inches="tight",
+    )
+
+    plt.close(fig)
+
+    return summary
+
 
 
 def _plot_oof_residual_quantiles(
@@ -2285,6 +2577,9 @@ def _build_validation_figure_paths(
             figure_dir
             / f"{prefix}inference_residual_quantiles.png"
         ),
+        "quantity_band_sensitivity": (
+            figure_dir / f"{prefix}quantity_band_sensitivity.png"
+        ),
 
         "inference_residual_by_year": (
             figure_dir
@@ -2309,6 +2604,8 @@ def build_validation_report(
     quantity_plausibility_result: dict[str, Any] | None = None,
     diagnostics_path: Path,
     release_readiness_path: Path,
+    model_predictions_path: Path,
+    inference_path: Path, 
     run_id: str,
     force: bool = False,
     logger,
@@ -2323,12 +2620,14 @@ def build_validation_report(
     structural_audit_path = Path(structural_audit_path)
     diagnostics_path = Path(diagnostics_path)
     release_readiness_path = Path(release_readiness_path)
+    inference_path = Path(inference_path)
 
     for label, path in (
         ("prepared Validation input", prepared_input_path),
         ("Validation structural audit", structural_audit_path),
         ("Validation diagnostics", diagnostics_path),
         ("Validation release readiness", release_readiness_path),
+        ("Validation inference", inference_path),
     ):
         if not path.is_file():
             raise FileNotFoundError(
@@ -4010,6 +4309,8 @@ def build_validation_report(
                     "Share above 10x",
                 ]
             )
+
+
         # ============================================================== 
         # Figures
         # ============================================================== 
@@ -4141,6 +4442,53 @@ def build_validation_report(
             product_metrics=product_metrics,
             output_path=figure_paths["inference_product_bias"],
         )
+
+
+        band_summary = _plot_quantity_band_sensitivity(
+            inference_path=inference_path,
+            output_path=figure_paths["quantity_band_sensitivity"],
+            threads=cfg.engine.threads,
+            display_factor=3.0,
+        )
+
+        band_display = band_summary.copy()
+
+        band_display["Band"] = band_display["factor"].map(
+            lambda x: "All observations" if math.isinf(x) else f"Within {x:g}×"
+        )
+
+        band_display["Retained"] = band_display["share_retained"].map(
+            lambda x: f"{x:.2%}"
+        )
+
+        band_display["Excluded"] = band_display["share_excluded"].map(
+            lambda x: f"{x:.2%}"
+        )
+
+        band_display["R² (log)"] = band_display["r2_log"].map(
+            lambda x: f"{x:.4f}"
+        )
+
+        band_display["Log cutoff"] = band_display["log_cutoff"].map(
+            lambda x: f"{x:.3f}" if pd.notna(x) else "—"
+        )
+
+        band_display["Robust σ equivalent"] = (
+            band_display["robust_sigma_equivalent"].map(
+                lambda x: f"{x:.2f}σ" if pd.notna(x) else "—"
+            )
+        )
+
+        band_display = band_display[
+            [
+                "Band",
+                "Log cutoff",
+                "Robust σ equivalent",
+                "Retained",
+                "Excluded",
+                "R² (log)",
+            ]
+        ]
 
         # ============================================================== 
         # Report narrative
@@ -4755,8 +5103,6 @@ def build_validation_report(
                 width=850,
             ),
             "",
-
-
             "### 6.3. Out-of-fold residual distribution",
             "",
             (
@@ -4928,8 +5274,53 @@ def build_validation_report(
                 inference_unseen_product_display
             ),
             "",
-
-            "### 9.4. Observed-versus-model residual distribution",
+            "### 9.4. Observed versus predicted quantity — R² and band sensitivity",
+            "",
+            (
+                "The figure compares observed trade quantities with predictions "
+                "from the final production model over the complete assessable "
+                "inference population. The left panel shows the full population; "
+                "the right panel illustrates a 3× multiplicative disagreement "
+                "threshold. R² is calculated on log quantities."
+            ),
+            "",
+            markdown_image(
+                "Production quantity fit and multiplicative-band sensitivity",
+                figure_paths["quantity_band_sensitivity"],
+                document_path=report_path,
+                width=1000,
+            ),
+            "",
+            _markdown_table(band_display),
+            "",
+            (
+                "The table compares the proportions of observations retained "
+                "and excluded under alternative multiplicative thresholds. "
+                "All statistics use the complete assessable population, "
+                "while the scatterplots display a sample for readability."
+            ),
+            "",
+            (
+                "Higher R² after excluding observations reflects the "
+                "smaller, selected population rather than improved model "
+                "performance. Production predictions include observations "
+                "used to fit the final model, so these results are descriptive "
+                "rather than independent estimates of generalization. "
+                "The thresholds are exploratory and do not change the "
+                "current plausibility classification."
+            ),
+            "",
+            (
+                "The robust residual scale is estimated as "
+                "1.4826 × MAD of production log residuals around their median. "
+                "The equivalent robust-sigma threshold is ln(factor) divided "
+                "by this scale. Multiplicative bands are centred on zero "
+                "log residual (perfect prediction), whereas MAD is calculated "
+                "around the residual median. These are descriptive scale "
+                "equivalents, not Gaussian confidence intervals."
+            ),
+            "",
+            "### 9.5. Observed-versus-model residual distribution",
             "",
             (
                 "For every row with a positive observed trade quantity and an "
@@ -4957,7 +5348,7 @@ def build_validation_report(
             ),
             "",
             "",
-            "### 9.5. Residual evidence by year",
+            "### 9.6. Residual evidence by year",
             "",
             (
                 "Year-level summaries show whether disagreement between the observed "
@@ -4976,7 +5367,7 @@ def build_validation_report(
                 )
             ),
             "",
-            "### 9.6. Model behavior by HS6",
+            "### 9.7. Model behavior by HS6",
             "",
             "Signed residuals reveal systematic quantity underprediction "
             "(positive) and overprediction (negative). "
@@ -4998,7 +5389,7 @@ def build_validation_report(
             "observations. The table retains all HS6 products, including "
             "unsupported categories._",
             "",
-            "### 9.7. Quantity plausibility by year",
+            "### 9.8. Quantity plausibility by year",
             "",
             f"Across all years, **{overall['Within bounds']}** of assessed quantities "
             f"({_format_integer(totals['within_bounds'])} of {overall['Assessed rows']}) "
@@ -5024,7 +5415,7 @@ def build_validation_report(
             "_Outside-bound quantities are flagged for review. These rates describe "
             "agreement with the production model reference._",
             "",
-            "### 9.8. Training selection and UV coherence", 
+            "### 9.9. Training selection and UV coherence", 
             "",
             "Matched observations are compared against the same HS×year UV "
             "reference before and after substituting model-predicted quantity. "
@@ -5038,7 +5429,7 @@ def build_validation_report(
             "been used to fit the model._", 
             "",
 
-            "### 9.9. Held-out performance by product family", "",
+            "### 9.10. Held-out performance by product family", "",
             "The following HS4 families have the largest out-of-fold MAE among "
             "groups with at least 100 held-out predictions. These evaluations "
             "use temporally held-out training-eligible observations.", "",

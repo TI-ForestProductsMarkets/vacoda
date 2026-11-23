@@ -644,6 +644,8 @@ def run_validation_workflow(
                 quantity_plausibility_result=plausibility_result,
                 diagnostics_path=diagnostics_path,
                 release_readiness_path=release_readiness_path,
+                model_predictions_path=model_predictions_path,
+                inference_path=inference_path, 
                 run_id=run_id,
                 force=force,
                 logger=logger,
