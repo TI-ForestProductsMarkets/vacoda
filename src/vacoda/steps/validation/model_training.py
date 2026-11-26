@@ -341,16 +341,21 @@ def _model_data_fingerprint(
 # Model checkpoint helpers
 # ======================================================================
 
+
 def _model_checkpoint_dir(
     *,
     cfg: ValidationConfig,
     model_name: str,
 ) -> Path:
 
-    checkpoint_group = (
-        training_definition_name(
-            cfg=cfg
-        )
+    checkpoint_group = training_definition_name(cfg=cfg)
+
+    model_cfg = cfg.model.models.enabled()[model_name]
+    loss = str(model_cfg.parameters.get("loss", "mse")).lower()
+
+    checkpoint_name = (
+        model_name if loss == "mse"
+        else f"{model_name}__loss_{loss}"
     )
 
     return (
@@ -359,7 +364,7 @@ def _model_checkpoint_dir(
         / checkpoint_group
         / "checkpoints"
         / "models"
-        / model_name
+        / checkpoint_name
     )
 
 def _model_fold_checkpoint_paths(
@@ -990,6 +995,13 @@ def _fit_predict_embedding_mlp(
 
     params = dict(parameters)
 
+    loss_name = str(params.pop("loss", "mse")).lower()
+
+    if loss_name not in {"mse", "mae"}:
+        raise ValueError(f"Unsupported MLP loss: {loss_name}")
+
+    loss_label = f"{loss_name.upper()}_log"
+    
     batch_size = int(
         params["batch_size"]
     )
@@ -1103,7 +1115,11 @@ def _fit_predict_embedding_mlp(
         lr=learning_rate,
     )
 
-    loss_function = nn.MSELoss()
+    loss_function = (
+        nn.MSELoss()
+        if loss_name == "mse"
+        else nn.L1Loss()
+    )
 
     # --------------------------------------------------
     # Internal training/early-stopping split
@@ -1248,10 +1264,7 @@ def _fit_predict_embedding_mlp(
 
             training_rows += batch_n
 
-        training_mse = (
-            training_loss_sum
-            / training_rows
-        )
+        training_loss = training_loss_sum / training_rows
 
         # ----------------------------------------------
         # Internal validation
@@ -1273,13 +1286,52 @@ def _fit_predict_embedding_mlp(
                 ).item()
             )
 
+        with torch.no_grad():
+            residual = internal_prediction - internal_target
+
+            validation_mae = residual.abs().mean().item()
+            validation_mse = residual.square().mean().item()
+
+            # R²(log)
+            total_variance = (
+                internal_target - internal_target.mean()
+            ).square().sum()
+
+            validation_r2_log = (
+                1.0 - residual.square().sum() / total_variance
+            ).item() if total_variance.item() > 0 else float("nan")
+
+            # R²(kg)
+            observed_kg = internal_target.double().exp()
+            predicted_kg = internal_prediction.double().exp()
+
+            total_variance_kg = (
+                observed_kg - observed_kg.mean()
+            ).square().sum()
+
+            validation_r2_kg = (
+                1.0 - (observed_kg - predicted_kg).square().sum()
+                / total_variance_kg
+            ).item() if (
+                total_variance_kg.item() > 0
+                and torch.isfinite(observed_kg).all().item()
+                and torch.isfinite(predicted_kg).all().item()
+                and torch.isfinite(total_variance_kg).item()
+            ) else float("nan")
+
         logger.info(
             "  Embedding MLP epoch %d — "
-            "train_MSE_log=%.6f, "
-            "internal_validation_MSE_log=%.6f",
+            "train_%s=%.6f | "
+            "validation_MAE(log)=%.6f | "
+            "MSE(log)=%.6f | "
+            "R²(log)=%.6f | R²(kg)=%.6f",
             epoch,
-            training_mse,
-            internal_loss,
+            loss_label,
+            training_loss,
+            validation_mae,
+            validation_mse,
+            validation_r2_log,
+            validation_r2_kg
         )
 
         # --------------------------------------------------
@@ -1333,7 +1385,7 @@ def _fit_predict_embedding_mlp(
                     logger.info(
                         "  Embedding MLP early stopping "
                         "at epoch %d; best epoch=%d, "
-                        "best internal MSE_log=%.6f",
+                        f"best internal {loss_label}=%.6f",
                         epoch,
                         best_epoch,
                         best_validation_loss,
@@ -1349,7 +1401,7 @@ def _fit_predict_embedding_mlp(
 
     logger.info(
         "  Embedding MLP fit complete — "
-        "best_epoch=%d, best_internal_MSE_log=%.6f",
+        f"best_epoch=%d, best_internal_{loss_label}=%.6f",
         best_epoch,
         best_validation_loss,
     )
@@ -2066,11 +2118,18 @@ def train_validation_models(
         "model_predictions"
     )
 
-    checkpoint_group = (
-        training_definition_name(
-            cfg=cfg
-        )
-    )
+
+    checkpoint_group = training_definition_name(cfg=cfg)
+
+    losses = {
+        str(model.parameters["loss"]).lower()
+        for model in cfg.model.models.enabled().values()
+        if "loss" in model.parameters
+    }
+
+    if losses:
+        checkpoint_group += "__loss_" + "_".join(sorted(losses))
+
 
     output_path = (
         base_output_path.parent

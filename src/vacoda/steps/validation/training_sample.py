@@ -41,7 +41,7 @@ def _format_training_parameter(
         return str(value)
 
     return (
-        f"{float(value):g}"
+        str(float(value))
         .replace(".", "p")
         .replace("-", "m")
     )

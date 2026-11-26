@@ -775,43 +775,6 @@ class ValidationModelEvaluationConfig:
             metrics=metrics,
         )
 
-
-@dataclass(frozen=True)
-class ValidationModelSelectionConfig:
-    enabled: bool
-    primary_metric: str
-
-    @classmethod
-    def from_dict(
-        cls,
-        cfg: dict[str, Any],
-        *,
-        evaluation_metrics: tuple[str, ...],
-    ) -> "ValidationModelSelectionConfig":
-        primary_metric = require_str(
-            cfg.get("primary_metric"),
-            key=(
-                "validation.model.selection."
-                "primary_metric"
-            ),
-        ).strip()
-
-        if primary_metric not in evaluation_metrics:
-            raise ValueError(
-                "validation.model.selection.primary_metric "
-                "must also appear in "
-                "validation.model.evaluation.metrics. "
-                f"Got {primary_metric!r}."
-            )
-
-        return cls(
-            enabled=require_bool(
-                cfg.get("enabled"),
-                key="validation.model.selection.enabled",
-            ),
-            primary_metric=primary_metric,
-        )
-
 @dataclass(frozen=True)
 class ValidationModelCheckpointsConfig:
     enable: bool
@@ -842,7 +805,6 @@ class ValidationModelConfig:
     validation: ValidationModelValidationConfig
     models: ValidationModelsConfig
     evaluation: ValidationModelEvaluationConfig
-    selection: ValidationModelSelectionConfig
     random_seed: int
 
     @classmethod
@@ -894,14 +856,6 @@ class ValidationModelConfig:
             )
         )
 
-        selection = ValidationModelSelectionConfig.from_dict(
-            require_dict(
-                cfg.get("selection"),
-                key="validation.model.selection",
-            ),
-            evaluation_metrics=evaluation.metrics,
-        )
-
         # ----------------------------------------------------------
         # Cross-section consistency
         # ----------------------------------------------------------
@@ -941,7 +895,6 @@ class ValidationModelConfig:
             validation=validation,
             models=models,
             evaluation=evaluation,
-            selection=selection,
             random_seed=require_int(
                 cfg.get("random_seed"),
                 key="validation.model.random_seed",

@@ -29,9 +29,6 @@ from vacoda.pipeline.artifact_manifest import (
     validate_manifest,
     write_manifest,
 )
-from vacoda.steps.validation.training_sample import (
-    training_definition_name,
-)
 from vacoda.utils.display import get_symbols
 from vacoda.utils.sql import sql_literal
 
@@ -65,12 +62,6 @@ def _selected_model_semantic_payload(
                 cfg.scope.target_hs
             ),
         },
-
-        "training_definition": (
-            training_definition_name(
-                cfg=cfg
-            )
-        ),
 
         "source": {
             "model_predictions_sha256": (
@@ -251,24 +242,11 @@ def select_validation_model(
             f"{model_predictions_path}"
         )
 
-    base_output_path = (
+    output_path = (
         Path(output_path)
         if output_path is not None
-        else cfg.product_path(
-            "selected_model"
-        )
-    )
-
-    checkpoint_group = (
-        training_definition_name(
-            cfg=cfg
-        )
-    )
-
-    output_path = (
-        base_output_path.parent
-        / checkpoint_group
-        / base_output_path.name
+        else model_predictions_path.parent
+        / cfg.product_path("selected_model").name
     )
 
     fallback_output_path = output_path.with_name(

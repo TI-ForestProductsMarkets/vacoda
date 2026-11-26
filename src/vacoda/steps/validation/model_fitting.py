@@ -72,14 +72,7 @@ from vacoda.steps.validation.model_training import (
     _validate_model_row_keys,
 )
 
-from vacoda.steps.validation.training_sample import (
-    training_definition_name,
-)
-
 from vacoda.utils.sql import sql_literal
-
-
-FITTED_MODEL_CACHE_VERSION = 2
 
 
 def _validate_production_bundle_manifest(
@@ -269,21 +262,11 @@ def _fitted_model_semantic_payload(
             "validation_fitted_model"
         ),
 
-        "cache_version": (
-            FITTED_MODEL_CACHE_VERSION
-        ),
-
         "scope": {
             "target_hs": (
                 cfg.scope.target_hs
             ),
         },
-
-        "training_definition": (
-            training_definition_name(
-                cfg=cfg
-            )
-        ),
 
         "training_data": {
             "rows": int(
@@ -668,6 +651,11 @@ def _determine_embedding_best_epoch(
         parameters
     )
 
+    loss_name = str(params.get("loss", "mse")).lower()
+
+    if loss_name not in {"mse", "mae"}:
+        raise ValueError(f"Unsupported embedding loss: {loss_name}")
+
     batch_size = int(
         params[
             "batch_size"
@@ -803,7 +791,7 @@ def _determine_embedding_best_epoch(
         lr=learning_rate,
     )
 
-    loss_function = nn.MSELoss()
+    loss_function = nn.MSELoss() if loss_name == "mse" else nn.L1Loss()
 
     train_dataset = TensorDataset(
         torch.from_numpy(
@@ -951,7 +939,7 @@ def _determine_embedding_best_epoch(
                 batch_n
             )
 
-        training_mse = (
+        training_loss = (
             training_loss_sum
             / training_rows
         )
@@ -983,13 +971,13 @@ def _determine_embedding_best_epoch(
         )
 
         logger.info(
-            "    Epoch %d — "
-            "train_MSE_log=%.6f, "
-            "internal_validation_MSE_log=%.6f, "
-            "epoch_time=%.1fs, "
-            "phase_time=%.1fmin",
+            "    Epoch %d — train_%s_log=%.6f, "
+            "internal_validation_%s_log=%.6f, "
+            "epoch_time=%.1fs, phase_time=%.1fmin",
             epoch,
-            training_mse,
+            loss_name.upper(),
+            training_loss,
+            loss_name.upper(),
             internal_loss,
             epoch_elapsed,
             phase_elapsed / 60.0,
@@ -1034,9 +1022,10 @@ def _determine_embedding_best_epoch(
                     logger.info(
                         "    Early stopping at epoch %d; "
                         "best epoch=%d, "
-                        "best internal MSE_log=%.6f",
+                        "best internal %s_log=%.6f",
                         epoch,
                         best_epoch,
+                        loss_name.upper(),
                         best_validation_loss,
                     )
 
@@ -1084,6 +1073,13 @@ def _fit_embedding_full_population(
     params = dict(
         parameters
     )
+
+    loss_name = str(
+        params.get("loss", "mse")
+    ).lower()
+
+    if loss_name not in {"mse", "mae"}:
+        raise ValueError(f"Unsupported embedding loss: {loss_name}")
 
     batch_size = int(
         params[
@@ -1146,7 +1142,7 @@ def _fit_embedding_full_population(
         lr=learning_rate,
     )
 
-    loss_function = nn.MSELoss()
+    loss_function = nn.MSELoss() if loss_name == "mse" else nn.L1Loss()
 
     dataset = TensorDataset(
         torch.from_numpy(
@@ -1243,7 +1239,7 @@ def _fit_embedding_full_population(
                 batch_n
             )
 
-        training_mse = (
+        training_loss = (
             training_loss_sum
             / training_rows
         )
@@ -1271,13 +1267,12 @@ def _fit_embedding_full_population(
 
         logger.info(
             "    Final fit epoch %d/%d — "
-            "train_MSE_log=%.6f, "
-            "epoch_time=%.1fs, "
-            "phase_time=%.1fmin, "
-            "eta=%.1fmin",
+            "train_%s_log=%.6f, "
+            "epoch_time=%.1fs, phase_time=%.1fmin, eta=%.1fmin",
             epoch,
             final_epochs,
-            training_mse,
+            loss_name.upper(),
+            training_loss,
             epoch_elapsed,
             phase_elapsed / 60.0,
             remaining_seconds / 60.0,
@@ -1927,27 +1922,17 @@ def fit_selected_validation_model(
     # Resolve output
     # ------------------------------------------------------------------
 
-    base_output_path = (
-        Path(
-            output_path
-        )
+
+    output_path = (
+        Path(output_path)
         if output_path is not None
-        else cfg.product_path(
-            "fitted_model"
-        )
+        else selected_model_path.parent
+        / cfg.product_path("fitted_model").name
     )
 
-    checkpoint_group = (
-        training_definition_name(
-            cfg=cfg
-        )
-    )
-
-    output_directory = base_output_path.parent / checkpoint_group
     if role == "fallback":
-        output_directory = output_directory / "fallback"
+        output_path = output_path.parent / "fallback" / output_path.name
 
-    output_path = output_directory / base_output_path.name
 
     bundle_path = (
         _production_bundle_path(
@@ -2545,7 +2530,8 @@ def fit_selected_validation_model(
         )
 
         logger.info(
-            "  Best epoch-selection internal MSE_log: %.6f",
+            "  Best epoch-selection internal %s_log: %.6f",
+            str(parameters.get("loss", "mse")).upper(),
             epoch_selection_validation_loss,
         )
 

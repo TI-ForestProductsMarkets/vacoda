@@ -283,12 +283,15 @@ def _plot_quantity_band_sensitivity(
             FROM quantity_inference_fit
         """).fetchone()[0]
 
-        robust_sigma = 1.4826 * float(residual_mad)
+        residual_mad = float(residual_mad)
 
-        if not math.isfinite(robust_sigma) or robust_sigma <= 0:
-            raise RuntimeError(
-                "Cannot calculate a positive robust residual scale."
-            )
+        if not math.isfinite(residual_mad) or residual_mad <= 0:
+            raise RuntimeError("Cannot calculate a positive residual MAD.")
+
+        # if not math.isfinite(robust_sigma) or robust_sigma <= 0:
+        #     raise RuntimeError(
+        #         "Cannot calculate a positive robust residual scale."
+        #     )
 
         # ----------------------------------------------------------
         # Full-population statistics and threshold sensitivity
@@ -310,21 +313,16 @@ def _plot_quantity_band_sensitivity(
             row = con.execute(f"""
                 WITH retained AS (
                     SELECT
-                        observed_log,
-                        predicted_log
+                        EXP(observed_log) AS observed,
+                        EXP(predicted_log) AS predicted
                     FROM quantity_inference_fit
                     WHERE {condition}
                 )
                 SELECT
                     COUNT(*) AS n,
-                    AVG(observed_log) AS mean_y,
-                    SUM(observed_log * observed_log) AS sum_y2,
-                    SUM(
-                        POWER(
-                            observed_log - predicted_log,
-                            2
-                        )
-                    ) AS sse
+                    AVG(observed) AS mean_y,
+                    SUM(POWER(observed, 2)) AS sum_y2,
+                    SUM(POWER(observed - predicted, 2)) AS sse
                 FROM retained
             """).fetchone()
 
@@ -347,7 +345,7 @@ def _plot_quantity_band_sensitivity(
             results.append({
                 "factor": factor,
                 "n": int(n),
-                "r2_log": float(r2),
+                "r2": float(r2),
             })
 
         summary = pd.DataFrame(results)
@@ -366,8 +364,8 @@ def _plot_quantity_band_sensitivity(
             lambda f: math.log(f) if math.isfinite(f) else float("nan")
         )
 
-        summary["robust_sigma_equivalent"] = (
-            summary["log_cutoff"] / robust_sigma
+        summary["mad_equivalent"] = (
+            summary["log_cutoff"] / residual_mad
         )
 
 
@@ -404,11 +402,11 @@ def _plot_quantity_band_sensitivity(
         "predicted_log"
     ].to_numpy(dtype=float)
 
-    x = predicted_log / math.log(10)
-    y = observed_log / math.log(10)
+    x = np.exp(predicted_log)
+    y = np.exp(observed_log)
 
     all_r2 = float(
-        summary.iloc[0]["r2_log"]
+        summary.iloc[0]["r2"]
     )
 
     selected = summary.loc[
@@ -445,7 +443,7 @@ def _plot_quantity_band_sensitivity(
             axes[1],
             mask,
             f"Within {display_factor:g}× disagreement",
-            float(selected["r2_log"]),
+            float(selected["r2"]),
         ),
     )
 
@@ -476,19 +474,16 @@ def _plot_quantity_band_sensitivity(
         )
 
         ax.set_title(title)
+        ax.set_xscale("log")
+        ax.set_yscale("log")
 
-        ax.set_xlabel(
-            "Log10(predicted quantity, kg)"
-        )
-
-        ax.set_ylabel(
-            "Log10(observed quantity, kg)"
-        )
+        ax.set_xlabel("Predicted quantity (kg)")
+        ax.set_ylabel("Observed quantity (kg)")
 
         ax.text(
             0.04,
             0.96,
-            f"R² (log) = {r2:.4f}",
+            f"R² = {r2:.4f}",
             transform=ax.transAxes,
             va="top",
             bbox=dict(
@@ -2501,6 +2496,139 @@ def _plot_model_performance_by_year(
 
 
 
+def _plot_quantity_error_and_mirror_disagreement(
+    *,
+    con: duckdb.DuckDBPyConnection,
+    prepared_input_path: Path,
+    model_predictions_path: Path,
+    selected_model_name: str,
+    quantity_output_path: Path,
+    mirror_output_path: Path,
+) -> dict[str, float]:
+    """Descriptive selected-model OOF diagnostics, with no refitting.
+
+    Quantity deciles use every valid selected-model OOF prediction. Mirror
+    quintiles use only rows with two positive synchronized reporter quantities.
+    """
+    predictions_sql = sql_literal(model_predictions_path)
+    prepared_sql = sql_literal(prepared_input_path)
+
+    # Match the same valid-positive target/prediction population as the notebook.
+    # SQL joining avoids loading all columns of the multi-million-row H5 file.
+    observations = con.execute(f"""
+        WITH oof AS (
+            SELECT year, exporter_iso, importer_iso, target_cmd,
+                   prediction_quantity_kg,
+                   ABS(LN(target_quantity_kg) - LN(prediction_quantity_kg))
+                       AS absolute_log_error
+            FROM read_parquet({predictions_sql})
+            WHERE model_name = ?
+              AND isfinite(target_quantity_kg) AND target_quantity_kg > 0
+              AND isfinite(prediction_quantity_kg) AND prediction_quantity_kg > 0
+        ), prepared AS (
+            SELECT year, exporter_iso, importer_iso, target_cmd,
+                   export_synchronized_quantity_kg,
+                   import_synchronized_quantity_kg
+            FROM read_parquet({prepared_sql})
+        )
+        SELECT oof.prediction_quantity_kg, oof.absolute_log_error,
+               prepared.export_synchronized_quantity_kg AS export_kg,
+               prepared.import_synchronized_quantity_kg AS import_kg,
+               CASE WHEN prepared.year IS NULL THEN FALSE ELSE TRUE END AS matched
+        FROM oof
+        LEFT JOIN prepared USING (year, exporter_iso, importer_iso, target_cmd)
+    """, [selected_model_name]).fetchdf()
+
+    if observations.empty:
+        raise RuntimeError("No valid selected-model held-out quantity predictions")
+    if not observations["matched"].all():
+        raise RuntimeError("Selected-model held-out rows failed to match prepared H5 data")
+
+    # Guard one-to-one joins; avoid silently weighting duplicated prepared rows.
+    n_keys = con.execute(f"""
+        SELECT COUNT(*) FROM (
+            SELECT year, exporter_iso, importer_iso, target_cmd
+            FROM read_parquet({prepared_sql})
+            GROUP BY 1,2,3,4 HAVING COUNT(*) > 1
+        )
+    """).fetchone()[0]
+    if n_keys:
+        raise RuntimeError("Prepared H5 contains duplicate join keys")
+
+    observations["quantity_decile"] = pd.qcut(
+        observations["prediction_quantity_kg"], 10,
+        labels=False, duplicates="drop"
+    ) + 1
+    by_quantity = observations.groupby("quantity_decile", observed=True).agg(
+        observations=("absolute_log_error", "size"),
+        mae_log=("absolute_log_error", "mean"),
+    )
+
+    quantity_output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig, ax = plt.subplots(figsize=(9, 4.7))
+    ax.plot(by_quantity.index, by_quantity["mae_log"], marker="o", linewidth=2)
+    ax.set(xlabel="Predicted quantity (Q1: lowest 10% → Q10: highest 10%)",
+           ylabel="Held-out MAE (log quantity)",
+           title="Held-out quantity-model error by trade-flow magnitude")
+    ax.set_xticks(by_quantity.index)
+    ax.set_xticklabels([f"Q{i}" for i in by_quantity.index])
+    ax.grid(alpha=0.25)
+    fig.tight_layout()
+    fig.savefig(quantity_output_path, dpi=180, bbox_inches="tight")
+    plt.close(fig)
+
+    valid_mirror = (
+        np.isfinite(observations["export_kg"])
+        & np.isfinite(observations["import_kg"])
+        & (observations["export_kg"] > 0)
+        & (observations["import_kg"] > 0)
+    )
+    mirror = observations.loc[valid_mirror].copy()
+    if mirror.empty:
+        raise RuntimeError("No held-out rows with two valid mirror quantities")
+    mirror["mirror_disagreement"] = np.abs(
+        np.log(mirror["export_kg"]) - np.log(mirror["import_kg"])
+    )
+    mirror["disagreement_group"] = pd.qcut(
+        mirror["mirror_disagreement"], 5, labels=False, duplicates="drop"
+    ) + 1
+    by_both = mirror.groupby(
+        ["quantity_decile", "disagreement_group"], observed=True
+    ).agg(observations=("absolute_log_error", "size"),
+          mae_log=("absolute_log_error", "mean")).reset_index()
+    # Do not draw a statistically thin combination as a reliable-looking line.
+    by_both.loc[by_both["observations"] < 100, "mae_log"] = np.nan
+
+    mirror_output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig, ax = plt.subplots(figsize=(9, 5.2))
+    for group, part in by_both.groupby("disagreement_group", observed=True):
+        ax.plot(part["quantity_decile"], part["mae_log"],
+                marker="o", linewidth=1.7,
+                label=f"G{int(group)}")
+    ax.set(xlabel="Predicted-quantity decile (smallest to largest)",
+           ylabel="Held-out MAE (log quantity)",
+           title="Held-out error by quantity and mirror disagreement")
+    ax.set_xticks(by_quantity.index)
+    ax.set_xticklabels([f"Q{i}" for i in by_quantity.index])
+    ax.grid(alpha=0.25)
+    ax.legend(
+        title="Exporter/importer disagreement (G1: lowest 20% → G5: highest 20%)",
+        ncol=5,
+        fontsize=9,
+        title_fontsize=9,
+    )
+    fig.tight_layout()
+    fig.savefig(mirror_output_path, dpi=180, bbox_inches="tight")
+    plt.close(fig)
+
+    return {
+        "heldout_rows": len(observations),
+        "mirror_rows": len(mirror),
+        "coverage_pct": 100 * len(mirror) / len(observations),
+        "min_cell_rows": int(by_both["observations"].min()),
+    }
+
+
 def _build_validation_figure_paths(
     *,
     figure_dir: Path,
@@ -2513,6 +2641,12 @@ def _build_validation_figure_paths(
 
     return {
 
+        "model_oof_quantity_deciles": (
+            figure_dir / f"{prefix}model_oof_quantity_deciles.png"
+        ),
+        "model_oof_quantity_mirror": (
+            figure_dir / f"{prefix}model_oof_quantity_mirror.png"
+        ),
         "model_oof_residual_quantiles": (
             figure_dir / f"{prefix}model_oof_residual_quantiles.png"
         ),
@@ -4318,6 +4452,15 @@ def build_validation_report(
             figure_dir=figure_dir,
             target_hs=cfg.scope.target_hs,
         )
+        oof_error_summary = _plot_quantity_error_and_mirror_disagreement(
+            con=con,
+            prepared_input_path=prepared_input_path,
+            model_predictions_path=model_predictions_path,
+            selected_model_name=selected_model_name,
+            quantity_output_path=figure_paths["model_oof_quantity_deciles"],
+            mirror_output_path=figure_paths["model_oof_quantity_mirror"],
+        )
+
         _plot_training_uv_distance_distribution(
             diagnostics=diagnostics,
             output_path=figure_paths[
@@ -4465,28 +4608,27 @@ def build_validation_report(
             lambda x: f"{x:.2%}"
         )
 
-        band_display["R² (log)"] = band_display["r2_log"].map(
+        band_display["R²"] = band_display["r2"].map(
             lambda x: f"{x:.4f}"
         )
 
         band_display["Log cutoff"] = band_display["log_cutoff"].map(
             lambda x: f"{x:.3f}" if pd.notna(x) else "—"
         )
-
-        band_display["Robust σ equivalent"] = (
-            band_display["robust_sigma_equivalent"].map(
-                lambda x: f"{x:.2f}σ" if pd.notna(x) else "—"
+        
+        band_display["Residual MAD equivalent"] = (
+            band_display["mad_equivalent"].map(
+                lambda x: f"{x:.2f} MAD" if pd.notna(x) else "—"
             )
         )
 
         band_display = band_display[
             [
                 "Band",
-                "Log cutoff",
-                "Robust σ equivalent",
+                "Residual MAD equivalent",
                 "Retained",
                 "Excluded",
-                "R² (log)",
+                "R²",
             ]
         ]
 
@@ -5281,7 +5423,7 @@ def build_validation_report(
                 "from the final production model over the complete assessable "
                 "inference population. The left panel shows the full population; "
                 "the right panel illustrates a 3× multiplicative disagreement "
-                "threshold. R² is calculated on log quantities."
+                "threshold. R² is calculated on quantities in kg."
             ),
             "",
             markdown_image(
@@ -5433,7 +5575,51 @@ def build_validation_report(
             "The following HS4 families have the largest out-of-fold MAE among "
             "groups with at least 100 held-out predictions. These evaluations "
             "use temporally held-out training-eligible observations.", "",
-            _markdown_table(oof_hs4_display), 
+            _markdown_table(oof_hs4_display),
+            "",
+            "### 9.11. Held-out error by quantity magnitude and mirror disagreement",
+            "",
+            "- These diagnostics use temporally held-out predictions from the "
+            "selected quantity model. Predicted quantities are ranked and divided "
+            "into ten equally populated groups (deciles): Q1 contains the lowest "
+            "10% of predicted quantities, while Q10 contains the highest 10%. "
+            "These deciles are defined using all valid held-out predictions.",
+            "",
+            "- For observations with positive, finite synchronized quantities from "
+            "both reporters, mirror disagreement is measured as the absolute "
+            "logarithmic ratio of exporter and importer quantities. These "
+            "observations are divided into five equally populated disagreement "
+            "groups (quintiles): G1 represents the lowest 20% disagreement and "
+            "G5 the highest 20%. The same quantity-decile boundaries are retained "
+            "for both figures.",
+            markdown_image(
+                "Held-out MAE by predicted-quantity decile",
+                figure_paths["model_oof_quantity_deciles"],
+                document_path=report_path,
+                width=850,
+            ),
+            "",
+            markdown_image(
+                "Held-out MAE by quantity decile and mirror disagreement",
+                figure_paths["model_oof_quantity_mirror"],
+                document_path=report_path,
+                width=850,
+            ),
+            "",
+            (
+                f"Two-reporter coverage: {oof_error_summary['mirror_rows']:,} / "
+                f"{oof_error_summary['heldout_rows']:,} "
+                f"({oof_error_summary['coverage_pct']:.2f}%). "
+                f"Minimum cell support: {oof_error_summary['min_cell_rows']:,} "
+                "observations; cells with fewer than 100 observations are "
+                "omitted from the plotted lines."
+            ),
+            "",
+            "Held-out error generally decreases with predicted quantity. "
+            "Greater exporter/importer disagreement is associated with larger "
+            "model residuals, particularly among medium-to-large trade flows. "
+            "These are descriptive associations relative to reconciled "
+            "quantities, not independent measures of true trade quantities.",
             "",
             "## 10. Scientific interpretation",
             "",

@@ -180,7 +180,7 @@ validation:
         type: "hist_gradient_boosting"
         parameters:
           learning_rate: 0.05
-          max_iter: 300
+          max_iter: 1 #300
           max_leaf_nodes: 31
           min_samples_leaf: 50
 
@@ -196,7 +196,7 @@ validation:
         enable: false
         type: "random_forest"
         parameters:
-          n_estimators: 300
+          n_estimators: 1 #300
           min_samples_leaf: 5
           max_features: 0.8
 
@@ -219,9 +219,10 @@ validation:
         enable: true
         type: "embedding_mlp"
         parameters:
+          loss: "mae"
           batch_size: 4096
           learning_rate: 0.001
-          max_epochs: 35
+          max_epochs: 1
           patience: 5
           early_stopping: true
 
@@ -240,6 +241,7 @@ validation:
         enable: false
         type: "embedding_mlp"
         parameters:
+          loss : "mae"
           batch_size: 8192
           learning_rate: 0.001
           max_epochs: 35
@@ -260,6 +262,7 @@ validation:
         enable: false
         type: "embedding_mlp"
         parameters:
+          loss : "mae"
           batch_size: 16384
           learning_rate: 0.001
           max_epochs: 35
@@ -284,11 +287,6 @@ validation:
         - mae_log
         - rmse_log
         - median_absolute_log_error
-
-    selection:
-      enabled: false
-      primary_metric: "mae_log"
-
 
     random_seed: 42
 

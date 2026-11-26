@@ -10,7 +10,11 @@ KEYS = ["year", "exporter_iso", "importer_iso", "target_cmd"]
 MAD_COLUMN = "training_normalized_uv_distance"
 MODEL_NAME = "emb_mlp_bs4096_lr0p001"
 TRAINING_FILENAME = "comtrade_target_h5_training_sample.parquet"
-DEFINITIONS = {"2.5": "refwin_2_0__n30__uv2p5", "2.0": "refwin_2_0__n30__uv2"}
+DEFINITIONS = {
+    "2.5": "refwin_2_0__n30__uv2p5",
+    "2.0": "refwin_2_0__n30__uv2",
+    "1.0": "refwin_2_0__n30__uv1",
+}
 
 
 def read_rows(connection, path, columns, where, year):
@@ -24,11 +28,18 @@ def read_rows(connection, path, columns, where, year):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--year", type=int, default=2024)
-    parser.add_argument("--cutoff", choices=[*DEFINITIONS, "both"], default="both")
+    parser.add_argument("--cutoff", choices=[*DEFINITIONS, "all"], default="all")
+    parser.add_argument(
+    "--loss",
+        choices=["mse", "mae"],
+        default="mse",
+        help="Training and early-stopping loss for the embedding MLP",
+    )
     parser.add_argument("--threads", type=int, help="Override pipeline engine.threads")
     parser.add_argument("--validation-config", type=Path)
     parser.add_argument("--output-dir", type=Path, default=Path("h5_mad_comparison"))
     parser.add_argument("--check-only", action="store_true", help="Load and validate the holdout")
+
     args = parser.parse_args()
 
     import duckdb
@@ -71,7 +82,7 @@ def main():
         cutoff: cfg.output_dir() / "training" / definition / TRAINING_FILENAME
         for cutoff, definition in DEFINITIONS.items()
     }
-    cutoffs = list(DEFINITIONS) if args.cutoff == "both" else [args.cutoff]
+    cutoffs = list(DEFINITIONS) if args.cutoff == "all" else [args.cutoff]
 
     with duckdb.connect(config={"threads": cfg.engine.threads}) as connection:
         logger.info("Reading common %d holdout from %s", args.year, paths["2.5"])
@@ -97,12 +108,63 @@ def main():
         if args.check_only:
             return
 
+
+        # Training population under the current 2.5 MAD selection.
+        baseline_count = connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM read_parquet(?)
+            WHERE year < ?
+            AND training_selected IS TRUE
+            """,
+            [str(paths["2.5"]), args.year],
+        ).fetchone()[0]
+
+        for mad in [1.0, 2.0, 2.5]:
+            n_selected = connection.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM read_parquet(?)
+                WHERE year < ?
+                AND training_selected IS TRUE
+                AND {MAD_COLUMN} <= ?
+                """,
+                [str(paths["2.5"]), args.year, mad],
+            ).fetchone()[0]
+
+            logger.info(
+                "MAD %.1f: %s training rows (%.2f%% of 2.5 MAD)",
+                mad,
+                f"{n_selected:,}",
+                100 * n_selected / baseline_count if baseline_count else 0,
+            )
+
+
         for cutoff in cutoffs:
+            suffix = "" if args.loss == "mse" else "_mae"
+
+            output = (
+                args.output_dir
+                / f"h5_{args.year}_mad_{cutoff.replace('.', 'p')}{suffix}.parquet"
+            )
+
+            if output.is_file() and output.stat().st_size > 0:
+                logger.info(
+                    "MAD %s: output already exists, skipping training: %s",
+                    cutoff,
+                    output,
+                )
+                continue
+
+            ## train 
             start = perf_counter()
             logger.info("MAD %s: reading selected training rows from %s", cutoff, paths["2.5"])
             training_filter = "year < ? AND training_selected IS TRUE"
-            if cutoff == "2.0":
-                training_filter += " AND training_normalized_uv_distance <= 2.0"
+
+            if cutoff != "2.5":
+                training_filter += (
+                    f" AND {MAD_COLUMN} <= {float(cutoff)}"
+                )
 
             training = read_rows(
                 connection, paths["2.5"], columns,
@@ -127,21 +189,47 @@ def main():
                 x_validation_numeric=eval_num,
                 x_validation_categorical=eval_cat,
                 category_sizes=sizes,
-                parameters=model.parameters,
+                parameters={
+                    **model.parameters,
+                    "loss": args.loss,
+                },
                 cfg=cfg,
                 logger=logger,
             )
             del train_num, eval_num, train_cat, eval_cat, y_train
             prediction = _inverse_target(values=transformed, cfg=cfg)
+            observed = result_keys[target].to_numpy(dtype=float)
+
+            log_error = np.log(observed) - np.log(prediction)
+
+            def r2(y, p):
+                denominator = np.sum((y - y.mean()) ** 2)
+                return (
+                    1 - np.sum((y - p) ** 2) / denominator
+                    if denominator > 0 else np.nan
+                )
+
+            logger.info(
+                "MAD %s | loss=%s | 2024 holdout (%s rows) — "
+                "MAE(log)=%.5f | MSE(log)=%.5f | "
+                "R²(log)=%.5f | R²(kg)=%.5f",
+                cutoff,
+                args.loss,
+                f"{len(observed):,}",
+                np.mean(np.abs(log_error)),
+                np.mean(log_error ** 2),
+                r2(np.log(observed), np.log(prediction)),
+                r2(observed, prediction),
+            )
             if len(prediction) != len(result_keys) or not (
                 np.isfinite(prediction) & (prediction > 0)
             ).all():
                 raise ValueError(f"MAD {cutoff} produced invalid quantity predictions")
-
-            output = args.output_dir / f"h5_{args.year}_mad_{cutoff.replace('.', 'p')}.parquet"
             output.parent.mkdir(parents=True, exist_ok=True)
             temporary = output.with_suffix(f".{os.getpid()}.tmp")
-            result_keys.assign(prediction_quantity_kg=prediction).to_parquet(temporary, index=False)
+            result_keys.assign(
+                prediction_quantity_kg=prediction
+            ).to_parquet(temporary, index=False)
             temporary.replace(output)
             logger.info("MAD %s: saved %s in %.1f s", cutoff, output, perf_counter() - start)
 

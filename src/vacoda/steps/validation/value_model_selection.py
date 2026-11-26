@@ -52,24 +52,32 @@ def _reusable(path, payload):
 
 
 def compare_and_select_value_model(
-    *, cfg, training_sample_path, force=False, logger,
+    *, 
+    cfg, 
+    training_sample_path, 
+    selected_model_path,
+    force=False, 
+    logger,
 ):
     if cfg.value_model is None:
         raise ValueError("Value model comparison requires validation.value_model.")
 
     value_cfg = replace(cfg, model=cfg.value_model)
     model_cfg = value_cfg.model
-    definition = training_definition_name(cfg=value_cfg)
+
+    ## Output directory structure
     paths = {}
+
     for product in ("value_model_predictions", "value_selected_model"):
         base = cfg.product_path(product)
-        paths[f"{product}_path"] = base.parent / definition / base.name
+        paths[f"{product}_path"] = (
+            base.parent / selected_model_path.parent.name / base.name
+        )
 
     predictions_path = paths["value_model_predictions_path"]
     selected_path = paths["value_selected_model_path"]
     candidates = model_cfg.models.enabled()
     common_payload = {
-        "version": 1,
         "training_sample": file_stat_fingerprint(training_sample_path),
         "target": asdict(model_cfg.target),
         "features": asdict(model_cfg.features),
@@ -91,9 +99,10 @@ def compare_and_select_value_model(
     with duckdb.connect(config={"threads": cfg.engine.threads}) as con:
         year, training, holdout = _load_calibration_fold(
             cfg=value_cfg,
+            model_cfg=value_cfg,
             con=con,
             training_sample_path=training_sample_path,
-            key_columns=KEYS,
+            label="value"
         )
 
     if holdout[KEYS].isna().any().any() or holdout.duplicated(KEYS).any():
@@ -124,8 +133,13 @@ def compare_and_select_value_model(
         else:
             logger.info("Fitting value candidate %s on years before %d.", name, year)
             prediction = _predict_calibration_fold(
-                cfg=value_cfg, training=training, holdout=holdout, model=model, logger=logger,
-            )
+                        model_cfg=value_cfg, 
+                        training=training, 
+                        holdout=holdout, 
+                        model=model, 
+                        logger=logger,
+                        )
+            
             if len(prediction) != len(base) or not (
                 np.isfinite(prediction) & (prediction > 0)
             ).all():
