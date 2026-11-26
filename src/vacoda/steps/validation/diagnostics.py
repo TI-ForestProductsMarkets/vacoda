@@ -262,18 +262,10 @@ def build_diagnostics(
             f"Release-readiness artifact not found: {release_readiness_path}"
         )
     
-    training_definition = training_definition_name(
-        cfg=cfg
-    )
-
-    base_output_path = cfg.product_path(
-        "diagnostics"
-    )
-
     output_path = (
-        base_output_path.parent
-        / training_definition
-        / base_output_path.name
+        cfg.product_path("diagnostics").parent
+        / model_predictions_path.parent.name
+        / cfg.product_path("diagnostics").name
     )
 
     columns_cfg = cfg.diagnostics.columns

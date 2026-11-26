@@ -418,6 +418,7 @@ def run_validation_workflow(
                 runner=lambda: compare_and_select_value_model(
                     cfg=cfg,
                     training_sample_path=training_sample_path,
+                    selected_model_path= selected_model_path,
                     force=force,
                     logger=logger,
                 ),
@@ -449,7 +450,6 @@ def run_validation_workflow(
                     cfg=replace(cfg, model=cfg.value_model),
                     training_sample_path=training_sample_path,
                     selected_model_path=value_selected_model_path,
-                    output_path=cfg.product_path("value_fitted_model"),
                     run_id=run_id,
                     force=force,
                     logger=logger,

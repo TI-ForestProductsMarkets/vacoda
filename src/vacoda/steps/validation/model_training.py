@@ -341,6 +341,19 @@ def _model_data_fingerprint(
 # Model checkpoint helpers
 # ======================================================================
 
+def _model_run_dir(cfg: ValidationConfig) -> Path:
+    group = training_definition_name(cfg=cfg)
+
+    losses = {
+        str(model.parameters.get("loss", "mse")).lower()
+        for model in cfg.model.models.enabled().values()
+        if model.type == "embedding_mlp"
+    }
+
+    if losses:
+        group += "__loss_" + "_".join(sorted(losses))
+
+    return cfg.product_path("model_predictions").parent / group
 
 def _model_checkpoint_dir(
     *,
@@ -348,20 +361,18 @@ def _model_checkpoint_dir(
     model_name: str,
 ) -> Path:
 
-    checkpoint_group = training_definition_name(cfg=cfg)
-
     model_cfg = cfg.model.models.enabled()[model_name]
-    loss = str(model_cfg.parameters.get("loss", "mse")).lower()
 
-    checkpoint_name = (
-        model_name if loss == "mse"
-        else f"{model_name}__loss_{loss}"
-    )
+    checkpoint_name = model_name
+
+    if model_cfg.type == "embedding_mlp":
+        loss = str(model_cfg.parameters.get("loss", "mse")).lower()
+        checkpoint_name += f"__loss_{loss}"
 
     return (
         cfg.output_dir()
         / "model"
-        / checkpoint_group
+        / training_definition_name(cfg=cfg)
         / "checkpoints"
         / "models"
         / checkpoint_name
@@ -375,24 +386,16 @@ def _model_fold_checkpoint_paths(
 ) -> dict[str, Path]:
 
     directory = (
-        _model_checkpoint_dir(
-            cfg=cfg,
-            model_name=model_name,
-        )
+        _model_checkpoint_dir(cfg=cfg, model_name=model_name)
         / "folds"
         / str(int(held_out_year))
     )
 
-    predictions_path = (
-        directory
-        / "predictions.parquet"
-    )
+    predictions_path = directory / "predictions.parquet"
 
     return {
         "predictions": predictions_path,
-        "manifest": manifest_path_for(
-            predictions_path
-        ),
+        "manifest": manifest_path_for(predictions_path),
     }
 
 
@@ -493,25 +496,16 @@ def _model_checkpoint_paths(
     cfg: ValidationConfig,
     model_name: str,
 ) -> dict[str, Path]:
-    """Return checkpoint artifact paths for one candidate model."""
-
-    directory = _model_checkpoint_dir(
-        cfg=cfg,
-        model_name=model_name,
-    )
 
     predictions_path = (
-        directory
+        _model_checkpoint_dir(cfg=cfg, model_name=model_name)
         / "predictions.parquet"
     )
 
     return {
         "predictions": predictions_path,
-        "manifest": manifest_path_for(
-            predictions_path
-        ),
+        "manifest": manifest_path_for(predictions_path),
     }
-
 
 def _model_semantic_payload(
     *,
@@ -2114,27 +2108,9 @@ def train_validation_models(
         input_path
     )
 
-    base_output_path = cfg.product_path(
-        "model_predictions"
-    )
-
-
-    checkpoint_group = training_definition_name(cfg=cfg)
-
-    losses = {
-        str(model.parameters["loss"]).lower()
-        for model in cfg.model.models.enabled().values()
-        if "loss" in model.parameters
-    }
-
-    if losses:
-        checkpoint_group += "__loss_" + "_".join(sorted(losses))
-
-
     output_path = (
-        base_output_path.parent
-        / checkpoint_group
-        / base_output_path.name
+        _model_run_dir(cfg)
+        / cfg.product_path("model_predictions").name
     )
 
     # ------------------------------------------------------------------

@@ -196,7 +196,7 @@ validation:
         enable: false
         type: "random_forest"
         parameters:
-          n_estimators: 1 #300
+          n_estimators: 300
           min_samples_leaf: 5
           max_features: 0.8
 
@@ -222,7 +222,7 @@ validation:
           loss: "mae"
           batch_size: 4096
           learning_rate: 0.001
-          max_epochs: 1
+          max_epochs: 1 #35
           patience: 5
           early_stopping: true
 

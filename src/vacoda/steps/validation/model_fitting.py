@@ -1819,7 +1819,6 @@ def fit_selected_validation_model(
     training_sample_path: Path,
     selected_model_path: Path,
     run_id: str,
-    output_path: Path | None = None,
     force: bool = False,
     logger,
     role: str = "primary",
@@ -1855,6 +1854,15 @@ def fit_selected_validation_model(
             "Selected Validation model artifact not found: "
             f"{selected_model_path}"
         )
+
+    ## Output path 
+    is_value_model = (selected_model_path.name == cfg.product_path("value_selected_model").name)
+    product = "value_fitted_model" if is_value_model else "fitted_model"
+
+    output_path = (selected_model_path.parent / cfg.product_path(product).name )
+
+    if role == "fallback":
+        output_path = output_path.parent / role / output_path.name
 
     # ------------------------------------------------------------------
     # Read selected model
@@ -1917,22 +1925,6 @@ def fit_selected_validation_model(
             f"Selection artifact: {selected_model_type!r}; "
             f"configuration: {model_cfg.type!r}."
         )
-
-    # ------------------------------------------------------------------
-    # Resolve output
-    # ------------------------------------------------------------------
-
-
-    output_path = (
-        Path(output_path)
-        if output_path is not None
-        else selected_model_path.parent
-        / cfg.product_path("fitted_model").name
-    )
-
-    if role == "fallback":
-        output_path = output_path.parent / "fallback" / output_path.name
-
 
     bundle_path = (
         _production_bundle_path(

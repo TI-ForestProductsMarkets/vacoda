@@ -148,20 +148,6 @@ def _read_fitted_model_metadata(
     }
 
 
-def _inference_output_path(*, cfg: ValidationConfig) -> Path:
-    """Return the configured inference path for this training definition."""
-
-    checkpoint_group = training_definition_name(cfg=cfg)
-
-    base_path = cfg.product_path("inference")
-
-    return (
-        base_path.parent
-        / checkpoint_group
-        / "inference"
-        / base_path.name
-    )
-
 
 def _load_bundle(
     *,
@@ -1232,7 +1218,6 @@ def run_validation_inference(
     value_fitted_model_path: Path,
     value_model_bundle_path: Path,
     run_id: str,
-    output_path: Path | None = None,
     force: bool = False,
     logger,
 ) -> dict[str, Any]:
@@ -1275,18 +1260,9 @@ def run_validation_inference(
             raise FileNotFoundError(f"Value model artifact not found: {path}")
 
     output_path = (
-        Path(
-            output_path
-        )
-        if output_path is not None
-        else _inference_output_path(
-            cfg=cfg
-        )
-    )
-
-    output_path.parent.mkdir(
-        parents=True,
-        exist_ok=True,
+        fitted_model_path.parent
+        / "inference"
+        / cfg.product_path("inference").name
     )
 
     logger.info(
@@ -1341,16 +1317,29 @@ def run_validation_inference(
         bundle=bundle,
         metadata=metadata,
     )
+    
+    logger.info("  Quantity target configured: %s", cfg.model.target.column)
+    logger.info("  Quantity target in bundle: %s", bundle.get("target_column"))
+    logger.info("  Quantity bundle loaded from: %s", model_bundle_path)
 
     if bundle.get("target_column") != cfg.model.target.column:
         raise RuntimeError(
-            "Fitted model target does not match Validation configuration."
+            "Fitted quantity-model target mismatch: "
+            f"expected={cfg.model.target.column!r}, "
+            f"found={bundle.get('target_column')!r}, "
+            f"bundle={model_bundle_path}"
         )
+    
 
     if bundle.get("target_transform") != cfg.model.target.transform:
         raise RuntimeError(
-            "Fitted model target transform does not match Validation configuration."
+            "Fitted quantity-model target transform mismatch: "
+            f"expected={cfg.model.target.transform!r}, "
+            f"found={bundle.get('target_transform')!r}, "
+            f"bundle={model_bundle_path}"
         )
+
+
     _validate_bundle_feature_contract(
         bundle=bundle,
         cfg=cfg,
@@ -1371,11 +1360,14 @@ def run_validation_inference(
         model_type=value_metadata["model_type"],
     )
     _validate_bundle_identity(bundle=value_bundle, metadata=value_metadata)
+
+
     if (
         value_bundle.get("target_column") != cfg.value_model.target.column
         or value_bundle.get("target_transform") != cfg.value_model.target.transform
     ):
         raise RuntimeError("Value model target configuration mismatch.")
+    
     _validate_bundle_feature_contract(
         bundle=value_bundle,
         cfg=value_cfg,
