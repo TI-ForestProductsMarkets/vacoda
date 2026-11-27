@@ -1265,6 +1265,8 @@ def run_validation_inference(
         / cfg.product_path("inference").name
     )
 
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    
     logger.info(
         "%s Run Validation inference",
         get_symbols("build"),
@@ -1318,10 +1320,6 @@ def run_validation_inference(
         metadata=metadata,
     )
     
-    logger.info("  Quantity target configured: %s", cfg.model.target.column)
-    logger.info("  Quantity target in bundle: %s", bundle.get("target_column"))
-    logger.info("  Quantity bundle loaded from: %s", model_bundle_path)
-
     if bundle.get("target_column") != cfg.model.target.column:
         raise RuntimeError(
             "Fitted quantity-model target mismatch: "

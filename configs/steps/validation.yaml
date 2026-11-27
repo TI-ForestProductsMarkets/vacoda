@@ -180,7 +180,7 @@ validation:
         type: "hist_gradient_boosting"
         parameters:
           learning_rate: 0.05
-          max_iter: 1 #300
+          max_iter: 300
           max_leaf_nodes: 31
           min_samples_leaf: 50
 
@@ -219,10 +219,10 @@ validation:
         enable: true
         type: "embedding_mlp"
         parameters:
-          loss: "mae"
+          loss: "mse"
           batch_size: 4096
           learning_rate: 0.001
-          max_epochs: 1 #35
+          max_epochs: 35
           patience: 5
           early_stopping: true
 
