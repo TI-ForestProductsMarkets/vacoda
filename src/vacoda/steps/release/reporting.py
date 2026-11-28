@@ -1,7 +1,7 @@
-"""Compact, evidence-led reporting for published VACODA Release datasets.
+"""
+vacoda.steps.release.reporting
 
-Reporting is descriptive; publication authority belongs to the Release audit.
-Figures follow the shared VACODA figure-directory convention.
+Compact, evidence-led reporting for published VACODA Release datasets.
 """
 from __future__ import annotations
 
@@ -22,11 +22,13 @@ from vacoda.utils.display import get_symbols
 from vacoda.utils.markdown import insert_markdown_toc, markdown_image
 from vacoda.utils.sql import sql_literal
 from vacoda.visualization.relationships import plot_figure_pair, plot_figure_row
+from vacoda.steps.release.release_data import PUBLIC_COLUMN_NAMES
 
+## 
 SIDECARS = (
     "journey",
     "availability",
-    "fallback",
+    "model_usage",
     "missing_reasons",
     "distributions",
     "annual_trade",
@@ -34,48 +36,50 @@ SIDECARS = (
     "product_trade",
     "feature_distributions",
 )
+
+# Labels and summaries for vacoda stages
 STAGE_LABELS = {
-    "hs_sync": "HS Sync", "quantity": "Quantity", "cif_fob": "CIF/FOB",
-    "trade_sync": "Trade Sync", "value": "Value", "validation_prepared": "Validation prepared",
-    "validation_inference": "Validation inference", "release_enriched": "Release",
+    "hs_sync": "HS Sync", 
+    "quantity": "Quantity", 
+    "cif_fob": "CIF/FOB",
+    "trade_sync": "Trade Sync", 
+    "value": "Value", 
+    "validation_prepared": "Validation prepared",
+    "validation_inference": "Validation inference",
+    "validation_plausibility": "Validation plausibility",
+    "release_enriched": "Release",
 }
 STAGE_SUMMARIES = {
-    "ingestion": (
-        "Ingest and prepare the source trade observations."
-    ),
-    "hs_sync": (
-        "Harmonize product classifications into the target HS revision."
-    ),
-    "quantity": (
-        "Standardize and prepare quantity evidence from reporting countries."
-    ),
-    "cif_fob": (
-        "Account for the CIF/FOB distinction in bilateral trade values."
-    ),
-    "trade_sync": (
-        "Reconcile bilateral trade values and quantities."
-    ),
-    "value": (
-        "Prepare the reconciled trade values in constant USD."
-    ),
-    "validation_prepared": (
-        "Construct the UV-based training population and model inputs."
-    ),
-    "validation_inference": (
-        "Evaluate candidate models and infer an additional quantity feature."
-    ),
-    "release_enriched": (
-        "Publish synchronized and inferred data."
-    ),
+    "ingestion": ("Ingest and prepare the source trade observations."),
+    "hs_sync": ("Harmonize product classifications into the target HS revision."),
+    "quantity": ("Standardize and prepare quantity evidence from reporting countries."),
+    "cif_fob": ("Account for the CIF/FOB distinction in bilateral trade values."),
+    "trade_sync": ("Reconcile bilateral trade values and quantities."),
+    "value": ("Prepare the reconciled trade values in constant USD."),
+    "validation_inference": ("Generate model-based quantity and value predictions."),
+    "validation_plausibility": ("Assess quantity and value plausibility using calibrated bounds."),
+    "release_enriched": ("Publish audited quantity and value assessments."),
 }
+
 FIELD_LABELS = {
-    "trade_value_reconciled_constant_usd": "Trade value (constant USD)",
-    "trade_synced_quantity_kg": "Synchronized quantity (kg)",
-    "model_prediction_quantity_kg": "Model prediction (kg)",
+    # Quantity
+    "quantity_reconciled_kg": "Observed quantity (kg)",
+    "model_prediction_quantity_kg": "Predicted quantity (kg)",
+    "quantity_lower_kg": "Quantity lower bound (kg)",
+    "quantity_upper_kg": "Quantity upper bound (kg)",
+
+    # Value
+    "trade_value_reconciled_constant_usd": "Observed value (constant USD)",
+    "model_prediction_value": "Predicted value (constant USD)",
+    "value_lower_constant_usd": "Value lower bound (constant USD)",
+    "value_upper_constant_usd": "Value upper bound (constant USD)",
+
+    # Additional diagnostics
     "trade_sync_uv_usd_per_kg": "Observed unit value (USD/kg)",
     "model_uv_usd_per_kg": "Model unit value (USD/kg)",
     "quantity_abs_log_residual": "Absolute log quantity residual",
 }
+
 REASON_LABELS = {
     "export_missing_and_import_corrected_missing": "Export missing; corrected import missing",
     "export_nonpositive": "Export value nonpositive",
@@ -147,22 +151,39 @@ def _plot_journey(journey: list[dict[str, Any]], path: Path) -> None:
     _save(fig, path)
 
 
-def _plot_annual_coverage(annual: list[dict[str, Any]], path: Path) -> None:
+def _plot_annual_coverage(
+    annual: list[dict[str, Any]],
+    path: Path,
+) -> None:
     rows = sorted(annual, key=lambda r: r["year"])
+
     years = [int(r["year"]) for r in rows]
-    fig, ax = plt.subplots(figsize=(9, 4.2))
-    for key, label in (
-        ("synced_quantity_rows", "Reconciled trade quantity"),
-        ("nominal_value_rows", "Reconciled trade value"),
-        ("raw_model_prediction_rows", "Model predictions"),
-    ):
-        ax.plot(years, [100 * r[key] / r["standard_rows"] for r in rows], marker="o", label=label)
-    ax.set_ylabel("Coverage (% of annual Release rows)")
+
+    series = (
+        ("observed_quantity_rows", "Observed quantity"),
+        ("predicted_quantity_rows", "Predicted quantity"),
+        ("observed_value_rows", "Observed value"),
+        ("predicted_value_rows", "Predicted value"),
+    )
+
+    fig, ax = plt.subplots(figsize=(9, 4.5))
+
+    for field, label in series:
+        values = [
+            100.0 * r[field] / r["standard_rows"]
+            if r["standard_rows"] else 0.0
+            for r in rows
+        ]
+
+        ax.plot(years, values, marker="o", label=label)
+
     ax.set_xlabel("Year")
+    ax.set_ylabel("Coverage (% of annual Release rows)")
     ax.set_xticks(years)
     ax.set_ylim(0, 105)
     ax.grid(axis="y", alpha=0.25)
-    ax.legend(loc="lower left")
+    ax.legend(loc="lower left", ncol=2)
+
     _save(fig, path)
 
 
@@ -320,11 +341,12 @@ def build_release_report(
     standard_path, enriched_path = Path(standard_path), Path(enriched_path)
     audit_path, diagnostics_path = Path(audit_path), Path(diagnostics_path)
     expected = {
-        "standard": cfg.product_path("release", release_id=release_id),
-        "enriched": cfg.enriched_path(release_id=release_id),
-        "audit": cfg.product_path("release_audit", release_id=release_id),
+        "standard":    cfg.product_path("release", release_id=release_id),
+        "enriched":    cfg.enriched_path(release_id=release_id),
+        "audit":       cfg.product_path("release_audit", release_id=release_id),
         "diagnostics": cfg.product_path("diagnostics", release_id=release_id),
     }
+
     for name, path in {"standard": standard_path, "enriched": enriched_path,
                        "audit": audit_path, "diagnostics": diagnostics_path}.items():
         if path != expected[name]:
@@ -334,17 +356,16 @@ def build_release_report(
     enriched_metadata = cfg.metadata_path(enriched=True, release_id=release_id)
     _require("standard metadata", standard_metadata)
     _require("enriched metadata", enriched_metadata)
+
     if not cfg.artifacts.enable:
         raise RuntimeError("Release reporting is required by the workflow")
+    
     report_path = cfg.artifacts_path(run_id)
     latest_path = cfg.artifacts_latest_path()
     if report_path.exists() and not force:
         raise FileExistsError(f"Release report already exists: {report_path}")
 
-    field_labels = {
-        **FIELD_LABELS,
-        quantity_col: "Reconciled trade quantity (kg)",
-    }
+    field_labels = FIELD_LABELS
 
     # Match Value reporting: central figure root / stage / target revision.
     figure_dir = get_figure_dir() / "release" / f"target_{cfg.scope.target_hs.lower()}"
@@ -385,9 +406,14 @@ def build_release_report(
         }
         journey = sorted(sidecars["journey"], key=lambda r: r["stage_order"])
         availability = sidecars["availability"]
-        fallback = sorted(
-            sidecars["fallback"],
-            key=lambda r: (-r["fallback_rows"], r["target_cmd"]),
+        model_usage = sorted(
+            sidecars["model_usage"],
+            key=lambda r: (
+                r["target"],
+                -r["prediction_rows"],
+                str(r["model_name"] or ""),
+                r["year"],
+            ),
         )
         reasons = sorted(sidecars["missing_reasons"], key=lambda r: (-r["rows"], r["reason"]))
         dist = [r for r in sidecars["distributions"] if r["period_type"] == "all_years"]
@@ -397,9 +423,10 @@ def build_release_report(
         feature_distributions = sidecars["feature_distributions"]
         lookup = {(r["stage"], r["field"]): r for r in availability}
         final_specs = (
-            ("Reconciled trade value", "trade_value_reconciled"),
-            ("Synchronized trade quantity", quantity_col),
-            ("Model prediction", "model_prediction_quantity_kg"),
+            ("Observed quantity", "quantity_reconciled_kg"),
+            ("Predicted quantity", "model_prediction_quantity_kg"),
+            ("Observed value", "trade_value_reconciled_constant_usd"),
+            ("Predicted value", "model_prediction_value"),
         )
         final_coverage = []
         for label, field in final_specs:
@@ -407,11 +434,49 @@ def build_release_report(
             if item is None:
                 raise RuntimeError(f"Release availability missing: {field}")
             final_coverage.append((label, item))
-        missing_value_rows = int(overall["enriched_rows"]) - int(overall["nominal_value_rows"])
-        if sum(int(r["rows"]) for r in reasons) != missing_value_rows:
-            raise RuntimeError("Missing-reason totals differ from missing monetary values")
-        if sum(int(r["fallback_rows"]) for r in fallback) != int(overall["fallback_prediction_rows"]):
-            raise RuntimeError("Fallback totals differ from overall diagnostics")
+
+
+        # Verify that each model-usage population matches the published
+        # prediction counts. Model names are not hard-coded.
+
+        for target, expected_field in (
+            ("quantity", "predicted_quantity_rows"),
+            ("value", "predicted_value_rows"),
+        ):
+            actual = sum(
+                int(row["prediction_rows"])
+                for row in model_usage
+                if row["target"] == target
+            )
+
+            expected = int(overall[expected_field])
+
+            if actual != expected:
+                raise RuntimeError(
+                    f"{target.capitalize()} model-usage count mismatch: "
+                    f"models={actual:,}, published={expected:,}"
+                )
+
+        # Every published observation must have a recognized assessment status.
+
+        for target in ("quantity", "value"):
+            assessed_rows = sum(
+                int(overall[f"{target}_{status}_rows"])
+                for status in (
+                    "plausible",
+                    "not_plausible",
+                    "not_assessed",
+                )
+            )
+
+            published_rows = int(overall["standard_rows"])
+
+            if assessed_rows != published_rows:
+                raise RuntimeError(
+                    f"{target.capitalize()} plausibility status counts do not "
+                    f"cover the published population: "
+                    f"statuses={assessed_rows:,}, rows={published_rows:,}"
+        )
 
         _plot_journey(journey, figure_paths["journey"])
         _plot_annual_coverage(annual, figure_paths["annual_coverage"])
@@ -472,6 +537,14 @@ def build_release_report(
             "",
             "- **Year:** Calendar year associated with the bilateral trade observations.",
             "",
+            "- **Observed quantity:** Records containing a reconciled quantity in kilograms.",
+            "",
+            "- **Predicted quantity:** Records containing a model-predicted quantity in kilograms.",
+            "",
+            "- **Observed value:** Records containing a reconciled trade value in constant USD.",
+            "",
+            "- **Predicted value:** Records containing a model-predicted trade value in constant USD.",
+            "",
             "- **Bilateral rows:** Total number of published observations for the corresponding year. "
             "Each observation represents a unique combination of year, exporting country, importing country, "
             "and product code (`target_cmd`). These counts describe the final bilateral population, "
@@ -495,14 +568,22 @@ def build_release_report(
             "Neither synchronized quantities nor model predictions represent independently verified physical weights.",
             "",
             *_table(
-                ["Year", "Bilateral rows", "Synchronized trade quantity", "Reconciled trade value", "Model predictions"],
+                [
+                    "Year",
+                    "Bilateral rows",
+                    "Observed quantity",
+                    "Predicted quantity",
+                    "Observed value",
+                    "Predicted value",
+                ],
                 [
                     (
                         _fmt(r["year"], year=True),
                         _fmt(r["standard_rows"]),
-                        _fmt(r["synced_quantity_rows"]),
-                        _fmt(r["nominal_value_rows"]),
-                        _fmt(r["raw_model_prediction_rows"]),
+                        _fmt(r["observed_quantity_rows"]),
+                        _fmt(r["predicted_quantity_rows"]),
+                        _fmt(r["observed_value_rows"]),
+                        _fmt(r["predicted_value_rows"]),
                     )
                     for r in annual
                 ],
@@ -530,70 +611,71 @@ def build_release_report(
             "",
             "_Evidence categories describe observed values, not established causes of missing factors._", 
             "",
-            "## 3. Model Predictions and Fallback",
+            "## 3. Model Predictions and Plausibility",
             "",
-            "### 3.1 Training, inference and publication",
-            "",
-            *_table(["Population", "Observations"], [
-                ("Training selected", _fmt(overall["training_selected_rows"])),
-                ("Model predictions", _fmt(overall["raw_model_prediction_rows"])),
-                ("Standard predictions retained", _fmt(overall["standard_prediction_rows"])),
-                ("Random Forest fallback predictions", _fmt(overall["fallback_prediction_rows"])),
-                ("Fallback HS6 codes", _fmt(overall["fallback_hs6_codes"])),
-                ("Support not evaluated", _fmt(overall["support_not_evaluated_rows"])),
-                ("Rows with recorded imputation method", _fmt(overall["imputed_value_rows"])),
-            ]),
-            "",
-            "**Quantity publication policy:** The configured Validation quantity "
-            f"(`{quantity_col}`) is published as `trade_quantity_kg`. "
-            "Model predictions provide an additional quantity estimate and "
-            "do not overwrite the reconciled quantity.",
-            "",
-            "The selected Embedding MLP handles observations where HS6 or HS4 "
-            "was represented during model fitting. When both categories are "
-            "unseen, prediction is routed to the Random Forest fallback. "
-            "Both published datasets retain these predictions. Observations "
-            "with invalid model inputs receive no prediction.",
-            "",
-            "**Monetary-value imputation:** Both published datasets preserve "
-            "the `imputation_method` field from Validation Prepared. "
-            "The reported count describes observations with a recorded method; "
-            "Release does not perform additional imputation.",
-            "",
-            "**Model interpretation:** Predictions are learned from selected "
-            "synchronized trade observations, not independently verified "
-            "shipment weights. Detailed training rules and out-of-fold "
-            "evaluation are documented in Validation.",
-            "",
-            "### 3.2 Random Forest fallback by HS6",
+            "### 3.1 Prediction coverage",
             "",
             *_table(
-                ["HS6", "Fallback predictions", "First year", "Last year"],
+                ["Measurement", "Observations"],
                 [
-                    (
-                        r["target_cmd"],
-                        _fmt(r["fallback_rows"]),
-                        _fmt(r["first_year"], year=True),
-                        _fmt(r["last_year"], year=True),
-                    )
-                    for r in fallback
+                    ("Observed quantity", _fmt(overall["observed_quantity_rows"])),
+                    ("Predicted quantity", _fmt(overall["predicted_quantity_rows"])),
+                    ("Observed value", _fmt(overall["observed_value_rows"])),
+                    ("Predicted value", _fmt(overall["predicted_value_rows"])),
                 ],
             ),
             "",
-            "Fallback predictions are used when both HS6 and HS4 were unseen "
-            "during primary-model fitting. They are retained in both "
-            "Standard and Enriched datasets.",
+            "### 3.2 Models used",
             "",
-
-            "### 3.3 Prediction discrepancy", 
+            "Model identities are read from the published Release dataset.",
             "",
-            "- The plot shows the distribution of absolute logarithmic discrepancies between synchronized trade quantities "
-            "and model-predicted quantities across observations where both are available; it is not restricted to training data, but covers all comparable observations in the Release dataset."
-            ]
-        if residual_figure:
-            lines.extend([markdown_image("Absolute log residual profile (P05–P95)",
-                                         figure_paths["residual_profile"], document_path=report_path), ""])
-        lines.extend([
+            *_table(
+                ["Target", "Year", "Model", "Predictions"],
+                [
+                    (
+                        r["target"].capitalize(),
+                        _fmt(r["year"], year=True),
+                        r["model_name"] or "Unspecified",
+                        _fmt(r["prediction_rows"]),
+                    )
+                    for r in model_usage
+                ],
+            ),
+            "",
+            "### 3.3 Quantity and value plausibility",
+            "",
+            *_table(
+                ["Assessment", "Plausible", "Not plausible", "Not assessed"],
+                [
+                    (
+                        "Quantity",
+                        _fmt(overall["quantity_plausible_rows"]),
+                        _fmt(overall["quantity_not_plausible_rows"]),
+                        _fmt(overall["quantity_not_assessed_rows"]),
+                    ),
+                    (
+                        "Value",
+                        _fmt(overall["value_plausible_rows"]),
+                        _fmt(overall["value_not_plausible_rows"]),
+                        _fmt(overall["value_not_assessed_rows"]),
+                    ),
+                ],
+            ),
+            "",
+            "Plausibility classifications are inherited from Validation. "
+            "Release does not independently recalibrate prediction bounds.",
+            "",
+            "### 3.4 Prediction discrepancy",
+            "",
+            "The distribution summarizes absolute logarithmic differences "
+            "between observed and predicted quantities where both are available.",
+            "",
+            markdown_image(
+                "Absolute log quantity residual profile (P05–P95)",
+                figure_paths["residual_profile"],
+                document_path=report_path,
+            ),
+            "",
             "## 4. Exploring the Published Data", 
             "",
             "### 4.1 Trade evolution", 
@@ -698,9 +780,11 @@ def build_release_report(
                 ("Enriched", _fmt(overall["enriched_rows"]), _fmt(len(cfg.schema.enriched))),
             ]), 
             "",
-            f"**Audit:** passed · {n_checks} checks · 0 failed. "
-            f"**Random Forest fallback predictions retained:** "
-            f"{_fmt(overall['fallback_prediction_rows'])}.",            
+            f"**Audit:** passed · {n_checks} checks · 0 failed.",
+            "",
+            f"**Quantity predictions:** {_fmt(overall['predicted_quantity_rows'])}  ",
+            f"**Value predictions:** {_fmt(overall['predicted_value_rows'])}",
+            "",         
             "",
             "### 5.2 Published artifacts", 
             "",
@@ -716,24 +800,29 @@ def build_release_report(
             "",
             "## 6. Interpretation and Limitations",
             "",
-            "VACODA combines harmonized source trade observations, bilateral "
-            "reconciliation and model-based quantity inference into two "
-            "complementary published datasets.",
+            "VACODA combines harmonized trade observations, bilateral "
+            "reconciliation, model-based quantity and value predictions, "
+            "and calibrated plausibility assessments.",
             "",
-            "Trade-Sync quantities are reconciled estimates, while model "
-            "quantities provide additional statistical evidence. Neither "
-            "should be interpreted as independently verified shipment weights.",
+            "Observed quantities and values represent reconciled trade evidence. "
+            "Model predictions provide additional statistical estimates; neither "
+            "should be interpreted as independently verified shipment measurements.",
             "",
-            "Missing values remain missing when the relevant source evidence "
-            "or required model inputs are unavailable. Random Forest fallback "
-            "predictions are retained in both datasets when HS6 and HS4 are "
-            "unseen during primary-model fitting. Recorded monetary-value "
-            "imputation provenance is preserved in both published datasets.",
+            "Quantity and value plausibility are assessed separately against "
+            "their respective calibrated bounds. A plausible classification "
+            "indicates consistency with those bounds, not proof that the "
+            "observed trade record is correct.",
             "",
-            "Detailed methodology, diagnostic figures and validation "
-            "results remain in the individual upstream module reports. "
-            "The Release audit establishes technical publication integrity, "
-            "not ground-truth accuracy.",
+            "Observations without sufficient evidence for assessment are "
+            "reported as not assessed. Missing predictions and observed "
+            "values remain distinguishable in the published datasets.",
+            "",
+            "Model identities are preserved in the published data. Release "
+            "does not select models, retrain them, or recalculate plausibility bounds.",
+            "",
+            "Detailed methodology and model evaluation remain documented "
+            "in the upstream Validation reports. The Release audit establishes "
+            "technical publication integrity, not ground-truth accuracy.",
             "",
             "## Appendix — Technical Reference", 
             "",
@@ -748,14 +837,14 @@ def build_release_report(
             f"**Standard dataset ({len(cfg.schema.standard)} columns)**",
             "",
             *[
-                f"{i}. `{name}`"
+                f"{i}. `{PUBLIC_COLUMN_NAMES.get(name, name)}`"
                 for i, name in enumerate(cfg.schema.standard, start=1)
             ],
             "",
             f"**Enriched dataset — additional columns ({len(cfg.schema.enriched_additional)} columns)**",
             "",
             *[
-                f"{i}. `{name}`"
+                f"{i}. `{PUBLIC_COLUMN_NAMES.get(name, name)}`"
                 for i, name in enumerate(cfg.schema.enriched_additional, start=1)
             ],
             "",

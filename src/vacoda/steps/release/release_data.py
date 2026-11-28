@@ -1,8 +1,11 @@
-"""VACODA Release candidate construction (no publication or approval).
+"""
+
+vacoda.steps.release.release_data
+-----------------------------
+VACODA Release candidate construction.
 
 Combine canonical Validation Prepared and Inference on bilateral keys, write
 standard and enriched Parquet candidates to the workflow staging directory.
-Release audits and publication are separate workflow steps.
 """
 from __future__ import annotations
 
@@ -67,12 +70,36 @@ DERIVED = {
     "trade_sync_uv_mad_distance", 
     "model_uv_mad_distance",
 }
+
+## =============================================================
+# PUBLIC COLUMN NAMES
+## =============================================================
+
 PUBLIC_COLUMN_NAMES = {
+
+    ## Standard Release Columns
+    "importer_iso": "reporter",
+    "exporter_iso": "exporter",
     "target_cmd": "hs6",
-    "trade_value_reconciled": "trade_value_usd",
+
     "model_prediction_quantity_kg": "predicted_quantity_kg",
+    "quantity_reconciled_kg": "observed_quantity_kg",
+    "quantity_lower_kg": "quantity_lower_band",
+    "quantity_upper_kg": "quantity_upper_band",
+    "quantity_plausibility_status": "quantity_plausible_status",
+
+    "model_prediction_value": "predicted_value_constant_usd",
+    "trade_value_reconciled_constant_usd": "observed_value_constant_usd",
+    "value_lower_constant_usd": "value_lower_band",
+    "value_upper_constant_usd": "value_upper_band",
+    "value_plausibility_status": "value_plausible_status",
+
+    "validation_model_name": "model_quantity",
+    "value_validation_model_name": "model_value",
     "model_prediction_available": "prediction_available",
 
+
+    ## Enriched Release Columns
     "import_value_fob_corrected": "import_value_fob",
     "export_synchronized_quantity_kg": "export_quantity_kg",
     "import_synchronized_quantity_kg": "import_quantity_kg",
@@ -80,7 +107,6 @@ PUBLIC_COLUMN_NAMES = {
     "import_synchronized_quantity_source": "import_quantity_source",
     "pair_uses_estimated_weight": "uses_estimated_weight",
     "pair_uses_weight_proxy": "uses_weight_proxy",
-    "trade_value_reconciled_constant_usd": "trade_value_constant_usd",
     "cif_fob_factor_applied": "cif_fob_factor",
     "cif_fob_factor_applied_source": "cif_fob_factor_source",
     "reconciliation_method_applied": "reconciliation_method",
@@ -97,10 +123,8 @@ PUBLIC_COLUMN_NAMES = {
 
     "exporter_adjusted_weight": "exporter_trade_weight",
     "importer_adjusted_weight": "importer_trade_weight",
-
-    "validation_model_name": "model_name",
-    "validation_model_type": "model_type",
 }
+
 PREPARED_FIELDS = {
     "trade_value_reconciled", *PREPARED_EXTRA,
 }

@@ -1,6 +1,7 @@
-"""Descriptive diagnostics for published VACODA Release datasets.
-Step 4 of Release. These summaries are informational only and never
-authorize publication or change the published datasets.
+"""
+vacoda.steps.release.diagnostics
+
+Descriptive diagnostics for published VACODA Release datasets.
 """
 from __future__ import annotations
 from pathlib import Path
@@ -18,7 +19,7 @@ from vacoda.pipeline.checkpoint import (
 from vacoda.steps.release.release_data import PUBLIC_COLUMN_NAMES
 
 # Sidecars are intentionally separate from the original overall/year table so
-# existing report consumers remain compatible. No per-run counts are embedded.
+# existing report consumers remain compatible. 
 
 _STAGE_ORDER = (
     "ingestion",
@@ -29,6 +30,7 @@ _STAGE_ORDER = (
     "value",
     "validation_prepared",
     "validation_inference",
+    "validation_plausibility",
     "release_enriched",
 )
 
@@ -36,7 +38,7 @@ def _sidecar_paths(main_path: Path) -> dict[str, Path]:
     names = (
         "journey",
         "availability",
-        "fallback",
+        "model_usage",
         "missing_reasons",
         "distributions",
         "annual_trade",
@@ -76,21 +78,47 @@ def _build_exploration_sidecars(
         SELECT
             year,
             COUNT(*) AS rows,
-            COUNT(*) FILTER (WHERE {valid_value}) AS usable_value_rows,
-            COUNT(*) FILTER (WHERE {valid_quantity}) AS usable_quantity_rows,
-            COUNT(*) FILTER (WHERE {valid_prediction}) AS prediction_rows,
-            SUM(trade_value_reconciled_constant_usd)
-                FILTER (WHERE {valid_value})
-                AS total_trade_value_constant_usd,
-            MEDIAN(trade_value_reconciled_constant_usd)
-                FILTER (WHERE {valid_value})
-                AS median_trade_value_constant_usd,
-            MEDIAN({quantity_sql})
-                FILTER (WHERE {valid_quantity})
-                AS median_trade_synced_quantity_kg,
-            MEDIAN(model_prediction_quantity_kg)
-                FILTER (WHERE {valid_prediction})
-                AS median_model_prediction_quantity_kg
+
+            -- Observed and predicted quantity
+            COUNT(*) FILTER (
+                WHERE {valid_quantity}
+            ) AS usable_quantity_rows,
+
+            COUNT(*) FILTER (
+                WHERE {valid_prediction}
+            ) AS prediction_rows,
+
+            MEDIAN({quantity_sql}) FILTER (
+                WHERE {valid_quantity}
+            ) AS median_observed_quantity_kg,
+
+            MEDIAN(model_prediction_quantity_kg) FILTER (
+                WHERE {valid_prediction}
+            ) AS median_predicted_quantity_kg,
+
+            -- Observed and predicted value
+            COUNT(*) FILTER (
+                WHERE {valid_value}
+            ) AS usable_value_rows,
+
+            COUNT(*) FILTER (
+                WHERE model_prediction_value > 0
+                AND isfinite(model_prediction_value)
+            ) AS value_prediction_rows,
+
+            SUM(trade_value_reconciled_constant_usd) FILTER (
+                WHERE {valid_value}
+            ) AS total_trade_value_constant_usd,
+
+            MEDIAN(trade_value_reconciled_constant_usd) FILTER (
+                WHERE {valid_value}
+            ) AS median_trade_value_constant_usd,
+
+            MEDIAN(model_prediction_value) FILTER (
+                WHERE model_prediction_value > 0
+                AND isfinite(model_prediction_value)
+            ) AS median_predicted_value_constant_usd
+
         FROM enriched_release
         GROUP BY year
         ORDER BY year
@@ -202,13 +230,26 @@ def _build_exploration_sidecars(
 
     # 4. Distribution quantiles across published observations.
     measures = (
-        "trade_value_reconciled_constant_usd",
-        quantity_col,
+        # Quantity
+        "quantity_reconciled_kg",
         "model_prediction_quantity_kg",
+        "quantity_lower_kg",
+        "quantity_upper_kg",
+
+        # Value
+        "trade_value_reconciled_constant_usd",
+        "model_prediction_value",
+        "value_lower_constant_usd",
+        "value_upper_constant_usd",
+
+        # Unit-value diagnostics
         "trade_sync_uv_usd_per_kg",
         "model_uv_usd_per_kg",
+
+        # Model discrepancy
         "quantity_abs_log_residual",
     )
+
     available_columns = {
         row[0] for row in con.execute(
             "DESCRIBE SELECT * FROM enriched_release"
@@ -309,6 +350,7 @@ def _build_sidecars(
     sources = dict(source_paths)
     sources["release_enriched"] = enriched_path
     temps: dict[str, Path] = {}
+
     # 1. Real stage row counts, including the observation-grain boundary.
     # A stage may be absent if the workflow has not supplied that artifact.
     journey_selects = []
@@ -328,23 +370,57 @@ def _build_sidecars(
     temps["journey"] = _write_frame(
         con, " UNION ALL ".join(journey_selects), sidecar_paths["journey"]
     )
+
     # 2. Availability: shared definition means positive finite quantity/value,
     # but 'prediction available' flag can differ from published non-null output.
     # Optional fields are omitted rather than confused with zero counts.
     specs = {
         "quantity": ("synchronized_quantity_kg",),
-        "cif_fob": ("export_value_fob", "import_value_fob_corrected"),
-        "trade_sync": ("trade_value_reconciled", quantity_col),
-        "value": ("trade_value_reconciled", "trade_value_reconciled_constant_usd"),
-        "validation_prepared": ("trade_value_reconciled_constant_usd", quantity_col),
-        "validation_inference": ("model_prediction_quantity_kg",),
-        "release_enriched": (
-            "trade_value_reconciled", 
+
+        "cif_fob": (
+            "export_value_fob",
+            "import_value_fob_corrected",
+        ),
+
+        "trade_sync": (
+            "trade_value_reconciled",
+            quantity_col,
+        ),
+
+        "value": (
+            "trade_value_reconciled",
             "trade_value_reconciled_constant_usd",
-            quantity_col, 
+        ),
+
+        "validation_prepared": (
+            "trade_value_reconciled_constant_usd",
+            quantity_col,
+        ),
+
+        "validation_inference": (
             "model_prediction_quantity_kg",
+            "model_prediction_value",
+        ),
+
+        "validation_plausibility": (
+            "quantity_lower_kg",
+            "quantity_upper_kg",
+            "value_lower_constant_usd",
+            "value_upper_constant_usd",
+        ),
+
+        "release_enriched": (
+            "quantity_reconciled_kg",
+            "model_prediction_quantity_kg",
+            "trade_value_reconciled_constant_usd",
+            "model_prediction_value",
+            "quantity_lower_kg",
+            "quantity_upper_kg",
+            "value_lower_constant_usd",
+            "value_upper_constant_usd",
         ),
     }
+
     selects = []
     for stage, fields in specs.items():
         path = sources.get(stage)
@@ -378,7 +454,8 @@ def _build_sidecars(
     temps["availability"] = _write_frame(
         con, " UNION ALL ".join(selects), sidecar_paths["availability"]
     )
-    # 3. Random Forest fallback predictions by HS6 product.
+
+    # 3. Model usage by target and year.
     fallback_required = {
         "target_cmd",
         "year",
@@ -400,93 +477,98 @@ def _build_sidecars(
             f"Release enriched missing fallback fields: {sorted(missing)}"
         )
 
-    temps["fallback"] = _write_frame(con, """
-        SELECT
-            CAST(target_cmd AS VARCHAR) AS target_cmd,
-            MIN(year) AS first_year,
-            MAX(year) AS last_year,
-            COUNT(*) AS fallback_rows
-        FROM enriched_release
-        WHERE validation_model_type = 'random_forest'
-          AND model_prediction_available IS TRUE
-        GROUP BY 1
-        ORDER BY fallback_rows DESC, target_cmd
-    """, sidecar_paths["fallback"])
+    # 3. Actual quantity and value model usage.
+    # Model identities come from the published dataset.
 
-    # 4. Explanations: derive cases from source-side CIF/FOB values if supplied.
-    # This classifies every missing reconciled value by available side evidence.
-    # Counts are not the same thing as proof of source causation. Expose
-    # 'source_not_provided' explicitly rather than inventing a reason.
-    cif_path = source_paths.get("cif_fob")
-    cols = _schema(con, cif_path) if cif_path is not None else set()
-    if {"export_value_fob", "import_value_fob_corrected"}.issubset(cols):
-        # Key join assures that status is attributed to the SAME bilateral row.
-        keys = {"year", "exporter_iso", "importer_iso", "target_cmd"}
-        if not keys.issubset(cols) or not keys.issubset(ecols):
-            raise RuntimeError("CIF/FOB and Release need bilateral identity columns")
-        path_sql = sql_literal(cif_path)
-        factor_col = "estimated_cif_fob_factor" if "estimated_cif_fob_factor" in cols else None
-        # Factor explanation is not inferred from an arbitrarily named column.
-        factor_case = (
-            f"WHEN c.{factor_col} IS NULL THEN 'no_estimated_factor' "
-            if factor_col else ""
-        )
-        reasons_query = f"""
-            WITH missing AS (
-                SELECT
-                    e.year,
-                    e.exporter_iso,
-                    e.importer_iso,
-                    e.target_cmd,
-                    c.year AS matched_source_year,
-                    c.export_value_fob,
-                    c.import_value_fob_corrected
-                FROM enriched_release e
-                LEFT JOIN read_parquet({path_sql}) c
-                USING (year, exporter_iso, importer_iso, target_cmd)
-                WHERE e.trade_value_reconciled IS NULL
-            ),
-            grouped AS (
-                SELECT
-                    CASE
-                        WHEN matched_source_year IS NULL
-                            THEN 'source_row_not_matched'
-                        WHEN export_value_fob IS NULL
-                            AND import_value_fob_corrected IS NULL
-                            THEN 'export_missing_and_import_corrected_missing'
-                        WHEN export_value_fob IS NULL
-                            THEN 'export_missing_import_corrected_present'
-                        WHEN export_value_fob <= 0
-                            THEN 'export_nonpositive'
-                        ELSE 'other_missing_reconciled_value'
-                    END AS reason,
-                    COUNT(*) AS rows
-                FROM missing
-                GROUP BY 1
-            )
-            SELECT reason, rows
-            FROM grouped
-        """
-        # Use LEFT JOIN with missing-side checks in the notebook for exact
-        # attribution if source artifacts have changed between runs.
-    else:
-        reasons_query = """
-            SELECT 'source_not_provided' AS reason, COUNT(*) AS rows
-            FROM enriched_release
-            WHERE trade_value_reconciled IS NULL
-        """
+    model_usage_sql = """
+        SELECT
+            'quantity' AS target,
+            model_quantity AS model_name,
+            year,
+            COUNT(*) AS prediction_rows
+        FROM enriched_release
+        WHERE model_prediction_quantity_kg IS NOT NULL
+        GROUP BY model_quantity, year
+
+        UNION ALL
+
+        SELECT
+            'value' AS target,
+            model_value AS model_name,
+            year,
+            COUNT(*) AS prediction_rows
+        FROM enriched_release
+        WHERE model_prediction_value IS NOT NULL
+        GROUP BY model_value, year
+    """
+
+    temps["model_usage"] = _write_frame(
+        con,
+        model_usage_sql,
+        sidecar_paths["model_usage"],
+    )
+
+    # 4. Missing observed values in the published dataset.
+    # These describe availability, not inferred upstream causes.
+
+    reasons_query = """
+        SELECT
+            'observed_quantity_missing' AS reason,
+            COUNT(*) AS rows
+        FROM enriched_release
+        WHERE quantity_reconciled_kg IS NULL
+
+        UNION ALL
+
+        SELECT
+            'observed_value_missing' AS reason,
+            COUNT(*) AS rows
+        FROM enriched_release
+        WHERE trade_value_reconciled_constant_usd IS NULL
+
+        UNION ALL
+
+        SELECT
+            'predicted_quantity_missing' AS reason,
+            COUNT(*) AS rows
+        FROM enriched_release
+        WHERE model_prediction_quantity_kg IS NULL
+
+        UNION ALL
+
+        SELECT
+            'predicted_value_missing' AS reason,
+            COUNT(*) AS rows
+        FROM enriched_release
+        WHERE model_prediction_value IS NULL
+    """
+
     temps["missing_reasons"] = _write_frame(
         con, reasons_query, sidecar_paths["missing_reasons"]
     )
+
     # 5. Compact long-form quantiles for plots; positive finite values only.
     distribution_fields = (
-        "trade_value_reconciled_constant_usd", 
-        quantity_col,
-        "model_prediction_quantity_kg", 
+        # Quantity
+        "quantity_reconciled_kg",
+        "model_prediction_quantity_kg",
+        "quantity_lower_kg",
+        "quantity_upper_kg",
+
+        # Value
+        "trade_value_reconciled_constant_usd",
+        "model_prediction_value",
+        "value_lower_constant_usd",
+        "value_upper_constant_usd",
+
+        # Unit values
         "trade_sync_uv_usd_per_kg",
-        "model_uv_usd_per_kg", 
+        "model_uv_usd_per_kg",
+
+        # Residuals
         "quantity_abs_log_residual",
     )
+
     dist = []
     for field in distribution_fields:
         if field not in ecols:
@@ -545,11 +627,9 @@ def build_release_diagnostics(
     approval was enforced earlier by the Release workflow and publisher.
     """
     start = perf_counter()
-    public_column_names = {
-            **PUBLIC_COLUMN_NAMES,
-            quantity_col: "trade_quantity_kg",
-        }
-    
+    public_column_names = PUBLIC_COLUMN_NAMES
+
+    ## verify the paths and release identity
     standard_path = Path(standard_path)
     enriched_path = Path(enriched_path)
     audit_path = Path(audit_path)
@@ -557,43 +637,37 @@ def build_release_diagnostics(
     sidecar_paths = _sidecar_paths(output_path)
     source_paths = {k: Path(v) for k, v in (source_paths or {}).items()}
 
-    quantity_sql = '"' + quantity_col.replace('"', '""') + '"'
+    quantity_sql = "quantity_reconciled_kg"
+
     ## Local Checkpoints
     checkpoint_path = checkpoint_dir / "diagnostics.json"
-
-    output_paths = {
-        "main": output_path,
-        **_sidecar_paths(output_path),
-    }
-
+    output_paths = {"main": output_path, **_sidecar_paths(output_path),}
     config_fp = semantic_config_fingerprint(
         config={
             "quantity_column": quantity_col,
             "release_id": release_id,
             "scope": cfg.scope,
-            "code_fingerprint": file_fingerprint(
-                Path(__file__),
-                hash_file=True,
-            ),
+            "code_fingerprint": file_fingerprint( Path(__file__), hash_file=True, ),
         }
     )
 
     input_fp = {
         "standard": file_fingerprint(standard_path),
         "enriched": file_fingerprint(enriched_path),
-        "sources": {
-            name: file_fingerprint(path)
-            for name, path in sorted(source_paths.items())
-        },
+        "sources": {name: file_fingerprint(path) for name, path in sorted(source_paths.items())},
     }
 
     expected_standard = cfg.product_path("release", release_id=release_id)
     expected_enriched = cfg.enriched_path(release_id=release_id)
     expected_audit = cfg.product_path("release_audit", release_id=release_id)
+
+    # Check that the provided paths match the expected release identity.
     if (standard_path != expected_standard
             or enriched_path != expected_enriched
             or audit_path != expected_audit):
         raise ValueError("Release diagnostics input paths do not match release identity.")
+
+    # Check that the provided paths exist and are non-empty.
     for label, path in (
         ("standard dataset", standard_path),
         ("enriched dataset", enriched_path),
@@ -636,13 +710,14 @@ def build_release_diagnostics(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     standard_sql = sql_literal(standard_path)
     enriched_sql = sql_literal(enriched_path)
-    audit_sql = sql_literal(audit_path)
+    audit_sql    = sql_literal(audit_path)
+
     con = duckdb.connect()
     temporary_path = output_path.with_name(output_path.name + ".tmp")
     try:
         con.execute(f"PRAGMA threads={int(cfg.engine.threads)}")
-        # Only read the published artifacts; do not materialize the full dataset
-        # into pandas, and do not assign publication permissions here.
+
+        # Only read the published artifacts; 
         audit_row = con.execute(f"""
             SELECT run_id, release_id, audit_passed
             FROM read_parquet({audit_sql})
@@ -670,131 +745,128 @@ def build_release_diagnostics(
                 public_column_names,
             )
         )
+
         # Two aggregate sets permit descriptive cross-product comparisons
         # without joining millions of underlying bilateral observations.
-        query = f"""
+        query = """
             WITH s AS (
                 SELECT
-                    CASE WHEN GROUPING(year) = 1 THEN 'all_years'
-                         ELSE 'year' END AS period_type,
-                    CASE WHEN GROUPING(year) = 1 THEN NULL
-                         ELSE year END AS year,
+                    CASE WHEN GROUPING(year) = 1
+                        THEN 'all_years' ELSE 'year'
+                    END AS period_type,
+
+                    CASE WHEN GROUPING(year) = 1
+                        THEN NULL ELSE year
+                    END AS year,
+
                     COUNT(*) AS standard_rows,
                     COUNT(DISTINCT target_cmd) AS hs6_codes,
+
+                    -- Quantity
+                    COUNT(quantity_reconciled_kg) AS observed_quantity_rows,
+                    COUNT(model_prediction_quantity_kg) AS predicted_quantity_rows,
+
                     COUNT(*) FILTER (
-                        WHERE trade_value_reconciled IS NOT NULL
-                    ) AS nominal_value_rows,
+                        WHERE quantity_plausibility_status = 'plausible'
+                    ) AS quantity_plausible_rows,
+
                     COUNT(*) FILTER (
-                        WHERE {quantity_sql} IS NOT NULL
-                    ) AS synced_quantity_rows,
+                        WHERE quantity_plausibility_status = 'not-plausible'
+                    ) AS quantity_not_plausible_rows,
+
                     COUNT(*) FILTER (
-                        WHERE model_prediction_available IS TRUE
-                    ) AS model_prediction_available_rows,
+                        WHERE quantity_plausibility_status = 'not_assessed'
+                    ) AS quantity_not_assessed_rows,
+
+                    -- Value
+                    COUNT(trade_value_reconciled_constant_usd) AS observed_value_rows,
+                    COUNT(model_prediction_value) AS predicted_value_rows,
+
                     COUNT(*) FILTER (
-                        WHERE model_prediction_quantity_kg IS NOT NULL
-                    ) AS standard_prediction_rows,
+                        WHERE value_plausibility_status = 'plausible'
+                    ) AS value_plausible_rows,
+
                     COUNT(*) FILTER (
-                        WHERE imputation_method IS NOT NULL
-                    ) AS imputed_value_rows,
-                    MEDIAN(trade_value_reconciled) AS median_trade_value_usd,
-                    MEDIAN({quantity_sql}) AS median_synced_quantity_kg,
-                    MEDIAN(model_prediction_quantity_kg) AS median_standard_prediction_kg
+                        WHERE value_plausibility_status = 'not-plausible'
+                    ) AS value_not_plausible_rows,
+
+                    COUNT(*) FILTER (
+                        WHERE value_plausibility_status = 'not_assessed'
+                    ) AS value_not_assessed_rows
+
                 FROM standard_release
                 GROUP BY GROUPING SETS ((year), ())
             ),
+
             e AS (
                 SELECT
-                    CASE WHEN GROUPING(year) = 1 THEN 'all_years'
-                         ELSE 'year' END AS period_type,
-                    CASE WHEN GROUPING(year) = 1 THEN NULL
-                         ELSE year END AS year,
+                    CASE WHEN GROUPING(year) = 1
+                        THEN 'all_years' ELSE 'year'
+                    END AS period_type,
+
+                    CASE WHEN GROUPING(year) = 1
+                        THEN NULL ELSE year
+                    END AS year,
+
                     COUNT(*) AS enriched_rows,
-                    COUNT(*) FILTER (
-                        WHERE model_prediction_quantity_kg IS NOT NULL
-                    ) AS raw_model_prediction_rows,
-                    COUNT(*) FILTER (
-                        WHERE validation_model_type = 'random_forest'
-                        AND model_prediction_available IS TRUE
-                    ) AS fallback_prediction_rows,
-                    COUNT(DISTINCT target_cmd) FILTER (
-                        WHERE validation_model_type = 'random_forest'
-                        AND model_prediction_available IS TRUE
-                    ) AS fallback_hs6_codes,
+
                     COUNT(*) FILTER (
                         WHERE model_input_valid IS TRUE
                     ) AS model_input_valid_rows,
+
                     COUNT(*) FILTER (
                         WHERE training_selected IS TRUE
                     ) AS training_selected_rows,
+
                     COUNT(*) FILTER (
                         WHERE hs6_seen IS FALSE
                     ) AS unseen_hs6_rows,
+
                     COUNT(*) FILTER (
                         WHERE hs4_seen IS FALSE
                     ) AS unseen_hs4_rows,
-                    COUNT(*) FILTER (
-                        WHERE hs6_seen IS NULL OR hs4_seen IS NULL
-                    ) AS support_not_evaluated_rows,
-                    COUNT(*) FILTER (
-                        WHERE quantity_abs_log_residual IS NOT NULL
-                    ) AS comparable_residual_rows,
+
+                    COUNT(quantity_abs_log_residual) AS comparable_residual_rows,
+
                     MEDIAN(quantity_abs_log_residual) AS median_abs_log_residual,
-                    MEDIAN(trade_sync_uv_usd_per_kg) AS median_trade_sync_uv_usd_per_kg,
-                    MEDIAN(model_uv_usd_per_kg) AS median_model_uv_usd_per_kg,
-                    MEDIAN(trade_sync_uv_mad_distance) AS median_trade_sync_uv_mad_distance,
-                    MEDIAN(model_uv_mad_distance) AS median_model_uv_mad_distance
+
+                    MEDIAN(trade_sync_uv_usd_per_kg)
+                        AS median_trade_sync_uv_usd_per_kg,
+
+                    MEDIAN(model_uv_usd_per_kg)
+                        AS median_model_uv_usd_per_kg
+
                 FROM enriched_release
                 GROUP BY GROUPING SETS ((year), ())
             )
-            SELECT
-                s.period_type,
-                s.year,
-                s.standard_rows,
-                e.enriched_rows,
-                s.hs6_codes,
-                s.nominal_value_rows,
-                s.synced_quantity_rows,
-                s.model_prediction_available_rows,
-                s.standard_prediction_rows,
-                e.raw_model_prediction_rows,
-                s.imputed_value_rows,
-                e.fallback_prediction_rows,
-                e.fallback_hs6_codes,
-                e.model_input_valid_rows,
-                e.training_selected_rows,
-                e.unseen_hs6_rows,
-                e.unseen_hs4_rows,
-                e.support_not_evaluated_rows,
-                e.comparable_residual_rows,
-                s.median_trade_value_usd,
-                s.median_synced_quantity_kg,
-                s.median_standard_prediction_kg,
-                e.median_abs_log_residual,
-                e.median_trade_sync_uv_usd_per_kg,
-                e.median_model_uv_usd_per_kg,
-                e.median_trade_sync_uv_mad_distance,
-                e.median_model_uv_mad_distance
-            FROM s JOIN e
-              ON s.period_type = e.period_type
-             AND s.year IS NOT DISTINCT FROM e.year
-            ORDER BY CASE WHEN s.period_type = 'all_years' THEN 1 ELSE 0 END,
-                     s.year
+
+            SELECT s.*, e.* EXCLUDE (period_type, year)
+            FROM s
+            JOIN e
+            ON s.period_type = e.period_type
+            AND s.year IS NOT DISTINCT FROM e.year
+
+            ORDER BY
+                CASE WHEN s.period_type = 'all_years' THEN 1 ELSE 0 END,
+                s.year
         """
+
+
         # Create a temporary Parquet before promoting the diagnostics artifact.
         temporary_path.unlink(missing_ok=True)
         con.execute(
             f"COPY ({query}) TO {sql_literal(temporary_path)} "
             "(FORMAT PARQUET, COMPRESSION ZSTD)"
         )
+
         summary = con.execute(f"""
             SELECT
                 standard_rows,
                 enriched_rows,
-                imputed_value_rows,
-                fallback_prediction_rows,
-                fallback_hs6_codes,
-                standard_prediction_rows,
-                raw_model_prediction_rows
+                observed_quantity_rows,
+                predicted_quantity_rows,
+                observed_value_rows,
+                predicted_value_rows
             FROM read_parquet({sql_literal(temporary_path)})
             WHERE period_type = 'all_years'
         """).fetchall()
@@ -807,14 +879,15 @@ def build_release_diagnostics(
         (
             n_standard,
             n_enriched,
-            n_imputed,
-            n_fallback,
-            n_fallback_codes,
-            n_standard_prediction,
-            n_raw_prediction,
+            n_observed_quantity,
+            n_predicted_quantity,
+            n_observed_value,
+            n_predicted_value,
         ) = summary[0]
+
         if not n_standard or not n_enriched:
             raise RuntimeError("Published Release dataset is empty.")
+
         sidecar_temp = _build_sidecars(
             con,
             output_path=output_path,
@@ -844,13 +917,21 @@ def build_release_diagnostics(
             "  Records: standard=%s enriched=%s", f"{n_standard:,}", f"{n_enriched:,}"
         )
         logger.info(
-            "  Random Forest fallback: %s rows (%s HS6 codes)",
-            f"{n_fallback:,}",
-            f"{n_fallback_codes:,}",
+            "  Records: standard=%s enriched=%s",
+            f"{n_standard:,}",
+            f"{n_enriched:,}",
         )
+
         logger.info(
-            "  Rows with recorded imputation method: %s",
-            f"{n_imputed:,}",
+            "  Quantity: observed=%s predicted=%s",
+            f"{n_observed_quantity:,}",
+            f"{n_predicted_quantity:,}",
+        )
+
+        logger.info(
+            "  Value: observed=%s predicted=%s",
+            f"{n_observed_value:,}",
+            f"{n_predicted_value:,}",
         )
         return {
             "status": "completed",
@@ -866,11 +947,13 @@ def build_release_diagnostics(
             "feature_distributions_path": sidecar_paths["feature_distributions"],
             "missing_reasons_path": sidecar_paths["missing_reasons"],
             "distributions_path": sidecar_paths["distributions"],
+            "model_usage_path": sidecar_paths["model_usage"],
+            "n_observed_quantity_rows": int(n_observed_quantity),
+            "n_predicted_quantity_rows": int(n_predicted_quantity),
+            "n_observed_value_rows": int(n_observed_value),
+            "n_predicted_value_rows": int(n_predicted_value),
             "n_rows": int(n_standard),
             "fallback_path": sidecar_paths["fallback"],
-            "n_fallback_prediction_rows": int(n_fallback),
-            "n_fallback_hs6_codes": int(n_fallback_codes),
-            "n_imputed_value_rows": int(n_imputed),
             "duration_seconds": perf_counter() - start,
         }
     finally:

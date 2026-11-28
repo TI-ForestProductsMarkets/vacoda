@@ -1,4 +1,4 @@
-# configs/steps/release.yaml
+# configs.steps.release.yaml
 # VACODA Release: publish standard and enriched datasets after audit.
 # Scope and engine are inherited from configs/pipeline.yaml.
 
@@ -17,6 +17,9 @@ release:
 
     inference:
       filename: "target_{target_hs_lower}_inference.parquet"
+
+    plausibility:
+      filename: "target_{target_hs_lower}_quantity_plausibility.parquet"
 
   output:
     stage: "release"
@@ -43,18 +46,33 @@ release:
       enable: true
       filename: "diagnostics/target_{target_hs_lower}_diagnostics.parquet"
 
-  # Enriched inherits standard in this exact order and appends extras.
+  # Enriched inherits standard in this exact order and appends extras
+
   schema:
     standard:
-      - year
-      - exporter_iso
+      # Trade identifiers
       - importer_iso
+      - exporter_iso
+      - year
       - target_cmd
-      - trade_value_reconciled
-      - imputation_method
-      - quantity_value_weighted_kg
+
+      # Quantity assessment
       - model_prediction_quantity_kg
-      - model_prediction_available
+      - quantity_reconciled_kg
+      - quantity_lower_kg
+      - quantity_upper_kg
+      - quantity_plausibility_status
+
+      # Value assessment (constant USD)
+      - model_prediction_value
+      - trade_value_reconciled_constant_usd
+      - value_lower_constant_usd
+      - value_upper_constant_usd
+      - value_plausibility_status
+
+      # Model provenance
+      - validation_model_name
+      - value_validation_model_name
 
     enriched_additional:
       # Original bilateral evidence

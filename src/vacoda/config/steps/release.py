@@ -72,6 +72,7 @@ class ReleaseInputConfig:
     format: str
     prepared: ReleaseInputFileConfig
     inference: ReleaseInputFileConfig
+    plausibility: ReleaseInputFileConfig
 
     @classmethod
     def from_dict(cls, cfg: dict[str, Any]) -> "ReleaseInputConfig":
@@ -96,6 +97,10 @@ class ReleaseInputConfig:
                 require_dict(cfg.get("inference"), key="release.input.inference"),
                 key="release.input.inference",
             ),
+            plausibility=ReleaseInputFileConfig.from_dict(
+                require_dict(cfg.get("plausibility"), key="release.input.plausibility"),
+                key="release.input.plausibility",
+            )
         )
 
     def resolve_dir(self) -> Path:
@@ -122,6 +127,9 @@ class ReleaseInputConfig:
             / "inference"
             / self.inference.filename
         )
+
+    def plausibility_path(self) -> Path:
+        return self.resolve_dir() / self.plausibility.filename
 
 
 @dataclass(frozen=True)
@@ -207,14 +215,22 @@ class ReleaseSchemaConfig:
         if overlap:
             raise ValueError("Release schemas overlap: " + ", ".join(sorted(overlap)))
         required = {
-            "year", 
-            "exporter_iso", 
-            "importer_iso", 
+            "importer_iso",
+            "exporter_iso",
+            "year",
             "target_cmd",
-            "trade_value_reconciled",
-            "model_prediction_quantity_kg", 
-            "model_prediction_available",
-            "imputation_method",
+            "model_prediction_quantity_kg",
+            "quantity_reconciled_kg",
+            "quantity_lower_kg",
+            "quantity_upper_kg",
+            "quantity_plausibility_status",
+            "model_prediction_value",
+            "trade_value_reconciled_constant_usd",
+            "value_lower_constant_usd",
+            "value_upper_constant_usd",
+            "value_plausibility_status",
+            "validation_model_name",
+            "value_validation_model_name",
         }
         if not required.issubset(standard):
             raise ValueError("Release standard schema missing required fields: "
